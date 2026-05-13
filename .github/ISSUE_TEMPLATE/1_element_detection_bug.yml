@@ -1,0 +1,110 @@
+name: 🎯 MCP Page Interaction Issue
+description: MCP browser tools fail to detect, click, scroll, type, or otherwise interact with some type of element on some page(s)
+labels: ["bug", "element-detection"]
+title: "Interaction Issue: ..."
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report! Please fill out the form below to help us reproduce and fix the issue.
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        > [!IMPORTANT]
+        > 🙏 Please **go check *right now before filling this out* that that you are *actually* on the [⬆️ LATEST VERSION](https://github.com/traverse/traverse/releases)**.
+        > 🚀 We ship changes every hour and we might've already fixed your issue today!  
+        > <a href="https://github.com/traverse/traverse/releases"><img src="https://github.com/user-attachments/assets/4cd34ee6-bafb-4f24-87e2-27a31dc5b9a4" width="500px"/></a>
+        > If you are running an old version, the **first thing we will ask you to do is *upgrade to the latest version* and try again**:
+        > - 🆕 [`beta`](https://docs.traverse.com/development/local-setup):   `uv pip install --upgrade git+https://github.com/traverse/traverse.git@main`
+        > - 📦 [`stable`](https://pypi.org/project/traverse/#history): `uv pip install --upgrade traverse`
+
+  - type: input
+    id: version
+    attributes:
+      label: Traverse Version
+      description: |
+        What version of `traverse` are you using? (Run `uv pip show traverse` or `git log -n 1`)  
+        **DO NOT JUST WRITE `latest release` or `main` or a very old version or we will close your issue!**
+      placeholder: "e.g. 0.4.45 or 62760baaefd"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: LLM Model
+      description: Which LLM model are you using?
+      placeholder: "e.g. bu-1.0, gpt-5-mini, claude-4-5-sonnet, gemini-2.0-flash, etc."
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Screenshots, Description, and MCP tool sequence
+      description: |
+        A description of the issue + screenshots, and the exact MCP tool calls or coding-agent instructions that led to it (redact sensitive data).  
+        To help us fix it even faster, screenshot the Chome devtools [`Computed Styles` pane](https://developer.chrome.com/docs/devtools/css/reference#computed) for each failing element.
+      placeholder: |
+        🎯 Goal: Compare the prices of 3 items on a few seller pages
+        💬 Tool sequence:
+          1. browser_navigate https://example.com
+          2. browser_click index=12
+          3. browser_type index=19 text="abc"  <- ❌ selection/input goes wrong here
+        ☝️ please include real URLs 🔗 and screenshots 📸 when possible!
+    validations:
+      required: true
+
+  - type: textarea
+    id: html
+    attributes:
+      label: "HTML around where it's failing"
+      description: A snippet of the HTML from the failing page around where the MCP/browser runtime is failing to interact.
+      render: html
+      placeholder: |
+        <form na-someform="abc">               <!-- ⬅️ at least one parent element above -->
+          <div class="element-to-click">
+            <div data-isbutton="true">Click me</div>
+          </div>
+          <input id="someinput" name="someinput" type="text" />  <!-- ⬅️ failing element -->
+          ...
+        </form>
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System & Browser Versions
+      description: What operating system and browser are you using?
+      placeholder: "e.g. Ubuntu 24.04 + playwright chromium v136, Windows 11 + Chrome.exe v133, macOS ..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Python Code Sample
+      description: Include some python code that reproduces the issue
+      render: python
+      placeholder: |
+        from dotenv import load_dotenv
+        load_dotenv()  # tip: always load_dotenv() before other imports
+        from traverse import BrowserSession, Tools
+
+        browser_session = BrowserSession(headless=False)
+        tools = Tools()
+        ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Full DEBUG Log Output
+      description: Please copy and paste the *full* log output *from the start of the run*. Make sure to set `TRAVERSE_LOGGING_LEVEL=DEBUG` in your `.env` or shell environment.
+      render: shell
+      placeholder: |
+        $ uv run python repro.py
+        DEBUG    [browser] 🌎  Initializing new browser
+        DEBUG    [mcp] Browser session initialized
