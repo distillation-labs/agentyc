@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import subprocess
 import sys
@@ -14,6 +15,17 @@ from pathlib import Path
 from statistics import mean
 from threading import Thread
 from typing import Any
+
+from traverse.dogfood import (
+	build_issue_body,
+	build_issue_title,
+	collect_fixture_regression_reasons,
+	create_github_issue,
+	default_artifact_root,
+	detect_regressions,
+	write_json,
+	write_text,
+)
 
 
 @dataclass(slots=True)
@@ -403,6 +415,28 @@ def build_fixture_pack() -> list[BenchmarkFixture]:
 			focus_text='Delete branch',
 			action_scenario='confirm-dialog',
 		),
+	]
+
+
+def dogfood_fixture_slugs() -> list[str]:
+	return [
+		'dense-catalog',
+		'long-docs',
+		'workflow-form',
+		'pricing-table',
+		'triage-checklist',
+		'accessibility-panel',
+		'delayed-release',
+		'modal-wizard',
+		'drift-recovery',
+		'repeated-actions',
+		'tab-workspace',
+		'contenteditable-compose',
+		'custom-combobox',
+		'iframe-workspace',
+		'shadow-dom-workspace',
+		'debounced-autocomplete',
+		'confirm-dialog',
 	]
 
 
@@ -1639,6 +1673,24 @@ def summarize_results(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
 	}
 
 
+def should_capture_fixture_artifacts(result: dict[str, Any]) -> bool:
+	return bool(collect_fixture_regression_reasons(result))
+
+
+async def capture_fixture_artifacts(server, fixture: BenchmarkFixture, result: dict[str, Any], artifact_root: Path) -> None:
+	fixture_root = artifact_root / fixture.slug
+	fixture_root.mkdir(parents=True, exist_ok=True)
+
+	state_json, screenshot_b64 = await server._get_browser_state(include_screenshot=True, mode='auto')
+	html = await server._get_html()
+
+	write_json(fixture_root / 'result.json', result)
+	write_text(fixture_root / 'state.json', state_json)
+	write_text(fixture_root / 'page.html', html)
+	if screenshot_b64:
+		(fixture_root / 'screenshot.png').write_bytes(base64.b64decode(screenshot_b64))
+
+
 async def main() -> None:
 	fixtures = build_fixture_pack()
 	fixture_lookup = {fixture.slug: fixture for fixture in fixtures}
@@ -1646,15 +1698,47 @@ async def main() -> None:
 	parser = argparse.ArgumentParser(description='Benchmark MCP runtime payload size, latency, and extraction behavior.')
 	parser.add_argument('--json', action='store_true', help='Print compact JSON instead of pretty JSON.')
 	parser.add_argument(
+		'--preset',
+		choices=['dogfood'],
+		help='Run a named fixture preset. Ignored when --fixture is provided.',
+	)
+	parser.add_argument(
 		'--fixture',
 		action='append',
 		dest='fixtures',
 		choices=sorted(fixture_lookup.keys()),
 		help='Run only the selected fixture(s). Can be provided multiple times.',
 	)
+	parser.add_argument('--open-issue', action='store_true', help='Open a GitHub issue when dogfood regressions are detected.')
+	parser.add_argument(
+		'--artifact-dir',
+		type=Path,
+		help='Write dogfood artifacts to this directory instead of the default user-level dogfood path.',
+	)
+	parser.add_argument(
+		'--issue-repo',
+		help='Optional GitHub repository override for issue creation (defaults to the current repo).',
+	)
+	parser.add_argument(
+		'--issue-label',
+		action='append',
+		dest='issue_labels',
+		default=[],
+		help='Label to apply to auto-opened issues. Can be provided multiple times.',
+	)
+	parser.add_argument(
+		'--issue-title-prefix',
+		default='[dogfood]',
+		help='Prefix to use for auto-opened issue titles.',
+	)
 	args = parser.parse_args()
 
-	selected_fixtures = [fixture_lookup[slug] for slug in args.fixtures] if args.fixtures else fixtures
+	if args.fixtures:
+		selected_fixtures = [fixture_lookup[slug] for slug in args.fixtures]
+	elif args.preset == 'dogfood':
+		selected_fixtures = [fixture_lookup[slug] for slug in dogfood_fixture_slugs()]
+	else:
+		selected_fixtures = fixtures
 	import_ms = measure_import_ms()
 
 	from traverse.mcp.server import TraverseServer
@@ -1677,7 +1761,48 @@ async def main() -> None:
 			'summary': summarize_results(results),
 			'fixtures': results,
 		}
+
+		regressions = detect_regressions(results)
+		artifact_root: Path | None = None
+		if args.artifact_dir is not None:
+			artifact_root = args.artifact_dir.expanduser()
+		elif args.open_issue and regressions:
+			artifact_root = default_artifact_root()
+
+		if artifact_root is not None:
+			artifact_root.mkdir(parents=True, exist_ok=True)
+			regression_slugs = {regression.slug for regression in regressions}
+			write_json(artifact_root / 'report.json', output)
+			if regressions:
+				for fixture in selected_fixtures:
+					if fixture.slug in regression_slugs:
+						await capture_fixture_artifacts(server, fixture, results[fixture.slug], artifact_root)
+
+		if args.open_issue and regressions:
+			assert artifact_root is not None
+			body_file = artifact_root / 'issue-body.md'
+			issue_body = build_issue_body(
+				preset='dogfood',
+				command='./scripts/dogfood.sh',
+				artifact_dir=artifact_root,
+				output=output,
+				regressions=regressions,
+			)
+			write_text(body_file, issue_body)
+			issue_title = build_issue_title(regressions, preset='dogfood', title_prefix=args.issue_title_prefix)
+			labels = args.issue_labels or ['dogfood']
+			issue_url = create_github_issue(title=issue_title, body_file=body_file, labels=labels, repo=args.issue_repo)
+			output['dogfood_issue'] = {
+				'title': issue_title,
+				'url': issue_url,
+				'artifact_dir': str(artifact_root),
+				'body_file': str(body_file),
+			}
+			write_json(artifact_root / 'report.json', output)
+
 		print(json.dumps(output, indent=None if args.json else 2, sort_keys=False))
+		if args.open_issue and regressions:
+			raise SystemExit(1)
 	finally:
 		await server._shutdown()
 		fixture_pack.close()
