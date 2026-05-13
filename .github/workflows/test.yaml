@@ -1,0 +1,63 @@
+name: test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+      - stable
+      - 'releases/**'
+    tags:
+      - '*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --dev
+      - run: ./bin/lint.sh
+
+  tests:
+    needs: lint
+    runs-on: ubuntu-latest
+    env:
+      ANONYMIZED_TELEMETRY: 'false'
+      IN_DOCKER: 'True'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - run: uv sync --dev
+
+      - name: Get week number for cache key
+        id: week
+        run: echo "number=$(date +%Y-W%U)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache chromium binaries
+        id: cache-chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-chromium-${{ steps.week.outputs.number }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-chromium-
+
+      - name: Install Chromium if not cached
+        if: steps.cache-chromium.outputs.cache-hit != 'true'
+        run: uvx playwright install chromium --with-deps --no-shell
+
+      - run: ./bin/test.sh
