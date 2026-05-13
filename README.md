@@ -73,3 +73,25 @@ uv run python scripts/benchmark_mcp_runtime.py --fixture delayed-release --fixtu
 ```
 
 Current test script targets deterministic browser-core tests used by the MCP runtime, and the benchmark pack now gates compaction, deterministic extraction, and action reliability.
+
+## Distribution
+
+```bash
+uv build
+uvx traverse
+pipx install traverse
+```
+
+Release publishing is handled by the GitHub `publish` workflow with trusted publishing on `0.1.0`.
+
+## Dogfooding
+
+```bash
+./scripts/dogfood.sh
+./scripts/dogfood.sh --json
+DOGFOOD_OPEN_ISSUES=1 ./scripts/dogfood.sh
+```
+
+The dogfood runner exercises the harder browser workflows in the benchmark corpus: dense pages, long docs, forms, dialogs, iframes, shadow DOM, and comboboxes.
+When `DOGFOOD_OPEN_ISSUES=1`, it also captures a per-run artifact bundle under `~/.traverse/dogfood/...` and opens a GitHub issue automatically for any regression it detects. Optional env vars: `DOGFOOD_ARTIFACT_DIR`, `DOGFOOD_ISSUE_REPO`, `DOGFOOD_ISSUE_LABELS`, `DOGFOOD_ISSUE_TITLE_PREFIX`.
+Auto-issue mode requires `gh` to be installed and authenticated.
