@@ -1,0 +1,57 @@
+# router.py
+
+## Symbols
+
+- `_build_deterministic_result` (function) L656 — 7 callers, 1 callees
+- `_project_key_value_pairs` (function) L912 — 1 callers, 1 callees
+- `_build_table_structured_payload` (function) L686 — 1 callers, 4 callees
+- `DeterministicExtractionResult` (class) L148 — 2 callers, 0 callees
+- `_project_image_items` (function) L829 — 1 callers, 1 callees
+- `maybe_extract_deterministic_content` (function) L182 — 1 callers, 8 callees
+- `_build_key_value_structured_payload` (function) L799 — 1 callers, 4 callees
+- `_format_deterministic_link_collection_result` (function) L316 — 1 callers, 7 callees
+- `_extract_option_texts` (function) L1303 — 1 callers, 3 callees
+- `_should_use_deterministic_link_route` (function) L1095 — 1 callers, 1 callees
+- `_build_list_structured_payload` (function) L720 — 1 callers, 2 callees
+- `_format_deterministic_list_result` (function) L439 — 1 callers, 6 callees
+- `_project_single_table` (function) L962 — 2 callers, 2 callees
+- `_coerce_form_field_value` (function) L1058 — 1 callers, 1 callees
+- `_build_image_structured_payload` (function) L772 — 1 callers, 3 callees
+- `_extract_markdown_link_collection_items` (function) L1188 — 1 callers, 5 callees
+- `_append_partial_notice` (function) L681 — 6 callers, 1 callees
+- `_walk_descendants` (function) L1314 — 1 callers, 1 callees
+- `_project_link_collection_items` (function) L883 — 1 callers, 1 callees
+- `_project_link_collection_item` (function) L894 — 1 callers, 2 callees
+- `_extract_key_value_pairs` (function) L1219 — 1 callers, 3 callees
+- `_format_deterministic_links_result` (function) L274 — 1 callers, 5 callees
+- `_project_key_value_object` (function) L941 — 1 callers, 2 callees
+- `_project_table_rows` (function) L982 — 2 callers, 1 callees
+- `_form_field_label` (function) L1275 — 1 callers, 2 callees
+- `_extract_markdown_links` (function) L1105 — 2 callers, 2 callees
+- `_split_markdown_table_row` (function) L1163 — 1 callers, 0 callees
+- `_project_single_image` (function) L840 — 2 callers, 2 callees
+- `_project_table_row` (function) L993 — 1 callers, 2 callees
+- `_extract_form_fields` (function) L1247 — 1 callers, 6 callees
+- `_project_key_value_pair` (function) L923 — 1 callers, 2 callees
+- `_normalize_identifier` (function) L1091 — 14 callers, 1 callees
+- `_project_tables` (function) L955 — 1 callers, 1 callees
+- `_format_deterministic_form_result` (function) L538 — 1 callers, 6 callees
+- `_project_list_item` (function) L1017 — 1 callers, 2 callees
+- `_find_matching_key` (function) L1083 — 1 callers, 1 callees
+- `get_deterministic_extraction_strategy` (function) L154 — 2 callers, 2 callees
+- `_build_form_structured_payload` (function) L858 — 1 callers, 2 callees
+- `_extract_markdown_images` (function) L1119 — 1 callers, 2 callees
+- `_project_form_fields` (function) L1029 — 1 callers, 1 callees
+- `normalize_text` (function) L1328 — 22 callers, 0 callees
+- `_format_deterministic_key_value_result` (function) L485 — 1 callers, 7 callees
+- `_project_form_field` (function) L1040 — 1 callers, 2 callees
+- `_is_required_field` (function) L1322 — 1 callers, 1 callees
+- `_extract_markdown_list_items` (function) L1167 — 2 callers, 1 callees
+- `_coerce_scalar_value` (function) L1064 — 8 callers, 1 callees
+- `_format_deterministic_image_result` (function) L598 — 1 callers, 7 callees
+- `_build_structured_deterministic_result` (function) L667 — 6 callers, 1 callees
+- `_format_deterministic_table_result` (function) L374 — 1 callers, 7 callees
+- `_extract_markdown_tables` (function) L1134 — 1 callers, 2 callees
+- `_parent_label_text` (function) L1291 — 1 callers, 1 callees
+- `_build_link_collection_structured_payload` (function) L745 — 1 callers, 2 callees
+- `_project_list_items` (function) L1006 — 1 callers, 1 callees
