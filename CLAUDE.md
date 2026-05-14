@@ -10,11 +10,11 @@ The library follows an event-driven architecture with several key components:
 
 ### Core Components
 
-- **Agent (`traverse/agent/service.py`)**: The main orchestrator that takes tasks, manages browser sessions, and executes LLM-driven action loops
-- **BrowserSession (`traverse/browser/session.py`)**: Manages browser lifecycle, CDP connections, and coordinates multiple watchdog services through an event bus
-- **Tools (`traverse/tools/service.py`)**: Action registry that maps LLM decisions to browser operations (click, type, scroll, etc.)
-- **DomService (`traverse/dom/service.py`)**: Extracts and processes DOM content, handles element highlighting and accessibility tree generation
-- **LLM Integration (`traverse/llm/`)**: Abstraction layer supporting OpenAI, Anthropic, Google, Groq, and other providers
+- **Agent (`agentyc/agent/service.py`)**: The main orchestrator that takes tasks, manages browser sessions, and executes LLM-driven action loops
+- **BrowserSession (`agentyc/browser/session.py`)**: Manages browser lifecycle, CDP connections, and coordinates multiple watchdog services through an event bus
+- **Tools (`agentyc/tools/service.py`)**: Action registry that maps LLM decisions to browser operations (click, type, scroll, etc.)
+- **DomService (`agentyc/dom/service.py`)**: Extracts and processes DOM content, handles element highlighting and accessibility tree generation
+- **LLM Integration (`agentyc/llm/`)**: Abstraction layer supporting OpenAI, Anthropic, Google, Groq, and other providers
 
 ### Event-Driven Browser Management
 
@@ -27,7 +27,7 @@ BrowserSession uses a `bubus` event bus to coordinate watchdog services:
 
 ### CDP Integration
 
-Uses `cdp-use` (https://github.com/traverse/cdp-use) for typed CDP protocol access. All CDP client management lives in `traverse/browser/session.py`.
+Uses `cdp-use` (https://github.com/agentyc/cdp-use) for typed CDP protocol access. All CDP client management lives in `agentyc/browser/session.py`.
 
 We want our library APIs to be ergonomic, intuitive, and hard to get wrong.
 
@@ -53,7 +53,7 @@ uv sync
 **MCP Server Mode:**
 The library can run as an MCP server for integration with Claude Desktop:
 ```bash
-uvx traverse[cli] --mcp
+uvx agentyc[cli] --mcp
 ```
 
 ## Code Style
@@ -72,7 +72,7 @@ uvx traverse[cli] --mcp
 
 ## CDP-Use
 
-We use a thin wrapper around CDP called cdp-use: https://github.com/traverse/cdp-use. cdp-use only provides shallow typed interfaces for the websocket calls, all CDP client and session management + other CDP helpers still live in traverse/browser/session.py.
+We use a thin wrapper around CDP called cdp-use: https://github.com/agentyc/cdp-use. cdp-use only provides shallow typed interfaces for the websocket calls, all CDP client and session management + other CDP helpers still live in agentyc/browser/session.py.
 
 - CDP-Use: All CDP APIs are exposed in an automatically typed interfaces via cdp-use `cdp_client.send.DomainHere.methodNameHere(params=...)` like so:
   - `cdp_client.send.DOMSnapshot.enable(session_id=session_id)`
@@ -128,8 +128,8 @@ If that doesn't work, just insert your new modified code as new lines in the fil
 - **Service Pattern**: Each major component has a `service.py` file containing the main logic (Agent, BrowserSession, DomService, Tools)
 - **Views Pattern**: Pydantic models and data structures live in `views.py` files
 - **Events**: Event definitions in `events.py` files, following the event-driven architecture
-- **Browser Profile**: `traverse/browser/profile.py` contains all browser launch arguments, display configuration, and extension management
-- **System Prompts**: Agent prompts are in markdown files: `traverse/agent/system_prompt*.md`
+- **Browser Profile**: `agentyc/browser/profile.py` contains all browser launch arguments, display configuration, and extension management
+- **System Prompts**: Agent prompts are in markdown files: `agentyc/agent/system_prompt*.md`
 
 ## Browser Configuration
 
@@ -145,7 +145,7 @@ The library supports both modes:
 1. **As MCP Server**: Exposes browser automation tools to MCP clients like Claude Desktop
 2. **With MCP Clients**: Agents can connect to external MCP servers (filesystem, GitHub, etc.) to extend capabilities
 
-Connection management lives in `traverse/mcp/client.py`.
+Connection management lives in `agentyc/mcp/client.py`.
 
 ## Important Development Constraints
 
