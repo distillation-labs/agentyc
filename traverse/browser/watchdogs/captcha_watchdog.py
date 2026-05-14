@@ -11,11 +11,9 @@ earlier in-flight waits may return prematurely.
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Protocol, cast
 
 from bubus import BaseEvent
-from cdp_use.cdp.traverse.events import CaptchaSolverFinishedEvent as CDPCaptchaSolverFinishedEvent
-from cdp_use.cdp.traverse.events import CaptchaSolverStartedEvent as CDPCaptchaSolverStartedEvent
 from pydantic import PrivateAttr
 
 from traverse.browser.events import (
@@ -28,6 +26,10 @@ from traverse.browser.events import (
 from traverse.browser.watchdog_base import BaseWatchdog
 
 CaptchaResultType = Literal['success', 'failed', 'timeout', 'unknown']
+
+
+class _CaptchaEventPayload(Protocol):
+	def get(self, key: str, default: Any = None) -> Any: ...
 
 
 @dataclass
@@ -84,8 +86,12 @@ class CaptchaWatchdog(BaseWatchdog):
 			return
 
 		cdp_client = self.browser_session.cdp_client
+		traverse_register = getattr(cdp_client.register, 'Traverse', None)
+		if traverse_register is None:
+			self.logger.info('CaptchaWatchdog: Traverse CDP domain unavailable in cdp_use; captcha event monitoring disabled')
+			return
 
-		def _on_captcha_started(event_data: CDPCaptchaSolverStartedEvent, session_id: str | None) -> None:
+		def _on_captcha_started(event_data: _CaptchaEventPayload, session_id: str | None) -> None:
 			try:
 				self._captcha_solving = True
 				self._captcha_result = 'unknown'
@@ -117,7 +123,7 @@ class CaptchaWatchdog(BaseWatchdog):
 				self._captcha_solving = False
 				self._captcha_solved_event.set()
 
-		def _on_captcha_finished(event_data: CDPCaptchaSolverFinishedEvent, session_id: str | None) -> None:
+		def _on_captcha_finished(event_data: _CaptchaEventPayload, session_id: str | None) -> None:
 			try:
 				success = event_data.get('success', False)
 				self._captcha_solving = False
@@ -149,8 +155,16 @@ class CaptchaWatchdog(BaseWatchdog):
 				self._captcha_solving = False
 				self._captcha_solved_event.set()
 
-		cdp_client.register.Traverse.captchaSolverStarted(_on_captcha_started)
-		cdp_client.register.Traverse.captchaSolverFinished(_on_captcha_finished)
+		captcha_solver_started = getattr(traverse_register, 'captchaSolverStarted', None)
+		captcha_solver_finished = getattr(traverse_register, 'captchaSolverFinished', None)
+		if not callable(captcha_solver_started) or not callable(captcha_solver_finished):
+			self.logger.info(
+				'CaptchaWatchdog: Traverse captcha CDP events unavailable in cdp_use; captcha event monitoring disabled'
+			)
+			return
+
+		cast(Any, captcha_solver_started)(_on_captcha_started)
+		cast(Any, captcha_solver_finished)(_on_captcha_finished)
 		self._cdp_handlers_registered = True
 		self.logger.debug('🔒 CaptchaWatchdog: registered CDP event handlers for Traverse captcha events')
 
