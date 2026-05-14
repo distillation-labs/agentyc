@@ -1,14 +1,22 @@
 [project]
 name = "traverse"
-description = "Lightweight MCP server for deterministic browser automation"
+description = "MCP-first browser automation for coding agents"
 authors = [{ name = "Gregor Zunic" }]
 version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
+keywords = ["mcp", "model-context-protocol", "browser-automation", "cdp", "agents"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
     "aiohttp==3.13.4",
@@ -67,10 +75,12 @@ all = ["traverse[aws,oci]"]
 
 
 [project.urls]
-Homepage = "https://traverse.com"
-Documentation = "https://docs.traverse.com"
-Repository = "https://github.com/traverse/traverse"
-Telemetry = "https://docs.traverse.com/development/monitoring/telemetry"
+Homepage = "https://github.com/distillation-labs/traverse"
+Documentation = "https://github.com/distillation-labs/traverse#readme"
+Repository = "https://github.com/distillation-labs/traverse"
+Issues = "https://github.com/distillation-labs/traverse/issues"
+Changelog = "https://github.com/distillation-labs/traverse/releases"
+Telemetry = "https://github.com/distillation-labs/traverse#deterministic-extraction"
 "Terms of Service" = "https://traverse.com/legal/terms-of-service"
 "Privacy Policy" = "https://traverse.com/privacy/"
 
@@ -187,7 +197,8 @@ allow-direct-references = true
 #     "sys_platform == 'win32' and platform_machine == 'x86_64'",
 #     # "sys_platform == 'win32' and platform_machine == 'arm64'",  # no pytorch wheels available yet
 # ]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "ruff==0.14.14",
     "tokencost==0.1.26",
     "build==1.4.0",
