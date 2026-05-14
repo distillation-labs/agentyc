@@ -2,7 +2,7 @@
 
 import os
 
-from traverse.config import CONFIG
+from agentyc.config import CONFIG
 
 
 class TestLazyConfig:
@@ -11,24 +11,24 @@ class TestLazyConfig:
 	def test_config_reads_env_vars_lazily(self):
 		"""Test that CONFIG reads environment variables each time they're accessed."""
 		# Set an env var
-		original_value = os.environ.get('TRAVERSE_LOGGING_LEVEL', '')
+		original_value = os.environ.get('AGENTYC_LOGGING_LEVEL', '')
 		try:
-			os.environ['TRAVERSE_LOGGING_LEVEL'] = 'debug'
-			assert CONFIG.TRAVERSE_LOGGING_LEVEL == 'debug'
+			os.environ['AGENTYC_LOGGING_LEVEL'] = 'debug'
+			assert CONFIG.AGENTYC_LOGGING_LEVEL == 'debug'
 
 			# Change the env var
-			os.environ['TRAVERSE_LOGGING_LEVEL'] = 'info'
-			assert CONFIG.TRAVERSE_LOGGING_LEVEL == 'info'
+			os.environ['AGENTYC_LOGGING_LEVEL'] = 'info'
+			assert CONFIG.AGENTYC_LOGGING_LEVEL == 'info'
 
 			# Delete the env var to test default
-			del os.environ['TRAVERSE_LOGGING_LEVEL']
-			assert CONFIG.TRAVERSE_LOGGING_LEVEL == 'info'  # default value
+			del os.environ['AGENTYC_LOGGING_LEVEL']
+			assert CONFIG.AGENTYC_LOGGING_LEVEL == 'info'  # default value
 		finally:
 			# Restore original value
 			if original_value:
-				os.environ['TRAVERSE_LOGGING_LEVEL'] = original_value
+				os.environ['AGENTYC_LOGGING_LEVEL'] = original_value
 			else:
-				os.environ.pop('TRAVERSE_LOGGING_LEVEL', None)
+				os.environ.pop('AGENTYC_LOGGING_LEVEL', None)
 
 	def test_boolean_env_vars(self):
 		"""Test boolean environment variables are parsed correctly."""
@@ -92,29 +92,29 @@ class TestLazyConfig:
 				os.environ.pop('XDG_CACHE_HOME', None)
 
 	def test_cloud_sync_inherits_telemetry(self):
-		"""Test TRAVERSE_CLOUD_SYNC inherits from ANONYMIZED_TELEMETRY when not set."""
+		"""Test AGENTYC_CLOUD_SYNC inherits from ANONYMIZED_TELEMETRY when not set."""
 		telemetry_original = os.environ.get('ANONYMIZED_TELEMETRY', '')
-		sync_original = os.environ.get('TRAVERSE_CLOUD_SYNC', '')
+		sync_original = os.environ.get('AGENTYC_CLOUD_SYNC', '')
 		try:
-			# When TRAVERSE_CLOUD_SYNC is not set, it should inherit from ANONYMIZED_TELEMETRY
+			# When AGENTYC_CLOUD_SYNC is not set, it should inherit from ANONYMIZED_TELEMETRY
 			os.environ['ANONYMIZED_TELEMETRY'] = 'true'
-			os.environ.pop('TRAVERSE_CLOUD_SYNC', None)
-			assert CONFIG.TRAVERSE_CLOUD_SYNC is True
+			os.environ.pop('AGENTYC_CLOUD_SYNC', None)
+			assert CONFIG.AGENTYC_CLOUD_SYNC is True
 
 			os.environ['ANONYMIZED_TELEMETRY'] = 'false'
-			os.environ.pop('TRAVERSE_CLOUD_SYNC', None)
-			assert CONFIG.TRAVERSE_CLOUD_SYNC is False
+			os.environ.pop('AGENTYC_CLOUD_SYNC', None)
+			assert CONFIG.AGENTYC_CLOUD_SYNC is False
 
 			# When explicitly set, it should use its own value
 			os.environ['ANONYMIZED_TELEMETRY'] = 'false'
-			os.environ['TRAVERSE_CLOUD_SYNC'] = 'true'
-			assert CONFIG.TRAVERSE_CLOUD_SYNC is True
+			os.environ['AGENTYC_CLOUD_SYNC'] = 'true'
+			assert CONFIG.AGENTYC_CLOUD_SYNC is True
 		finally:
 			if telemetry_original:
 				os.environ['ANONYMIZED_TELEMETRY'] = telemetry_original
 			else:
 				os.environ.pop('ANONYMIZED_TELEMETRY', None)
 			if sync_original:
-				os.environ['TRAVERSE_CLOUD_SYNC'] = sync_original
+				os.environ['AGENTYC_CLOUD_SYNC'] = sync_original
 			else:
-				os.environ.pop('TRAVERSE_CLOUD_SYNC', None)
+				os.environ.pop('AGENTYC_CLOUD_SYNC', None)
