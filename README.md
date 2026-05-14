@@ -82,7 +82,8 @@ uvx traverse
 pipx install traverse
 ```
 
-Release publishing is handled by the GitHub `publish` workflow with trusted publishing on `0.1.0`.
+Release publishing is handled by the GitHub `workflow.yml` trusted-publishing workflow with the `release` environment.
+On PyPI, add a trusted publisher for `jassskalkat/traverse`, workflow `workflow.yml`, environment `release`.
 
 ## Dogfooding
 
