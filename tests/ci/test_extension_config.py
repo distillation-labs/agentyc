@@ -6,12 +6,12 @@ import pytest
 
 
 class TestDisableExtensionsEnvVar:
-	"""Test TRAVERSE_DISABLE_EXTENSIONS environment variable."""
+	"""Test AGENTYC_DISABLE_EXTENSIONS environment variable."""
 
 	def test_default_value_is_true(self):
 		"""Without env var set, enable_default_extensions should default to True."""
 		# Clear the env var if it exists
-		original = os.environ.pop('TRAVERSE_DISABLE_EXTENSIONS', None)
+		original = os.environ.pop('AGENTYC_DISABLE_EXTENSIONS', None)
 		try:
 			# Import fresh to get the default
 			from agentyc.browser.profile import _get_enable_default_extensions_default
@@ -19,7 +19,7 @@ class TestDisableExtensionsEnvVar:
 			assert _get_enable_default_extensions_default() is True
 		finally:
 			if original is not None:
-				os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = original
+				os.environ['AGENTYC_DISABLE_EXTENSIONS'] = original
 
 	@pytest.mark.parametrize(
 		'env_value,expected_enabled',
@@ -43,9 +43,9 @@ class TestDisableExtensionsEnvVar:
 	)
 	def test_env_var_values(self, env_value: str, expected_enabled: bool):
 		"""Test various env var values are parsed correctly."""
-		original = os.environ.get('TRAVERSE_DISABLE_EXTENSIONS')
+		original = os.environ.get('AGENTYC_DISABLE_EXTENSIONS')
 		try:
-			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = env_value
+			os.environ['AGENTYC_DISABLE_EXTENSIONS'] = env_value
 			from agentyc.browser.profile import _get_enable_default_extensions_default
 
 			result = _get_enable_default_extensions_default()
@@ -54,42 +54,42 @@ class TestDisableExtensionsEnvVar:
 			)
 		finally:
 			if original is not None:
-				os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = original
+				os.environ['AGENTYC_DISABLE_EXTENSIONS'] = original
 			else:
-				os.environ.pop('TRAVERSE_DISABLE_EXTENSIONS', None)
+				os.environ.pop('AGENTYC_DISABLE_EXTENSIONS', None)
 
 	def test_browser_profile_uses_env_var(self):
 		"""Test that BrowserProfile picks up the env var."""
-		original = os.environ.get('TRAVERSE_DISABLE_EXTENSIONS')
+		original = os.environ.get('AGENTYC_DISABLE_EXTENSIONS')
 		try:
 			# Test with env var set to true (disable extensions)
-			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = 'true'
+			os.environ['AGENTYC_DISABLE_EXTENSIONS'] = 'true'
 
 			from agentyc.browser.profile import BrowserProfile
 
 			profile = BrowserProfile(headless=True)
 			assert profile.enable_default_extensions is False, (
-				'BrowserProfile should disable extensions when TRAVERSE_DISABLE_EXTENSIONS=true'
+				'BrowserProfile should disable extensions when AGENTYC_DISABLE_EXTENSIONS=true'
 			)
 
 			# Test with env var set to false (enable extensions)
-			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = 'false'
+			os.environ['AGENTYC_DISABLE_EXTENSIONS'] = 'false'
 			profile2 = BrowserProfile(headless=True)
 			assert profile2.enable_default_extensions is True, (
-				'BrowserProfile should enable extensions when TRAVERSE_DISABLE_EXTENSIONS=false'
+				'BrowserProfile should enable extensions when AGENTYC_DISABLE_EXTENSIONS=false'
 			)
 
 		finally:
 			if original is not None:
-				os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = original
+				os.environ['AGENTYC_DISABLE_EXTENSIONS'] = original
 			else:
-				os.environ.pop('TRAVERSE_DISABLE_EXTENSIONS', None)
+				os.environ.pop('AGENTYC_DISABLE_EXTENSIONS', None)
 
 	def test_explicit_param_overrides_env_var(self):
 		"""Test that explicit enable_default_extensions parameter overrides env var."""
-		original = os.environ.get('TRAVERSE_DISABLE_EXTENSIONS')
+		original = os.environ.get('AGENTYC_DISABLE_EXTENSIONS')
 		try:
-			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = 'true'
+			os.environ['AGENTYC_DISABLE_EXTENSIONS'] = 'true'
 
 			from agentyc.browser.profile import BrowserProfile
 
@@ -99,25 +99,25 @@ class TestDisableExtensionsEnvVar:
 
 		finally:
 			if original is not None:
-				os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = original
+				os.environ['AGENTYC_DISABLE_EXTENSIONS'] = original
 			else:
-				os.environ.pop('TRAVERSE_DISABLE_EXTENSIONS', None)
+				os.environ.pop('AGENTYC_DISABLE_EXTENSIONS', None)
 
 	def test_browser_session_uses_env_var(self):
 		"""Test that BrowserSession picks up the env var via BrowserProfile."""
-		original = os.environ.get('TRAVERSE_DISABLE_EXTENSIONS')
+		original = os.environ.get('AGENTYC_DISABLE_EXTENSIONS')
 		try:
-			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = '1'
+			os.environ['AGENTYC_DISABLE_EXTENSIONS'] = '1'
 
 			from agentyc.browser import BrowserSession
 
 			session = BrowserSession(headless=True)
 			assert session.browser_profile.enable_default_extensions is False, (
-				'BrowserSession should disable extensions when TRAVERSE_DISABLE_EXTENSIONS=1'
+				'BrowserSession should disable extensions when AGENTYC_DISABLE_EXTENSIONS=1'
 			)
 
 		finally:
 			if original is not None:
-				os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = original
+				os.environ['AGENTYC_DISABLE_EXTENSIONS'] = original
 			else:
-				os.environ.pop('TRAVERSE_DISABLE_EXTENSIONS', None)
+				os.environ.pop('AGENTYC_DISABLE_EXTENSIONS', None)

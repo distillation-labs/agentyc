@@ -38,7 +38,7 @@ echo
 echo "[+] Installing packages in venv"
 uv sync --dev
 echo
-echo "[i] Tip: make sure to set TRAVERSE_LOGGING_LEVEL=debug and your LLM API keys in your .env file"
+echo "[i] Tip: make sure to set AGENTYC_LOGGING_LEVEL=debug and your LLM API keys in your .env file"
 echo
 uv pip show agentyc
 

@@ -62,7 +62,7 @@ ENV TZ=UTC \
     IN_DOCKER=True
 
 # User config
-ENV TRAVERSE_USER="agentyc" \
+ENV AGENTYC_USER="agentyc" \
     DEFAULT_PUID=911 \
     DEFAULT_PGID=911
 
@@ -99,16 +99,16 @@ RUN (echo "[i] Docker build for Agentyc $(cat /VERSION.txt) starting..." \
     ) | tee -a /VERSION.txt
 
 # Create non-privileged user for agentyc and chrome
-RUN echo "[*] Setting up $TRAVERSE_USER user uid=${DEFAULT_PUID}..." \
-    && groupadd --system $TRAVERSE_USER \
-    && useradd --system --create-home --gid $TRAVERSE_USER --groups audio,video $TRAVERSE_USER \
-    && usermod -u "$DEFAULT_PUID" "$TRAVERSE_USER" \
-    && groupmod -g "$DEFAULT_PGID" "$TRAVERSE_USER" \
+RUN echo "[*] Setting up $AGENTYC_USER user uid=${DEFAULT_PUID}..." \
+    && groupadd --system $AGENTYC_USER \
+    && useradd --system --create-home --gid $AGENTYC_USER --groups audio,video $AGENTYC_USER \
+    && usermod -u "$DEFAULT_PUID" "$AGENTYC_USER" \
+    && groupmod -g "$DEFAULT_PGID" "$AGENTYC_USER" \
     && mkdir -p /data \
-    && mkdir -p /home/$TRAVERSE_USER/.config \
-    && chown -R $TRAVERSE_USER:$TRAVERSE_USER /home/$TRAVERSE_USER \
-    && ln -s $DATA_DIR /home/$TRAVERSE_USER/.config/agentyc \
-    && echo -e "\nTRAVERSE_USER=$TRAVERSE_USER PUID=$(id -u $TRAVERSE_USER) PGID=$(id -g $TRAVERSE_USER)\n\n" \
+    && mkdir -p /home/$AGENTYC_USER/.config \
+    && chown -R $AGENTYC_USER:$AGENTYC_USER /home/$AGENTYC_USER \
+    && ln -s $DATA_DIR /home/$AGENTYC_USER/.config/agentyc \
+    && echo -e "\nAGENTYC_USER=$AGENTYC_USER PUID=$(id -u $AGENTYC_USER) PGID=$(id -g $AGENTYC_USER)\n\n" \
     | tee -a /VERSION.txt
     # DEFAULT_PUID and DEFAULT_PID are overridden by PUID and PGID in /bin/docker_entrypoint.sh at runtime
     # https://docs.linuxserver.io/general/understanding-puid-and-pgid
@@ -167,8 +167,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/chromium /usr/bin/chromium-browser \
     && ln -s /usr/bin/chromium /app/chromium-browser \
-    && mkdir -p "/home/${TRAVERSE_USER}/.config/chromium/Crash Reports/pending/" \
-    && chown -R "$TRAVERSE_USER:$TRAVERSE_USER" "/home/${TRAVERSE_USER}/.config" \
+    && mkdir -p "/home/${AGENTYC_USER}/.config/chromium/Crash Reports/pending/" \
+    && chown -R "$AGENTYC_USER:$AGENTYC_USER" "/home/${AGENTYC_USER}/.config" \
     && ( \
         which chromium-browser && /usr/bin/chromium-browser --version \
         && echo -e '\n\n' \
@@ -194,7 +194,7 @@ RUN --mount=type=cache,target=/root/.cache,sharing=locked,id=cache-$TARGETARCH$T
      ) | tee -a /VERSION.txt
 
 RUN mkdir -p "$DATA_DIR/profiles/default" \
-    && chown -R $TRAVERSE_USER:$TRAVERSE_USER "$DATA_DIR" "$DATA_DIR"/* \
+    && chown -R $AGENTYC_USER:$AGENTYC_USER "$DATA_DIR" "$DATA_DIR"/* \
     && ( \
         echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \
         && echo -e "PLATFORM=${TARGETPLATFORM} ARCH=$(uname -m) ($(uname -s) ${TARGETARCH} ${TARGETVARIANT})\n" \
@@ -202,7 +202,7 @@ RUN mkdir -p "$DATA_DIR/profiles/default" \
     ) | tee -a /VERSION.txt
 
 
-USER "$TRAVERSE_USER"
+USER "$AGENTYC_USER"
 VOLUME "$DATA_DIR"
 EXPOSE 9242
 EXPOSE 9222

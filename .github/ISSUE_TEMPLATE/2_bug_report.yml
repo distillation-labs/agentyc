@@ -65,7 +65,7 @@ body:
     id: logs
     attributes:
       label: Full DEBUG Log Output
-      description: Please copy and paste the log output. Make sure to set `TRAVERSE_LOGGING_LEVEL=DEBUG` in your `.env` or shell environment.
+      description: Please copy and paste the log output. Make sure to set `AGENTYC_LOGGING_LEVEL=DEBUG` in your `.env` or shell environment.
       render: shell
       placeholder: |
         $ uv run python repro.py

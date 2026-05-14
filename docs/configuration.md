@@ -44,22 +44,22 @@ The current MCP runtime honors these documented overrides directly or through th
 
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_HEADLESS` | Override the default profile's `headless` value |
-| `TRAVERSE_ALLOWED_DOMAINS` | Comma-separated domain allowlist override |
-| `TRAVERSE_PROXY_URL` | Chromium proxy server URL |
-| `TRAVERSE_NO_PROXY` | Comma-separated proxy bypass list |
-| `TRAVERSE_PROXY_USERNAME` | Proxy username |
-| `TRAVERSE_PROXY_PASSWORD` | Proxy password |
-| `TRAVERSE_DISABLE_EXTENSIONS` | Disable default bundled extensions |
+| `AGENTYC_HEADLESS` | Override the default profile's `headless` value |
+| `AGENTYC_ALLOWED_DOMAINS` | Comma-separated domain allowlist override |
+| `AGENTYC_PROXY_URL` | Chromium proxy server URL |
+| `AGENTYC_NO_PROXY` | Comma-separated proxy bypass list |
+| `AGENTYC_PROXY_USERNAME` | Proxy username |
+| `AGENTYC_PROXY_PASSWORD` | Proxy password |
+| `AGENTYC_DISABLE_EXTENSIONS` | Disable default bundled extensions |
 
 ### Logging And Runtime
 
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_LOGGING_LEVEL` | Shared agentyc log level outside MCP stdio mode |
-| `TRAVERSE_ACTION_TIMEOUT_S` | Per-action timeout used by the tool service |
+| `AGENTYC_LOGGING_LEVEL` | Shared agentyc log level outside MCP stdio mode |
+| `AGENTYC_ACTION_TIMEOUT_S` | Per-action timeout used by the tool service |
 | `ANONYMIZED_TELEMETRY` | Enable or disable anonymized telemetry |
-| `TRAVERSE_CLOUD_SYNC` | Enable or disable cloud sync behavior in shared config |
+| `AGENTYC_CLOUD_SYNC` | Enable or disable cloud sync behavior in shared config |
 
 ### Optional LLM Config
 
@@ -67,7 +67,7 @@ These values may still exist in shared config because the package exposes Python
 
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_LLM_MODEL` | Default model string in shared config |
+| `AGENTYC_LLM_MODEL` | Default model string in shared config |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GOOGLE_API_KEY` | Google API key |
@@ -87,7 +87,7 @@ The MCP server creates `BrowserProfile` instances from the default profile plus 
 
 The current public MCP runtime documents these security-related controls:
 
-- `allowed_domains` via config or `TRAVERSE_ALLOWED_DOMAINS`
+- `allowed_domains` via config or `AGENTYC_ALLOWED_DOMAINS`
 - Private/reserved IP blocking in the browser security watchdog
 - `disable_security=False` by default in the MCP server
 

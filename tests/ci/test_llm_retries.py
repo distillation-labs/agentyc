@@ -15,13 +15,13 @@ class TestChatAgentycRetries:
 	@pytest.fixture
 	def mock_env(self, monkeypatch):
 		"""Set up environment for ChatAgentyc."""
-		monkeypatch.setenv('TRAVERSE_API_KEY', 'test-api-key')
+		monkeypatch.setenv('AGENTYC_API_KEY', 'test-api-key')
 
 	@pytest.mark.asyncio
 	async def test_retries_on_503_with_exponential_backoff(self, mock_env):
 		"""Test that 503 errors trigger retries with exponential backoff."""
-		from agentyc.llm.messages import UserMessage
 		from agentyc.llm.agentyc.chat import ChatAgentyc
+		from agentyc.llm.messages import UserMessage
 
 		# Track timing of each attempt
 		attempt_times: list[float] = []
@@ -84,9 +84,9 @@ class TestChatAgentycRetries:
 	@pytest.mark.asyncio
 	async def test_no_retry_on_401(self, mock_env):
 		"""Test that 401 errors do NOT trigger retries."""
+		from agentyc.llm.agentyc.chat import ChatAgentyc
 		from agentyc.llm.exceptions import ModelProviderError
 		from agentyc.llm.messages import UserMessage
-		from agentyc.llm.agentyc.chat import ChatAgentyc
 
 		attempt_count = 0
 
@@ -116,8 +116,8 @@ class TestChatAgentycRetries:
 	@pytest.mark.asyncio
 	async def test_retries_on_timeout(self, mock_env):
 		"""Test that timeouts trigger retries."""
-		from agentyc.llm.messages import UserMessage
 		from agentyc.llm.agentyc.chat import ChatAgentyc
+		from agentyc.llm.messages import UserMessage
 
 		attempt_count = 0
 
@@ -148,9 +148,9 @@ class TestChatAgentycRetries:
 	@pytest.mark.asyncio
 	async def test_max_retries_exhausted(self, mock_env):
 		"""Test that error is raised after max retries exhausted."""
+		from agentyc.llm.agentyc.chat import ChatAgentyc
 		from agentyc.llm.exceptions import ModelProviderError
 		from agentyc.llm.messages import UserMessage
-		from agentyc.llm.agentyc.chat import ChatAgentyc
 
 		attempt_count = 0
 

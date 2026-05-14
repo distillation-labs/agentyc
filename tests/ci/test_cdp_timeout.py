@@ -14,7 +14,6 @@ import time
 from unittest.mock import patch
 
 import pytest
-
 from agentyc.browser._cdp_timeout import (
 	DEFAULT_CDP_REQUEST_TIMEOUT_S,
 	TimeoutWrappedCDPClient,
@@ -105,7 +104,7 @@ def test_default_cdp_timeout_is_reasonable():
 
 
 def test_parse_env_rejects_malformed_values():
-	"""Mirrors the defensive parse used for TRAVERSE_ACTION_TIMEOUT_S."""
+	"""Mirrors the defensive parse used for AGENTYC_ACTION_TIMEOUT_S."""
 	for bad in ('', 'nan', 'NaN', 'inf', '-inf', '0', '-5', 'abc'):
 		assert _parse_env_cdp_timeout(bad) == 60.0, f'Expected fallback for {bad!r}'
 
