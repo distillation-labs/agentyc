@@ -11,10 +11,9 @@ regardless of extract_images. The parameter only matters for images inside <td>,
 import asyncio
 
 import pytest
+from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.dom.markdown_extractor import extract_clean_markdown
 from pytest_httpserver import HTTPServer
-
-from traverse.browser import BrowserProfile, BrowserSession
-from traverse.dom.markdown_extractor import extract_clean_markdown
 
 # --- Fixtures ---
 
@@ -201,8 +200,8 @@ class TestExtractImagesAutoDetection:
 
 	async def test_auto_detect_image_url_query(self, browser_session, base_url, tmp_path):
 		"""Query containing 'image url' auto-enables extract_images and returns deterministic image URLs."""
-		from traverse.filesystem.file_system import FileSystem
-		from traverse.tools.service import Tools
+		from agentyc.filesystem.file_system import FileSystem
+		from agentyc.tools.service import Tools
 
 		await _navigate(browser_session, f'{base_url}/products-table')
 
@@ -220,8 +219,8 @@ class TestExtractImagesAutoDetection:
 
 	async def test_no_auto_detect_without_image_keyword(self, browser_session, base_url, tmp_path):
 		"""Query without image keywords keeps table images out of the deterministic table result."""
-		from traverse.filesystem.file_system import FileSystem
-		from traverse.tools.service import Tools
+		from agentyc.filesystem.file_system import FileSystem
+		from agentyc.tools.service import Tools
 
 		await _navigate(browser_session, f'{base_url}/products-table')
 
