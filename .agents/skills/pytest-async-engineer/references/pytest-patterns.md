@@ -1,6 +1,6 @@
 # Pytest Async Patterns
 
-Grounded in traverse's test suite: pytest-asyncio auto mode, pytest-httpserver, and the no-mock constraint.
+Grounded in agentyc's test suite: pytest-asyncio auto mode, pytest-httpserver, and the no-mock constraint.
 
 ## What Good Looks Like
 
