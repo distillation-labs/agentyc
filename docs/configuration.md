@@ -5,17 +5,17 @@
 Configuration for the MCP server is resolved in this order:
 
 1. Environment variables
-2. Config file at `~/.config/traverse/config.json`
+2. Config file at `~/.config/agentyc/config.json`
 3. Code defaults in the browser profile and config models
 
-The MCP server loads config through `traverse.config.load_traverse_config()` and then starts browser sessions from the default browser profile plus any environment overrides.
+The MCP server loads config through `agentyc.config.load_agentyc_config()` and then starts browser sessions from the default browser profile plus any environment overrides.
 
 ## Config File
 
 Default path:
 
 ```text
-~/.config/traverse/config.json
+~/.config/agentyc/config.json
 ```
 
 The MCP runtime reads the default browser profile from that file when present.
@@ -25,7 +25,7 @@ The MCP runtime reads the default browser profile from that file when present.
 Public CLI entrypoint:
 
 ```bash
-traverse --session-timeout-minutes 10
+agentyc --session-timeout-minutes 10
 ```
 
 Supported CLI options in the public release:
@@ -34,7 +34,7 @@ Supported CLI options in the public release:
 |--------|-------------|
 | `--session-timeout-minutes` | Idle timeout for tracked browser sessions |
 
-There is no separate `--mcp` switch in the current public CLI. The `traverse` command itself starts the stdio MCP server.
+There is no separate `--mcp` switch in the current public CLI. The `agentyc` command itself starts the stdio MCP server.
 
 ## Environment Variables
 
@@ -44,22 +44,22 @@ The current MCP runtime honors these documented overrides directly or through th
 
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_HEADLESS` | Override the default profile's `headless` value |
-| `TRAVERSE_ALLOWED_DOMAINS` | Comma-separated domain allowlist override |
-| `TRAVERSE_PROXY_URL` | Chromium proxy server URL |
-| `TRAVERSE_NO_PROXY` | Comma-separated proxy bypass list |
-| `TRAVERSE_PROXY_USERNAME` | Proxy username |
-| `TRAVERSE_PROXY_PASSWORD` | Proxy password |
-| `TRAVERSE_DISABLE_EXTENSIONS` | Disable default bundled extensions |
+| `AGENTYC_HEADLESS` | Override the default profile's `headless` value |
+| `AGENTYC_ALLOWED_DOMAINS` | Comma-separated domain allowlist override |
+| `AGENTYC_PROXY_URL` | Chromium proxy server URL |
+| `AGENTYC_NO_PROXY` | Comma-separated proxy bypass list |
+| `AGENTYC_PROXY_USERNAME` | Proxy username |
+| `AGENTYC_PROXY_PASSWORD` | Proxy password |
+| `AGENTYC_DISABLE_EXTENSIONS` | Disable default bundled extensions |
 
 ### Logging And Runtime
 
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_LOGGING_LEVEL` | Shared traverse log level outside MCP stdio mode |
-| `TRAVERSE_ACTION_TIMEOUT_S` | Per-action timeout used by the tool service |
+| `AGENTYC_LOGGING_LEVEL` | Shared agentyc log level outside MCP stdio mode |
+| `AGENTYC_ACTION_TIMEOUT_S` | Per-action timeout used by the tool service |
 | `ANONYMIZED_TELEMETRY` | Enable or disable anonymized telemetry |
-| `TRAVERSE_CLOUD_SYNC` | Enable or disable cloud sync behavior in shared config |
+| `AGENTYC_CLOUD_SYNC` | Enable or disable cloud sync behavior in shared config |
 
 ### Optional LLM Config
 
@@ -67,18 +67,18 @@ These values may still exist in shared config because the package exposes Python
 
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_LLM_MODEL` | Default model string in shared config |
+| `AGENTYC_LLM_MODEL` | Default model string in shared config |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `GOOGLE_API_KEY` | Google API key |
 
 ## Browser Profile Notes
 
-The MCP server creates `BrowserProfile` instances from the default profile plus overrides. Publicly relevant defaults in `traverse.mcp.server` include:
+The MCP server creates `BrowserProfile` instances from the default profile plus overrides. Publicly relevant defaults in `agentyc.mcp.server` include:
 
-- `downloads_path`: `~/Downloads/traverse-mcp`
+- `downloads_path`: `~/Downloads/agentyc-mcp`
 - `keep_alive`: `False`
-- `user_data_dir`: `~/.config/traverse/profiles/default`
+- `user_data_dir`: `~/.config/agentyc/profiles/default`
 - `device_scale_factor`: `1.0`
 - `disable_security`: `False`
 - `headless`: `False`, unless overridden
@@ -87,7 +87,7 @@ The MCP server creates `BrowserProfile` instances from the default profile plus 
 
 The current public MCP runtime documents these security-related controls:
 
-- `allowed_domains` via config or `TRAVERSE_ALLOWED_DOMAINS`
+- `allowed_domains` via config or `AGENTYC_ALLOWED_DOMAINS`
 - Private/reserved IP blocking in the browser security watchdog
 - `disable_security=False` by default in the MCP server
 
