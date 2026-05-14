@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from traverse.dogfood import build_issue_body, build_issue_title, create_github_issue, detect_regressions
+from agentyc.dogfood import build_issue_body, build_issue_title, create_github_issue, detect_regressions
 
 
 def test_dogfood_issue_body_mentions_regressions(tmp_path: Path) -> None:
@@ -63,7 +63,7 @@ def test_create_github_issue_builds_expected_command(monkeypatch, tmp_path: Path
 		called['text'] = text
 		return SimpleNamespace(returncode=0, stdout='https://github.com/org/repo/issues/1', stderr='')
 
-	monkeypatch.setattr('traverse.dogfood.subprocess.run', fake_run)
+	monkeypatch.setattr('agentyc.dogfood.subprocess.run', fake_run)
 
 	issue_url = create_github_issue(
 		title='[dogfood] dense-catalog regression',
