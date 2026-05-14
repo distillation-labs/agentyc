@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pytest_httpserver import HTTPServer
 
-from traverse.actions import ActionResult
-from traverse.browser import BrowserProfile, BrowserSession
-from traverse.dom.serializer.serializer import DOMTreeSerializer
-from traverse.dom.service import DomService
-from traverse.dom.views import DOMRect, EnhancedAXNode, EnhancedDOMTreeNode, EnhancedSnapshotNode, NodeType
-from traverse.filesystem.file_system import FileSystem
-from traverse.mcp.server import TraverseServer
-from traverse.mcp.state import build_browser_state_payload, parse_element_ref
-from traverse.tools.service import Tools
+from agentyc.actions import ActionResult
+from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.dom.serializer.serializer import DOMTreeSerializer
+from agentyc.dom.service import DomService
+from agentyc.dom.views import DOMRect, EnhancedAXNode, EnhancedDOMTreeNode, EnhancedSnapshotNode, NodeType
+from agentyc.filesystem.file_system import FileSystem
+from agentyc.mcp.server import AgentycServer
+from agentyc.mcp.state import build_browser_state_payload, parse_element_ref
+from agentyc.tools.service import Tools
 
 _ACCESSIBLE_HTML = """
 <!DOCTYPE html>
@@ -660,7 +660,7 @@ def tools():
 
 class TestMCPHotPathFixes:
 	async def test_get_state_forwards_include_screenshot_flag(self):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.browser_session.get_browser_state_summary = AsyncMock(return_value=_stub_state())
 
@@ -702,7 +702,7 @@ class TestMCPHotPathFixes:
 		assert timing['relaxed_interactive_fallback'] > 0
 
 	async def test_screenshot_reuses_manual_capture_without_requesting_state_screenshot(self):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.browser_session.id = 'session-1'
 		server.browser_session.take_screenshot = AsyncMock(return_value=b'png-data')
@@ -888,7 +888,7 @@ class TestMCPHotPathFixes:
 		fake_send.Runtime.evaluate.assert_awaited_once()
 
 	async def test_extract_content_skips_unused_browser_state_fetch(self, tmp_path):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.tools = AsyncMock()
 		server.tools.act = AsyncMock(return_value=ActionResult(extracted_content='done'))
@@ -900,7 +900,7 @@ class TestMCPHotPathFixes:
 		server.browser_session.get_browser_state_summary.assert_not_called()
 
 	async def test_extract_content_forwards_output_schema(self, tmp_path):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.tools = AsyncMock()
 		server.tools.act = AsyncMock(return_value=ActionResult(extracted_content='done'))
@@ -913,7 +913,7 @@ class TestMCPHotPathFixes:
 		assert action.model_dump(mode='python')['extract']['output_schema'] == schema
 
 	async def test_click_and_type_accept_refs(self):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.browser_session.id = 'session-1'
 		server.browser_session.get_dom_element_by_index = AsyncMock(
@@ -935,7 +935,7 @@ class TestMCPHotPathFixes:
 		assert server.browser_session.get_dom_element_by_index.await_args_list[1].args == (42,)
 
 	async def test_extract_content_appends_extraction_metadata(self, tmp_path):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.tools = AsyncMock()
 		server.tools.act = AsyncMock(
@@ -959,7 +959,7 @@ class TestMCPHotPathFixes:
 		assert '"llm_used": false' in result
 
 	async def test_type_returns_postcondition_error_on_value_mismatch(self):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.browser_session.get_dom_element_by_index = AsyncMock(
 			return_value=_StubElement(42, 'Release name', tag='input', attrs={'type': 'text'})
@@ -999,7 +999,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_browser_get_state_min_focus_and_delta_modes(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/accessible')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 
 		state_json, _ = await server._get_browser_state(mode='min')
@@ -1030,7 +1030,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_browser_get_state_auto_uses_full_on_small_pages(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/accessible')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 
 		state_json, _ = await server._get_browser_state()
@@ -1226,7 +1226,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_browser_get_state_includes_context_for_repeated_labels(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/repeated')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 
 		state_json, _ = await server._get_browser_state(mode='auto')
@@ -1242,7 +1242,7 @@ class TestMCPStateProtocolAndExtraction:
 	):
 		await browser_session.navigate_to(f'{base_url}/iframe-workspace')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 
 		state_json, _ = await server._get_browser_state(mode='auto')
@@ -1255,7 +1255,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_public_mcp_contenteditable_workflow(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/editor')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server._update_session_activity = lambda *_args, **_kwargs: None
@@ -1280,7 +1280,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_public_mcp_custom_combobox_workflow(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/combobox')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server._update_session_activity = lambda *_args, **_kwargs: None
@@ -1305,7 +1305,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_public_mcp_same_origin_iframe_workflow(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/iframe-workspace')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server._update_session_activity = lambda *_args, **_kwargs: None
@@ -1330,7 +1330,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_public_mcp_shadow_dom_workflow(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/shadow-form')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server._update_session_activity = lambda *_args, **_kwargs: None
@@ -1357,9 +1357,9 @@ class TestMCPStateProtocolAndExtraction:
 		await browser_session.navigate_to(f'{base_url}/upload')
 
 		upload_path = tmp_path / 'release-notes.pdf'
-		upload_path.write_text('traverse upload fixture')
+		upload_path.write_text('agentyc upload fixture')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server._file_system_base_dir = tmp_path
@@ -1380,7 +1380,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_public_mcp_debounced_autocomplete_workflow(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/autocomplete')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server._update_session_activity = lambda *_args, **_kwargs: None
@@ -1409,7 +1409,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_public_mcp_confirm_dialog_workflow(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/confirm-dialog')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server._update_session_activity = lambda *_args, **_kwargs: None
@@ -1427,7 +1427,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_click_recovers_after_dom_drift(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/drift')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 		server.tools = Tools()
 		server.tools.set_coordinate_clicking(True)
@@ -1449,7 +1449,7 @@ class TestMCPStateProtocolAndExtraction:
 	async def test_focus_mode_recovers_after_dom_drift(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/drift')
 
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = browser_session
 
 		state_json, _ = await server._get_browser_state(mode='auto')
@@ -1467,7 +1467,7 @@ class TestMCPStateProtocolAndExtraction:
 		assert focus_payload['interactive_elements'][0]['text'] == 'Approve deployment'
 
 	async def test_click_disabled_element_returns_explicit_error(self):
-		server = TraverseServer()
+		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.browser_session.id = 'session-1'
 		server.browser_session.get_dom_element_by_index = AsyncMock(
