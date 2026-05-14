@@ -1,6 +1,6 @@
 """Tests for markdown extractor preprocessing."""
 
-from traverse.dom.markdown_extractor import _preprocess_markdown_content
+from agentyc.dom.markdown_extractor import _preprocess_markdown_content
 
 
 class TestPreprocessMarkdownContent:
