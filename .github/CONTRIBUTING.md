@@ -1,7 +1,7 @@
-# Contributing to traverse
+# Contributing to agentyc
 
 We love contributions! Please read through these links to get started:
 
- - 🔢 [Contribution Guidelines](https://docs.traverse.com/development/contribution-guide)
- - 👾 [Local Development Setup Guide](https://docs.traverse.com/development/local-setup)
- - 🏷️ [Issues Tagged: `#help-wanted`](https://github.com/traverse/traverse/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22)
+ - 🔢 [Contribution Guidelines](https://docs.agentyc.com/development/contribution-guide)
+ - 👾 [Local Development Setup Guide](https://docs.agentyc.com/development/local-setup)
+ - 🏷️ [Issues Tagged: `#help-wanted`](https://github.com/agentyc/agentyc/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22help%20wanted%22)
