@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# This script is used to setup a local development environment for the traverse project.
+# This script is used to setup a local development environment for the agentyc project.
 # Usage:
 #   $ ./bin/setup.sh
 
@@ -20,11 +20,11 @@ cd "$SCRIPT_DIR"
 
 
 if [ -f "$SCRIPT_DIR/lint.sh" ]; then
-    echo "[√] already inside a cloned traverse repo"
+    echo "[√] already inside a cloned agentyc repo"
 else
-    echo "[+] Cloning traverse repo into current directory: $SCRIPT_DIR"
-    git clone https://github.com/traverse/traverse
-    cd traverse
+    echo "[+] Cloning agentyc repo into current directory: $SCRIPT_DIR"
+    git clone https://github.com/agentyc/agentyc
+    cd agentyc
 fi
 
 echo "[+] Installing uv..."
@@ -38,13 +38,13 @@ echo
 echo "[+] Installing packages in venv"
 uv sync --dev
 echo
-echo "[i] Tip: make sure to set TRAVERSE_LOGGING_LEVEL=debug and your LLM API keys in your .env file"
+echo "[i] Tip: make sure to set AGENTYC_LOGGING_LEVEL=debug and your LLM API keys in your .env file"
 echo
-uv pip show traverse
+uv pip show agentyc
 
 echo "Usage:"
 echo "  $ source .venv/bin/activate"
-echo "  $ traverse               run the MCP server"
+echo "  $ agentyc               run the MCP server"
 echo "  or"
-echo "  $ uv run python -c 'from traverse import BrowserSession; print(BrowserSession.list_chrome_profiles())'"
+echo "  $ uv run python -c 'from agentyc import BrowserSession; print(BrowserSession.list_chrome_profiles())'"
 echo ""
