@@ -1,36 +1,45 @@
-# traverse (MCP Edition)
+# traverse
 
-Lightweight, deterministic browser automation over MCP for coding agents.
+Lightweight, MCP-first browser automation for coding agents.
 
-This repository is intentionally MCP-first: no autonomous agent loop, no standalone interactive CLI surface. The primary interface is an MCP stdio server exposing direct browser actions.
+This repository currently ships a public stdio MCP server for deterministic browser control plus the underlying Python browser/session primitives used by that server.
 
-## What you get
+## What ships in `0.1.0`
 
-- Deterministic browser tools: navigate, click (index or coordinates), type, upload files, scroll, back, tabs, screenshot, HTML, structured extract.
-- Session management tools: list/close sessions and auto-cleanup for idle sessions.
-- Browser/session primitives (`BrowserSession`, `BrowserProfile`) and tool registry (`Tools`) for direct Python integration.
+- A stdio MCP server exposed by the `traverse` console script.
+- Deterministic browser tools for navigation, interaction, state inspection, screenshots, HTML access, file upload, tab management, and session cleanup.
+- Deterministic-only MCP extraction. `browser_extract_content` does not use an LLM in the public MCP server.
+- Python imports such as `BrowserSession`, `BrowserProfile`, `Tools`, and `TraverseServer` for direct integration.
 
-## Quickstart
+## Install
+
+```bash
+uv tool install traverse
+```
+
+Or from source:
 
 ```bash
 uv venv --python 3.11
 source .venv/bin/activate
-uv sync
+uv sync --dev
 ```
 
-Run the MCP server on stdio:
+## Run The MCP Server
 
 ```bash
-uv run traverse
+traverse
 ```
 
 Optional timeout override:
 
 ```bash
-uv run traverse --session-timeout-minutes 20
+traverse --session-timeout-minutes 20
 ```
 
-## MCP tool surface
+The server uses stdio transport and advertises `server_name="traverse"` with `server_version="0.1.0"`.
+
+## MCP Tool Surface
 
 - `browser_navigate`
 - `browser_click`
@@ -49,50 +58,30 @@ uv run traverse --session-timeout-minutes 20
 - `browser_close_session`
 - `browser_close_all`
 
-`browser_upload_file` takes a local path plus a ref or index for the upload control.
+`browser_click` and `browser_type` accept stable element refs from `browser_get_state`, such as `e123`.
 
-## Token-efficient MCP patterns
+## Deterministic Extraction
 
-- `browser_get_state` supports `mode=auto|full|min|focus`, stable element refs like `e123`, `effective_mode`, optional label `context`, and `since_hash` for cheap unchanged-state checks.
-- `mode=auto` is the default: it keeps full state on small pages and switches to ranked compact state on large pages.
-- `browser_click` and `browser_type` accept those refs directly, so agents do not have to resend large state payloads just to keep targeting stable.
-- `browser_extract_content` can answer low-ambiguity links, tables, list/checklist items, form fields, key-value panels, and search-result/link-collection queries deterministically; link-collection routes preserve URLs automatically when needed.
-- `browser_extract_content` also accepts an optional `output_schema` through MCP; compatible direct table/list/form/key-value/link-collection queries can return validated JSON without an LLM round-trip.
-- `browser_extract_content` keeps free-text summary/action queries on full markdown for small pages, but switches large pages to a compact action-summary context; `<extraction_metadata>` includes route, `llm_used`, deterministic/structured flags, partial markers, and `context_mode` so agents can tell what path ran.
-- `browser_click` and `browser_type` fail with explicit machine-readable prefixes like `Error [target_disabled]`; typing now also fails on value postcondition mismatches, and ref-based actions do mild live-ref recovery for small DOM drift instead of silently missing.
+`browser_extract_content` is deterministic-only in the public MCP server.
+
+- Compatible links, link collections, tables, lists, form fields, key-value blocks, and image queries can be extracted without an LLM.
+- Optional `output_schema` supports deterministic structured extraction for compatible queries.
+- Unsupported free-form extraction requests return an error instead of silently falling back to an LLM.
+- Responses include `<extraction_metadata>` so callers can inspect the deterministic route and partial/truncation markers.
 
 ## Development
 
 ```bash
 ./scripts/lint.sh
 ./scripts/test.sh
-uv run python scripts/benchmark_mcp_runtime.py
-uv run python scripts/benchmark_mcp_runtime.py --fixture dense-catalog --fixture long-docs
-uv run python scripts/benchmark_mcp_runtime.py --fixture workflow-form --fixture pricing-table --fixture triage-checklist
-uv run python scripts/benchmark_mcp_runtime.py --fixture delayed-release --fixture modal-wizard --fixture drift-recovery --fixture repeated-actions --fixture tab-workspace --fixture accessibility-panel
-```
-
-Current test script targets deterministic browser-core tests used by the MCP runtime, and the benchmark pack now gates compaction, deterministic extraction, and action reliability.
-
-## Distribution
-
-```bash
 uv build
-uvx traverse
-pipx install traverse
 ```
 
-Release publishing is handled by the GitHub `workflow.yml` trusted-publishing workflow.
-On PyPI, add a trusted publisher for `jassskalkat/traverse` and workflow `workflow.yml`. The environment is optional.
+`./scripts/test.sh` runs the targeted deterministic MCP/browser-core CI suite.
 
-## Dogfooding
+## Release Notes
 
-```bash
-./scripts/dogfood.sh
-./scripts/dogfood.sh --json
-DOGFOOD_OPEN_ISSUES=1 ./scripts/dogfood.sh
-```
-
-The dogfood runner exercises the harder browser workflows in the benchmark corpus: dense pages, long docs, forms, dialogs, iframes, shadow DOM, and comboboxes.
-When `DOGFOOD_OPEN_ISSUES=1`, it also captures a per-run artifact bundle under `~/.traverse/dogfood/...` and opens a GitHub issue automatically for any regression it detects. Optional env vars: `DOGFOOD_ARTIFACT_DIR`, `DOGFOOD_ISSUE_REPO`, `DOGFOOD_ISSUE_LABELS`, `DOGFOOD_ISSUE_TITLE_PREFIX`.
-Auto-issue mode requires `gh` to be installed and authenticated.
+- Package version: `0.1.0`
+- Build artifacts: `uv build`
+- Publish workflow: `.github/workflows/workflow.yml`
+- Trusted publisher repository: `distillation-labs/traverse`
