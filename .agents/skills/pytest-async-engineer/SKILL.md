@@ -1,7 +1,7 @@
 ---
 name: pytest-async-engineer
 description: >
-  Use for writing or fixing tests in traverse: async test patterns with pytest-asyncio,
+  Use for writing or fixing tests in agentyc: async test patterns with pytest-asyncio,
   HTTP fixture servers with pytest-httpserver, the no-mock constraint, LLM fixture setup,
   BrowserSession lifecycle in tests, and CI test organization. Trigger when the user asks
   how to write a test for a browser automation feature, how to serve HTML for a test, how
@@ -82,7 +82,7 @@ httpserver.expect_request('/api/data').respond_with_json({'status': 'ok'})
 
 ```python
 import pytest
-from traverse.browser import BrowserProfile, BrowserSession
+from agentyc.browser import BrowserProfile, BrowserSession
 
 @pytest.fixture
 async def browser_session():
@@ -103,7 +103,7 @@ LLM fixtures return pre-canned `ChatInvokeCompletion` objects. See `conftest.py`
 existing fixtures. To add a new canned response:
 
 ```python
-from traverse.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from unittest.mock import AsyncMock
 
 @pytest.fixture
