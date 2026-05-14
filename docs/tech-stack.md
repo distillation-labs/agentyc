@@ -161,4 +161,4 @@ await cdp_client.send.Target.attachToTarget(
 )
 ```
 
-All CDP session management, target tracking, and sub-session handling for cross-origin iframes lives in `traverse/browser/session.py` — `cdp-use` only provides the typed protocol layer.
+All CDP session management, target tracking, and sub-session handling for cross-origin iframes lives in `agentyc/browser/session.py` — `cdp-use` only provides the typed protocol layer.
