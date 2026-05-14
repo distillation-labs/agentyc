@@ -114,8 +114,8 @@ jobs:
                   "Bash(rm:*)",
                   "Bash(playwright:*)",
                   "Bash(uv run playwright:*)",
-                  "Bash(./bin/lint.sh)",
-                  "Bash(./bin/test.sh)",
+                  "Bash(./scripts/lint.sh)",
+                  "Bash(./scripts/test.sh)",
                   "WebFetch(*)",
                   "WebSearch(*)"
                 ],
@@ -144,7 +144,7 @@ jobs:
             Bash(rm:*)
             Bash(playwright:*)
             Bash(uv run playwright:*)
-            Bash(./bin/lint.sh)
-            Bash(./bin/test.sh)
+            Bash(./scripts/lint.sh)
+            Bash(./scripts/test.sh)
             WebFetch(*)
             WebSearch(*)
