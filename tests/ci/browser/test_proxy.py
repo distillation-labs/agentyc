@@ -2,16 +2,15 @@ import asyncio
 from typing import Any
 
 import pytest
-
-from traverse.browser import BrowserProfile, BrowserSession
-from traverse.browser.profile import ProxySettings
-from traverse.config import CONFIG
+from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.browser.profile import ProxySettings
+from agentyc.config import CONFIG
 
 
 def test_chromium_args_include_proxy_flags():
 	profile = BrowserProfile(
 		headless=True,
-		user_data_dir=str(CONFIG.TRAVERSE_PROFILES_DIR / 'proxy-smoke'),
+		user_data_dir=str(CONFIG.AGENTYC_PROFILES_DIR / 'proxy-smoke'),
 		proxy=ProxySettings(
 			server='http://proxy.local:8080',
 			bypass='localhost,127.0.0.1',
@@ -27,7 +26,7 @@ async def test_cdp_proxy_auth_handler_registers_and_responds():
 	# Create profile with proxy auth credentials
 	profile = BrowserProfile(
 		headless=True,
-		user_data_dir=str(CONFIG.TRAVERSE_PROFILES_DIR / 'proxy-smoke'),
+		user_data_dir=str(CONFIG.AGENTYC_PROFILES_DIR / 'proxy-smoke'),
 		proxy=ProxySettings(username='user', password='pass'),
 	)
 	session = BrowserSession(browser_profile=profile)
