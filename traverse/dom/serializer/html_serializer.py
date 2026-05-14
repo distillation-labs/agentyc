@@ -179,10 +179,17 @@ class HTMLSerializer:
 		if not children:
 			return ''
 
-		# Check if table already has thead
+		# Check if table already has thead. Browsers often synthesize a tbody even when
+		# the source HTML omits it, so normalize that shape too.
 		child_tags = [c.tag_name for c in children if c.node_type == NodeType.ELEMENT_NODE]
 		has_thead = 'thead' in child_tags
 		has_tbody = 'tbody' in child_tags
+		first_child = children[0] if children else None
+		implicit_tbody = (
+			first_child
+			if first_child is not None and first_child.node_type == NodeType.ELEMENT_NODE and first_child.tag_name == 'tbody'
+			else None
+		)
 
 		if has_thead or not child_tags:
 			# Already normalized or empty — serialize normally
@@ -192,6 +199,9 @@ class HTMLSerializer:
 				if child_html:
 					parts.append(child_html)
 			return ''.join(parts)
+
+		if implicit_tbody is not None:
+			return self._normalize_table_body(table_node, implicit_tbody, depth)
 
 		# Find the first <tr> with <th> cells
 		first_tr = None
@@ -242,6 +252,44 @@ class HTMLSerializer:
 				child_html = self.serialize(child, depth + 1)
 				if child_html:
 					parts.append(child_html)
+
+		return ''.join(parts)
+
+	def _normalize_table_body(self, table_node: EnhancedDOMTreeNode, tbody_node: EnhancedDOMTreeNode, depth: int) -> str:
+		"""Promote a header-like first tbody row into thead when the browser inserted tbody."""
+		rows = tbody_node.children
+		if not rows:
+			return ''.join(child_html for child in table_node.children if (child_html := self.serialize(child, depth + 1)))
+
+		first_row = rows[0]
+		if first_row.node_type != NodeType.ELEMENT_NODE or first_row.tag_name != 'tr':
+			return ''.join(child_html for child in table_node.children if (child_html := self.serialize(child, depth + 1)))
+
+		has_header_cells = any(
+			child.node_type == NodeType.ELEMENT_NODE and child.tag_name == 'th' for child in first_row.children
+		)
+		if not has_header_cells:
+			return ''.join(child_html for child in table_node.children if (child_html := self.serialize(child, depth + 1)))
+
+		parts = []
+		for child in table_node.children:
+			if child is tbody_node:
+				continue
+			child_html = self.serialize(child, depth + 1)
+			if child_html:
+				parts.append(child_html)
+
+		parts.append('<thead>')
+		parts.append(self.serialize(first_row, depth + 2))
+		parts.append('</thead>')
+
+		if len(rows) > 1:
+			parts.append('<tbody>')
+			for row in rows[1:]:
+				row_html = self.serialize(row, depth + 2)
+				if row_html:
+					parts.append(row_html)
+			parts.append('</tbody>')
 
 		return ''.join(parts)
 
