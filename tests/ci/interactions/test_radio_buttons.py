@@ -7,9 +7,9 @@ so that CDP click dispatch works for radio buttons whose labels visually overlap
 import pytest
 from pytest_httpserver import HTTPServer
 
-from traverse.browser import BrowserSession
-from traverse.browser.profile import BrowserProfile
-from traverse.tools.service import Tools
+from agentyc.browser import BrowserSession
+from agentyc.browser.profile import BrowserProfile
+from agentyc.tools.service import Tools
 
 # -- HTML fixtures --
 
