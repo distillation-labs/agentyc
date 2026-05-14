@@ -5,27 +5,26 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-from traverse.browser.cloud.cloud import (
+from agentyc.browser.cloud.cloud import (
 	CloudBrowserAuthError,
 	CloudBrowserClient,
 	CloudBrowserError,
 )
-from traverse.browser.cloud.views import CreateBrowserRequest
-from traverse.browser.profile import BrowserProfile
-from traverse.browser.session import BrowserSession
-from traverse.sync.auth import CloudAuthConfig
+from agentyc.browser.cloud.views import CreateBrowserRequest
+from agentyc.browser.profile import BrowserProfile
+from agentyc.browser.session import BrowserSession
+from agentyc.sync.auth import CloudAuthConfig
 
 
 @pytest.fixture
 def temp_config_dir(monkeypatch):
 	"""Create temporary config directory."""
 	with tempfile.TemporaryDirectory() as tmpdir:
-		temp_dir = Path(tmpdir) / '.config' / 'traverse'
+		temp_dir = Path(tmpdir) / '.config' / 'agentyc'
 		temp_dir.mkdir(parents=True, exist_ok=True)
 
 		# Use monkeypatch to set the environment variable
-		monkeypatch.setenv('TRAVERSE_CONFIG_DIR', str(temp_dir))
+		monkeypatch.setenv('AGENTYC_CONFIG_DIR', str(temp_dir))
 
 		yield temp_dir
 
@@ -45,13 +44,13 @@ class TestCloudBrowserClient:
 		"""Test successful cloud browser creation."""
 
 		# Clear environment variable so test uses mock_auth_config
-		monkeypatch.delenv('TRAVERSE_API_KEY', raising=False)
+		monkeypatch.delenv('AGENTYC_API_KEY', raising=False)
 
 		# Mock response data matching the API
 		mock_response_data = {
 			'id': 'test-browser-id',
 			'status': 'active',
-			'liveUrl': 'https://live.traverse.com?wss=test',
+			'liveUrl': 'https://live.agentyc.com?wss=test',
 			'cdpUrl': 'wss://test.proxy.daytona.works',
 			'timeoutAt': '2025-09-17T04:35:36.049892',
 			'startedAt': '2025-09-17T03:35:36.049974',
@@ -88,20 +87,20 @@ class TestCloudBrowserClient:
 		"""Test cloud browser creation with auth error."""
 
 		# Clear environment variable and don't create auth config - should trigger auth error
-		monkeypatch.delenv('TRAVERSE_API_KEY', raising=False)
+		monkeypatch.delenv('AGENTYC_API_KEY', raising=False)
 
 		client = CloudBrowserClient()
 
 		with pytest.raises(CloudBrowserAuthError) as exc_info:
 			await client.create_browser(CreateBrowserRequest())
 
-		assert 'TRAVERSE_API_KEY is not set' in str(exc_info.value)
+		assert 'AGENTYC_API_KEY is not set' in str(exc_info.value)
 
 	async def test_create_browser_http_401(self, mock_auth_config, monkeypatch):
 		"""Test cloud browser creation with HTTP 401 response."""
 
 		# Clear environment variable so test uses mock_auth_config
-		monkeypatch.delenv('TRAVERSE_API_KEY', raising=False)
+		monkeypatch.delenv('AGENTYC_API_KEY', raising=False)
 
 		with patch('httpx.AsyncClient') as mock_client_class:
 			mock_response = AsyncMock()
@@ -118,19 +117,19 @@ class TestCloudBrowserClient:
 			with pytest.raises(CloudBrowserAuthError) as exc_info:
 				await client.create_browser(CreateBrowserRequest())
 
-			assert 'TRAVERSE_API_KEY is invalid' in str(exc_info.value)
+			assert 'AGENTYC_API_KEY is invalid' in str(exc_info.value)
 
 	async def test_create_browser_with_env_var(self, temp_config_dir, monkeypatch):
-		"""Test cloud browser creation using TRAVERSE_API_KEY environment variable."""
+		"""Test cloud browser creation using AGENTYC_API_KEY environment variable."""
 
 		# Set environment variable
-		monkeypatch.setenv('TRAVERSE_API_KEY', 'env-test-token')
+		monkeypatch.setenv('AGENTYC_API_KEY', 'env-test-token')
 
 		# Mock response data matching the API
 		mock_response_data = {
 			'id': 'test-browser-id',
 			'status': 'active',
-			'liveUrl': 'https://live.traverse.com?wss=test',
+			'liveUrl': 'https://live.agentyc.com?wss=test',
 			'cdpUrl': 'wss://test.proxy.daytona.works',
 			'timeoutAt': '2025-09-17T04:35:36.049892',
 			'startedAt': '2025-09-17T03:35:36.049974',
@@ -166,13 +165,13 @@ class TestCloudBrowserClient:
 		"""Test successful cloud browser session stop."""
 
 		# Clear environment variable so test uses mock_auth_config
-		monkeypatch.delenv('TRAVERSE_API_KEY', raising=False)
+		monkeypatch.delenv('AGENTYC_API_KEY', raising=False)
 
 		# Mock response data for stop
 		mock_response_data = {
 			'id': 'test-browser-id',
 			'status': 'stopped',
-			'liveUrl': 'https://live.traverse.com?wss=test',
+			'liveUrl': 'https://live.agentyc.com?wss=test',
 			'cdpUrl': 'wss://test.proxy.daytona.works',
 			'timeoutAt': '2025-09-17T04:35:36.049892',
 			'startedAt': '2025-09-17T03:35:36.049974',
@@ -210,7 +209,7 @@ class TestCloudBrowserClient:
 		"""Test stopping a browser session that doesn't exist."""
 
 		# Clear environment variable so test uses mock_auth_config
-		monkeypatch.delenv('TRAVERSE_API_KEY', raising=False)
+		monkeypatch.delenv('AGENTYC_API_KEY', raising=False)
 
 		with patch('httpx.AsyncClient') as mock_client_class:
 			mock_response = AsyncMock()
@@ -247,7 +246,7 @@ class TestBrowserSessionCloudIntegration:
 		"""Test that cloud browser profile settings work correctly."""
 
 		# Clear environment variable so test uses mock_auth_config
-		monkeypatch.delenv('TRAVERSE_API_KEY', raising=False)
+		monkeypatch.delenv('AGENTYC_API_KEY', raising=False)
 
 		# Test cloud browser profile creation
 		profile = BrowserProfile(use_cloud=True)
