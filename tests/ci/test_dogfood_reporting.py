@@ -56,7 +56,7 @@ def test_dogfood_issue_body_mentions_regressions(tmp_path: Path) -> None:
 def test_create_github_issue_builds_expected_command(monkeypatch, tmp_path: Path) -> None:
 	called = {}
 
-	def fake_run(command, check, capture_output, text):  # noqa: ANN001
+	def fake_run(command, check, capture_output, text):
 		called['command'] = command
 		called['check'] = check
 		called['capture_output'] = capture_output
