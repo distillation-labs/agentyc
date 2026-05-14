@@ -339,6 +339,34 @@ class TestTableNormalizationIntegration:
 		# The header should be present
 		assert 'Header1' in content
 		assert 'Header2' in content
+		assert '---' in content
+
+	async def test_table_with_implicit_tbody_normalized_via_serializer(self, browser_session, httpserver: HTTPServer):
+		"""Tables parsed with an implicit tbody should still promote a header row to thead."""
+		html = """
+		<html><body>
+		<table>
+			<tbody>
+				<tr><th>Header1</th><th>Header2</th></tr>
+				<tr><td>data1</td><td>data2</td></tr>
+				<tr><td>data3</td><td>data4</td></tr>
+			</tbody>
+		</table>
+		</body></html>
+		"""
+		httpserver.expect_request('/table-implicit-tbody-test').respond_with_data(html, content_type='text/html')
+		url = httpserver.url_for('/table-implicit-tbody-test')
+
+		await browser_session.navigate_to(url)
+
+		from traverse.dom.markdown_extractor import extract_clean_markdown
+
+		content, _ = await extract_clean_markdown(browser_session=browser_session)
+
+		assert '|' in content
+		assert 'Header1' in content
+		assert 'Header2' in content
+		assert '---' in content
 
 	async def test_large_table_extraction_preserves_structure(self, browser_session, httpserver: HTTPServer):
 		"""Large table extraction should produce structure-aware chunks."""
