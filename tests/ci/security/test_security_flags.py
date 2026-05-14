@@ -2,7 +2,7 @@
 
 import tempfile
 
-from traverse.browser.profile import BrowserProfile
+from agentyc.browser.profile import BrowserProfile
 
 
 class TestBrowserProfileDisableSecurity:
