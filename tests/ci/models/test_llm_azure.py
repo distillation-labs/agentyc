@@ -2,7 +2,7 @@
 
 from tests.ci.models.model_test_helper import run_model_button_click_test
 
-from traverse.llm.azure.chat import ChatAzureOpenAI
+from agentyc.llm.azure.chat import ChatAzureOpenAI
 
 
 async def test_azure_gpt_4_1_mini(httpserver):
