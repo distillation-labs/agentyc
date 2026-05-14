@@ -1,5 +1,5 @@
 name: 💡 New Feature or Enhancement Request
-description: Suggest an idea or improvement for the traverse library or Agent capabilities
+description: Suggest an idea or improvement for the agentyc library or Agent capabilities
 title: "Feature Request: ..."
 type: 'Enhancement'
 labels: ['enhancement']
@@ -44,10 +44,10 @@ body:
   - type: input
     id: version
     attributes:
-      label: What version of traverse are you currently using?
+      label: What version of agentyc are you currently using?
       description: |
-        Run `uv pip show traverse` or `git log -n 1` and share the exact number or git hash. DO NOT JUST ENTER `latest release` OR `main`.
-        We need to know what version of the traverse library you're running in order to contextualize your feature request.  
+        Run `uv pip show agentyc` or `git log -n 1` and share the exact number or git hash. DO NOT JUST ENTER `latest release` OR `main`.
+        We need to know what version of the agentyc library you're running in order to contextualize your feature request.  
         Sometimes features are already available and just need to be enabled with config on certain versions.
       placeholder: "e.g. 0.1.48 or 62760baaefd"
     validations:
@@ -58,12 +58,12 @@ body:
       value: |
         ---
         > [!IMPORTANT]
-        > 🙏 Please **go check *right now before filling this out* that that you have tried the [⬆️ LATEST VERSION](https://github.com/traverse/traverse/releases)**.
+        > 🙏 Please **go check *right now before filling this out* that that you have tried the [⬆️ LATEST VERSION](https://github.com/agentyc/agentyc/releases)**.
         > 🚀 We ship *hundreds* of improvements a day and we might've already added a solution to your need yesterday!  
-        > <a href="https://github.com/traverse/traverse/releases"><img src="https://github.com/user-attachments/assets/4cd34ee6-bafb-4f24-87e2-27a31dc5b9a4" width="500px"/></a>
+        > <a href="https://github.com/agentyc/agentyc/releases"><img src="https://github.com/user-attachments/assets/4cd34ee6-bafb-4f24-87e2-27a31dc5b9a4" width="500px"/></a>
         > If you are running an old version, the **first thing we will ask you to do is *try the latest `beta`***:
-        > - 🆕 [`beta`](https://docs.traverse.com/development/local-setup):   `uv pip install --upgrade git+https://github.com/traverse/traverse.git@main`
-        > - 📦 [`stable`](https://pypi.org/project/traverse/#history): `pip install --upgrade traverse`
+        > - 🆕 [`beta`](https://docs.agentyc.com/development/local-setup):   `uv pip install --upgrade git+https://github.com/agentyc/agentyc.git@main`
+        > - 📦 [`stable`](https://pypi.org/project/agentyc/#history): `pip install --upgrade agentyc`
 
   - type: checkboxes
     id: priority
@@ -76,9 +76,9 @@ body:
           required: false
         - label: "It would be nice to add it sometime in the next 2 years"
           required: false
-        - label: "💪 I'm willing to [start a PR](https://docs.traverse.com/development/contribution-guide) to work on this myself"
+        - label: "💪 I'm willing to [start a PR](https://docs.agentyc.com/development/contribution-guide) to work on this myself"
           required: false
-        - label: "💼 My company would spend >$5k on [Browser-Use Cloud](https://traverse.com) if it solved this reliably for us"
+        - label: "💼 My company would spend >$5k on [Browser-Use Cloud](https://agentyc.com) if it solved this reliably for us"
           required: false
 
   - type: markdown
@@ -89,5 +89,5 @@ body:
         > Start conversations about your feature request in other places too, the more  
         > 📣 hype we see around a request the more likely we are to add it!
         >
-        > - 👾 Discord: [https://link.traverse.com/discord](https://link.traverse.com/discord)
-        > - 𝕏  Twitter: [https://x.com/traverse](https://x.com/traverse)
+        > - 👾 Discord: [https://link.agentyc.com/discord](https://link.agentyc.com/discord)
+        > - 𝕏  Twitter: [https://x.com/agentyc](https://x.com/agentyc)
