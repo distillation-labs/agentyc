@@ -1,199 +1,96 @@
 # Configuration
 
-## Configuration Sources (Priority Order)
+## Configuration Sources
 
-1. **Environment variables** — highest priority
-2. **Config file** (`~/.config/traverse/config.json`) — DB-style saved profiles
-3. **Code defaults** in `BrowserProfile`, `LLMEntry`, `AgentEntry`
+Configuration for the MCP server is resolved in this order:
 
----
+1. Environment variables
+2. Config file at `~/.config/traverse/config.json`
+3. Code defaults in the browser profile and config models
 
-## BrowserProfile
+The MCP server loads config through `traverse.config.load_traverse_config()` and then starts browser sessions from the default browser profile plus any environment overrides.
 
-`BrowserProfile` (`traverse/browser/profile.py`) is the single object that controls how a browser session launches.
+## Config File
 
-```python
-from traverse import BrowserProfile, BrowserSession
+Default path:
 
-profile = BrowserProfile(
-    headless=False,
-    window_width=1280,
-    window_height=800,
-    user_data_dir="/path/to/profile",
-    proxy=ProxySettings(server="http://proxy:8080"),
-    allowed_domains=["example.com", "*.trusted.org"],
-)
-
-async with BrowserSession(profile=profile) as session:
-    ...
+```text
+~/.config/traverse/config.json
 ```
 
-### Key Parameters
+The MCP runtime reads the default browser profile from that file when present.
 
-#### Display
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `headless` | `bool` | `False` | Run without visible UI |
-| `window_width` | `int` | auto-detected | Browser window width in px |
-| `window_height` | `int` | auto-detected | Browser window height in px |
-| `device_scale_factor` | `float` | `1.0` | HiDPI scale factor |
+## MCP CLI
 
-Display size is auto-detected via `detect_display_configuration()`:
-- macOS: `AppKit.NSScreen`
-- Linux/Windows: `screeninfo`
+Public CLI entrypoint:
 
-#### Persistence
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `user_data_dir` | `Path \| None` | temp dir | Chrome user data directory for persistent sessions |
-| `keep_user_data_dir` | `bool` | `False` | Don't delete user data dir on session close |
+```bash
+traverse --session-timeout-minutes 10
+```
 
-#### Proxy
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `proxy` | `ProxySettings \| None` | Proxy config |
-| `ProxySettings.server` | `str` | Proxy URL (e.g., `http://host:port`) |
-| `ProxySettings.bypass` | `str` | Comma-separated bypass list |
-| `ProxySettings.username` | `str \| None` | Auth username |
-| `ProxySettings.password` | `str \| None` | Auth password |
+Supported CLI options in the public release:
 
-#### Security
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `allowed_domains` | `list[str] \| None` | `None` (all allowed) | Allowlist; wildcards supported (`*.example.com`) |
-| `blocked_domains` | `list[str]` | `[]` | Denylist |
-| `block_private_ips` | `bool` | `True` | Block navigation to private/reserved IPs (SSRF protection) |
-| `disable_security` | `bool` | `False` | Disable Chrome security features (use for testing only) |
+| Option | Description |
+|--------|-------------|
+| `--session-timeout-minutes` | Idle timeout for tracked browser sessions |
 
-#### Extensions
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `disable_extensions` | `bool` | `False` | Disable all extensions |
-| `extension_whitelist` | `list[str]` | `[]` | Per-domain extension bypass |
-
-Built-in extensions: uBlock Origin, cookie handler.
-
-#### Browser Process
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `chrome_binary_path` | `Path \| None` | auto-detected | Path to Chrome/Chromium binary |
-| `remote_debugging_port` | `int` | `9222` | CDP debug port |
-| `extra_chromium_args` | `list[str]` | `[]` | Additional Chrome flags |
-| `no_sandbox` | `bool` | `False` | Disable Chrome sandbox (auto-enabled in Docker) |
-
-#### Cloud / Remote
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `cdp_url` | `str \| None` | Connect to existing Chrome via CDP URL (e.g., Browserless) |
-| `cloud_browser` | `CloudBrowserConfig \| None` | Traverse cloud browser config |
-
----
+There is no separate `--mcp` switch in the current public CLI. The `traverse` command itself starts the stdio MCP server.
 
 ## Environment Variables
 
-### Browser Behavior
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `TRAVERSE_HEADLESS` | `true`/`false` headless mode | `false` |
-| `TRAVERSE_ALLOWED_DOMAINS` | Comma-separated domain allowlist | (none) |
-| `TRAVERSE_BLOCKED_DOMAINS` | Comma-separated domain denylist | (none) |
-| `TRAVERSE_PROXY_URL` | Proxy server URL | (none) |
-| `TRAVERSE_DISABLE_EXTENSIONS` | `true`/`false` | `false` |
+The current MCP runtime honors these documented overrides directly or through the shared config layer.
 
-### LLM
+### Browser Behavior
+
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_LLM_MODEL` | Default LLM model string |
+| `TRAVERSE_HEADLESS` | Override the default profile's `headless` value |
+| `TRAVERSE_ALLOWED_DOMAINS` | Comma-separated domain allowlist override |
+| `TRAVERSE_PROXY_URL` | Chromium proxy server URL |
+| `TRAVERSE_NO_PROXY` | Comma-separated proxy bypass list |
+| `TRAVERSE_PROXY_USERNAME` | Proxy username |
+| `TRAVERSE_PROXY_PASSWORD` | Proxy password |
+| `TRAVERSE_DISABLE_EXTENSIONS` | Disable default bundled extensions |
+
+### Logging And Runtime
+
+| Variable | Description |
+|----------|-------------|
+| `TRAVERSE_LOGGING_LEVEL` | Shared traverse log level outside MCP stdio mode |
+| `TRAVERSE_ACTION_TIMEOUT_S` | Per-action timeout used by the tool service |
+| `ANONYMIZED_TELEMETRY` | Enable or disable anonymized telemetry |
+| `TRAVERSE_CLOUD_SYNC` | Enable or disable cloud sync behavior in shared config |
+
+### Optional LLM Config
+
+These values may still exist in shared config because the package exposes Python LLM integrations, but the public MCP extraction path does not use them.
+
+| Variable | Description |
+|----------|-------------|
+| `TRAVERSE_LLM_MODEL` | Default model string in shared config |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `ANTHROPIC_API_KEY` | Anthropic API key |
-| `GOOGLE_API_KEY` | Google Gemini API key |
-| `GROQ_API_KEY` | Groq API key |
-| `MISTRAL_API_KEY` | Mistral API key |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI key |
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL |
-| `GITHUB_TOKEN` | GitHub Copilot token |
+| `GOOGLE_API_KEY` | Google API key |
 
-### Logging and Debugging
-| Variable | Description | Values |
-|----------|-------------|--------|
-| `TRAVERSE_LOGGING_LEVEL` | Log verbosity | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+## Browser Profile Notes
 
-### Action Behavior
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `TRAVERSE_ACTION_TIMEOUT_S` | Per-action timeout in seconds | `180` |
+The MCP server creates `BrowserProfile` instances from the default profile plus overrides. Publicly relevant defaults in `traverse.mcp.server` include:
 
----
+- `downloads_path`: `~/Downloads/traverse-mcp`
+- `keep_alive`: `False`
+- `user_data_dir`: `~/.config/traverse/profiles/default`
+- `device_scale_factor`: `1.0`
+- `disable_security`: `False`
+- `headless`: `False`, unless overridden
 
-## Config File (`~/.config/traverse/config.json`)
+## Security-Relevant Settings
 
-DB-style JSON file storing named profiles. Managed via CLI or the config API.
+The current public MCP runtime documents these security-related controls:
 
-Structure:
-```json
-{
-  "browser_profiles": [
-    {
-      "id": "<uuid7>",
-      "name": "my-profile",
-      "headless": false,
-      "window_width": 1280,
-      "user_data_dir": "/path/to/data"
-    }
-  ],
-  "llm_configs": [
-    {
-      "id": "<uuid7>",
-      "name": "default",
-      "model": "gpt-4o",
-      "api_key": "sk-...",
-      "temperature": 0.0
-    }
-  ],
-  "agent_configs": [
-    {
-      "id": "<uuid7>",
-      "name": "default",
-      "max_steps": 100,
-      "use_vision": true,
-      "system_prompt_override": null
-    }
-  ]
-}
-```
+- `allowed_domains` via config or `TRAVERSE_ALLOWED_DOMAINS`
+- Private/reserved IP blocking in the browser security watchdog
+- `disable_security=False` by default in the MCP server
 
----
+## Deterministic Extraction Caveat
 
-## MCP Server Configuration
-
-When running as MCP server, these parameters are accepted via CLI or MCP initialization:
-
-| Parameter | Description |
-|-----------|-------------|
-| `--headless` | Run browser headless |
-| `--model` | LLM model for extraction (e.g., `gpt-4o`) |
-| `--allowed-domains` | Domain allowlist |
-| `--session-timeout` | Idle session cleanup timeout |
-| `--mcp` | Start in MCP server mode |
-
-CLI entry points: `traverse`, `traverse`, `bu`, `browser`
-
-```bash
-# Start as MCP server
-uvx traverse[cli] --mcp
-
-# With options
-uvx traverse[cli] --mcp --headless --allowed-domains example.com,*.trusted.org
-```
-
----
-
-## Iframe Limits
-
-Configurable in `BrowserSession`:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `max_iframe_depth` | `2` | How deep to traverse nested iframes |
-| `max_iframes_per_page` | `5` | Max iframes to process per page |
-| `include_cross_origin_iframes` | `True` | Whether to attach sub-sessions for cross-origin frames |
+`browser_extract_content` in the public MCP server is deterministic-only for `0.1.0`. Setting LLM-related environment variables does not enable an LLM fallback for this MCP tool.
