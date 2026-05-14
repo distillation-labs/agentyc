@@ -4,30 +4,30 @@ This document reflects the public `0.1.0` release surface shipped by this reposi
 
 ## MCP Server
 
-The primary public surface is the stdio MCP server implemented in `traverse.mcp.server`.
+The primary public surface is the stdio MCP server implemented in `agentyc.mcp.server`.
 
 ### CLI
 
 ```bash
-traverse
+agentyc
 ```
 
 Optional timeout override:
 
 ```bash
-traverse --session-timeout-minutes 20
+agentyc --session-timeout-minutes 20
 ```
 
 ### Python
 
 ```python
-from traverse import TraverseServer
+from agentyc import AgentycServer
 
-server = TraverseServer(session_timeout_minutes=20)
+server = AgentycServer(session_timeout_minutes=20)
 await server.run()
 ```
 
-`TraverseServer` exposes tools only. The public server does not expose MCP resources or prompts.
+`AgentycServer` exposes tools only. The public server does not expose MCP resources or prompts.
 
 ### Tool List
 
@@ -76,9 +76,9 @@ Example:
 
 ## Python Imports
 
-These public imports are available from `traverse`:
+These public imports are available from `agentyc`:
 
-- `TraverseServer`
+- `AgentycServer`
 - `BrowserSession`
 - `BrowserProfile`
 - `Tools`
