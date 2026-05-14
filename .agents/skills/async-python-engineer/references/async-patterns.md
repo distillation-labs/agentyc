@@ -1,6 +1,6 @@
 # Async Python Patterns
 
-Grounded in traverse's asyncio usage, bubus EventBus, and watchdog lifecycle.
+Grounded in agentyc's asyncio usage, bubus EventBus, and watchdog lifecycle.
 
 ## What Good Looks Like
 
