@@ -10,20 +10,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import psutil
-from bubus import BaseEvent
-from pydantic import PrivateAttr
-
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	BrowserKillEvent,
 	BrowserLaunchEvent,
 	BrowserLaunchResult,
 	BrowserStopEvent,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.observability import observe_debug
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.observability import observe_debug
+from bubus import BaseEvent
+from pydantic import PrivateAttr
 
 if TYPE_CHECKING:
-	from traverse.browser.profile import BrowserChannel
+	from agentyc.browser.profile import BrowserChannel
 
 
 class LocalBrowserWatchdog(BaseWatchdog):
@@ -170,7 +169,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 						pass
 
 				# Keep only the in-use directory for cleanup during browser kill
-				if currently_used_dir and 'traverse-tmp-' in currently_used_dir:
+				if currently_used_dir and 'agentyc-tmp-' in currently_used_dir:
 					self._temp_dirs_to_cleanup = [Path(currently_used_dir)]
 				else:
 					self._temp_dirs_to_cleanup = []
@@ -186,7 +185,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 
 					if attempt < max_retries - 1:
 						# Create a temporary directory for next attempt
-						tmp_dir = Path(tempfile.mkdtemp(prefix='traverse-tmp-'))
+						tmp_dir = Path(tempfile.mkdtemp(prefix='agentyc-tmp-'))
 						self._temp_dirs_to_cleanup.append(tmp_dir)
 
 						# Update profile to use temp directory
@@ -237,7 +236,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		import platform
 		from pathlib import Path
 
-		from traverse.browser.profile import TRAVERSE_DEFAULT_CHANNEL, BrowserChannel
+		from agentyc.browser.profile import TRAVERSE_DEFAULT_CHANNEL, BrowserChannel
 
 		system = platform.system()
 
@@ -472,7 +471,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		try:
 			temp_path = Path(temp_dir)
 			# Only remove if it's actually a temp directory we created
-			if 'traverse-tmp-' in str(temp_path):
+			if 'agentyc-tmp-' in str(temp_path):
 				shutil.rmtree(temp_path, ignore_errors=True)
 		except Exception as e:
 			self.logger.debug(f'Failed to cleanup temp dir {temp_dir}: {e}')

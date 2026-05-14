@@ -1,4 +1,4 @@
-# Traverse MCP Evaluation
+# Agentyc MCP Evaluation
 
 ## Summary
 

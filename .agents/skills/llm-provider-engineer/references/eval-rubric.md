@@ -22,5 +22,5 @@
 
 ## Output Quality
 - Response includes a field mapping table or checklist.
-- Error translation to `traverse.llm.exceptions` is addressed.
+- Error translation to `agentyc.llm.exceptions` is addressed.
 - Anti-patterns (raw SDK objects, skipped usage, manual JSON parsing) are flagged.

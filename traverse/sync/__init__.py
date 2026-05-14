@@ -1,6 +1,6 @@
-"""Cloud sync module for Traverse."""
+"""Cloud sync module for Agentyc."""
 
-from traverse.sync.auth import CloudAuthConfig, DeviceAuthClient
-from traverse.sync.service import CloudSync
+from agentyc.sync.auth import CloudAuthConfig, DeviceAuthClient
+from agentyc.sync.service import CloudSync
 
 __all__ = ['CloudAuthConfig', 'DeviceAuthClient', 'CloudSync']

@@ -19,12 +19,12 @@ from anthropic.types.tool_choice_tool_param import ToolChoiceToolParam
 from httpx import Timeout
 from pydantic import BaseModel
 
-from traverse.llm.anthropic.serializer import AnthropicMessageSerializer
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError, ModelRateLimitError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.schema import SchemaOptimizer
-from traverse.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from agentyc.llm.anthropic.serializer import AnthropicMessageSerializer
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.schema import SchemaOptimizer
+from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 T = TypeVar('T', bound=BaseModel)
 

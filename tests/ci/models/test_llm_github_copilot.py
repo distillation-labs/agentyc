@@ -5,8 +5,8 @@ import types
 import pytest
 from pydantic import BaseModel
 
-from traverse.llm.copilot.chat import ChatGitHubCopilot
-from traverse.llm.messages import ContentPartImageParam, ContentPartTextParam, ImageURL, SystemMessage, UserMessage
+from agentyc.llm.copilot.chat import ChatGitHubCopilot
+from agentyc.llm.messages import ContentPartImageParam, ContentPartTextParam, ImageURL, SystemMessage, UserMessage
 
 
 class StructuredResponse(BaseModel):
@@ -129,7 +129,7 @@ async def test_github_copilot_structured_output_and_image_attachments(fake_copil
 
 	response = await llm.ainvoke(
 		[
-			SystemMessage(content='You are Traverse.'),
+			SystemMessage(content='You are Agentyc.'),
 			UserMessage(content=[ContentPartTextParam(text='Inspect this page', type='text'), image]),
 		],
 		output_format=StructuredResponse,

@@ -6,8 +6,8 @@ import re
 from collections import defaultdict
 from typing import Any, Literal, cast
 
-from traverse.browser.views import BrowserStateSummary
-from traverse.dom.views import EnhancedDOMTreeNode
+from agentyc.browser.views import BrowserStateSummary
+from agentyc.dom.views import EnhancedDOMTreeNode
 
 StateMode = Literal['auto', 'full', 'min', 'focus']
 

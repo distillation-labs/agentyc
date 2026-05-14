@@ -1,5 +1,5 @@
 """
-OCI Raw API chat model integration for traverse.
+OCI Raw API chat model integration for agentyc.
 
 This module provides direct integration with Oracle Cloud Infrastructure's
 Generative AI service using raw API calls without Langchain dependencies.
@@ -21,11 +21,11 @@ from oci.generative_ai_inference.models import (
 )
 from pydantic import BaseModel
 
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError, ModelRateLimitError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.schema import SchemaOptimizer
-from traverse.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.schema import SchemaOptimizer
+from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 from .serializer import OCIRawMessageSerializer
 
@@ -35,9 +35,9 @@ T = TypeVar('T', bound=BaseModel)
 @dataclass
 class ChatOCIRaw(BaseChatModel):
 	"""
-	A direct OCI Raw API integration for traverse that bypasses Langchain.
+	A direct OCI Raw API integration for agentyc that bypasses Langchain.
 
-	This class provides a traverse compatible interface for OCI GenAI models
+	This class provides a agentyc compatible interface for OCI GenAI models
 	using direct API calls to Oracle Cloud Infrastructure.
 
 	Args:
@@ -374,7 +374,7 @@ IMPORTANT:
 				modified_messages = messages.copy()
 
 				# Add or modify system message
-				from traverse.llm.messages import SystemMessage
+				from agentyc.llm.messages import SystemMessage
 
 				if modified_messages and hasattr(modified_messages[0], 'role') and modified_messages[0].role == 'system':
 					# Modify existing system message

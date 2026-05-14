@@ -1,13 +1,13 @@
 """
 Message serializer for OCI Raw API integration.
 
-This module handles the conversion between traverse message formats
+This module handles the conversion between agentyc message formats
 and the OCI Raw API message format using proper OCI SDK models.
 """
 
 from oci.generative_ai_inference.models import ImageContent, ImageUrl, Message, TextContent
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	ContentPartImageParam,
@@ -18,7 +18,7 @@ from traverse.llm.messages import (
 
 class OCIRawMessageSerializer:
 	"""
-	Serializer for converting between traverse message types and OCI Raw API message formats.
+	Serializer for converting between agentyc message types and OCI Raw API message formats.
 	Uses proper OCI SDK model objects as shown in the working example.
 
 	Supports both:
@@ -61,10 +61,10 @@ class OCIRawMessageSerializer:
 	@staticmethod
 	def serialize_messages(messages: list[BaseMessage]) -> list[Message]:
 		"""
-		Serialize a list of traverse messages to OCI Raw API Message objects.
+		Serialize a list of agentyc messages to OCI Raw API Message objects.
 
 		Args:
-		    messages: List of traverse messages
+		    messages: List of agentyc messages
 
 		Returns:
 		    List of OCI Message objects
@@ -134,7 +134,7 @@ class OCIRawMessageSerializer:
 							contents.append(text_content)
 						elif part.type == 'image_url':
 							# Assistant messages can have images in responses
-							# Note: This is currently unreachable in traverse but kept for completeness
+							# Note: This is currently unreachable in agentyc but kept for completeness
 							image_content = OCIRawMessageSerializer._create_image_content(part)
 							contents.append(image_content)
 						elif part.type == 'refusal':
@@ -165,7 +165,7 @@ class OCIRawMessageSerializer:
 		We combine all messages into a single conversation string.
 
 		Args:
-		    messages: List of traverse messages
+		    messages: List of agentyc messages
 
 		Returns:
 		    Single string containing the conversation

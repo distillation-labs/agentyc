@@ -4,7 +4,7 @@ from typing import Any, overload
 
 from ollama._types import Image, Message
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	SystemMessage,
@@ -60,7 +60,7 @@ class OllamaMessageSerializer:
 
 	@staticmethod
 	def _serialize_tool_calls(tool_calls: list[ToolCall]) -> list[Message.ToolCall]:
-		"""Convert traverse ToolCalls to Ollama ToolCalls."""
+		"""Convert agentyc ToolCalls to Ollama ToolCalls."""
 		ollama_tool_calls: list[Message.ToolCall] = []
 
 		for tool_call in tool_calls:
@@ -139,5 +139,5 @@ class OllamaMessageSerializer:
 
 	@staticmethod
 	def serialize_messages(messages: list[BaseMessage]) -> list[Message]:
-		"""Serialize a list of traverse messages to Ollama Messages."""
+		"""Serialize a list of agentyc messages to Ollama Messages."""
 		return [OllamaMessageSerializer.serialize(m) for m in messages]

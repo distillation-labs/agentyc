@@ -1,7 +1,7 @@
 ---
 name: pydantic-v2-engineer
 description: >
-  Use for designing Pydantic v2 models in traverse: ConfigDict tuning, validators, model
+  Use for designing Pydantic v2 models in agentyc: ConfigDict tuning, validators, model
   splitting across service.py and views.py, PrivateAttr usage, Protocol integration, and
   schema generation for MCP tool surfaces. Trigger when the user asks how to structure a data
   model, how to add runtime validation, how to use AfterValidator, when to use PrivateAttr vs
@@ -107,7 +107,7 @@ class DomService(BaseModel):
 - The hosting model must set `arbitrary_types_allowed=True`.
 
 ```python
-from traverse.llm.base import BaseChatModel
+from agentyc.llm.base import BaseChatModel
 
 class AgentSettings(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)

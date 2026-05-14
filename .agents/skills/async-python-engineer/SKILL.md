@@ -1,7 +1,7 @@
 ---
 name: async-python-engineer
 description: >
-  Use for designing or implementing async Python patterns in traverse: asyncio task management,
+  Use for designing or implementing async Python patterns in agentyc: asyncio task management,
   event-driven architecture with bubus EventBus, structured concurrency, cancellation, error
   propagation from background tasks, and async lifecycle management. Trigger when the user asks
   how to run something concurrently, how to handle task errors without crashing the session, how
@@ -25,7 +25,7 @@ background tasks. The session lifecycle is the unit of correctness.
 
 ## Core Rules
 
-- Use `create_task_with_error_handling(coro, ...)` from `traverse.utils` for all fire-and-forget tasks.
+- Use `create_task_with_error_handling(coro, ...)` from `agentyc.utils` for all fire-and-forget tasks.
 - Never use raw `asyncio.create_task(coro)` without attaching an error callback — uncaught exceptions in tasks are silent by default.
 - Use `asyncio.gather(*coros, return_exceptions=False)` when you need to fan out and want to propagate the first failure.
 - Use `asyncio.gather(*coros, return_exceptions=True)` when you need all results regardless of failures.
@@ -68,7 +68,7 @@ the naming convention.
 
 ### Safe background tasks
 ```python
-from traverse.utils import create_task_with_error_handling
+from agentyc.utils import create_task_with_error_handling
 
 task = create_task_with_error_handling(
     self._poll_something(),

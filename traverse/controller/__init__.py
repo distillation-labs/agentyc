@@ -1,3 +1,3 @@
-from traverse.tools.service import Controller
+from agentyc.tools.service import Controller
 
 __all__ = ['Controller']

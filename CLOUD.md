@@ -1,31 +1,31 @@
 # Cloud.md
-Instructions for AI Agents to assist the user in using Traverse Cloud
+Instructions for AI Agents to assist the user in using Agentyc Cloud
 
-## What is Traverse Cloud?
-Traverse is a framework for AI Agents that interact with web browsers.
-Traverse Cloud is the fully hosted product made by Traverse made for users to automate web-based tasks. 
+## What is Agentyc Cloud?
+Agentyc is a framework for AI Agents that interact with web browsers.
+Agentyc Cloud is the fully hosted product made by Agentyc made for users to automate web-based tasks. 
 Users submit tasks in the form of prompts (text and optionally files and images) and through API requests, remote browsers and agents are spun up to complete these tasks on-demand. 
 Pricing is usage based and adjudicated through an API key system.
-Billing, API Key management, live session viewing, task results, account settings, and profile management is done through the Traverse Cloud web app at https://cloud.traverse.com/
+Billing, API Key management, live session viewing, task results, account settings, and profile management is done through the Agentyc Cloud web app at https://cloud.agentyc.com/
 
 ## Core Concepts:
-The key product of Traverse Cloud is the completion of user tasks.
-- A Session is the complete package of infrastructure Traverse Cloud provides. Sessions are currently limited to 15 minutes of runtime. A session has a Browser running, and users can run Agents in a session to complete tasks. A Session is limited to one and only one Browser, which will be open the entire duration of the Session. Users can run a maximum of one Agent on a Session at a time, which will control the Browser. After one Agent is done, the user can run another within the same Session, limited only by the Session maximum duration.
-- A Browser is simply a browser running on Traverse Cloud infrastructure (a Session). Browsers (as a service) are controllable via CDP url. The user can use an Agent to control a Browser, or can request the CDP url and control the hosted browser with whatever scripts or external automations they desire. However we mainly encourage to control Browsers with Traverse Agents, as they are optimized to work together. These official Traverse browsers are forked from chromium, but have a lot of proprietary optimizations made to them so that they are extremely fast and lightweight, untraceable and not detectable as bots, and come preloaded with adblockers and other quality of life. Using Traverse hosted browsers provides significant performance improvements. 
+The key product of Agentyc Cloud is the completion of user tasks.
+- A Session is the complete package of infrastructure Agentyc Cloud provides. Sessions are currently limited to 15 minutes of runtime. A session has a Browser running, and users can run Agents in a session to complete tasks. A Session is limited to one and only one Browser, which will be open the entire duration of the Session. Users can run a maximum of one Agent on a Session at a time, which will control the Browser. After one Agent is done, the user can run another within the same Session, limited only by the Session maximum duration.
+- A Browser is simply a browser running on Agentyc Cloud infrastructure (a Session). Browsers (as a service) are controllable via CDP url. The user can use an Agent to control a Browser, or can request the CDP url and control the hosted browser with whatever scripts or external automations they desire. However we mainly encourage to control Browsers with Agentyc Agents, as they are optimized to work together. These official Agentyc browsers are forked from chromium, but have a lot of proprietary optimizations made to them so that they are extremely fast and lightweight, untraceable and not detectable as bots, and come preloaded with adblockers and other quality of life. Using Agentyc hosted browsers provides significant performance improvements. 
 - An Agent is the collection of tools, prompts, and framework that enables a Large Language Model to interact with a Browser. The Agents goal is to complete a given user Task. The Agent goes through an iterative process of many steps to complete this. For each step, the Agent is given the page state (including a screenshot) of the Browser, and then it calls tools to interact with the Browser. After many steps, the Agent will mark the task as complete, either successfully or unsuccessfully and return a result, which is a block of text and optionally files. After completion, an independent strict judge will examine the Agent's trajectory and give a verdict of true or false on whether the Agent completed its task successfully. The Agent has a lot of settings which can be tuned to improve performance, most importantly the LLM Model used.
-- A Model is a Large Language Model that powers an Agent. The smarter and more capable the Model, the better the Agent will perform. The best model to use is ChatTraverse, the Traverse official chat completion API which always routes to the best frontier foundation model as determined by Traverse internal evaluations. ChatTraverse has several speed and cost optimizations done through batching, caching, and other tricks, making it faster and more cost effective than any other option, with identical performance to the top frontier models.
+- A Model is a Large Language Model that powers an Agent. The smarter and more capable the Model, the better the Agent will perform. The best model to use is ChatAgentyc, the Agentyc official chat completion API which always routes to the best frontier foundation model as determined by Agentyc internal evaluations. ChatAgentyc has several speed and cost optimizations done through batching, caching, and other tricks, making it faster and more cost effective than any other option, with identical performance to the top frontier models.
 - A Browser Profile is a folder of browser data that is saved on our Cloud. If a user creates a Session with a Browser that has no Browser Profile, no data will persist. However, if they use the same Browser Profile across multiple Sessions, then data such as authentication cookies, site local storage data, saved passwords and credentials, and user preferences will persist. A Browser Profile is essentially a cloud hosted Chrome Profile, in fact, through the Profile Upload feature, a user can upload a Chrome profile from their own machine to be used on the Cloud in Sessions. This is great for giving authentication to Agents. A user can create a Chrome profile on their own machine, log into all of the services they want, and then upload this profile to the Cloud for automations.
-- A Task is the combination of user prompt with optionally files and images that is given to the Agents to complete. Traverse Cloud primarily sells the completion of user Tasks. Writing Tasks with clarity is key to success. 
-- Profile Sync is the best way to handle authentication for tasks. This feature allows users to upload their local browser cookies (where the user is already logged into the services they need authentication for) to a Browser Profile that can be used for tasks on the cloud. To initiate a Profile Sync, a user must run `export TRAVERSE_API_KEY=<your_key> && curl -fsSL https://traverse.com/profile.sh | sh` and follow the steps in the interactive terminal.
+- A Task is the combination of user prompt with optionally files and images that is given to the Agents to complete. Agentyc Cloud primarily sells the completion of user Tasks. Writing Tasks with clarity is key to success. 
+- Profile Sync is the best way to handle authentication for tasks. This feature allows users to upload their local browser cookies (where the user is already logged into the services they need authentication for) to a Browser Profile that can be used for tasks on the cloud. To initiate a Profile Sync, a user must run `export TRAVERSE_API_KEY=<your_key> && curl -fsSL https://agentyc.com/profile.sh | sh` and follow the steps in the interactive terminal.
 
 ## Quickstart
-To get started, direct the user to first must create an account, purchase credits (or simply claim the five free tasks given on account creation), and generate an API key on the Traverse online platform: https://cloud.traverse.com/. These are the only steps that can only be done on the platform.
+To get started, direct the user to first must create an account, purchase credits (or simply claim the five free tasks given on account creation), and generate an API key on the Agentyc online platform: https://cloud.agentyc.com/. These are the only steps that can only be done on the platform.
 
 Avoid giving the user all of the following steps at once as it may seem overwheling. Instead present one step at a time and only continue when asked. Do as much for the user as you are able to.
 
 Next, direct the user to run their first task by making the following post request to Create Task from whatever system is available (cURL, python, JS, etc), but replace `<apiKey>` with the users actual API key.
 ```bash
-curl -X POST https://api.traverse.com/api/v2/tasks \
+curl -X POST https://api.agentyc.com/api/v2/tasks \
      -H "X-Browser-Use-API-Key: <apiKey>" \
      -H "Content-Type: application/json" \
      -d '{
@@ -36,13 +36,13 @@ This will return a response of the format:
 {"id": "string","sessionId": "string"}
 The user will probably want to watch the live stream of the task being completed by the agent, so direct them to use the Get Session request using the `<sessionId>` returned by the prior request and their API key
 ```bash
-curl https://api.traverse.com/api/v2/sessions/<sessionId> \
+curl https://api.agentyc.com/api/v2/sessions/<sessionId> \
      -H "X-Browser-Use-API-Key: <apiKey>"
 ```
 And in the response object there will be a `"liveUrl": "string"`. Direct the user to visit that url or open it for them.
 If the user wants to terminate the Session after the Agent has completed its task (by default the Session will remain open), direct them to use the Update Session request with the stop action
 ```bash
-curl -X PATCH https://api.traverse.com/api/v2/sessions/<session_id> \
+curl -X PATCH https://api.agentyc.com/api/v2/sessions/<session_id> \
      -H "X-Browser-Use-API-Key: <apiKey>" \
      -H "Content-Type: application/json" \
      -d '{
@@ -52,14 +52,14 @@ curl -X PATCH https://api.traverse.com/api/v2/sessions/<session_id> \
 ```
 
 ## API (v2) Docs
-The best way to use Traverse Cloud is with API v2. 
+The best way to use Agentyc Cloud is with API v2. 
 Other options exist, namely API v2 and the SDK, but give less comprehensive control.
 
 ### Billing
 ##### Get Account Billing
-GET https://api.traverse.com/api/v2/billing/account
+GET https://api.agentyc.com/api/v2/billing/account
 Get authenticated account information including credit balances and account details.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/billing/get-account-billing-billing-account-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/billing/get-account-billing-billing-account-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -160,9 +160,9 @@ components:
 ### Tasks
 
 #### List Tasks
-GET https://api.traverse.com/api/v2/tasks
+GET https://api.agentyc.com/api/v2/tasks
 Get paginated list of AI agent tasks with optional filtering by session and status.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/tasks/list-tasks-tasks-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/tasks/list-tasks-tasks-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -313,12 +313,12 @@ components:
 ```
 
 #### Create Task
-POST https://api.traverse.com/api/v2/tasks
+POST https://api.agentyc.com/api/v2/tasks
 Content-Type: application/json
 You can either:
 1. Start a new task (auto creates a new simple session)
 2. Start a new task in an existing session (you can create a custom session before starting the task and reuse it for follow-up tasks)
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/tasks/create-task-tasks-post
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/tasks/create-task-tasks-post
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -374,7 +374,7 @@ components:
     SupportedLLMs:
       type: string
       enum:
-        - value: traverse-llm
+        - value: agentyc-llm
         - value: gpt-4.1
         - value: gpt-4.1-mini
         - value: o4-mini
@@ -467,9 +467,9 @@ components:
 ```
 
 #### Get Task
-GET https://api.traverse.com/api/v2/tasks/{task_id}
+GET https://api.agentyc.com/api/v2/tasks/{task_id}
 Get detailed task information including status, progress, steps, and file outputs.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/tasks/get-task-tasks-task-id-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/tasks/get-task-tasks-task-id-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -618,10 +618,10 @@ components:
 ```
 
 #### Update Task
-PATCH https://api.traverse.com/api/v2/tasks/{task_id}
+PATCH https://api.agentyc.com/api/v2/tasks/{task_id}
 Content-Type: application/json
 Control task execution with stop, pause, resume, or stop task and session actions.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/tasks/update-task-tasks-task-id-patch
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/tasks/update-task-tasks-task-id-patch
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -789,9 +789,9 @@ components:
 ```
 
 #### Get Task Logs
-GET https://api.traverse.com/api/v2/tasks/{task_id}/logs
+GET https://api.agentyc.com/api/v2/tasks/{task_id}/logs
 Get secure download URL for task execution logs with step-by-step details.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/tasks/get-task-logs-tasks-task-id-logs-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/tasks/get-task-logs-tasks-task-id-logs-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -850,9 +850,9 @@ components:
 ### Sessions
 
 #### List Sessions
-GET https://api.traverse.com/api/v2/sessions
+GET https://api.agentyc.com/api/v2/sessions
 Get paginated list of AI agent sessions with optional status filtering.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/sessions/list-sessions-sessions-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/sessions/list-sessions-sessions-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -952,10 +952,10 @@ components:
 ```
 
 #### Create Session
-POST https://api.traverse.com/api/v2/sessions
+POST https://api.agentyc.com/api/v2/sessions
 Content-Type: application/json
 Create a new session with a new task.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/sessions/create-session-sessions-post
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/sessions/create-session-sessions-post
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1060,9 +1060,9 @@ components:
 ```
 
 #### Get Session
-GET https://api.traverse.com/api/v2/sessions/{session_id}
+GET https://api.agentyc.com/api/v2/sessions/{session_id}
 Get detailed session information including status, URLs, and task details.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/sessions/get-session-sessions-session-id-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/sessions/get-session-sessions-session-id-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1200,10 +1200,10 @@ components:
 ```
 
 #### Update Session
-PATCH https://api.traverse.com/api/v2/sessions/{session_id}
+PATCH https://api.agentyc.com/api/v2/sessions/{session_id}
 Content-Type: application/json
 Stop a session and all its running tasks.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/sessions/update-session-sessions-session-id-patch
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/sessions/update-session-sessions-session-id-patch
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1355,9 +1355,9 @@ components:
 ```
 
 #### Get Session Public Share
-GET https://api.traverse.com/api/v2/sessions/{session_id}/public-share
+GET https://api.agentyc.com/api/v2/sessions/{session_id}/public-share
 Get public share information including URL and usage statistics.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/sessions/get-session-public-share-sessions-session-id-public-share-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/sessions/get-session-public-share-sessions-session-id-public-share-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1421,9 +1421,9 @@ components:
 ```
 
 #### Create Session Public Share
-POST https://api.traverse.com/api/v2/sessions/{session_id}/public-share
+POST https://api.agentyc.com/api/v2/sessions/{session_id}/public-share
 Create or return existing public share for a session.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/sessions/create-session-public-share-sessions-session-id-public-share-post
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/sessions/create-session-public-share-sessions-session-id-public-share-post
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1487,9 +1487,9 @@ components:
 ```
 
 #### Delete Session Public Share
-DELETE https://api.traverse.com/api/v2/sessions/{session_id}/public-share
+DELETE https://api.agentyc.com/api/v2/sessions/{session_id}/public-share
 Remove public share for a session.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/sessions/delete-session-public-share-sessions-session-id-public-share-delete
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/sessions/delete-session-public-share-sessions-session-id-public-share-delete
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1541,10 +1541,10 @@ components:
 ### Files
 
 #### User Upload File Presigned Url
-POST https://api.traverse.com/api/v2/files/sessions/{session_id}/presigned-url
+POST https://api.agentyc.com/api/v2/files/sessions/{session_id}/presigned-url
 Content-Type: application/json
 Generate a secure presigned URL for uploading files that AI agents can use during tasks.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/files/user-upload-file-presigned-url-files-sessions-session-id-presigned-url-post
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/files/user-upload-file-presigned-url-files-sessions-session-id-presigned-url-post
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1659,10 +1659,10 @@ components:
 ```
 
 #### User Upload File Presigned Url Browser
-POST https://api.traverse.com/api/v2/files/browsers/{session_id}/presigned-url
+POST https://api.agentyc.com/api/v2/files/browsers/{session_id}/presigned-url
 Content-Type: application/json
 Generate a secure presigned URL for uploading files that AI agents can use during tasks.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/files/user-upload-file-presigned-url-browser-files-browsers-session-id-presigned-url-post
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/files/user-upload-file-presigned-url-browser-files-browsers-session-id-presigned-url-post
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1777,9 +1777,9 @@ components:
 ```
 
 #### Get Task Output File Presigned Url
-GET https://api.traverse.com/api/v2/files/tasks/{task_id}/output-files/{file_id}
+GET https://api.agentyc.com/api/v2/files/tasks/{task_id}/output-files/{file_id}
 Get secure download URL for an output file generated by the AI agent.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/files/get-task-output-file-presigned-url-files-tasks-task-id-output-files-file-id-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/files/get-task-output-file-presigned-url-files-tasks-task-id-output-files-file-id-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1851,9 +1851,9 @@ components:
 ### Profiles
 
 #### List Profiles
-GET https://api.traverse.com/api/v2/profiles
+GET https://api.agentyc.com/api/v2/profiles
 Get paginated list of profiles.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/profiles/list-profiles-profiles-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/profiles/list-profiles-profiles-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -1948,13 +1948,13 @@ components:
 ```
 
 #### Create Profile
-POST https://api.traverse.com/api/v2/profiles
+POST https://api.agentyc.com/api/v2/profiles
 Content-Type: application/json
 Profiles allow you to preserve the state of the browser between tasks.
 They are most commonly used to allow users to preserve the log-in state in the agent between tasks.
 You'd normally create one profile per user and then use it for all their tasks.
 You can create a new profile by calling this endpoint.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/profiles/create-profile-profiles-post
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/profiles/create-profile-profiles-post
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -2042,9 +2042,9 @@ components:
 ```
 
 #### Get Profile
-GET https://api.traverse.com/api/v2/profiles/{profile_id}
+GET https://api.agentyc.com/api/v2/profiles/{profile_id}
 Get profile details.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/profiles/get-profile-profiles-profile-id-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/profiles/get-profile-profiles-profile-id-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -2120,9 +2120,9 @@ components:
 ```
 
 #### Delete Browser Profile
-DELETE https://api.traverse.com/api/v2/profiles/{profile_id}
+DELETE https://api.agentyc.com/api/v2/profiles/{profile_id}
 Permanently delete a browser profile and its configuration.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/profiles/delete-browser-profile-profiles-profile-id-delete
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/profiles/delete-browser-profile-profiles-profile-id-delete
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -2168,10 +2168,10 @@ components:
 ```
 
 #### Update Profile
-PATCH https://api.traverse.com/api/v2/profiles/{profile_id}
+PATCH https://api.agentyc.com/api/v2/profiles/{profile_id}
 Content-Type: application/json
 Update a browser profile's information.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/profiles/update-profile-profiles-profile-id-patch
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/profiles/update-profile-profiles-profile-id-patch
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -2261,9 +2261,9 @@ components:
 ### Browsers
 
 #### List Browser Sessions
-GET https://api.traverse.com/api/v2/browsers
+GET https://api.agentyc.com/api/v2/browsers
 Get paginated list of browser sessions with optional status filtering.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/browsers/list-browser-sessions-browsers-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/browsers/list-browser-sessions-browsers-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -2371,7 +2371,7 @@ components:
 ```
 
 #### Create Browser Session
-POST https://api.traverse.com/api/v2/browsers
+POST https://api.agentyc.com/api/v2/browsers
 Content-Type: application/json
 Create a new browser session.
 **Pricing:** Browser sessions are charged at $0.05 per hour.
@@ -2382,7 +2382,7 @@ For example, if you stop a session after 30 minutes, you'll be refunded $0.025.
 **Session Limits:**
 - Free users (without active subscription): Maximum 15 minutes per session
 - Paid subscribers: Up to 4 hours per session
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/browsers/create-browser-session-browsers-post
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/browsers/create-browser-session-browsers-post
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -2508,9 +2508,9 @@ components:
 ```
 
 #### Get Browser Session
-GET https://api.traverse.com/api/v2/browsers/{session_id}
+GET https://api.agentyc.com/api/v2/browsers/{session_id}
 Get detailed browser session information including status and URLs.
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/browsers/get-browser-session-browsers-session-id-get
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/browsers/get-browser-session-browsers-session-id-get
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1
@@ -2592,13 +2592,13 @@ components:
 ```
 
 #### Update Browser Session
-PATCH https://api.traverse.com/api/v2/browsers/{session_id}
+PATCH https://api.agentyc.com/api/v2/browsers/{session_id}
 Content-Type: application/json
 Stop a browser session.
 **Refund:** When you stop a session, unused time is automatically refunded.
 If the session ran for less than 1 hour, you'll receive a proportional refund.
 Billing is ceil to the nearest minute (minimum 1 minute).
-Reference: https://docs.cloud.traverse.com/api-reference/v-2-api-current/browsers/update-browser-session-browsers-session-id-patch
+Reference: https://docs.cloud.agentyc.com/api-reference/v-2-api-current/browsers/update-browser-session-browsers-session-id-patch
 OpenAPI Specification
 ```yaml
 openapi: 3.1.1

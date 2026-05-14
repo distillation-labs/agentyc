@@ -1,6 +1,6 @@
 # Pydantic v2 Patterns
 
-Grounded in traverse's usage of Pydantic v2 across BrowserSession, watchdogs, and LLM views.
+Grounded in agentyc's usage of Pydantic v2 across BrowserSession, watchdogs, and LLM views.
 
 ## What Good Looks Like
 

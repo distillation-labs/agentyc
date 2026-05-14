@@ -1,5 +1,5 @@
 """
-Cloud sync service for sending events to the Traverse cloud.
+Cloud sync service for sending events to the Agentyc cloud.
 """
 
 import logging
@@ -7,14 +7,14 @@ import logging
 import httpx
 from bubus import BaseEvent
 
-from traverse.config import CONFIG
-from traverse.sync.auth import TEMP_USER_ID, DeviceAuthClient
+from agentyc.config import CONFIG
+from agentyc.sync.auth import TEMP_USER_ID, DeviceAuthClient
 
 logger = logging.getLogger(__name__)
 
 
 class CloudSync:
-	"""Service for syncing events to the Traverse cloud"""
+	"""Service for syncing events to the Agentyc cloud"""
 
 	def __init__(self, base_url: str | None = None, allow_session_events_for_auth: bool = False):
 		# Backend API URL for all API requests - can be passed directly or defaults to env var

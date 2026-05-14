@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, overload
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	ContentPartImageParam,
@@ -17,7 +17,7 @@ MessageDict = dict[str, Any]
 
 
 class DeepSeekMessageSerializer:
-	"""Serializer for converting traverse messages to DeepSeek messages."""
+	"""Serializer for converting agentyc messages to DeepSeek messages."""
 
 	# -------- content 处理 --------------------------------------------------
 	@staticmethod

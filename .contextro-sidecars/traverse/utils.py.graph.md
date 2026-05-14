@@ -20,10 +20,10 @@
 - `sanitize_surrogates` (function) L800 — 1 callers, 0 callees
 - `get_git_info` (function) L663 — 0 callers, 0 callees
 - `time_execution_sync` (function) L392 — 0 callers, 0 callees
-- `check_latest_traverse_version` (function) L644 — 0 callers, 0 callees
+- `check_latest_agentyc_version` (function) L644 — 0 callers, 0 callees
 - `_initialize_loop_state` (function) L147 — 1 callers, 0 callees
 - `__init__` (function) L107 — 1 callers, 82 callees
-- `get_traverse_version` (function) L614 — 7 callers, 1 callees
+- `get_agentyc_version` (function) L614 — 7 callers, 1 callees
 - `_log_pretty_url` (function) L727 — 1 callers, 0 callees
 - `is_unsafe_pattern` (function) L463 — 0 callers, 0 callees
 - `check_env_variables` (function) L458 — 0 callers, 0 callees

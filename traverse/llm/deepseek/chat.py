@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, overload
 
 import httpx
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.deepseek.serializer import DeepSeekMessageSerializer
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.schema import SchemaOptimizer
+from agentyc.llm.views import ChatInvokeCompletion
 from openai import (
 	APIConnectionError,
 	APIError,
@@ -14,13 +20,6 @@ from openai import (
 	RateLimitError,
 )
 from pydantic import BaseModel
-
-from traverse.llm.base import BaseChatModel
-from traverse.llm.deepseek.serializer import DeepSeekMessageSerializer
-from traverse.llm.exceptions import ModelProviderError, ModelRateLimitError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.schema import SchemaOptimizer
-from traverse.llm.views import ChatInvokeCompletion
 
 T = TypeVar('T', bound=BaseModel)
 

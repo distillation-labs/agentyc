@@ -1,11 +1,11 @@
-"""MCP (Model Context Protocol) client integration for traverse.
+"""MCP (Model Context Protocol) client integration for agentyc.
 
-This module provides integration between external MCP servers and traverse's action registry.
-MCP tools are dynamically discovered and registered as traverse actions.
+This module provides integration between external MCP servers and agentyc's action registry.
+MCP tools are dynamically discovered and registered as agentyc actions.
 
 Example usage:
-    from traverse import Tools
-    from traverse.mcp.client import MCPClient
+    from agentyc import Tools
+    from agentyc.mcp.client import MCPClient
 
     tools = Tools()
 
@@ -16,7 +16,7 @@ Example usage:
         args=["@mycompany/mcp-server@latest"]
     )
 
-    # Register all MCP tools as traverse actions
+    # Register all MCP tools as agentyc actions
     await mcp_client.register_to_tools(tools)
 
     # Now use with Agent as normal - MCP tools are available as actions
@@ -27,13 +27,12 @@ import logging
 import time
 from typing import Any
 
+from agentyc.actions import ActionResult
+from agentyc.telemetry import MCPClientTelemetryEvent, ProductTelemetry
+from agentyc.tools.registry.service import Registry
+from agentyc.tools.service import Tools
+from agentyc.utils import create_task_with_error_handling, get_agentyc_version
 from pydantic import BaseModel, ConfigDict, Field, create_model
-
-from traverse.actions import ActionResult
-from traverse.telemetry import MCPClientTelemetryEvent, ProductTelemetry
-from traverse.tools.registry.service import Registry
-from traverse.tools.service import Tools
-from traverse.utils import create_task_with_error_handling, get_traverse_version
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ MCP_AVAILABLE = True
 
 
 class MCPClient:
-	"""Client for connecting to MCP servers and exposing their tools as traverse actions."""
+	"""Client for connecting to MCP servers and exposing their tools as agentyc actions."""
 
 	def __init__(
 		self,
@@ -121,7 +120,7 @@ class MCPClient:
 					server_name=self.server_name,
 					command=self.command,
 					tools_discovered=len(self._tools),
-					version=get_traverse_version(),
+					version=get_agentyc_version(),
 					action='connect',
 					duration_seconds=duration,
 					error_message=error_msg,
@@ -201,7 +200,7 @@ class MCPClient:
 					server_name=self.server_name,
 					command=self.command,
 					tools_discovered=0,  # Tools cleared on disconnect
-					version=get_traverse_version(),
+					version=get_agentyc_version(),
 					action='disconnect',
 					duration_seconds=duration,
 					error_message=error_msg,
@@ -215,7 +214,7 @@ class MCPClient:
 		tool_filter: list[str] | None = None,
 		prefix: str | None = None,
 	) -> None:
-		"""Register MCP tools as actions in the traverse tools.
+		"""Register MCP tools as actions in the agentyc tools.
 
 		Args:
 			tools: Browser-use tools to register actions to
@@ -243,10 +242,10 @@ class MCPClient:
 			self._register_tool_as_action(registry, action_name, tool)
 			self._registered_actions.add(action_name)
 
-		logger.info(f"✅ Registered {len(self._registered_actions)} MCP tools from '{self.server_name}' as traverse actions")
+		logger.info(f"✅ Registered {len(self._registered_actions)} MCP tools from '{self.server_name}' as agentyc actions")
 
 	def _register_tool_as_action(self, registry: Registry, action_name: str, tool: Any) -> None:
-		"""Register a single MCP tool as a traverse action.
+		"""Register a single MCP tool as a agentyc action.
 
 		Args:
 			registry: Browser-use registry to register action to
@@ -344,7 +343,7 @@ class MCPClient:
 							server_name=self.server_name,
 							command=self.command,
 							tools_discovered=len(self._tools),
-							version=get_traverse_version(),
+							version=get_agentyc_version(),
 							action='tool_call',
 							tool_name=tool.name,
 							duration_seconds=duration,
@@ -388,7 +387,7 @@ class MCPClient:
 							server_name=self.server_name,
 							command=self.command,
 							tools_discovered=len(self._tools),
-							version=get_traverse_version(),
+							version=get_agentyc_version(),
 							action='tool_call',
 							tool_name=tool.name,
 							duration_seconds=duration,
@@ -400,7 +399,7 @@ class MCPClient:
 		mcp_action_wrapper.__name__ = action_name
 		mcp_action_wrapper.__qualname__ = f'mcp.{self.server_name}.{action_name}'
 
-		# Register the action with traverse
+		# Register the action with agentyc
 		description = tool.description or f'MCP tool from {self.server_name}: {tool.name}'
 
 		# Use the registry's action decorator

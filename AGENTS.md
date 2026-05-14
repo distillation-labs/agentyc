@@ -1,10 +1,10 @@
-# traverse contributor notes
+# agentyc contributor notes
 
-Traverse is a lightweight MCP-first browser automation runtime for coding agents. The repository intentionally focuses on deterministic browser control over CDP and MCP stdio integration.
+Agentyc is a lightweight MCP-first browser automation runtime for coding agents. The repository intentionally focuses on deterministic browser control over CDP and MCP stdio integration.
 
 ## Scope
 
-- Keep: `traverse/mcp`, `traverse/browser`, `traverse/dom`, `traverse/tools`, `traverse/filesystem`, `traverse/llm`.
+- Keep: `agentyc/mcp`, `agentyc/browser`, `agentyc/dom`, `agentyc/tools`, `agentyc/filesystem`, `agentyc/llm`.
 - Do not reintroduce autonomous agent loops, standalone interactive CLI flows, cloud skill wrappers, or sandbox execution surfaces.
 - Prefer explicit browser actions and clear failure modes over fallback automation.
 

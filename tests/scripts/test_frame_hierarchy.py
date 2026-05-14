@@ -4,9 +4,9 @@
 import asyncio
 import sys
 
-from traverse.browser import BrowserSession
-from traverse.browser.events import BrowserStartEvent
-from traverse.browser.profile import BrowserProfile
+from agentyc.browser import BrowserSession
+from agentyc.browser.events import BrowserStartEvent
+from agentyc.browser.profile import BrowserProfile
 
 
 async def analyze_frame_hierarchy(url):
@@ -230,7 +230,7 @@ async def analyze_frame_hierarchy(url):
 				pass  # Ignore errors if already disconnected
 
 		# Then stop the browser process
-		from traverse.browser.events import BrowserStopEvent
+		from agentyc.browser.events import BrowserStopEvent
 
 		stop_event = session.event_bus.dispatch(BrowserStopEvent())
 		try:

@@ -7,11 +7,11 @@ from ollama import AsyncClient as OllamaAsyncClient
 from ollama import Options
 from pydantic import BaseModel
 
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.ollama.serializer import OllamaMessageSerializer
-from traverse.llm.views import ChatInvokeCompletion
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.ollama.serializer import OllamaMessageSerializer
+from agentyc.llm.views import ChatInvokeCompletion
 
 T = TypeVar('T', bound=BaseModel)
 

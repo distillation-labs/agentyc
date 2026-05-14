@@ -8,14 +8,13 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, cast, overload
 
 import httpx
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.mistral.schema import MistralSchemaOptimizer
+from agentyc.llm.openai.serializer import OpenAIMessageSerializer
+from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from pydantic import BaseModel
-
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError, ModelRateLimitError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.mistral.schema import MistralSchemaOptimizer
-from traverse.llm.openai.serializer import OpenAIMessageSerializer
-from traverse.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)

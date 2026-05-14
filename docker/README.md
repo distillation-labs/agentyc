@@ -1,6 +1,6 @@
 # Docker Setup for Browser-Use
 
-This directory contains the optimized Docker build system for traverse, achieving < 30 second builds.
+This directory contains the optimized Docker build system for agentyc, achieving < 30 second builds.
 
 ## Quick Start
 
@@ -8,11 +8,11 @@ This directory contains the optimized Docker build system for traverse, achievin
 # Build base images (only needed once or when dependencies change)
 ./scripts/build-base-images.sh
 
-# Build traverse
-docker build -f Dockerfile.fast -t traverse .
+# Build agentyc
+docker build -f Dockerfile.fast -t agentyc .
 
 # Or use the standard Dockerfile (slower but self-contained)
-docker build -t traverse .
+docker build -t agentyc .
 ```
 
 ## Files

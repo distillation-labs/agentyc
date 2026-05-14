@@ -6,7 +6,7 @@
 - `ainvoke` (function) L108 — 0 callers, 0 callees
 - `ainvoke` (function) L113 — 0 callers, 0 callees
 - `ainvoke` (function) L103 — 0 callers, 0 callees
-- `ChatTraverse` (class) L31 — 5 callers, 0 callees
+- `ChatAgentyc` (class) L31 — 5 callers, 0 callees
 - `provider` (function) L95 — 0 callers, 0 callees
 - `_serialize_message` (function) L293 — 1 callers, 0 callees
 - `name` (function) L99 — 0 callers, 0 callees

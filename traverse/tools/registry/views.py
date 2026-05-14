@@ -3,9 +3,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from traverse.browser import BrowserSession
-from traverse.filesystem.file_system import FileSystem
-from traverse.llm.base import BaseChatModel
+from agentyc.browser import BrowserSession
+from agentyc.filesystem.file_system import FileSystem
+from agentyc.llm.base import BaseChatModel
 
 if TYPE_CHECKING:
 	pass
@@ -110,7 +110,7 @@ class ActionRegistry(BaseModel):
 			return True
 
 		# Use the centralized URL matching logic from utils
-		from traverse.utils import match_url_with_domain_pattern
+		from agentyc.utils import match_url_with_domain_pattern
 
 		for domain_pattern in domains:
 			if match_url_with_domain_pattern(url, domain_pattern):
@@ -154,10 +154,10 @@ class SpecialActionParameters(BaseModel):
 	# optional user-provided context object passed down from the caller/runtime
 	# e.g. can contain anything, external db connections, file handles, queues, runtime config objects, etc.
 	# that you might want to be able to access quickly from within many of your actions
-	# traverse code doesn't use this at all, we just pass it down to your actions for convenience
+	# agentyc code doesn't use this at all, we just pass it down to your actions for convenience
 	context: Any | None = None
 
-	# traverse session object, can be used to create new tabs, navigate, access CDP
+	# agentyc session object, can be used to create new tabs, navigate, access CDP
 	browser_session: BrowserSession | None = None
 
 	# Current page URL for filtering and context

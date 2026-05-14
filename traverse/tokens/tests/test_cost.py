@@ -8,9 +8,9 @@ import asyncio
 import importlib
 import logging
 
-from traverse.llm import ChatGoogle, ChatOpenAI
-from traverse.llm.messages import AssistantMessage, SystemMessage, UserMessage
-from traverse.tokens.service import TokenCost
+from agentyc.llm import ChatGoogle, ChatOpenAI
+from agentyc.llm.messages import AssistantMessage, SystemMessage, UserMessage
+from agentyc.tokens.service import TokenCost
 
 # Optional OCI import
 try:
@@ -65,7 +65,7 @@ Only output the country name, no numbers, no punctuation, just the name."""
 		models.append(oci_model)
 		print(f'✅ OCI model added to test: {oci_model.name}')
 	else:
-		print('ℹ️  OCI model not available (install with pip install traverse[oci] and configure credentials)')
+		print('ℹ️  OCI model not available (install with pip install agentyc[oci] and configure credentials)')
 
 	print('\n🌍 Iterative Country Generation Test')
 	print('=' * 80)

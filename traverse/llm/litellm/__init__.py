@@ -1,3 +1,3 @@
-from traverse.llm.litellm.chat import ChatLiteLLM
+from agentyc.llm.litellm.chat import ChatLiteLLM
 
 __all__ = ['ChatLiteLLM']

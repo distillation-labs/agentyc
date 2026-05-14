@@ -7,8 +7,8 @@ with allowed_domains and prohibited_domains configurations.
 
 from bubus import EventBus
 
-from traverse.browser import BrowserProfile, BrowserSession
-from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 
 class TestIPv4Blocking:

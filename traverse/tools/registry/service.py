@@ -11,18 +11,18 @@ from typing import Any, Generic, Optional, TypeVar, Union, get_args, get_origin
 import pyotp
 from pydantic import BaseModel, Field, RootModel, create_model
 
-from traverse.browser import BrowserSession
-from traverse.filesystem.file_system import FileSystem
-from traverse.llm.base import BaseChatModel
-from traverse.observability import observe_debug
-from traverse.telemetry.service import ProductTelemetry
-from traverse.tools.registry.views import (
+from agentyc.browser import BrowserSession
+from agentyc.filesystem.file_system import FileSystem
+from agentyc.llm.base import BaseChatModel
+from agentyc.observability import observe_debug
+from agentyc.telemetry.service import ProductTelemetry
+from agentyc.tools.registry.views import (
 	ActionModel,
 	ActionRegistry,
 	RegisteredAction,
 	SpecialActionParameters,
 )
-from traverse.utils import is_new_tab_page, match_url_with_domain_pattern, time_execution_async
+from agentyc.utils import is_new_tab_page, match_url_with_domain_pattern, time_execution_async
 
 Context = TypeVar('Context')
 

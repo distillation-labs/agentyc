@@ -27,7 +27,7 @@
 - `GOOGLE_API_KEY` (function) L140 — 0 callers, 0 callees
 - `TRAVERSE_CONFIG_DIR` (function) L96 — 0 callers, 1 callees
 - `LLMEntry` (class) L264 — 1 callers, 0 callees
-- `load_traverse_config` (function) L511 — 1 callers, 0 callees
+- `load_agentyc_config` (function) L511 — 1 callers, 0 callees
 - `TRAVERSE_DEFAULT_USER_DATA_DIR` (function) L112 — 0 callers, 0 callees
 - `TRAVERSE_LOGGING_LEVEL` (function) L54 — 0 callers, 0 callees
 - `DBStyleEntry` (class) L244 — 0 callers, 0 callees

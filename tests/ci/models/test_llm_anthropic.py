@@ -2,7 +2,7 @@
 
 from tests.ci.models.model_test_helper import run_model_button_click_test
 
-from traverse.llm.anthropic.chat import ChatAnthropic
+from agentyc.llm.anthropic.chat import ChatAnthropic
 
 
 async def test_anthropic_claude_sonnet_4_0(httpserver):

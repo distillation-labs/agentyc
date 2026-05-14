@@ -1,13 +1,13 @@
 """
-Telemetry for Traverse.
+Telemetry for Agentyc.
 """
 
 from typing import TYPE_CHECKING
 
 # Type stubs for lazy imports
 if TYPE_CHECKING:
-	from traverse.telemetry.service import ProductTelemetry
-	from traverse.telemetry.views import (
+	from agentyc.telemetry.service import ProductTelemetry
+	from agentyc.telemetry.views import (
 		BaseTelemetryEvent,
 		CLITelemetryEvent,
 		MCPClientTelemetryEvent,
@@ -16,11 +16,11 @@ if TYPE_CHECKING:
 
 # Lazy imports mapping
 _LAZY_IMPORTS = {
-	'ProductTelemetry': ('traverse.telemetry.service', 'ProductTelemetry'),
-	'BaseTelemetryEvent': ('traverse.telemetry.views', 'BaseTelemetryEvent'),
-	'CLITelemetryEvent': ('traverse.telemetry.views', 'CLITelemetryEvent'),
-	'MCPClientTelemetryEvent': ('traverse.telemetry.views', 'MCPClientTelemetryEvent'),
-	'MCPServerTelemetryEvent': ('traverse.telemetry.views', 'MCPServerTelemetryEvent'),
+	'ProductTelemetry': ('agentyc.telemetry.service', 'ProductTelemetry'),
+	'BaseTelemetryEvent': ('agentyc.telemetry.views', 'BaseTelemetryEvent'),
+	'CLITelemetryEvent': ('agentyc.telemetry.views', 'CLITelemetryEvent'),
+	'MCPClientTelemetryEvent': ('agentyc.telemetry.views', 'MCPClientTelemetryEvent'),
+	'MCPServerTelemetryEvent': ('agentyc.telemetry.views', 'MCPServerTelemetryEvent'),
 }
 
 

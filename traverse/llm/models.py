@@ -2,7 +2,7 @@
 Convenient access to LLM models.
 
 Usage:
-    from traverse import llm
+    from agentyc import llm
 
     # Simple model access
     model = llm.azure_gpt_4_1_mini
@@ -14,17 +14,17 @@ Usage:
 import os
 from typing import TYPE_CHECKING
 
-from traverse.llm.azure.chat import ChatAzureOpenAI
-from traverse.llm.cerebras.chat import ChatCerebras
-from traverse.llm.copilot.chat import ChatGitHubCopilot
-from traverse.llm.google.chat import ChatGoogle
-from traverse.llm.mistral.chat import ChatMistral
-from traverse.llm.openai.chat import ChatOpenAI
-from traverse.llm.traverse.chat import ChatTraverse
+from agentyc.llm.agentyc.chat import ChatAgentyc
+from agentyc.llm.azure.chat import ChatAzureOpenAI
+from agentyc.llm.cerebras.chat import ChatCerebras
+from agentyc.llm.copilot.chat import ChatGitHubCopilot
+from agentyc.llm.google.chat import ChatGoogle
+from agentyc.llm.mistral.chat import ChatMistral
+from agentyc.llm.openai.chat import ChatOpenAI
 
 # Optional OCI import
 try:
-	from traverse.llm.oci_raw.chat import ChatOCIRaw
+	from agentyc.llm.oci_raw.chat import ChatOCIRaw
 
 	OCI_AVAILABLE = True
 except ImportError:
@@ -32,7 +32,7 @@ except ImportError:
 	OCI_AVAILABLE = False
 
 if TYPE_CHECKING:
-	from traverse.llm.base import BaseChatModel
+	from agentyc.llm.base import BaseChatModel
 
 # Type stubs for IDE autocomplete
 openai_gpt_4o: 'BaseChatModel'
@@ -206,12 +206,12 @@ def get_llm_by_name(model_name: str):
 		api_key = os.getenv('CEREBRAS_API_KEY')
 		return ChatCerebras(model=model, api_key=api_key)
 
-	# Traverse Models
+	# Agentyc Models
 	elif provider == 'bu':
 		# Handle bu_latest -> bu-latest conversion (need to prepend 'bu-' back)
 		model = f'bu-{model_part.replace("_", "-")}'
 		api_key = os.getenv('TRAVERSE_API_KEY')
-		return ChatTraverse(model=model, api_key=api_key)
+		return ChatAgentyc(model=model, api_key=api_key)
 
 	# GitHub Copilot SDK Models
 	elif provider == 'copilot':
@@ -242,12 +242,12 @@ def __getattr__(name: str) -> 'BaseChatModel':
 
 	elif name == 'ChatOCIRaw':
 		if not OCI_AVAILABLE:
-			raise ImportError('OCI integration not available. Install with: pip install "traverse[oci]"')
+			raise ImportError('OCI integration not available. Install with: pip install "agentyc[oci]"')
 		return ChatOCIRaw  # type: ignore
 	elif name == 'ChatCerebras':
 		return ChatCerebras  # type: ignore
-	elif name == 'ChatTraverse':
-		return ChatTraverse  # type: ignore
+	elif name == 'ChatAgentyc':
+		return ChatAgentyc  # type: ignore
 	elif name == 'ChatGitHubCopilot':
 		return ChatGitHubCopilot  # type: ignore
 
@@ -265,7 +265,7 @@ __all__ = [
 	'ChatGoogle',
 	'ChatMistral',
 	'ChatCerebras',
-	'ChatTraverse',
+	'ChatAgentyc',
 	'ChatGitHubCopilot',
 ]
 
@@ -322,7 +322,7 @@ __all__ += [
 	'cerebras_qwen_3_235b_a22b_instruct_2507',
 	'cerebras_qwen_3_235b_a22b_thinking_2507',
 	'cerebras_qwen_3_coder_480b',
-	# Traverse instances - created on demand
+	# Agentyc instances - created on demand
 	'bu_latest',
 	'bu_1_0',
 	'bu_2_0',
@@ -331,4 +331,4 @@ __all__ += [
 ]
 
 # NOTE: OCI backend is optional. The try/except ImportError and conditional __all__ are required
-# so this module can be imported without traverse[oci] installed.
+# so this module can be imported without agentyc[oci] installed.

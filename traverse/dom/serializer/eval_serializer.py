@@ -1,8 +1,8 @@
 # @file purpose: Concise evaluation serializer for DOM trees - optimized for LLM query writing
 
 
-from traverse.dom.utils import cap_text_length
-from traverse.dom.views import (
+from agentyc.dom.utils import cap_text_length
+from agentyc.dom.views import (
 	EnhancedDOMTreeNode,
 	NodeType,
 	SimplifiedNode,

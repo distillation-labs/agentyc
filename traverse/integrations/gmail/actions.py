@@ -1,5 +1,5 @@
 """
-Gmail Actions for Traverse
+Gmail Actions for Agentyc
 Defines agent actions for Gmail integration including 2FA code retrieval,
 email reading, and authentication management.
 """
@@ -8,8 +8,8 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from traverse.actions import ActionResult
-from traverse.tools.service import Tools
+from agentyc.actions import ActionResult
+from agentyc.tools.service import Tools
 
 from .service import GmailService
 
@@ -30,7 +30,7 @@ def register_gmail_actions(tools: Tools, gmail_service: GmailService | None = No
 	"""
 	Register Gmail actions with the provided tools
 	Args:
-	    tools: The traverse tools to register actions with
+	    tools: The agentyc tools to register actions with
 	    gmail_service: Optional pre-configured Gmail service instance
 	    access_token: Optional direct access token (alternative to file-based auth)
 	"""

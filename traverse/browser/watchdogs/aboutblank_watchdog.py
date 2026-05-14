@@ -6,7 +6,7 @@ from bubus import BaseEvent
 from cdp_use.cdp.target import TargetID
 from pydantic import PrivateAttr
 
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	AboutBlankDVDScreensaverShownEvent,
 	BrowserStopEvent,
 	BrowserStoppedEvent,
@@ -15,7 +15,7 @@ from traverse.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
+from agentyc.browser.watchdog_base import BaseWatchdog
 
 if TYPE_CHECKING:
 	pass
@@ -177,7 +177,7 @@ class AboutBlankWatchdog(BaseWatchdog):
 
 					// Create the image element
 					const img = document.createElement('img');
-					img.src = 'https://cf.traverse.com/logo.svg';
+					img.src = 'https://cf.agentyc.com/logo.svg';
 					img.alt = 'Browser-Use';
 					img.style.width = '200px';
 					img.style.height = 'auto';

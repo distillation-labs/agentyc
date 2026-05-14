@@ -1,4 +1,4 @@
-from traverse.dom.views import EnhancedDOMTreeNode, NodeType
+from agentyc.dom.views import EnhancedDOMTreeNode, NodeType
 
 
 class ClickableElementDetector:

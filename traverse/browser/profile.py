@@ -10,9 +10,9 @@ from urllib.parse import urlparse
 
 from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from traverse.browser.cloud.views import CloudBrowserParams
-from traverse.config import CONFIG
-from traverse.utils import _log_pretty_path, logger
+from agentyc.browser.cloud.views import CloudBrowserParams
+from agentyc.config import CONFIG
+from agentyc.utils import _log_pretty_path, logger
 
 
 def _get_enable_default_extensions_default() -> bool:
@@ -287,7 +287,7 @@ class BrowserChannel(str, Enum):
 	MSEDGE_CANARY = 'msedge-canary'
 
 
-# Using constants from central location in traverse.config
+# Using constants from central location in agentyc.config
 TRAVERSE_DEFAULT_CHANNEL = BrowserChannel.CHROMIUM
 
 
@@ -432,12 +432,12 @@ class BrowserLaunchArgs(BaseModel):
 
 			# Create unique directory in system temp folder for downloads
 			unique_id = str(uuid.uuid4())[:8]  # 8 characters
-			downloads_path = Path(tempfile.gettempdir()) / f'traverse-downloads-{unique_id}'
+			downloads_path = Path(tempfile.gettempdir()) / f'agentyc-downloads-{unique_id}'
 
 			# Ensure path doesn't already exist (extremely unlikely but possible)
 			while downloads_path.exists():
 				unique_id = str(uuid.uuid4())[:8]
-				downloads_path = Path(tempfile.gettempdir()) / f'traverse-downloads-{unique_id}'
+				downloads_path = Path(tempfile.gettempdir()) / f'agentyc-downloads-{unique_id}'
 
 			self.downloads_path = downloads_path
 			self.downloads_path.mkdir(parents=True, exist_ok=True)
@@ -514,7 +514,7 @@ class BrowserLaunchPersistentContextArgs(BrowserLaunchArgs, BrowserContextArgs):
 	def validate_user_data_dir(cls, v: str | Path | None) -> str | Path:
 		"""Validate user data dir is set to a non-default path."""
 		if v is None:
-			return tempfile.mkdtemp(prefix='traverse-user-data-dir-')
+			return tempfile.mkdtemp(prefix='agentyc-user-data-dir-')
 		return Path(v).expanduser().resolve()
 
 
@@ -563,7 +563,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	is_local: bool = Field(default=False, description='Whether this is a local browser instance')
 	use_cloud: bool = Field(
 		default=False,
-		description='Use traverse cloud browser service instead of local browser',
+		description='Use agentyc cloud browser service instead of local browser',
 	)
 
 	@property
@@ -596,7 +596,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	# New consolidated proxy config (typed)
 	proxy: ProxySettings | None = Field(
 		default=None,
-		description='Proxy settings. Use traverse.browser.profile.ProxySettings(server, bypass, username, password)',
+		description='Proxy settings. Use agentyc.browser.profile.ProxySettings(server, bypass, username, password)',
 	)
 	enable_default_extensions: bool = Field(
 		default_factory=_get_enable_default_extensions_default,
@@ -604,7 +604,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	)
 	captcha_solver: bool = Field(
 		default=True,
-		description='Enable the captcha solver watchdog that listens for captcha events from the browser proxy. Automatically pauses agent steps while a CAPTCHA is being solved. Only active when the browser emits Traverse CDP events (e.g. Traverse cloud browsers). Harmless when disabled or when events are not emitted.',
+		description='Enable the captcha solver watchdog that listens for captcha events from the browser proxy. Automatically pauses agent steps while a CAPTCHA is being solved. Only active when the browser emits Agentyc CDP events (e.g. Agentyc cloud browsers). Harmless when disabled or when events are not emitted.',
 	)
 	demo_mode: bool = Field(
 		default=False,
@@ -688,7 +688,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	# 	default_factory=list, description='List of Chrome extension IDs to preinstall.'
 	# )
 	# extensions_dir: Path = Field(
-	# 	default_factory=lambda: Path('~/.config/traverse/cache/extensions').expanduser(),
+	# 	default_factory=lambda: Path('~/.config/agentyc/cache/extensions').expanduser(),
 	# 	description='Directory containing .crx extension files.',
 	# )
 
@@ -805,7 +805,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 			return
 
 		user_data_str = str(self.user_data_dir)
-		if 'traverse-user-data-dir-' in user_data_str.lower():
+		if 'agentyc-user-data-dir-' in user_data_str.lower():
 			# Already using a temp directory, no need to copy
 			return
 
@@ -819,7 +819,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 		if not is_chrome:
 			return
 
-		temp_dir = tempfile.mkdtemp(prefix='traverse-user-data-dir-')
+		temp_dir = tempfile.mkdtemp(prefix='agentyc-user-data-dir-')
 		path_original_user_data = Path(self.user_data_dir)
 		path_original_profile = path_original_user_data / self.profile_directory
 		path_temp_profile = Path(temp_dir) / self.profile_directory

@@ -1,12 +1,12 @@
 # Browser Actor
 
-Browser Actor is a web automation library built on CDP (Chrome DevTools Protocol) that provides low-level browser automation capabilities within the traverse ecosystem.
+Browser Actor is a web automation library built on CDP (Chrome DevTools Protocol) that provides low-level browser automation capabilities within the agentyc ecosystem.
 
 ## Usage
 
 ### Integrated with Browser (Recommended)
 ```python
-from traverse import Browser  # Alias for BrowserSession
+from agentyc import Browser  # Alias for BrowserSession
 
 # Create and start browser session
 browser = Browser()
@@ -20,7 +20,7 @@ current_page = await browser.get_current_page()
 
 ### Direct Page Access (Advanced)
 ```python
-from traverse.actor import Page, Element, Mouse
+from agentyc.actor import Page, Element, Mouse
 
 # Create page with existing browser session
 page = Page(browser_session, target_id, session_id)
@@ -224,7 +224,7 @@ class ElementInfo(TypedDict):
 
 ## Important Usage Notes
 
-**This is traverse actor, NOT Playwright or Selenium.** Only use the methods documented above.
+**This is agentyc actor, NOT Playwright or Selenium.** Only use the methods documented above.
 
 ### Critical JavaScript Rules
 - `page.evaluate()` and `element.evaluate()` MUST use `(...args) => {}` arrow function format

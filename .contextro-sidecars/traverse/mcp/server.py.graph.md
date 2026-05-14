@@ -12,7 +12,7 @@
 - `_upload_file` (function) L977 — 1 callers, 6 callees
 - `_validate_actionable_element` (function) L708 — 2 callers, 0 callees
 - `_update_session_activity` (function) L1251 — 5 callers, 0 callees
-- `TraverseServer` (class) L161 — 23 callers, 0 callees
+- `AgentycServer` (class) L161 — 23 callers, 0 callees
 - `_refresh_selector_map` (function) L638 — 1 callers, 1 callees
 - `_init_browser_session` (function) L555 — 2 callers, 8 callees
 - `_setup_handlers` (function) L191 — 1 callers, 4 callees

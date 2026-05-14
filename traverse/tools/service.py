@@ -13,9 +13,9 @@ except ImportError:
 	Laminar = None  # type: ignore
 from pydantic import BaseModel
 
-from traverse.actions import ActionModel, ActionResult
-from traverse.browser import BrowserSession
-from traverse.browser.events import (
+from agentyc.actions import ActionModel, ActionResult
+from agentyc.browser import BrowserSession
+from agentyc.browser.events import (
 	ClickCoordinateEvent,
 	ClickElementEvent,
 	CloseTabEvent,
@@ -29,18 +29,18 @@ from traverse.browser.events import (
 	TypeTextEvent,
 	UploadFileEvent,
 )
-from traverse.browser.views import BrowserError
-from traverse.dom.service import EnhancedDOMTreeNode
-from traverse.filesystem.file_system import FileSystem
-from traverse.llm.base import BaseChatModel
-from traverse.observability import observe_debug
-from traverse.tools.extraction.router import (
+from agentyc.browser.views import BrowserError
+from agentyc.dom.service import EnhancedDOMTreeNode
+from agentyc.filesystem.file_system import FileSystem
+from agentyc.llm.base import BaseChatModel
+from agentyc.observability import observe_debug
+from agentyc.tools.extraction.router import (
 	get_deterministic_extraction_strategy,
 	maybe_extract_deterministic_content,
 )
-from traverse.tools.registry.service import Registry
-from traverse.tools.utils import get_click_description
-from traverse.tools.views import (
+from agentyc.tools.registry.service import Registry
+from agentyc.tools.utils import get_click_description
+from agentyc.tools.views import (
 	ClickElementAction,
 	ClickElementActionIndexOnly,
 	CloseTabAction,
@@ -62,7 +62,7 @@ from traverse.tools.views import (
 	SwitchTabAction,
 	UploadFileAction,
 )
-from traverse.utils import create_task_with_error_handling, sanitize_surrogates, time_execution_sync
+from agentyc.utils import create_task_with_error_handling, sanitize_surrogates, time_execution_sync
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +209,7 @@ def _build_compact_action_context(
 ) -> str | None:
 	if not selector_map:
 		return None
-	from traverse.mcp.state import select_elements_for_min_mode, summarize_interactive_element
+	from agentyc.mcp.state import select_elements_for_min_mode, summarize_interactive_element
 
 	selected_elements = (
 		select_elements_for_min_mode(selector_map=selector_map, max_elements=18)
@@ -1199,7 +1199,7 @@ class Tools(Generic[Context]):
 			structured_model: type[BaseModel] | None = None
 			if output_schema is not None:
 				try:
-					from traverse.tools.extraction.schema_utils import schema_dict_to_pydantic_model
+					from agentyc.tools.extraction.schema_utils import schema_dict_to_pydantic_model
 
 					structured_model = schema_dict_to_pydantic_model(output_schema)
 				except (ValueError, TypeError) as exc:
@@ -1207,7 +1207,7 @@ class Tools(Generic[Context]):
 
 			# Extract clean markdown using the unified method
 			try:
-				from traverse.dom.markdown_extractor import extract_clean_markdown
+				from agentyc.dom.markdown_extractor import extract_clean_markdown
 
 				content, content_stats = await extract_clean_markdown(
 					browser_session=browser_session, extract_links=extract_links, extract_images=extract_images
@@ -1219,7 +1219,7 @@ class Tools(Generic[Context]):
 			final_filtered_length = content_stats['final_filtered_chars']
 
 			# Structure-aware chunking replaces naive char-based truncation
-			from traverse.dom.markdown_extractor import chunk_markdown_by_structure
+			from agentyc.dom.markdown_extractor import chunk_markdown_by_structure
 
 			chunks = chunk_markdown_by_structure(content, max_chunk_chars=MAX_CHAR_LIMIT, start_from_char=start_from_char)
 			if not chunks:
@@ -1279,7 +1279,7 @@ class Tools(Generic[Context]):
 						f'<structured_result>\n{json.dumps(deterministic_result_data)}\n</structured_result>'
 					)
 
-					from traverse.tools.extraction.views import ExtractionResult
+					from agentyc.tools.extraction.views import ExtractionResult
 
 					extraction_meta = ExtractionResult(
 						data=deterministic_result_data,
@@ -1732,7 +1732,7 @@ class Tools(Generic[Context]):
 				return ActionResult(extracted_content=msg)
 
 			# Dispatch SelectDropdownOptionEvent to the event handler
-			from traverse.browser.events import SelectDropdownOptionEvent
+			from agentyc.browser.events import SelectDropdownOptionEvent
 
 			event = browser_session.event_bus.dispatch(SelectDropdownOptionEvent(node=node, text=params.text))
 			selection_data = await event.event_result()
@@ -2171,7 +2171,7 @@ Validated Code (after quote fixing):
 		- claude-sonnet-4-5
 		- claude-opus-4-5
 		- gemini-3-pro
-		- traverse/* models
+		- agentyc/* models
 
 		Args:
 			enabled: True to enable coordinate clicking, False to disable

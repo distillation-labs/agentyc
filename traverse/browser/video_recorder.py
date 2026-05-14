@@ -1,4 +1,4 @@
-"""Video Recording Service for Traverse Sessions."""
+"""Video Recording Service for Agentyc Sessions."""
 
 import base64
 import io
@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 from typing import Optional
 
-from traverse.browser.profile import ViewportSize
+from agentyc.browser.profile import ViewportSize
 
 try:
 	import imageio.v2 as iio  # type: ignore[import-not-found]
@@ -62,7 +62,7 @@ class VideoRecorderService:
 		log an error and do nothing.
 		"""
 		if not IMAGEIO_AVAILABLE:
-			logger.error('MP4 recording requires optional dependencies. Please install them with: pip install "traverse[video]"')
+			logger.error('MP4 recording requires optional dependencies. Please install them with: pip install "agentyc[video]"')
 			return
 
 		try:

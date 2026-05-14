@@ -73,7 +73,7 @@ def _build_filename_error_message(file_name: str, supported_extensions: list[str
 	)
 
 
-DEFAULT_FILE_SYSTEM_PATH = 'traverse_agent_data'
+DEFAULT_FILE_SYSTEM_PATH = 'agentyc_agent_data'
 
 
 class FileSystemError(Exception):

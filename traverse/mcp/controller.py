@@ -1,7 +1,7 @@
-"""MCP (Model Context Protocol) tool wrapper for traverse.
+"""MCP (Model Context Protocol) tool wrapper for agentyc.
 
-This module provides integration between MCP tools and traverse's action registry system.
-MCP tools are dynamically discovered and registered as traverse actions.
+This module provides integration between MCP tools and agentyc's action registry system.
+MCP tools are dynamically discovered and registered as agentyc actions.
 """
 
 import asyncio
@@ -10,8 +10,8 @@ from typing import Any
 
 from pydantic import Field, create_model
 
-from traverse.actions import ActionResult
-from traverse.tools.registry.service import Registry
+from agentyc.actions import ActionResult
+from agentyc.tools.registry.service import Registry
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ except ImportError:
 
 
 class MCPToolWrapper:
-	"""Wrapper to integrate MCP tools as traverse actions."""
+	"""Wrapper to integrate MCP tools as agentyc actions."""
 
 	def __init__(self, registry: Registry, mcp_command: str, mcp_args: list[str] | None = None):
 		"""Initialize MCP tool wrapper.
@@ -89,7 +89,7 @@ class MCPToolWrapper:
 			pass
 
 	def _register_tool_as_action(self, tool_name: str, tool: Tool):
-		"""Register an MCP tool as a traverse action.
+		"""Register an MCP tool as a agentyc action.
 
 		Args:
 			tool_name: Name of the MCP tool
@@ -187,7 +187,7 @@ class MCPToolWrapper:
 		mcp_action_wrapper.__name__ = tool_name
 		mcp_action_wrapper.__qualname__ = f'mcp.{tool_name}'
 
-		# Register the action with traverse
+		# Register the action with agentyc
 		description = tool.description or f'MCP tool: {tool_name}'
 
 		# Use the decorator to register the action
@@ -236,7 +236,7 @@ class MCPToolWrapper:
 
 # Convenience function for easy integration
 async def register_mcp_tools(registry: Registry, mcp_command: str, mcp_args: list[str] | None = None) -> MCPToolWrapper:
-	"""Register MCP tools with a traverse registry.
+	"""Register MCP tools with a agentyc registry.
 
 	Args:
 		registry: Browser-use action registry
@@ -248,15 +248,15 @@ async def register_mcp_tools(registry: Registry, mcp_command: str, mcp_args: lis
 
 	Example:
 		```python
-	        from traverse import Tools
-	        from traverse.mcp.tools import register_mcp_tools
+	        from agentyc import Tools
+	        from agentyc.mcp.tools import register_mcp_tools
 
 	        tools = Tools()
 
 	        # Register Playwright MCP tools
 	        mcp = await register_mcp_tools(tools.registry, 'npx', ['@playwright/mcp@latest', '--headless'])
 
-	        # Now all MCP tools are available as traverse actions
+	        # Now all MCP tools are available as agentyc actions
 		```
 	"""
 	wrapper = MCPToolWrapper(registry, mcp_command, mcp_args)

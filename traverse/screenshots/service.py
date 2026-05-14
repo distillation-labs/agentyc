@@ -1,5 +1,5 @@
 """
-Screenshot storage service for traverse agents.
+Screenshot storage service for agentyc agents.
 """
 
 import base64
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import anyio
 
-from traverse.observability import observe_debug
+from agentyc.observability import observe_debug
 
 
 class ScreenshotService:

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build script for traverse base images
+# Build script for agentyc base images
 set -euo pipefail
 
 # Configuration
-REGISTRY="${DOCKER_REGISTRY:-traverse}"
+REGISTRY="${DOCKER_REGISTRY:-agentyc}"
 PLATFORMS="${PLATFORMS:-linux/amd64}"
 PUSH="${PUSH:-false}"
 
@@ -45,9 +45,9 @@ done
 
 # Create buildx builder if needed
 if [[ "$PLATFORMS" == *","* ]] || [ "$PUSH" = "true" ]; then
-    docker buildx inspect traverse-builder >/dev/null 2>&1 || \
-        docker buildx create --name traverse-builder --use
-    docker buildx use traverse-builder
+    docker buildx inspect agentyc-builder >/dev/null 2>&1 || \
+        docker buildx create --name agentyc-builder --use
+    docker buildx use agentyc-builder
 fi
 
 # Build images in order

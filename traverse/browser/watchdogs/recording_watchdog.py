@@ -1,4 +1,4 @@
-"""Recording Watchdog for Traverse Sessions."""
+"""Recording Watchdog for Agentyc Sessions."""
 
 import asyncio
 from pathlib import Path
@@ -9,11 +9,11 @@ from cdp_use.cdp.page.events import ScreencastFrameEvent
 from pydantic import PrivateAttr
 from uuid_extensions import uuid7str
 
-from traverse.browser.events import AgentFocusChangedEvent, BrowserConnectedEvent, BrowserStopEvent
-from traverse.browser.profile import ViewportSize
-from traverse.browser.video_recorder import VideoRecorderService
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.utils import create_task_with_error_handling
+from agentyc.browser.events import AgentFocusChangedEvent, BrowserConnectedEvent, BrowserStopEvent
+from agentyc.browser.profile import ViewportSize
+from agentyc.browser.video_recorder import VideoRecorderService
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.utils import create_task_with_error_handling
 
 
 class RecordingWatchdog(BaseWatchdog):
@@ -76,7 +76,7 @@ class RecordingWatchdog(BaseWatchdog):
 		recorder.start()
 		if not recorder._is_active:
 			raise RuntimeError(
-				'Failed to initialize video recorder — ensure optional deps are installed (`pip install "traverse[video]"`).'
+				'Failed to initialize video recorder — ensure optional deps are installed (`pip install "agentyc[video]"`).'
 			)
 
 		self._recorder = recorder

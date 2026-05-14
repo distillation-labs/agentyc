@@ -3,18 +3,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from cdp_use.cdp.accessibility.commands import GetFullAXTreeReturns
-from cdp_use.cdp.accessibility.types import AXNode
-from cdp_use.cdp.dom.types import Node
-from cdp_use.cdp.target import TargetID
-
-from traverse.dom.enhanced_snapshot import (
+from agentyc.dom.enhanced_snapshot import (
 	REQUIRED_COMPUTED_STYLES,
 	build_snapshot_lookup,
 )
-from traverse.dom.serializer.clickable_elements import ClickableElementDetector
-from traverse.dom.serializer.serializer import DOMTreeSerializer
-from traverse.dom.views import (
+from agentyc.dom.serializer.clickable_elements import ClickableElementDetector
+from agentyc.dom.serializer.serializer import DOMTreeSerializer
+from agentyc.dom.views import (
 	DOMRect,
 	EnhancedAXNode,
 	EnhancedAXProperty,
@@ -23,11 +18,15 @@ from traverse.dom.views import (
 	SerializedDOMState,
 	TargetAllTrees,
 )
-from traverse.observability import observe_debug
-from traverse.utils import create_task_with_error_handling
+from agentyc.observability import observe_debug
+from agentyc.utils import create_task_with_error_handling
+from cdp_use.cdp.accessibility.commands import GetFullAXTreeReturns
+from cdp_use.cdp.accessibility.types import AXNode
+from cdp_use.cdp.dom.types import Node
+from cdp_use.cdp.target import TargetID
 
 if TYPE_CHECKING:
-	from traverse.browser.session import BrowserSession
+	from agentyc.browser.session import BrowserSession
 
 # Note: iframe limits are now configurable via BrowserProfile.max_iframes and BrowserProfile.max_iframe_depth
 
@@ -953,7 +952,7 @@ class DomService:
 					node['contentDocument'], updated_html_frames, total_frame_offset, all_frames
 				)
 				dom_tree_node.content_document.parent_node = dom_tree_node
-				# forcefully set the parent node to the content document node (helps traverse the tree)
+				# forcefully set the parent node to the content document node (helps agentyc the tree)
 
 			if 'shadowRoots' in node and node['shadowRoots']:
 				dom_tree_node.shadow_roots = []
@@ -961,7 +960,7 @@ class DomService:
 					shadow_root_node = await _construct_enhanced_node(
 						shadow_root, updated_html_frames, total_frame_offset, all_frames
 					)
-					# forcefully set the parent node to the shadow root node (helps traverse the tree)
+					# forcefully set the parent node to the shadow root node (helps agentyc the tree)
 					shadow_root_node.parent_node = dom_tree_node
 					dom_tree_node.shadow_roots.append(shadow_root_node)
 

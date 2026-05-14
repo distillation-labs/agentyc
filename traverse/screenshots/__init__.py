@@ -1,1 +1,1 @@
-# Screenshots package for traverse
+# Screenshots package for agentyc

@@ -1,3 +1,3 @@
-from traverse.llm.vercel.chat import ChatVercel
+from agentyc.llm.vercel.chat import ChatVercel
 
 __all__ = ['ChatVercel']

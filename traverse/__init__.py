@@ -2,11 +2,11 @@ import os
 from asyncio import base_subprocess
 from typing import TYPE_CHECKING
 
-from traverse.logging_config import setup_logging
+from agentyc.logging_config import setup_logging
 
 # Only set up logging if not in MCP mode or if explicitly requested
 if os.environ.get('TRAVERSE_SETUP_LOGGING', 'true').lower() != 'false':
-	from traverse.config import CONFIG
+	from agentyc.config import CONFIG
 
 	debug_log_file = getattr(CONFIG, 'TRAVERSE_DEBUG_LOG_FILE', None)
 	info_log_file = getattr(CONFIG, 'TRAVERSE_INFO_LOG_FILE', None)
@@ -14,7 +14,7 @@ if os.environ.get('TRAVERSE_SETUP_LOGGING', 'true').lower() != 'false':
 else:
 	import logging
 
-	logger = logging.getLogger('traverse')
+	logger = logging.getLogger('agentyc')
 
 _original_del = base_subprocess.BaseSubprocessTransport.__del__
 
@@ -34,50 +34,50 @@ base_subprocess.BaseSubprocessTransport.__del__ = _patched_del
 
 
 if TYPE_CHECKING:
-	from traverse.actions import ActionModel, ActionResult
-	from traverse.browser import BrowserProfile, BrowserSession
-	from traverse.browser import BrowserSession as Browser
-	from traverse.dom.service import DomService
-	from traverse.llm import models
-	from traverse.llm.anthropic.chat import ChatAnthropic
-	from traverse.llm.azure.chat import ChatAzureOpenAI
-	from traverse.llm.copilot.chat import ChatGitHubCopilot
-	from traverse.llm.google.chat import ChatGoogle
-	from traverse.llm.groq.chat import ChatGroq
-	from traverse.llm.litellm.chat import ChatLiteLLM
-	from traverse.llm.mistral.chat import ChatMistral
-	from traverse.llm.oci_raw.chat import ChatOCIRaw
-	from traverse.llm.ollama.chat import ChatOllama
-	from traverse.llm.openai.chat import ChatOpenAI
-	from traverse.llm.traverse.chat import ChatTraverse
-	from traverse.llm.vercel.chat import ChatVercel
-	from traverse.mcp.server import TraverseServer
-	from traverse.tools.service import Controller, Tools
+	from agentyc.actions import ActionModel, ActionResult
+	from agentyc.browser import BrowserProfile, BrowserSession
+	from agentyc.browser import BrowserSession as Browser
+	from agentyc.dom.service import DomService
+	from agentyc.llm import models
+	from agentyc.llm.anthropic.chat import ChatAnthropic
+	from agentyc.llm.azure.chat import ChatAzureOpenAI
+	from agentyc.llm.copilot.chat import ChatGitHubCopilot
+	from agentyc.llm.google.chat import ChatGoogle
+	from agentyc.llm.groq.chat import ChatGroq
+	from agentyc.llm.litellm.chat import ChatLiteLLM
+	from agentyc.llm.mistral.chat import ChatMistral
+	from agentyc.llm.oci_raw.chat import ChatOCIRaw
+	from agentyc.llm.ollama.chat import ChatOllama
+	from agentyc.llm.openai.chat import ChatOpenAI
+	from agentyc.llm.agentyc.chat import ChatAgentyc
+	from agentyc.llm.vercel.chat import ChatVercel
+	from agentyc.mcp.server import AgentycServer
+	from agentyc.tools.service import Controller, Tools
 
 
 _LAZY_IMPORTS = {
-	'ActionModel': ('traverse.actions', 'ActionModel'),
-	'ActionResult': ('traverse.actions', 'ActionResult'),
-	'BrowserSession': ('traverse.browser', 'BrowserSession'),
-	'Browser': ('traverse.browser', 'BrowserSession'),
-	'BrowserProfile': ('traverse.browser', 'BrowserProfile'),
-	'Tools': ('traverse.tools.service', 'Tools'),
-	'Controller': ('traverse.tools.service', 'Controller'),
-	'DomService': ('traverse.dom.service', 'DomService'),
-	'ChatOpenAI': ('traverse.llm.openai.chat', 'ChatOpenAI'),
-	'ChatGoogle': ('traverse.llm.google.chat', 'ChatGoogle'),
-	'ChatAnthropic': ('traverse.llm.anthropic.chat', 'ChatAnthropic'),
-	'ChatTraverse': ('traverse.llm.traverse.chat', 'ChatTraverse'),
-	'ChatGitHubCopilot': ('traverse.llm.copilot.chat', 'ChatGitHubCopilot'),
-	'ChatGroq': ('traverse.llm.groq.chat', 'ChatGroq'),
-	'ChatLiteLLM': ('traverse.llm.litellm.chat', 'ChatLiteLLM'),
-	'ChatMistral': ('traverse.llm.mistral.chat', 'ChatMistral'),
-	'ChatAzureOpenAI': ('traverse.llm.azure.chat', 'ChatAzureOpenAI'),
-	'ChatOCIRaw': ('traverse.llm.oci_raw.chat', 'ChatOCIRaw'),
-	'ChatOllama': ('traverse.llm.ollama.chat', 'ChatOllama'),
-	'ChatVercel': ('traverse.llm.vercel.chat', 'ChatVercel'),
-	'TraverseServer': ('traverse.mcp.server', 'TraverseServer'),
-	'models': ('traverse.llm.models', None),
+	'ActionModel': ('agentyc.actions', 'ActionModel'),
+	'ActionResult': ('agentyc.actions', 'ActionResult'),
+	'BrowserSession': ('agentyc.browser', 'BrowserSession'),
+	'Browser': ('agentyc.browser', 'BrowserSession'),
+	'BrowserProfile': ('agentyc.browser', 'BrowserProfile'),
+	'Tools': ('agentyc.tools.service', 'Tools'),
+	'Controller': ('agentyc.tools.service', 'Controller'),
+	'DomService': ('agentyc.dom.service', 'DomService'),
+	'ChatOpenAI': ('agentyc.llm.openai.chat', 'ChatOpenAI'),
+	'ChatGoogle': ('agentyc.llm.google.chat', 'ChatGoogle'),
+	'ChatAnthropic': ('agentyc.llm.anthropic.chat', 'ChatAnthropic'),
+	'ChatAgentyc': ('agentyc.llm.agentyc.chat', 'ChatAgentyc'),
+	'ChatGitHubCopilot': ('agentyc.llm.copilot.chat', 'ChatGitHubCopilot'),
+	'ChatGroq': ('agentyc.llm.groq.chat', 'ChatGroq'),
+	'ChatLiteLLM': ('agentyc.llm.litellm.chat', 'ChatLiteLLM'),
+	'ChatMistral': ('agentyc.llm.mistral.chat', 'ChatMistral'),
+	'ChatAzureOpenAI': ('agentyc.llm.azure.chat', 'ChatAzureOpenAI'),
+	'ChatOCIRaw': ('agentyc.llm.oci_raw.chat', 'ChatOCIRaw'),
+	'ChatOllama': ('agentyc.llm.ollama.chat', 'ChatOllama'),
+	'ChatVercel': ('agentyc.llm.vercel.chat', 'ChatVercel'),
+	'AgentycServer': ('agentyc.mcp.server', 'AgentycServer'),
+	'models': ('agentyc.llm.models', None),
 }
 
 
@@ -106,11 +106,11 @@ __all__ = [
 	'BrowserProfile',
 	'Controller',
 	'DomService',
-	'TraverseServer',
+	'AgentycServer',
 	'ChatOpenAI',
 	'ChatGoogle',
 	'ChatAnthropic',
-	'ChatTraverse',
+	'ChatAgentyc',
 	'ChatGitHubCopilot',
 	'ChatGroq',
 	'ChatLiteLLM',

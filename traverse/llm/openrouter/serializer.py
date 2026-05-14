@@ -1,7 +1,7 @@
 from openai.types.chat import ChatCompletionMessageParam
 
-from traverse.llm.messages import BaseMessage
-from traverse.llm.openai.serializer import OpenAIMessageSerializer
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.openai.serializer import OpenAIMessageSerializer
 
 
 class OpenRouterMessageSerializer:
@@ -14,10 +14,10 @@ class OpenRouterMessageSerializer:
 	@staticmethod
 	def serialize_messages(messages: list[BaseMessage]) -> list[ChatCompletionMessageParam]:
 		"""
-		Serialize a list of traverse messages to OpenRouter-compatible messages.
+		Serialize a list of agentyc messages to OpenRouter-compatible messages.
 
 		Args:
-		    messages: List of traverse messages
+		    messages: List of agentyc messages
 
 		Returns:
 		    List of OpenRouter-compatible messages (identical to OpenAI format)

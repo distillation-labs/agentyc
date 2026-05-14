@@ -7,6 +7,7 @@ from cdp_use.client import logger
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
+	from agentyc.browser.session import BrowserSession
 	from cdp_use.cdp.dom.commands import (
 		DescribeNodeParameters,
 		FocusParameters,
@@ -23,8 +24,6 @@ if TYPE_CHECKING:
 	from cdp_use.cdp.page.commands import CaptureScreenshotParameters
 	from cdp_use.cdp.page.types import Viewport
 	from cdp_use.cdp.runtime.commands import CallFunctionOnParameters
-
-	from traverse.browser.session import BrowserSession
 
 # Type definitions for element operations
 ModifierType = Literal['Alt', 'Control', 'Meta', 'Shift']

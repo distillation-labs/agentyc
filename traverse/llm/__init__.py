@@ -7,41 +7,41 @@ For easier transition we have
 from typing import TYPE_CHECKING
 
 # Lightweight imports that are commonly used
-from traverse.llm.base import BaseChatModel
-from traverse.llm.messages import (
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	SystemMessage,
 	UserMessage,
 )
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	ContentPartImageParam as ContentImage,
 )
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	ContentPartRefusalParam as ContentRefusal,
 )
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	ContentPartTextParam as ContentText,
 )
 
 # Type stubs for lazy imports
 if TYPE_CHECKING:
-	from traverse.llm.anthropic.chat import ChatAnthropic
-	from traverse.llm.aws.chat_anthropic import ChatAnthropicBedrock
-	from traverse.llm.aws.chat_bedrock import ChatAWSBedrock
-	from traverse.llm.azure.chat import ChatAzureOpenAI
-	from traverse.llm.cerebras.chat import ChatCerebras
-	from traverse.llm.copilot.chat import ChatGitHubCopilot
-	from traverse.llm.deepseek.chat import ChatDeepSeek
-	from traverse.llm.google.chat import ChatGoogle
-	from traverse.llm.groq.chat import ChatGroq
-	from traverse.llm.mistral.chat import ChatMistral
-	from traverse.llm.oci_raw.chat import ChatOCIRaw
-	from traverse.llm.ollama.chat import ChatOllama
-	from traverse.llm.openai.chat import ChatOpenAI
-	from traverse.llm.openrouter.chat import ChatOpenRouter
-	from traverse.llm.traverse.chat import ChatTraverse
-	from traverse.llm.vercel.chat import ChatVercel
+	from agentyc.llm.anthropic.chat import ChatAnthropic
+	from agentyc.llm.aws.chat_anthropic import ChatAnthropicBedrock
+	from agentyc.llm.aws.chat_bedrock import ChatAWSBedrock
+	from agentyc.llm.azure.chat import ChatAzureOpenAI
+	from agentyc.llm.cerebras.chat import ChatCerebras
+	from agentyc.llm.copilot.chat import ChatGitHubCopilot
+	from agentyc.llm.deepseek.chat import ChatDeepSeek
+	from agentyc.llm.google.chat import ChatGoogle
+	from agentyc.llm.groq.chat import ChatGroq
+	from agentyc.llm.mistral.chat import ChatMistral
+	from agentyc.llm.oci_raw.chat import ChatOCIRaw
+	from agentyc.llm.ollama.chat import ChatOllama
+	from agentyc.llm.openai.chat import ChatOpenAI
+	from agentyc.llm.openrouter.chat import ChatOpenRouter
+	from agentyc.llm.agentyc.chat import ChatAgentyc
+	from agentyc.llm.vercel.chat import ChatVercel
 
 	# Type stubs for model instances - enables IDE autocomplete
 	openai_gpt_4o: ChatOpenAI
@@ -80,22 +80,22 @@ if TYPE_CHECKING:
 
 # Lazy imports mapping for heavy chat models
 _LAZY_IMPORTS = {
-	'ChatAnthropic': ('traverse.llm.anthropic.chat', 'ChatAnthropic'),
-	'ChatAnthropicBedrock': ('traverse.llm.aws.chat_anthropic', 'ChatAnthropicBedrock'),
-	'ChatAWSBedrock': ('traverse.llm.aws.chat_bedrock', 'ChatAWSBedrock'),
-	'ChatAzureOpenAI': ('traverse.llm.azure.chat', 'ChatAzureOpenAI'),
-	'ChatTraverse': ('traverse.llm.traverse.chat', 'ChatTraverse'),
-	'ChatGitHubCopilot': ('traverse.llm.copilot.chat', 'ChatGitHubCopilot'),
-	'ChatCerebras': ('traverse.llm.cerebras.chat', 'ChatCerebras'),
-	'ChatDeepSeek': ('traverse.llm.deepseek.chat', 'ChatDeepSeek'),
-	'ChatGoogle': ('traverse.llm.google.chat', 'ChatGoogle'),
-	'ChatGroq': ('traverse.llm.groq.chat', 'ChatGroq'),
-	'ChatMistral': ('traverse.llm.mistral.chat', 'ChatMistral'),
-	'ChatOCIRaw': ('traverse.llm.oci_raw.chat', 'ChatOCIRaw'),
-	'ChatOllama': ('traverse.llm.ollama.chat', 'ChatOllama'),
-	'ChatOpenAI': ('traverse.llm.openai.chat', 'ChatOpenAI'),
-	'ChatOpenRouter': ('traverse.llm.openrouter.chat', 'ChatOpenRouter'),
-	'ChatVercel': ('traverse.llm.vercel.chat', 'ChatVercel'),
+	'ChatAnthropic': ('agentyc.llm.anthropic.chat', 'ChatAnthropic'),
+	'ChatAnthropicBedrock': ('agentyc.llm.aws.chat_anthropic', 'ChatAnthropicBedrock'),
+	'ChatAWSBedrock': ('agentyc.llm.aws.chat_bedrock', 'ChatAWSBedrock'),
+	'ChatAzureOpenAI': ('agentyc.llm.azure.chat', 'ChatAzureOpenAI'),
+	'ChatAgentyc': ('agentyc.llm.agentyc.chat', 'ChatAgentyc'),
+	'ChatGitHubCopilot': ('agentyc.llm.copilot.chat', 'ChatGitHubCopilot'),
+	'ChatCerebras': ('agentyc.llm.cerebras.chat', 'ChatCerebras'),
+	'ChatDeepSeek': ('agentyc.llm.deepseek.chat', 'ChatDeepSeek'),
+	'ChatGoogle': ('agentyc.llm.google.chat', 'ChatGoogle'),
+	'ChatGroq': ('agentyc.llm.groq.chat', 'ChatGroq'),
+	'ChatMistral': ('agentyc.llm.mistral.chat', 'ChatMistral'),
+	'ChatOCIRaw': ('agentyc.llm.oci_raw.chat', 'ChatOCIRaw'),
+	'ChatOllama': ('agentyc.llm.ollama.chat', 'ChatOllama'),
+	'ChatOpenAI': ('agentyc.llm.openai.chat', 'ChatOpenAI'),
+	'ChatOpenRouter': ('agentyc.llm.openrouter.chat', 'ChatOpenRouter'),
+	'ChatVercel': ('agentyc.llm.vercel.chat', 'ChatVercel'),
 }
 
 # Cache for model instances - only created when accessed
@@ -121,7 +121,7 @@ def __getattr__(name: str):
 
 	# Try to get model instances from models module on-demand
 	try:
-		from traverse.llm.models import __getattr__ as models_getattr
+		from agentyc.llm.models import __getattr__ as models_getattr
 
 		attr = models_getattr(name)
 		# Cache in our clean cache dict
@@ -146,7 +146,7 @@ __all__ = [
 	# Chat models
 	'BaseChatModel',
 	'ChatOpenAI',
-	'ChatTraverse',
+	'ChatAgentyc',
 	'ChatGitHubCopilot',
 	'ChatDeepSeek',
 	'ChatGoogle',

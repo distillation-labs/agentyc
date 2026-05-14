@@ -1,6 +1,6 @@
 from typing import Any
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	ContentPartImageParam,

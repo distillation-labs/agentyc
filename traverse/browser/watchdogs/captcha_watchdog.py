@@ -1,6 +1,6 @@
 """Captcha solver watchdog — monitors captcha events from the browser proxy.
 
-Listens for Traverse.captchaSolverStarted/Finished CDP events and exposes a
+Listens for Agentyc.captchaSolverStarted/Finished CDP events and exposes a
 wait_if_captcha_solving() method that the agent step loop uses to block until
 a captcha is resolved (with a configurable timeout).
 
@@ -13,17 +13,16 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, Protocol, cast
 
-from bubus import BaseEvent
-from pydantic import PrivateAttr
-
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	BrowserConnectedEvent,
 	BrowserStoppedEvent,
 	CaptchaSolverFinishedEvent,
 	CaptchaSolverStartedEvent,
 	_get_timeout,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
+from agentyc.browser.watchdog_base import BaseWatchdog
+from bubus import BaseEvent
+from pydantic import PrivateAttr
 
 CaptchaResultType = Literal['success', 'failed', 'timeout', 'unknown']
 
@@ -47,9 +46,9 @@ class CaptchaWatchdog(BaseWatchdog):
 	"""Monitors captcha solver events from the browser proxy.
 
 	When the proxy detects a CAPTCHA and starts solving it, a CDP event
-	``Traverse.captchaSolverStarted`` is sent over the WebSocket.  This
+	``Agentyc.captchaSolverStarted`` is sent over the WebSocket.  This
 	watchdog catches that event and blocks the agent's step loop (via
-	``wait_if_captcha_solving``) until ``Traverse.captchaSolverFinished``
+	``wait_if_captcha_solving``) until ``Agentyc.captchaSolverFinished``
 	arrives or the configurable timeout expires.
 	"""
 
@@ -80,15 +79,15 @@ class CaptchaWatchdog(BaseWatchdog):
 	# ------------------------------------------------------------------
 
 	async def on_BrowserConnectedEvent(self, event: BrowserConnectedEvent) -> None:
-		"""Register CDP event handlers for Traverse captcha solver events."""
+		"""Register CDP event handlers for Agentyc captcha solver events."""
 		if self._cdp_handlers_registered:
 			self.logger.debug('CaptchaWatchdog: CDP handlers already registered, skipping')
 			return
 
 		cdp_client = self.browser_session.cdp_client
-		traverse_register = getattr(cdp_client.register, 'Traverse', None)
-		if traverse_register is None:
-			self.logger.info('CaptchaWatchdog: Traverse CDP domain unavailable in cdp_use; captcha event monitoring disabled')
+		agentyc_register = getattr(cdp_client.register, 'Agentyc', None)
+		if agentyc_register is None:
+			self.logger.info('CaptchaWatchdog: Agentyc CDP domain unavailable in cdp_use; captcha event monitoring disabled')
 			return
 
 		def _on_captcha_started(event_data: _CaptchaEventPayload, session_id: str | None) -> None:
@@ -155,18 +154,18 @@ class CaptchaWatchdog(BaseWatchdog):
 				self._captcha_solving = False
 				self._captcha_solved_event.set()
 
-		captcha_solver_started = getattr(traverse_register, 'captchaSolverStarted', None)
-		captcha_solver_finished = getattr(traverse_register, 'captchaSolverFinished', None)
+		captcha_solver_started = getattr(agentyc_register, 'captchaSolverStarted', None)
+		captcha_solver_finished = getattr(agentyc_register, 'captchaSolverFinished', None)
 		if not callable(captcha_solver_started) or not callable(captcha_solver_finished):
 			self.logger.info(
-				'CaptchaWatchdog: Traverse captcha CDP events unavailable in cdp_use; captcha event monitoring disabled'
+				'CaptchaWatchdog: Agentyc captcha CDP events unavailable in cdp_use; captcha event monitoring disabled'
 			)
 			return
 
 		cast(Any, captcha_solver_started)(_on_captcha_started)
 		cast(Any, captcha_solver_finished)(_on_captcha_finished)
 		self._cdp_handlers_registered = True
-		self.logger.debug('🔒 CaptchaWatchdog: registered CDP event handlers for Traverse captcha events')
+		self.logger.debug('🔒 CaptchaWatchdog: registered CDP event handlers for Agentyc captcha events')
 
 	async def on_BrowserStoppedEvent(self, event: BrowserStoppedEvent) -> None:
 		"""Clear captcha state when the browser disconnects so nothing hangs."""

@@ -1,3 +1,3 @@
-from traverse.llm.copilot.chat import ChatGitHubCopilot
+from agentyc.llm.copilot.chat import ChatGitHubCopilot
 
 __all__ = ['ChatGitHubCopilot']

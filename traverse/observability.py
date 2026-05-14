@@ -1,6 +1,6 @@
-# @file purpose: Observability module for traverse that handles optional lmnr integration with debug mode support
+# @file purpose: Observability module for agentyc that handles optional lmnr integration with debug mode support
 """
-Observability module for traverse
+Observability module for agentyc
 
 This module provides observability decorators that optionally integrate with lmnr (Laminar) for tracing.
 If lmnr is not installed, it provides no-op wrappers that accept the same parameters.

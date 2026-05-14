@@ -4,7 +4,7 @@ ChatLiteLLM - LiteLLM chat model wrapper.
 Requires the `litellm` package to be installed separately:
     pip install litellm
 
-Note: litellm is NOT included as a dependency of traverse.
+Note: litellm is NOT included as a dependency of agentyc.
 """
 
 import logging
@@ -13,11 +13,11 @@ from typing import Any, TypeVar, overload
 
 from pydantic import BaseModel
 
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError, ModelRateLimitError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.schema import SchemaOptimizer
-from traverse.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.schema import SchemaOptimizer
+from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 from .serializer import LiteLLMMessageSerializer
 

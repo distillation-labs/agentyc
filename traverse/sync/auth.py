@@ -1,5 +1,5 @@
 """
-OAuth2 Device Authorization Grant flow client for traverse.
+OAuth2 Device Authorization Grant flow client for agentyc.
 """
 
 import asyncio
@@ -10,10 +10,9 @@ import time
 from datetime import datetime
 
 import httpx
+from agentyc.config import CONFIG
 from pydantic import BaseModel
 from uuid_extensions import uuid7str
-
-from traverse.config import CONFIG
 
 # Temporary user ID for pre-auth events (matches cloud backend)
 TEMP_USER_ID = '99999999-9999-9999-9999-999999999999'
@@ -299,7 +298,7 @@ class DeviceAuthClient:
 			terminal_width, _terminal_height = shutil.get_terminal_size((80, 20))
 			if show_instructions and CONFIG.TRAVERSE_CLOUD_SYNC:
 				logger.info('─' * max(terminal_width - 40, 20))
-				logger.info('🌐  View the details of this run in Traverse Cloud:')
+				logger.info('🌐  View the details of this run in Agentyc Cloud:')
 				logger.info(f'    👉  {verification_uri_complete}')
 				logger.info('─' * max(terminal_width - 40, 20) + '\n')
 
@@ -317,7 +316,7 @@ class DeviceAuthClient:
 				self.auth_config.save_to_file()
 
 				if show_instructions:
-					logger.debug('✅  Authentication successful! Cloud sync is now enabled with your traverse account.')
+					logger.debug('✅  Authentication successful! Cloud sync is now enabled with your agentyc account.')
 
 				return True
 

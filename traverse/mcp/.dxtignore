@@ -1,4 +1,4 @@
-# DXT ignore file for traverse
+# DXT ignore file for agentyc
 
 # Development and testing
 tests/
@@ -86,8 +86,8 @@ Makefile
 .venv/lib/python3.*/lib-dynload/
 .venv/include/
 
-# Keep traverse executable
-# .venv/bin/traverse  # KEEP THIS
+# Keep agentyc executable
+# .venv/bin/agentyc  # KEEP THIS
 
 # Exclude activation scripts and package managers  
 .venv/bin/activate*

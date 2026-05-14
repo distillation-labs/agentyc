@@ -9,14 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 import anyio
-from bubus import BaseEvent
-from cdp_use.cdp.browser import DownloadProgressEvent as CDPDownloadProgressEvent
-from cdp_use.cdp.browser import DownloadWillBeginEvent
-from cdp_use.cdp.network import ResponseReceivedEvent
-from cdp_use.cdp.target import SessionID, TargetID
-from pydantic import PrivateAttr
-
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	BrowserLaunchEvent,
 	BrowserStateRequestEvent,
 	BrowserStoppedEvent,
@@ -27,8 +20,14 @@ from traverse.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.utils import create_task_with_error_handling
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.utils import create_task_with_error_handling
+from bubus import BaseEvent
+from cdp_use.cdp.browser import DownloadProgressEvent as CDPDownloadProgressEvent
+from cdp_use.cdp.browser import DownloadWillBeginEvent
+from cdp_use.cdp.network import ResponseReceivedEvent
+from cdp_use.cdp.target import SessionID, TargetID
+from pydantic import PrivateAttr
 
 if TYPE_CHECKING:
 	pass
@@ -310,7 +309,7 @@ class DownloadsWatchdog(BaseWatchdog):
 					self.logger.debug(f'[DownloadsWatchdog] Error in download progress callback: {e}')
 
 			# Emit progress event for all states so listeners can track progress
-			from traverse.browser.events import DownloadProgressEvent as DownloadProgressEventInternal
+			from agentyc.browser.events import DownloadProgressEvent as DownloadProgressEventInternal
 
 			self.event_bus.dispatch(
 				DownloadProgressEventInternal(
@@ -823,7 +822,7 @@ class DownloadsWatchdog(BaseWatchdog):
 						self.logger.debug(f'[DownloadsWatchdog] Error in download complete callback: {e}')
 
 				# Dispatch download event
-				from traverse.browser.events import FileDownloadedEvent
+				from agentyc.browser.events import FileDownloadedEvent
 
 				self.event_bus.dispatch(
 					FileDownloadedEvent(
@@ -846,7 +845,7 @@ class DownloadsWatchdog(BaseWatchdog):
 		downloads_dir = (
 			Path(
 				self.browser_session.browser_profile.downloads_path
-				or f'{tempfile.gettempdir()}/traverse_downloads.{str(self.browser_session.id)[-4:]}'
+				or f'{tempfile.gettempdir()}/agentyc_downloads.{str(self.browser_session.id)[-4:]}'
 			)
 			.expanduser()
 			.resolve()
@@ -1280,12 +1279,12 @@ class DownloadsWatchdog(BaseWatchdog):
 							const blob = await response.blob();
 							const arrayBuffer = await blob.arrayBuffer();
 							const uint8Array = new Uint8Array(arrayBuffer);
-							
+
 							// Check if served from cache
-							const fromCache = response.headers.has('age') || 
+							const fromCache = response.headers.has('age') ||
 											 !response.headers.has('date');
-											 
-							return {{ 
+
+							return {{
 								data: Array.from(uint8Array),
 								fromCache: fromCache,
 								responseSize: uint8Array.length,

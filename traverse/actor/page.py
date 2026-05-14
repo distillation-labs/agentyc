@@ -4,11 +4,11 @@ from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel
 
-from traverse import logger
-from traverse.actor.utils import get_key_info
-from traverse.dom.serializer.serializer import DOMTreeSerializer
-from traverse.dom.service import DomService
-from traverse.llm.messages import SystemMessage, UserMessage
+from agentyc import logger
+from agentyc.actor.utils import get_key_info
+from agentyc.dom.serializer.serializer import DOMTreeSerializer
+from agentyc.dom.service import DomService
+from agentyc.llm.messages import SystemMessage, UserMessage
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 	)
 	from cdp_use.cdp.target.types import TargetInfo
 
-	from traverse.browser.session import BrowserSession
-	from traverse.llm.base import BaseChatModel
+	from agentyc.browser.session import BrowserSession
+	from agentyc.llm.base import BaseChatModel
 
 	from .element import Element
 	from .mouse import Mouse
@@ -558,7 +558,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 
 		Uses the shared markdown extractor for consistency with tools/service.py.
 		"""
-		from traverse.dom.markdown_extractor import extract_clean_markdown
+		from agentyc.dom.markdown_extractor import extract_clean_markdown
 
 		dom_service = self.dom_service
 		return await extract_clean_markdown(dom_service=dom_service, target_id=self._target_id, extract_links=extract_links)

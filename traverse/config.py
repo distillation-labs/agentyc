@@ -1,4 +1,4 @@
-"""Configuration system for traverse with automatic migration support."""
+"""Configuration system for agentyc with automatic migration support."""
 
 import json
 import logging
@@ -64,7 +64,7 @@ class OldConfig:
 
 	@property
 	def TRAVERSE_CLOUD_API_URL(self) -> str:
-		url = os.getenv('TRAVERSE_CLOUD_API_URL', 'https://api.traverse.com')
+		url = os.getenv('TRAVERSE_CLOUD_API_URL', 'https://api.agentyc.com')
 		assert '://' in url, 'TRAVERSE_CLOUD_API_URL must be a valid URL'
 		return url
 
@@ -94,7 +94,7 @@ class OldConfig:
 
 	@property
 	def TRAVERSE_CONFIG_DIR(self) -> Path:
-		path = Path(os.getenv('TRAVERSE_CONFIG_DIR', str(self.XDG_CONFIG_HOME / 'traverse'))).expanduser().resolve()
+		path = Path(os.getenv('TRAVERSE_CONFIG_DIR', str(self.XDG_CONFIG_HOME / 'agentyc'))).expanduser().resolve()
 		self._ensure_dirs()
 		return path
 
@@ -121,7 +121,7 @@ class OldConfig:
 	def _ensure_dirs(self) -> None:
 		"""Create directories if they don't exist (only once)"""
 		if not self._dirs_created:
-			config_dir = Path(os.getenv('TRAVERSE_CONFIG_DIR', str(self.XDG_CONFIG_HOME / 'traverse'))).expanduser().resolve()
+			config_dir = Path(os.getenv('TRAVERSE_CONFIG_DIR', str(self.XDG_CONFIG_HOME / 'agentyc'))).expanduser().resolve()
 			config_dir.mkdir(parents=True, exist_ok=True)
 			(config_dir / 'profiles').mkdir(parents=True, exist_ok=True)
 			(config_dir / 'extensions').mkdir(parents=True, exist_ok=True)
@@ -198,7 +198,7 @@ class FlatEnvConfig(BaseSettings):
 	TRAVERSE_INFO_LOG_FILE: str | None = Field(default=None)
 	ANONYMIZED_TELEMETRY: bool = Field(default=True)
 	TRAVERSE_CLOUD_SYNC: bool | None = Field(default=None)
-	TRAVERSE_CLOUD_API_URL: str = Field(default='https://api.traverse.com')
+	TRAVERSE_CLOUD_API_URL: str = Field(default='https://api.agentyc.com')
 	TRAVERSE_CLOUD_UI_URL: str = Field(default='')
 	TRAVERSE_MODEL_PRICING_URL: str = Field(default='')
 
@@ -409,7 +409,7 @@ class Config:
 			return Path(env_config.TRAVERSE_CONFIG_DIR).expanduser() / 'config.json'
 		else:
 			xdg_config = Path(env_config.XDG_CONFIG_HOME).expanduser()
-			return xdg_config / 'traverse' / 'config.json'
+			return xdg_config / 'agentyc' / 'config.json'
 
 	def _get_db_config(self) -> DBStyleConfigJSON:
 		"""Load and migrate config.json."""
@@ -508,8 +508,8 @@ CONFIG = Config()
 
 
 # Helper functions for MCP components
-def load_traverse_config() -> dict[str, Any]:
-	"""Load traverse configuration for MCP components."""
+def load_agentyc_config() -> dict[str, Any]:
+	"""Load agentyc configuration for MCP components."""
 	return CONFIG.load_config()
 
 

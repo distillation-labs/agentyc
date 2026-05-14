@@ -5,17 +5,17 @@
 Configuration for the MCP server is resolved in this order:
 
 1. Environment variables
-2. Config file at `~/.config/traverse/config.json`
+2. Config file at `~/.config/agentyc/config.json`
 3. Code defaults in the browser profile and config models
 
-The MCP server loads config through `traverse.config.load_traverse_config()` and then starts browser sessions from the default browser profile plus any environment overrides.
+The MCP server loads config through `agentyc.config.load_agentyc_config()` and then starts browser sessions from the default browser profile plus any environment overrides.
 
 ## Config File
 
 Default path:
 
 ```text
-~/.config/traverse/config.json
+~/.config/agentyc/config.json
 ```
 
 The MCP runtime reads the default browser profile from that file when present.
@@ -25,7 +25,7 @@ The MCP runtime reads the default browser profile from that file when present.
 Public CLI entrypoint:
 
 ```bash
-traverse --session-timeout-minutes 10
+agentyc --session-timeout-minutes 10
 ```
 
 Supported CLI options in the public release:
@@ -34,7 +34,7 @@ Supported CLI options in the public release:
 |--------|-------------|
 | `--session-timeout-minutes` | Idle timeout for tracked browser sessions |
 
-There is no separate `--mcp` switch in the current public CLI. The `traverse` command itself starts the stdio MCP server.
+There is no separate `--mcp` switch in the current public CLI. The `agentyc` command itself starts the stdio MCP server.
 
 ## Environment Variables
 
@@ -56,7 +56,7 @@ The current MCP runtime honors these documented overrides directly or through th
 
 | Variable | Description |
 |----------|-------------|
-| `TRAVERSE_LOGGING_LEVEL` | Shared traverse log level outside MCP stdio mode |
+| `TRAVERSE_LOGGING_LEVEL` | Shared agentyc log level outside MCP stdio mode |
 | `TRAVERSE_ACTION_TIMEOUT_S` | Per-action timeout used by the tool service |
 | `ANONYMIZED_TELEMETRY` | Enable or disable anonymized telemetry |
 | `TRAVERSE_CLOUD_SYNC` | Enable or disable cloud sync behavior in shared config |
@@ -74,11 +74,11 @@ These values may still exist in shared config because the package exposes Python
 
 ## Browser Profile Notes
 
-The MCP server creates `BrowserProfile` instances from the default profile plus overrides. Publicly relevant defaults in `traverse.mcp.server` include:
+The MCP server creates `BrowserProfile` instances from the default profile plus overrides. Publicly relevant defaults in `agentyc.mcp.server` include:
 
-- `downloads_path`: `~/Downloads/traverse-mcp`
+- `downloads_path`: `~/Downloads/agentyc-mcp`
 - `keep_alive`: `False`
-- `user_data_dir`: `~/.config/traverse/profiles/default`
+- `user_data_dir`: `~/.config/agentyc/profiles/default`
 - `device_scale_factor`: `1.0`
 - `disable_security`: `False`
 - `headless`: `False`, unless overridden

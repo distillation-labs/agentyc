@@ -1,9 +1,9 @@
 """
-Gmail Integration for Traverse
+Gmail Integration for Agentyc
 Provides Gmail API integration for email reading and verification code extraction.
 This integration enables agents to read email content and extract verification codes themselves.
 Usage:
-    from traverse.integrations.gmail import GmailService, register_gmail_actions
+    from agentyc.integrations.gmail import GmailService, register_gmail_actions
     # Option 1: Register Gmail actions with file-based authentication
     tools = Tools()
     register_gmail_actions(tools)

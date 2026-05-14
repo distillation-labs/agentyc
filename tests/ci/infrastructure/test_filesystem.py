@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from traverse.filesystem.file_system import (
+from agentyc.filesystem.file_system import (
 	DEFAULT_FILE_SYSTEM_PATH,
 	CsvFile,
 	FileSystem,

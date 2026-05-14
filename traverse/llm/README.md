@@ -1,4 +1,4 @@
-# Traverse LLMs
+# Agentyc LLMs
 
 We officially support the following LLMs:
 

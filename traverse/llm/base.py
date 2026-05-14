@@ -6,10 +6,9 @@ For easier transition we have
 
 from typing import Any, Protocol, TypeVar, overload, runtime_checkable
 
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.views import ChatInvokeCompletion
 from pydantic import BaseModel
-
-from traverse.llm.messages import BaseMessage
-from traverse.llm.views import ChatInvokeCompletion
 
 T = TypeVar('T', bound=BaseModel)
 

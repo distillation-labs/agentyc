@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from traverse.config import CONFIG
+from agentyc.config import CONFIG
 
 
 def addLoggingLevel(levelName, levelNum, methodName=None):
@@ -62,7 +62,7 @@ def addLoggingLevel(levelName, levelNum, methodName=None):
 
 
 def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file=None, info_log_file=None):
-	"""Setup logging configuration for traverse.
+	"""Setup logging configuration for agentyc.
 
 	Args:
 		stream: Output stream for logs (default: sys.stdout). Can be sys.stderr for MCP mode.
@@ -81,20 +81,20 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 
 	# Check if handlers are already set up
 	if logging.getLogger().hasHandlers() and not force_setup:
-		return logging.getLogger('traverse')
+		return logging.getLogger('agentyc')
 
 	# Clear existing handlers
 	root = logging.getLogger()
 	root.handlers = []
 
-	class TraverseFormatter(logging.Formatter):
+	class AgentycFormatter(logging.Formatter):
 		def __init__(self, fmt, log_level):
 			super().__init__(fmt)
 			self.log_level = log_level
 
 		def format(self, record):
 			# Only clean up names in INFO mode, keep everything in DEBUG mode
-			if self.log_level > logging.DEBUG and isinstance(record.name, str) and record.name.startswith('traverse.'):
+			if self.log_level > logging.DEBUG and isinstance(record.name, str) and record.name.startswith('agentyc.'):
 				# Extract clean component names from logger names
 				if 'Agent' in record.name:
 					record.name = 'Agent'
@@ -104,8 +104,8 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 					record.name = 'tools'
 				elif 'dom' in record.name:
 					record.name = 'dom'
-				elif record.name.startswith('traverse.'):
-					# For other traverse modules, use the last part
+				elif record.name.startswith('agentyc.'):
+					# For other agentyc modules, use the last part
 					parts = record.name.split('.')
 					if len(parts) >= 2:
 						record.name = parts[-1]
@@ -125,10 +125,10 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 	# adittional setLevel here to filter logs
 	if log_type == 'result':
 		console.setLevel('RESULT')
-		console.setFormatter(TraverseFormatter('%(message)s', log_level))
+		console.setFormatter(AgentycFormatter('%(message)s', log_level))
 	else:
 		console.setLevel(log_level)  # Keep console at original log level (e.g., INFO)
-		console.setFormatter(TraverseFormatter('%(levelname)-8s [%(name)s] %(message)s', log_level))
+		console.setFormatter(AgentycFormatter('%(levelname)-8s [%(name)s] %(message)s', log_level))
 
 	# Configure root logger only
 	root.addHandler(console)
@@ -140,7 +140,7 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 	if debug_log_file:
 		debug_handler = logging.FileHandler(debug_log_file, encoding='utf-8')
 		debug_handler.setLevel(logging.DEBUG)
-		debug_handler.setFormatter(TraverseFormatter('%(asctime)s - %(levelname)-8s [%(name)s] %(message)s', logging.DEBUG))
+		debug_handler.setFormatter(AgentycFormatter('%(asctime)s - %(levelname)-8s [%(name)s] %(message)s', logging.DEBUG))
 		file_handlers.append(debug_handler)
 		root.addHandler(debug_handler)
 
@@ -148,7 +148,7 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 	if info_log_file:
 		info_handler = logging.FileHandler(info_log_file, encoding='utf-8')
 		info_handler.setLevel(logging.INFO)
-		info_handler.setFormatter(TraverseFormatter('%(asctime)s - %(levelname)-8s [%(name)s] %(message)s', logging.INFO))
+		info_handler.setFormatter(AgentycFormatter('%(asctime)s - %(levelname)-8s [%(name)s] %(message)s', logging.INFO))
 		file_handlers.append(info_handler)
 		root.addHandler(info_handler)
 
@@ -156,13 +156,13 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 	effective_log_level = logging.DEBUG if debug_log_file else log_level
 	root.setLevel(effective_log_level)
 
-	# Configure traverse logger
-	traverse_logger = logging.getLogger('traverse')
-	traverse_logger.propagate = False  # Don't propagate to root logger
-	traverse_logger.addHandler(console)
+	# Configure agentyc logger
+	agentyc_logger = logging.getLogger('agentyc')
+	agentyc_logger.propagate = False  # Don't propagate to root logger
+	agentyc_logger.addHandler(console)
 	for handler in file_handlers:
-		traverse_logger.addHandler(handler)
-	traverse_logger.setLevel(effective_log_level)
+		agentyc_logger.addHandler(handler)
+	agentyc_logger.setLevel(effective_log_level)
 
 	# Configure bubus logger to allow INFO level logs
 	bubus_logger = logging.getLogger('bubus')
@@ -202,8 +202,8 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 			cdp_logger.addHandler(console)
 			cdp_logger.propagate = False
 
-	logger = logging.getLogger('traverse')
-	# logger.debug('Traverse logging setup complete with level %s', log_type)
+	logger = logging.getLogger('agentyc')
+	# logger.debug('Agentyc logging setup complete with level %s', log_type)
 
 	# Silence third-party loggers (but not CDP ones which we configured above)
 	third_party_loggers = [
@@ -283,7 +283,7 @@ def setup_log_pipes(session_id: str, base_dir: str | None = None):
 	"""Setup named pipes for log streaming.
 
 	Usage:
-		# In traverse:
+		# In agentyc:
 		setup_log_pipes(session_id="abc123")
 
 		# In consumer process:
@@ -301,7 +301,7 @@ def setup_log_pipes(session_id: str, base_dir: str | None = None):
 	runtime_handler = FIFOHandler(str(pipe_dir / 'runtime.pipe'))
 	runtime_handler.setLevel(logging.DEBUG)
 	runtime_handler.setFormatter(logging.Formatter('%(levelname)-8s [%(name)s] %(message)s'))
-	for name in ['traverse.browser', 'traverse.mcp', 'traverse.tools']:
+	for name in ['agentyc.browser', 'agentyc.mcp', 'agentyc.tools']:
 		logger = logging.getLogger(name)
 		logger.addHandler(runtime_handler)
 		logger.setLevel(logging.DEBUG)
@@ -321,7 +321,7 @@ def setup_log_pipes(session_id: str, base_dir: str | None = None):
 	event_handler = FIFOHandler(str(pipe_dir / 'events.pipe'))
 	event_handler.setLevel(logging.INFO)
 	event_handler.setFormatter(logging.Formatter('%(levelname)-8s [%(name)s] %(message)s'))
-	for name in ['bubus', 'traverse.browser.session']:
+	for name in ['bubus', 'agentyc.browser.session']:
 		logger = logging.getLogger(name)
 		logger.addHandler(event_handler)
 		logger.setLevel(logging.INFO)  # Enable INFO for event bus

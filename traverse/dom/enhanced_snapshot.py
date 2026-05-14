@@ -1,5 +1,5 @@
 """
-Enhanced snapshot processing for traverse DOM tree extraction.
+Enhanced snapshot processing for agentyc DOM tree extraction.
 
 This module provides stateless functions for parsing Chrome DevTools Protocol (CDP) DOMSnapshot data
 to extract visibility, clickability, cursor styles, and other layout information.
@@ -11,7 +11,7 @@ from cdp_use.cdp.domsnapshot.types import (
 	NodeTreeSnapshot,
 )
 
-from traverse.dom.views import DOMRect, EnhancedSnapshotNode
+from agentyc.dom.views import DOMRect, EnhancedSnapshotNode
 
 # Only the ESSENTIAL computed styles for interactivity and visibility detection
 REQUIRED_COMPUTED_STYLES = [
@@ -50,7 +50,7 @@ def build_snapshot_lookup(
 	"""Build a lookup table of backend node ID to enhanced snapshot data with everything calculated upfront."""
 	import logging
 
-	logger = logging.getLogger('traverse.dom.enhanced_snapshot')
+	logger = logging.getLogger('agentyc.dom.enhanced_snapshot')
 	snapshot_lookup: dict[int, EnhancedSnapshotNode] = {}
 
 	if not snapshot['documents']:

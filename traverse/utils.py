@@ -126,7 +126,7 @@ class SignalHandler:
 			interruptible_task_patterns: List of patterns to match task names that should be
 										 canceled on first Ctrl+C (default: ['step', 'multi_act', 'get_next_action'])
 			disabled: If True, signal handling is disabled and register() is a no-op.
-					Useful when embedding traverse in applications that manage their own signals.
+					Useful when embedding agentyc in applications that manage their own signals.
 		"""
 		self.loop = loop or asyncio.get_event_loop()
 		self.pause_callback = pause_callback
@@ -611,8 +611,8 @@ def merge_dicts(a: dict, b: dict, path: tuple[str, ...] = ()):
 
 
 @cache
-def get_traverse_version() -> str:
-	"""Get the traverse package version using the same logic as Agent._set_traverse_version_and_source"""
+def get_agentyc_version() -> str:
+	"""Get the agentyc package version using the same logic as Agent._set_agentyc_version_and_source"""
 	try:
 		package_root = Path(__file__).parent.parent
 		pyproject_path = package_root / 'pyproject.toml'
@@ -632,24 +632,24 @@ def get_traverse_version() -> str:
 		# If pyproject.toml doesn't exist, try getting version from pip
 		from importlib.metadata import version as get_version
 
-		version = str(get_version('traverse'))
+		version = str(get_version('agentyc'))
 		os.environ['LIBRARY_VERSION'] = version
 		return version
 
 	except Exception as e:
-		logger.debug(f'Error detecting traverse version: {type(e).__name__}: {e}')
+		logger.debug(f'Error detecting agentyc version: {type(e).__name__}: {e}')
 		return 'unknown'
 
 
-async def check_latest_traverse_version() -> str | None:
-	"""Check the latest version of traverse from PyPI asynchronously.
+async def check_latest_agentyc_version() -> str | None:
+	"""Check the latest version of agentyc from PyPI asynchronously.
 
 	Returns:
 		The latest version string if successful, None if failed
 	"""
 	try:
 		async with httpx.AsyncClient(timeout=3.0) as client:
-			response = await client.get('https://pypi.org/pypi/traverse/json')
+			response = await client.get('https://pypi.org/pypi/agentyc/json')
 			if response.status_code == 200:
 				data = response.json()
 				return data['info']['version']

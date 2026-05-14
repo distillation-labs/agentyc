@@ -1,11 +1,11 @@
 # Fast Dockerfile using pre-built base images
-ARG REGISTRY=traverse
+ARG REGISTRY=agentyc
 ARG BASE_TAG=latest
 FROM ${REGISTRY}/base-python-deps:${BASE_TAG}
 
-LABEL name="traverse" description="Browser automation for AI agents"
+LABEL name="agentyc" description="Browser automation for AI agents"
 
-ENV TRAVERSE_USER="traverse" DEFAULT_PUID=911 DEFAULT_PGID=911 DATA_DIR=/data
+ENV TRAVERSE_USER="agentyc" DEFAULT_PUID=911 DEFAULT_PGID=911 DATA_DIR=/data
 
 # Create user and directories
 RUN groupadd --system $TRAVERSE_USER && \
@@ -13,7 +13,7 @@ RUN groupadd --system $TRAVERSE_USER && \
     usermod -u "$DEFAULT_PUID" "$TRAVERSE_USER" && \
     groupmod -g "$DEFAULT_PGID" "$TRAVERSE_USER" && \
     mkdir -p /data /home/$TRAVERSE_USER/.config && \
-    ln -s $DATA_DIR /home/$TRAVERSE_USER/.config/traverse && \
+    ln -s $DATA_DIR /home/$TRAVERSE_USER/.config/agentyc && \
     mkdir -p "/home/$TRAVERSE_USER/.config/chromium/Crash Reports/pending/" && \
     mkdir -p "$DATA_DIR/profiles/default" && \
     chown -R "$TRAVERSE_USER:$TRAVERSE_USER" "/home/$TRAVERSE_USER" "$DATA_DIR"
@@ -21,11 +21,11 @@ RUN groupadd --system $TRAVERSE_USER && \
 WORKDIR /app
 COPY . /app
 
-# Install traverse
+# Install agentyc
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     uv sync --all-extras --locked --no-dev --compile-bytecode
 
 USER "$TRAVERSE_USER"
 VOLUME "$DATA_DIR"
 EXPOSE 9242 9222
-ENTRYPOINT ["traverse"]
+ENTRYPOINT ["agentyc"]

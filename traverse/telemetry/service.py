@@ -5,12 +5,12 @@ from dotenv import load_dotenv
 from posthog import Posthog
 from uuid_extensions import uuid7str
 
-from traverse.telemetry.views import BaseTelemetryEvent
-from traverse.utils import singleton
+from agentyc.telemetry.views import BaseTelemetryEvent
+from agentyc.utils import singleton
 
 load_dotenv()
 
-from traverse.config import CONFIG
+from agentyc.config import CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class ProductTelemetry:
 		if telemetry_disabled:
 			self._posthog_client = None
 		else:
-			logger.info('Using anonymized telemetry, see https://docs.traverse.com/development/monitoring/telemetry.')
+			logger.info('Using anonymized telemetry, see https://docs.agentyc.com/development/monitoring/telemetry.')
 			self._posthog_client = Posthog(
 				project_api_key=self.PROJECT_API_KEY,
 				host=self.HOST,

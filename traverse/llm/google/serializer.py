@@ -2,7 +2,7 @@ import base64
 
 from google.genai.types import Content, ContentListUnion, Part
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	SystemMessage,

@@ -4,10 +4,8 @@ import asyncio
 import json
 import os
 
-from cdp_use.cdp.input.commands import DispatchKeyEventParameters
-
-from traverse.actor.utils import get_key_info
-from traverse.browser.events import (
+from agentyc.actor.utils import get_key_info
+from agentyc.browser.events import (
 	ClickCoordinateEvent,
 	ClickElementEvent,
 	GetDropdownOptionsEvent,
@@ -22,10 +20,11 @@ from traverse.browser.events import (
 	UploadFileEvent,
 	WaitEvent,
 )
-from traverse.browser.views import BrowserError, URLNotAllowedError
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.dom.service import EnhancedDOMTreeNode
-from traverse.observability import observe_debug
+from agentyc.browser.views import BrowserError, URLNotAllowedError
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.dom.service import EnhancedDOMTreeNode
+from agentyc.observability import observe_debug
+from cdp_use.cdp.input.commands import DispatchKeyEventParameters
 
 # Import EnhancedDOMTreeNode and rebuild event models that have forward references to it
 # This must be done after all imports are complete
@@ -309,7 +308,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 			self.logger.info(f'✅ Generated PDF via CDP: {final_path} ({file_size:,} bytes)')
 
 			# Dispatch FileDownloadedEvent
-			from traverse.browser.events import FileDownloadedEvent
+			from agentyc.browser.events import FileDownloadedEvent
 
 			page_url = await self.browser_session.get_current_page_url()
 			self.browser_session.event_bus.dispatch(
@@ -2803,7 +2802,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 				const role = element.getAttribute('role');
 				const ariaControls = element.getAttribute('aria-controls');
 				const ariaExpanded = element.getAttribute('aria-expanded');
-				
+
 				if (role === 'combobox' && ariaControls) {
 					return {
 						isCombobox: true,
@@ -3062,18 +3061,18 @@ class DefaultActionWatchdog(BaseWatchdog):
 			expand_script = """
 			function() {
 				const element = this;
-				
+
 				// Dispatch focus event properly
 				const focusEvent = new FocusEvent('focus', { bubbles: true, cancelable: true });
 				element.dispatchEvent(focusEvent);
-				
+
 				// Also call native focus
 				element.focus();
-				
+
 				// Dispatch focusin event (bubbles, unlike focus)
 				const focusInEvent = new FocusEvent('focusin', { bubbles: true, cancelable: true });
 				element.dispatchEvent(focusInEvent);
-				
+
 				// For some comboboxes, a click is needed
 				const clickEvent = new MouseEvent('click', {
 					bubbles: true,
@@ -3081,7 +3080,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 					view: window
 				});
 				element.dispatchEvent(clickEvent);
-				
+
 				// Some comboboxes respond to mousedown
 				const mousedownEvent = new MouseEvent('mousedown', {
 					bubbles: true,
@@ -3089,7 +3088,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 					view: window
 				});
 				element.dispatchEvent(mousedownEvent);
-				
+
 				return {
 					success: true,
 					ariaExpanded: element.getAttribute('aria-expanded')
@@ -3110,21 +3109,21 @@ class DefaultActionWatchdog(BaseWatchdog):
 		extract_options_script = """
 		function(ariaControlsId) {
 			const combobox = this;
-			
+
 			// Find the listbox element referenced by aria-controls
 			const listbox = document.getElementById(ariaControlsId);
-			
+
 			if (!listbox) {
 				return {
 					error: `Could not find listbox element with id "${ariaControlsId}" referenced by aria-controls`,
 					ariaControlsId: ariaControlsId
 				};
 			}
-			
+
 			// Find all option elements in the listbox
 			const optionElements = listbox.querySelectorAll('[role="option"]');
 			const options = [];
-			
+
 			optionElements.forEach((item, idx) => {
 				const text = item.textContent ? item.textContent.trim() : '';
 				if (text) {
@@ -3136,7 +3135,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 					});
 				}
 			});
-			
+
 			// If no options with role="option", try other common patterns
 			if (options.length === 0) {
 				// Try li elements inside
@@ -3153,7 +3152,7 @@ class DefaultActionWatchdog(BaseWatchdog):
 					}
 				});
 			}
-			
+
 			return {
 				type: 'aria-combobox',
 				options: options,

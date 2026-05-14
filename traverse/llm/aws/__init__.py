@@ -2,13 +2,13 @@ from typing import TYPE_CHECKING
 
 # Type stubs for lazy imports
 if TYPE_CHECKING:
-	from traverse.llm.aws.chat_anthropic import ChatAnthropicBedrock
-	from traverse.llm.aws.chat_bedrock import ChatAWSBedrock
+	from agentyc.llm.aws.chat_anthropic import ChatAnthropicBedrock
+	from agentyc.llm.aws.chat_bedrock import ChatAWSBedrock
 
 # Lazy imports mapping for AWS chat models
 _LAZY_IMPORTS = {
-	'ChatAnthropicBedrock': ('traverse.llm.aws.chat_anthropic', 'ChatAnthropicBedrock'),
-	'ChatAWSBedrock': ('traverse.llm.aws.chat_bedrock', 'ChatAWSBedrock'),
+	'ChatAnthropicBedrock': ('agentyc.llm.aws.chat_anthropic', 'ChatAnthropicBedrock'),
+	'ChatAWSBedrock': ('agentyc.llm.aws.chat_bedrock', 'ChatAWSBedrock'),
 }
 
 

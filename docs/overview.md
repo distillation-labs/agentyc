@@ -2,7 +2,7 @@
 
 ## What It Is
 
-**traverse** (v0.12.6) is an async Python library that exposes Chrome browser control as a typed, deterministic API for AI agents. It bridges the gap between LLM decision-making and browser automation by:
+**agentyc** (v0.12.6) is an async Python library that exposes Chrome browser control as a typed, deterministic API for AI agents. It bridges the gap between LLM decision-making and browser automation by:
 
 - Wrapping CDP (Chrome DevTools Protocol) operations into structured, schema-validated actions
 - Serializing DOM state (element tree, screenshots, tab info) into token-efficient representations

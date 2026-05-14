@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from traverse.llm.schema import SchemaOptimizer
+from agentyc.llm.schema import SchemaOptimizer
 
 
 class MistralSchemaOptimizer:

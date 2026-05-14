@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from traverse.browser.profile import BrowserProfile, ViewportSize
-from traverse.browser.session import BrowserSession
-from traverse.tools.service import Tools
+from agentyc.browser.profile import BrowserProfile, ViewportSize
+from agentyc.browser.session import BrowserSession
+from agentyc.tools.service import Tools
 
 
 @pytest.fixture

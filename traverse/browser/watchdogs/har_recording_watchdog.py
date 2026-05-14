@@ -25,8 +25,8 @@ from cdp_use.cdp.network.events import (
 )
 from cdp_use.cdp.page.events import FrameNavigatedEvent, LifecycleEventEvent
 
-from traverse.browser.events import BrowserConnectedEvent, BrowserStopEvent
-from traverse.browser.watchdog_base import BaseWatchdog
+from agentyc.browser.events import BrowserConnectedEvent, BrowserStopEvent
+from agentyc.browser.watchdog_base import BaseWatchdog
 
 
 @dataclass
@@ -635,7 +635,7 @@ class HarRecordingWatchdog(BaseWatchdog):
 
 		# Try to include our library version in creator
 		try:
-			bu_version = importlib_metadata.version('traverse')
+			bu_version = importlib_metadata.version('agentyc')
 		except Exception:
 			# Fallback when running from source without installed package metadata
 			bu_version = 'dev'
@@ -643,7 +643,7 @@ class HarRecordingWatchdog(BaseWatchdog):
 		har_obj = {
 			'log': {
 				'version': '1.2',
-				'creator': {'name': 'traverse', 'version': bu_version},
+				'creator': {'name': 'agentyc', 'version': bu_version},
 				'browser': {'name': self._browser_name, 'version': self._browser_version},
 				'pages': [
 					{

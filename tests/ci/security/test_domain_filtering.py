@@ -1,4 +1,4 @@
-from traverse.browser import BrowserProfile, BrowserSession
+from agentyc.browser import BrowserProfile, BrowserSession
 
 
 class TestUrlAllowlistSecurity:
@@ -8,7 +8,7 @@ class TestUrlAllowlistSecurity:
 		"""Test that the URL allowlist cannot be bypassed using authentication credentials."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Create a context config with a sample allowed domain
 		browser_profile = BrowserProfile(allowed_domains=['example.com'], headless=True, user_data_dir=None)
@@ -30,7 +30,7 @@ class TestUrlAllowlistSecurity:
 		"""Test that glob patterns in allowed_domains work correctly."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Test *.example.com pattern (should match subdomains and main domain)
 		browser_profile = BrowserProfile(allowed_domains=['*.example.com'], headless=True, user_data_dir=None)
@@ -105,7 +105,7 @@ class TestUrlAllowlistSecurity:
 		"""Test edge cases for glob pattern matching to ensure proper behavior."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Test with domains containing glob pattern in the middle
 		browser_profile = BrowserProfile(allowed_domains=['*.google.com', 'https://wiki.org'], headless=True, user_data_dir=None)
@@ -139,7 +139,7 @@ class TestUrlAllowlistSecurity:
 		"""Test that root domains automatically allow www subdomain."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Test with simple root domains
 		browser_profile = BrowserProfile(allowed_domains=['example.com', 'test.org'], headless=True, user_data_dir=None)
@@ -167,7 +167,7 @@ class TestUrlAllowlistSecurity:
 		"""Test www subdomain is NOT automatically added for country-specific TLDs (2+ dots)."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Test with country-specific TLDs - these should NOT get automatic www
 		browser_profile = BrowserProfile(
@@ -195,7 +195,7 @@ class TestUrlAllowlistSecurity:
 		"""Test that www is not automatically added for domains that already have subdomains."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Test with existing subdomains - should NOT get automatic www
 		browser_profile = BrowserProfile(allowed_domains=['mail.example.com', 'api.test.org'], headless=True, user_data_dir=None)
@@ -219,7 +219,7 @@ class TestUrlAllowlistSecurity:
 		"""Test that www is not automatically added for wildcard patterns."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Test with wildcard patterns - should NOT get automatic www logic
 		browser_profile = BrowserProfile(allowed_domains=['*.example.com'], headless=True, user_data_dir=None)
@@ -236,7 +236,7 @@ class TestUrlAllowlistSecurity:
 		"""Test that www is not automatically added for full URL patterns."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Test with full URL patterns - should NOT get automatic www logic
 		browser_profile = BrowserProfile(
@@ -258,7 +258,7 @@ class TestUrlAllowlistSecurity:
 		"""Test the _is_root_domain helper method logic."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(allowed_domains=['example.com'], headless=True, user_data_dir=None)
 		browser_session = BrowserSession(browser_profile=browser_profile)
@@ -296,7 +296,7 @@ class TestUrlProhibitlistSecurity:
 		"""Domain-only patterns block exact host and www, but not other subdomains."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(prohibited_domains=['example.com', 'test.org'], headless=True, user_data_dir=None)
 		browser_session = BrowserSession(browser_profile=browser_profile)
@@ -320,7 +320,7 @@ class TestUrlProhibitlistSecurity:
 		"""Wildcard patterns block subdomains and main domain for http/https only."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(prohibited_domains=['*.example.com'], headless=True, user_data_dir=None)
 		browser_session = BrowserSession(browser_profile=browser_profile)
@@ -342,7 +342,7 @@ class TestUrlProhibitlistSecurity:
 		"""Full URL patterns block only matching scheme/host/prefix."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(prohibited_domains=['https://wiki.org', 'brave://*'], headless=True, user_data_dir=None)
 		browser_session = BrowserSession(browser_profile=browser_profile)
@@ -362,7 +362,7 @@ class TestUrlProhibitlistSecurity:
 		"""Internal new-tab/blank URLs are always allowed regardless of prohibited list."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(prohibited_domains=['*'], headless=True, user_data_dir=None)
 		browser_session = BrowserSession(browser_profile=browser_profile)
@@ -378,7 +378,7 @@ class TestUrlProhibitlistSecurity:
 		"""When allowlist is set, prohibited list is ignored by design."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(
 			allowed_domains=['*.example.com'],
@@ -403,7 +403,7 @@ class TestUrlProhibitlistSecurity:
 		"""Credentials injection with prohibited domain in username should not block unrelated hosts."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(prohibited_domains=['example.com'], headless=True, user_data_dir=None)
 		browser_session = BrowserSession(browser_profile=browser_profile)
@@ -423,7 +423,7 @@ class TestUrlProhibitlistSecurity:
 		"""Prohibited domain matching should be case-insensitive."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(prohibited_domains=['Example.COM'], headless=True, user_data_dir=None)
 		browser_session = BrowserSession(browser_profile=browser_profile)
@@ -442,7 +442,7 @@ class TestDomainListOptimization:
 		"""Test that lists < 100 items keep pattern matching support."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		browser_profile = BrowserProfile(
 			prohibited_domains=['*.google.com', 'x.com', 'facebook.com'], headless=True, user_data_dir=None
@@ -470,7 +470,7 @@ class TestDomainListOptimization:
 		"""Test that lists >= 100 items are converted to sets."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Create a list of 100 domains
 		large_list = [f'blocked{i}.com' for i in range(100)]
@@ -497,7 +497,7 @@ class TestDomainListOptimization:
 		"""Test that www variants are checked in set-based lookups."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Create a list with 100 domains (some with www, some without)
 		large_list = [f'site{i}.com' for i in range(50)] + [f'www.domain{i}.org' for i in range(50)]
@@ -526,7 +526,7 @@ class TestDomainListOptimization:
 		"""Test that allowed_domains also works with set optimization."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		# Create a large allowlist
 		large_list = [f'allowed{i}.com' for i in range(100)]
@@ -552,7 +552,7 @@ class TestDomainListOptimization:
 		"""Test that users can directly provide a set."""
 		from bubus import EventBus
 
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 
 		blocked_set = {f'blocked{i}.com' for i in range(50)}
 

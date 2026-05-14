@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
-from traverse.config import is_running_in_docker
+from agentyc.config import is_running_in_docker
 
 
 @dataclass

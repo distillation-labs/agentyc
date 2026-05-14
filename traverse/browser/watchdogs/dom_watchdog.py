@@ -4,23 +4,23 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	BrowserErrorEvent,
 	BrowserStateRequestEvent,
 	ScreenshotEvent,
 	TabCreatedEvent,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.dom.service import DomService
-from traverse.dom.views import (
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.dom.service import DomService
+from agentyc.dom.views import (
 	EnhancedDOMTreeNode,
 	SerializedDOMState,
 )
-from traverse.observability import observe_debug
-from traverse.utils import create_task_with_error_handling, time_execution_async
+from agentyc.observability import observe_debug
+from agentyc.utils import create_task_with_error_handling, time_execution_async
 
 if TYPE_CHECKING:
-	from traverse.browser.views import BrowserStateSummary, NetworkRequest, PageInfo, PaginationButton
+	from agentyc.browser.views import BrowserStateSummary, NetworkRequest, PageInfo, PaginationButton
 
 
 class DOMWatchdog(BaseWatchdog):
@@ -97,7 +97,7 @@ class DOMWatchdog(BaseWatchdog):
 		Returns:
 			List of NetworkRequest objects representing currently loading resources
 		"""
-		from traverse.browser.views import NetworkRequest
+		from agentyc.browser.views import NetworkRequest
 
 		try:
 			# get_or_create_cdp_session() now handles focus validation automatically
@@ -250,7 +250,7 @@ class DOMWatchdog(BaseWatchdog):
 		Returns:
 			Complete BrowserStateSummary with DOM, screenshot, and target info
 		"""
-		from traverse.browser.views import BrowserStateSummary, PageInfo
+		from agentyc.browser.views import BrowserStateSummary, PageInfo
 
 		self.logger.debug('🔍 DOMWatchdog.on_BrowserStateRequestEvent: STARTING browser state request')
 		page_url = await self.browser_session.get_current_page_url()
@@ -719,7 +719,7 @@ class DOMWatchdog(BaseWatchdog):
 		Returns:
 			List of PaginationButton instances found in the DOM
 		"""
-		from traverse.browser.views import PaginationButton
+		from agentyc.browser.views import PaginationButton
 
 		pagination_buttons_data = []
 		try:
@@ -754,7 +754,7 @@ class DOMWatchdog(BaseWatchdog):
 			PageInfo with all viewport, page dimensions, and scroll information
 		"""
 
-		from traverse.browser.views import PageInfo
+		from agentyc.browser.views import PageInfo
 
 		# get_or_create_cdp_session() handles focus validation automatically
 		cdp_session = await self.browser_session.get_or_create_cdp_session(

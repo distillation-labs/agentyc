@@ -17,7 +17,7 @@ class DogfoodRegression:
 
 def default_artifact_root() -> Path:
 	timestamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-	return Path.home() / '.traverse' / 'dogfood' / timestamp
+	return Path.home() / '.agentyc' / 'dogfood' / timestamp
 
 
 def _metric_recall(metric: Any) -> float | None:

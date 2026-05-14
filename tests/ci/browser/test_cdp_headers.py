@@ -1,7 +1,7 @@
 """
 Test that headers are properly passed to CDPClient for authenticated remote browser connections.
 
-This tests the fix for: When using traverse with remote browser services that require
+This tests the fix for: When using agentyc with remote browser services that require
 authentication headers, these headers need to be included in the WebSocket handshake.
 """
 
@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from traverse.browser.profile import BrowserProfile
-from traverse.browser.session import BrowserSession
+from agentyc.browser.profile import BrowserProfile
+from agentyc.browser.session import BrowserSession
 
 
 def test_browser_profile_headers_attribute():
@@ -48,7 +48,7 @@ async def test_cdp_client_headers_passed_on_connect():
 
 	session = BrowserSession(cdp_url='wss://remote-browser.example.com/cdp', headers=test_headers)
 
-	with patch('traverse.browser.session.TimeoutWrappedCDPClient') as mock_cdp_client_class:
+	with patch('agentyc.browser.session.TimeoutWrappedCDPClient') as mock_cdp_client_class:
 		# Setup mock CDPClient instance
 		mock_cdp_client = AsyncMock()
 		mock_cdp_client_class.return_value = mock_cdp_client
@@ -62,8 +62,8 @@ async def test_cdp_client_headers_passed_on_connect():
 		mock_cdp_client.send.Target.getTargets = AsyncMock(return_value={'targetInfos': []})
 		mock_cdp_client.send.Target.createTarget = AsyncMock(return_value={'targetId': 'test-target-id'})
 
-		# Mock SessionManager (imported inside connect() from traverse.browser.session_manager)
-		with patch('traverse.browser.session_manager.SessionManager') as mock_session_manager_class:
+		# Mock SessionManager (imported inside connect() from agentyc.browser.session_manager)
+		with patch('agentyc.browser.session_manager.SessionManager') as mock_session_manager_class:
 			mock_session_manager = MagicMock()
 			mock_session_manager_class.return_value = mock_session_manager
 			mock_session_manager.start_monitoring = AsyncMock()
@@ -87,7 +87,7 @@ async def test_cdp_client_headers_passed_on_connect():
 				assert actual_headers[key] == value, f'Header {key} should be passed as additional_headers'
 			# User-Agent should be injected for remote connections
 			assert 'User-Agent' in actual_headers, 'User-Agent should be injected for remote connections'
-			assert actual_headers['User-Agent'].startswith('traverse/'), 'User-Agent should start with traverse/'
+			assert actual_headers['User-Agent'].startswith('agentyc/'), 'User-Agent should start with agentyc/'
 			assert call_kwargs[1].get('max_ws_frame_size') == 200 * 1024 * 1024, 'max_ws_frame_size should be set'
 
 
@@ -98,7 +98,7 @@ async def test_cdp_client_no_headers_when_none():
 
 	assert session.browser_profile.headers is None
 
-	with patch('traverse.browser.session.TimeoutWrappedCDPClient') as mock_cdp_client_class:
+	with patch('agentyc.browser.session.TimeoutWrappedCDPClient') as mock_cdp_client_class:
 		mock_cdp_client = AsyncMock()
 		mock_cdp_client_class.return_value = mock_cdp_client
 		mock_cdp_client.start = AsyncMock()
@@ -109,7 +109,7 @@ async def test_cdp_client_no_headers_when_none():
 		mock_cdp_client.send.Target.getTargets = AsyncMock(return_value={'targetInfos': []})
 		mock_cdp_client.send.Target.createTarget = AsyncMock(return_value={'targetId': 'test-target-id'})
 
-		with patch('traverse.browser.session_manager.SessionManager') as mock_session_manager_class:
+		with patch('agentyc.browser.session_manager.SessionManager') as mock_session_manager_class:
 			mock_session_manager = MagicMock()
 			mock_session_manager_class.return_value = mock_session_manager
 			mock_session_manager.start_monitoring = AsyncMock()
@@ -124,7 +124,7 @@ async def test_cdp_client_no_headers_when_none():
 			call_kwargs = mock_cdp_client_class.call_args
 			actual_headers = call_kwargs[1].get('additional_headers')
 			assert actual_headers is not None, 'Remote connections should always have headers with User-Agent'
-			assert actual_headers['User-Agent'].startswith('traverse/'), 'User-Agent should be injected for remote connections'
+			assert actual_headers['User-Agent'].startswith('agentyc/'), 'User-Agent should be injected for remote connections'
 
 
 @pytest.mark.asyncio
@@ -135,7 +135,7 @@ async def test_headers_used_for_json_version_endpoint():
 	# Use HTTP URL (not ws://) to trigger /json/version fetch
 	session = BrowserSession(cdp_url='http://remote-browser.example.com:9222', headers=test_headers)
 
-	with patch('traverse.browser.session.httpx.AsyncClient') as mock_client_class:
+	with patch('agentyc.browser.session.httpx.AsyncClient') as mock_client_class:
 		mock_client = AsyncMock()
 		mock_client_class.return_value.__aenter__ = AsyncMock(return_value=mock_client)
 		mock_client_class.return_value.__aexit__ = AsyncMock()
@@ -145,7 +145,7 @@ async def test_headers_used_for_json_version_endpoint():
 		mock_response.json.return_value = {'webSocketDebuggerUrl': 'ws://remote-browser.example.com:9222/devtools/browser/abc'}
 		mock_client.get = AsyncMock(return_value=mock_response)
 
-		with patch('traverse.browser.session.TimeoutWrappedCDPClient') as mock_cdp_client_class:
+		with patch('agentyc.browser.session.TimeoutWrappedCDPClient') as mock_cdp_client_class:
 			mock_cdp_client = AsyncMock()
 			mock_cdp_client_class.return_value = mock_cdp_client
 			mock_cdp_client.start = AsyncMock()
@@ -153,7 +153,7 @@ async def test_headers_used_for_json_version_endpoint():
 			mock_cdp_client.send.Target = MagicMock()
 			mock_cdp_client.send.Target.setAutoAttach = AsyncMock()
 
-			with patch('traverse.browser.session_manager.SessionManager') as mock_sm_class:
+			with patch('agentyc.browser.session_manager.SessionManager') as mock_sm_class:
 				mock_sm = MagicMock()
 				mock_sm_class.return_value = mock_sm
 				mock_sm.start_monitoring = AsyncMock()
@@ -172,6 +172,6 @@ async def test_headers_used_for_json_version_endpoint():
 				for key, value in test_headers.items():
 					assert actual_headers[key] == value, f'Header {key} should be passed to /json/version'
 				# User-Agent should be injected
-				assert actual_headers['User-Agent'].startswith('traverse/'), (
+				assert actual_headers['User-Agent'].startswith('agentyc/'), (
 					'User-Agent should be injected for /json/version fetch'
 				)

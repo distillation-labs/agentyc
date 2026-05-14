@@ -1,6 +1,6 @@
 """Utility functions for browser tools."""
 
-from traverse.dom.service import EnhancedDOMTreeNode
+from agentyc.dom.service import EnhancedDOMTreeNode
 
 
 def get_click_description(node: EnhancedDOMTreeNode) -> str:

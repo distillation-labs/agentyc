@@ -2,15 +2,14 @@
 
 from typing import TYPE_CHECKING, ClassVar
 
-from bubus import BaseEvent
-
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	BrowserErrorEvent,
 	NavigateToUrlEvent,
 	NavigationCompleteEvent,
 	TabCreatedEvent,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
+from agentyc.browser.watchdog_base import BaseWatchdog
+from bubus import BaseEvent
 
 if TYPE_CHECKING:
 	pass

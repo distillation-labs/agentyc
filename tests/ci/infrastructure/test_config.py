@@ -2,7 +2,7 @@
 
 import os
 
-from traverse.config import CONFIG
+from agentyc.config import CONFIG
 
 
 class TestLazyConfig:

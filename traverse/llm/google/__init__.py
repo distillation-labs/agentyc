@@ -1,3 +1,3 @@
-from traverse.llm.google.chat import ChatGoogle
+from agentyc.llm.google.chat import ChatGoogle
 
 __all__ = ['ChatGoogle']

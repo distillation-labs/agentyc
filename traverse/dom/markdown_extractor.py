@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
-from traverse.dom.serializer.html_serializer import HTMLSerializer
-from traverse.dom.service import DomService
-from traverse.dom.views import MarkdownChunk
+from agentyc.dom.serializer.html_serializer import HTMLSerializer
+from agentyc.dom.service import DomService
+from agentyc.dom.views import MarkdownChunk
 
 if TYPE_CHECKING:
-	from traverse.browser.session import BrowserSession
-	from traverse.browser.watchdogs.dom_watchdog import DOMWatchdog
+	from agentyc.browser.session import BrowserSession
+	from agentyc.browser.watchdogs.dom_watchdog import DOMWatchdog
 
 
 async def extract_clean_markdown(

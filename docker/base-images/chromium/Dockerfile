@@ -1,5 +1,5 @@
 ARG BASE_TAG=latest
-FROM traverse/base-system:${BASE_TAG}
+FROM agentyc/base-system:${BASE_TAG}
 
 WORKDIR /tmp
 COPY pyproject.toml ./

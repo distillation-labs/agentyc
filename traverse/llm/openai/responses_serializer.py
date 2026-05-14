@@ -9,7 +9,7 @@ from openai.types.responses.response_input_message_content_list_param import (
 )
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	ContentPartImageParam,

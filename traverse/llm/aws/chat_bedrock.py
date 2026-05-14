@@ -5,12 +5,12 @@ from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from pydantic import BaseModel
 
-from traverse.llm.aws.serializer import AWSBedrockMessageSerializer
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError, ModelRateLimitError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.schema import SchemaOptimizer
-from traverse.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from agentyc.llm.aws.serializer import AWSBedrockMessageSerializer
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.schema import SchemaOptimizer
+from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 if TYPE_CHECKING:
 	from boto3 import client as AwsClient  # type: ignore
@@ -67,7 +67,7 @@ class ChatAWSBedrock(BaseChatModel):
 			from boto3 import client as AwsClient  # type: ignore
 		except ImportError:
 			raise ImportError(
-				'`boto3` not installed. Please install using `pip install traverse[aws] or pip install traverse[all]`'
+				'`boto3` not installed. Please install using `pip install agentyc[aws] or pip install agentyc[all]`'
 			)
 
 		if self.session:
@@ -169,7 +169,7 @@ class ChatAWSBedrock(BaseChatModel):
 			from botocore.exceptions import ClientError  # type: ignore
 		except ImportError:
 			raise ImportError(
-				'`boto3` not installed. Please install using `pip install traverse[aws] or pip install traverse[all]`'
+				'`boto3` not installed. Please install using `pip install agentyc[aws] or pip install agentyc[all]`'
 			)
 
 		bedrock_messages, system_message = AWSBedrockMessageSerializer.serialize_messages(messages)

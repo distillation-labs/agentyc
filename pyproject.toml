@@ -1,5 +1,5 @@
 [project]
-name = "traverse"
+name = "agentyc"
 description = "MCP-first browser automation for coding agents"
 authors = [{ name = "Gregor Zunic" }]
 version = "0.1.0"
@@ -67,25 +67,25 @@ eval = [
     "psutil==7.2.2",
     "datamodel-code-generator==0.53.0",
 ]
-all = ["traverse[aws,oci]"]
+all = ["agentyc[aws,oci]"]
 
-# will prefer to use local source code checked out in ../../traverse (if present) instead of pypi traverse package
+# will prefer to use local source code checked out in ../../agentyc (if present) instead of pypi agentyc package
 # [tool.uv.sources]
 # bubus = { path = "../bubus", editable = true }
 
 
 [project.urls]
-Homepage = "https://github.com/distillation-labs/traverse"
-Documentation = "https://github.com/distillation-labs/traverse#readme"
-Repository = "https://github.com/distillation-labs/traverse"
-Issues = "https://github.com/distillation-labs/traverse/issues"
-Changelog = "https://github.com/distillation-labs/traverse/releases"
-Telemetry = "https://github.com/distillation-labs/traverse#deterministic-extraction"
-"Terms of Service" = "https://traverse.com/legal/terms-of-service"
-"Privacy Policy" = "https://traverse.com/privacy/"
+Homepage = "https://github.com/distillation-labs/agentyc"
+Documentation = "https://github.com/distillation-labs/agentyc#readme"
+Repository = "https://github.com/distillation-labs/agentyc"
+Issues = "https://github.com/distillation-labs/agentyc/issues"
+Changelog = "https://github.com/distillation-labs/agentyc/releases"
+Telemetry = "https://github.com/distillation-labs/agentyc#deterministic-extraction"
+"Terms of Service" = "https://agentyc.com/legal/terms-of-service"
+"Privacy Policy" = "https://agentyc.com/privacy/"
 
 [project.scripts]
-traverse = "traverse.mcp.cli:main"
+agentyc = "agentyc.mcp.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -123,7 +123,7 @@ skip-magic-trailing-comma = false
 
 [tool.pyright]
 typeCheckingMode = "basic"
-include = ["traverse"]
+include = ["agentyc"]
 pythonVersion = "3.11"
 exclude = [
     ".venv/",
@@ -137,10 +137,10 @@ exclude = [
     "debug/*",
     "tests/scripts/*",
     "tests/old/*",
-    "traverse/dom/playground/*",
-    "traverse/llm/oci_raw/*",
-    "traverse/llm/tests/test_chat_models.py",
-    "traverse/llm/tests/test_single_step.py",
+    "agentyc/dom/playground/*",
+    "agentyc/llm/oci_raw/*",
+    "agentyc/llm/tests/test_chat_models.py",
+    "agentyc/llm/tests/test_single_step.py",
     "product_extraction.py",
     "discover/",
     "list/",
@@ -152,11 +152,11 @@ reportMissingTypeStubs = false
 
 [tool.hatch.build]
 include = [
-    "traverse/**/*.py",
-    "!traverse/**/tests/*.py",
-    "!traverse/**/tests.py",
-    "traverse/py.typed",
-    "traverse/dom/**/*.js",
+    "agentyc/**/*.py",
+    "!agentyc/**/tests/*.py",
+    "!agentyc/**/tests.py",
+    "agentyc/py.typed",
+    "agentyc/dom/**/*.js",
     "!tests/**/*.py",
     "!debug/*",
 ]

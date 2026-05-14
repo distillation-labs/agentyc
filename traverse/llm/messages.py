@@ -1,5 +1,5 @@
 """
-This implementation is based on the OpenAI types, while removing all the parts that are not needed for Traverse.
+This implementation is based on the OpenAI types, while removing all the parts that are not needed for Agentyc.
 """
 
 # region - Content parts

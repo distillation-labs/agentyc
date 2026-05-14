@@ -9,19 +9,19 @@ import httpx
 import pytest
 
 
-class TestChatTraverseRetries:
-	"""Test retry logic for ChatTraverse."""
+class TestChatAgentycRetries:
+	"""Test retry logic for ChatAgentyc."""
 
 	@pytest.fixture
 	def mock_env(self, monkeypatch):
-		"""Set up environment for ChatTraverse."""
+		"""Set up environment for ChatAgentyc."""
 		monkeypatch.setenv('TRAVERSE_API_KEY', 'test-api-key')
 
 	@pytest.mark.asyncio
 	async def test_retries_on_503_with_exponential_backoff(self, mock_env):
 		"""Test that 503 errors trigger retries with exponential backoff."""
-		from traverse.llm.messages import UserMessage
-		from traverse.llm.traverse.chat import ChatTraverse
+		from agentyc.llm.messages import UserMessage
+		from agentyc.llm.agentyc.chat import ChatAgentyc
 
 		# Track timing of each attempt
 		attempt_times: list[float] = []
@@ -63,7 +63,7 @@ class TestChatTraverseRetries:
 			mock_client_class.return_value = mock_client
 
 			# Use short delays for testing
-			client = ChatTraverse(retry_base_delay=0.1, retry_max_delay=1.0)
+			client = ChatAgentyc(retry_base_delay=0.1, retry_max_delay=1.0)
 			result = await client.ainvoke([UserMessage(content='test')])
 
 		# Should have made 3 attempts
@@ -84,9 +84,9 @@ class TestChatTraverseRetries:
 	@pytest.mark.asyncio
 	async def test_no_retry_on_401(self, mock_env):
 		"""Test that 401 errors do NOT trigger retries."""
-		from traverse.llm.exceptions import ModelProviderError
-		from traverse.llm.messages import UserMessage
-		from traverse.llm.traverse.chat import ChatTraverse
+		from agentyc.llm.exceptions import ModelProviderError
+		from agentyc.llm.messages import UserMessage
+		from agentyc.llm.agentyc.chat import ChatAgentyc
 
 		attempt_count = 0
 
@@ -105,7 +105,7 @@ class TestChatTraverseRetries:
 			mock_client.__aexit__ = AsyncMock(return_value=None)
 			mock_client_class.return_value = mock_client
 
-			client = ChatTraverse(retry_base_delay=0.01)
+			client = ChatAgentyc(retry_base_delay=0.01)
 
 			with pytest.raises(ModelProviderError, match='Invalid API key'):
 				await client.ainvoke([UserMessage(content='test')])
@@ -116,8 +116,8 @@ class TestChatTraverseRetries:
 	@pytest.mark.asyncio
 	async def test_retries_on_timeout(self, mock_env):
 		"""Test that timeouts trigger retries."""
-		from traverse.llm.messages import UserMessage
-		from traverse.llm.traverse.chat import ChatTraverse
+		from agentyc.llm.messages import UserMessage
+		from agentyc.llm.agentyc.chat import ChatAgentyc
 
 		attempt_count = 0
 
@@ -139,7 +139,7 @@ class TestChatTraverseRetries:
 			mock_client.__aexit__ = AsyncMock(return_value=None)
 			mock_client_class.return_value = mock_client
 
-			client = ChatTraverse(retry_base_delay=0.01)
+			client = ChatAgentyc(retry_base_delay=0.01)
 			result = await client.ainvoke([UserMessage(content='test')])
 
 		assert attempt_count == 2
@@ -148,9 +148,9 @@ class TestChatTraverseRetries:
 	@pytest.mark.asyncio
 	async def test_max_retries_exhausted(self, mock_env):
 		"""Test that error is raised after max retries exhausted."""
-		from traverse.llm.exceptions import ModelProviderError
-		from traverse.llm.messages import UserMessage
-		from traverse.llm.traverse.chat import ChatTraverse
+		from agentyc.llm.exceptions import ModelProviderError
+		from agentyc.llm.messages import UserMessage
+		from agentyc.llm.agentyc.chat import ChatAgentyc
 
 		attempt_count = 0
 
@@ -169,7 +169,7 @@ class TestChatTraverseRetries:
 			mock_client.__aexit__ = AsyncMock(return_value=None)
 			mock_client_class.return_value = mock_client
 
-			client = ChatTraverse(max_retries=3, retry_base_delay=0.01)
+			client = ChatAgentyc(max_retries=3, retry_base_delay=0.01)
 
 			with pytest.raises(ModelProviderError, match='Server error'):
 				await client.ainvoke([UserMessage(content='test')])
@@ -189,15 +189,15 @@ class TestChatGoogleRetries:
 	@pytest.mark.asyncio
 	async def test_retries_on_503_with_exponential_backoff(self, mock_env):
 		"""Test that 503 errors trigger retries with exponential backoff."""
-		from traverse.llm.exceptions import ModelProviderError
-		from traverse.llm.google.chat import ChatGoogle
-		from traverse.llm.messages import UserMessage
+		from agentyc.llm.exceptions import ModelProviderError
+		from agentyc.llm.google.chat import ChatGoogle
+		from agentyc.llm.messages import UserMessage
 
 		attempt_times: list[float] = []
 		attempt_count = 0
 
 		# Mock the genai client
-		with patch('traverse.llm.google.chat.genai') as mock_genai:
+		with patch('agentyc.llm.google.chat.genai') as mock_genai:
 			mock_client = MagicMock()
 			mock_genai.Client.return_value = mock_client
 
@@ -238,13 +238,13 @@ class TestChatGoogleRetries:
 	@pytest.mark.asyncio
 	async def test_no_retry_on_400(self, mock_env):
 		"""Test that 400 errors do NOT trigger retries."""
-		from traverse.llm.exceptions import ModelProviderError
-		from traverse.llm.google.chat import ChatGoogle
-		from traverse.llm.messages import UserMessage
+		from agentyc.llm.exceptions import ModelProviderError
+		from agentyc.llm.google.chat import ChatGoogle
+		from agentyc.llm.messages import UserMessage
 
 		attempt_count = 0
 
-		with patch('traverse.llm.google.chat.genai') as mock_genai:
+		with patch('agentyc.llm.google.chat.genai') as mock_genai:
 			mock_client = MagicMock()
 			mock_genai.Client.return_value = mock_client
 
@@ -266,13 +266,13 @@ class TestChatGoogleRetries:
 	@pytest.mark.asyncio
 	async def test_retries_on_429_rate_limit(self, mock_env):
 		"""Test that 429 rate limit errors trigger retries."""
-		from traverse.llm.exceptions import ModelProviderError
-		from traverse.llm.google.chat import ChatGoogle
-		from traverse.llm.messages import UserMessage
+		from agentyc.llm.exceptions import ModelProviderError
+		from agentyc.llm.google.chat import ChatGoogle
+		from agentyc.llm.messages import UserMessage
 
 		attempt_count = 0
 
-		with patch('traverse.llm.google.chat.genai') as mock_genai:
+		with patch('agentyc.llm.google.chat.genai') as mock_genai:
 			mock_client = MagicMock()
 			mock_genai.Client.return_value = mock_client
 

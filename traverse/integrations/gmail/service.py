@@ -1,5 +1,5 @@
 """
-Gmail API Service for Traverse
+Gmail API Service for Agentyc
 Handles Gmail API authentication, email reading, and 2FA code extraction.
 This service provides a clean interface for agents to interact with Gmail.
 """
@@ -17,7 +17,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from traverse.config import CONFIG
+from agentyc.config import CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +46,10 @@ class GmailService:
 		Args:
 		    credentials_file: Path to OAuth credentials JSON from Google Cloud Console
 		    token_file: Path to store/load access tokens
-		    config_dir: Directory to store config files (defaults to traverse config directory)
+		    config_dir: Directory to store config files (defaults to agentyc config directory)
 		    access_token: Direct access token (skips file-based auth if provided)
 		"""
-		# Set up configuration directory using traverse's config system
+		# Set up configuration directory using agentyc's config system
 		if config_dir is None:
 			self.config_dir = CONFIG.TRAVERSE_CONFIG_DIR
 		else:

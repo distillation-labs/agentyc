@@ -10,15 +10,15 @@ from cdp_use.cdp.target import SessionID, TargetID
 from cdp_use.cdp.target.events import TargetCrashedEvent
 from pydantic import Field, PrivateAttr
 
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	BrowserConnectedEvent,
 	BrowserErrorEvent,
 	BrowserStoppedEvent,
 	TabClosedEvent,
 	TabCreatedEvent,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.utils import create_task_with_error_handling
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.utils import create_task_with_error_handling
 
 if TYPE_CHECKING:
 	pass

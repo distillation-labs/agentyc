@@ -12,7 +12,7 @@ from groq.types.chat import (
 from groq.types.chat.chat_completion_content_part_image_param import ImageURL
 from groq.types.chat.chat_completion_message_tool_call_param import Function
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	ContentPartImageParam,

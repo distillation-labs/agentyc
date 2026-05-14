@@ -8,11 +8,9 @@ from tempfile import TemporaryDirectory
 from typing import Any, TypeVar, cast, overload
 from uuid import uuid4
 
-from pydantic import BaseModel
-
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError
-from traverse.llm.messages import (
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	ContentPartImageParam,
@@ -21,8 +19,9 @@ from traverse.llm.messages import (
 	SystemMessage,
 	UserMessage,
 )
-from traverse.llm.schema import SchemaOptimizer
-from traverse.llm.views import ChatInvokeCompletion
+from agentyc.llm.schema import SchemaOptimizer
+from agentyc.llm.views import ChatInvokeCompletion
+from pydantic import BaseModel
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -41,9 +40,9 @@ def _stop_client_sync(client: Any) -> None:
 
 @dataclass
 class ChatGitHubCopilot(BaseChatModel):
-	"""Experimental Traverse adapter for the GitHub Copilot SDK.
+	"""Experimental Agentyc adapter for the GitHub Copilot SDK.
 
-	This keeps Traverse as the only browser/tool loop by creating a fresh,
+	This keeps Agentyc as the only browser/tool loop by creating a fresh,
 	tool-less Copilot session for each invocation and treating Copilot as a
 	stateless text/JSON backend.
 	"""
@@ -77,7 +76,7 @@ class ChatGitHubCopilot(BaseChatModel):
 			raise ModelProviderError(
 				message=(
 					'GitHub Copilot SDK is not installed. Install it with '
-					'`uv add "traverse[copilot]"` or `uv add github-copilot-sdk`, '
+					'`uv add "agentyc[copilot]"` or `uv add github-copilot-sdk`, '
 					'then authenticate with `copilot auth login`.'
 				),
 				model=self.name,
@@ -137,9 +136,9 @@ class ChatGitHubCopilot(BaseChatModel):
 
 	def _build_system_message(self, system_messages: list[SystemMessage], output_format: type[T] | None) -> str:
 		parts = [
-			'You are the language model backend for Traverse.',
+			'You are the language model backend for Agentyc.',
 			'You are not the browser runtime. Do not invoke Copilot tools or assume you can inspect files, modify files, run shell commands, browse the web, or take actions outside the provided conversation transcript.',
-			'Respond only to the provided Traverse conversation transcript and attached images.',
+			'Respond only to the provided Agentyc conversation transcript and attached images.',
 		]
 
 		if output_format is not None:
@@ -148,9 +147,9 @@ class ChatGitHubCopilot(BaseChatModel):
 			)
 
 		if system_messages:
-			parts.append('<traverse_system_messages>')
+			parts.append('<agentyc_system_messages>')
 			parts.extend(self._message_text(message) for message in system_messages if self._message_text(message))
-			parts.append('</traverse_system_messages>')
+			parts.append('</agentyc_system_messages>')
 
 		return '\n\n'.join(parts)
 
@@ -180,7 +179,7 @@ class ChatGitHubCopilot(BaseChatModel):
 
 	def _serialize_prompt(self, messages: list[BaseMessage], output_format: type[T] | None) -> tuple[str, list[dict[str, Any]]]:
 		prompt_lines = [
-			'<traverse_conversation>',
+			'<agentyc_conversation>',
 		]
 		attachments: list[dict[str, Any]] = []
 		attachment_index = 1
@@ -205,7 +204,7 @@ class ChatGitHubCopilot(BaseChatModel):
 
 			prompt_lines.append('</message>')
 
-		prompt_lines.append('</traverse_conversation>')
+		prompt_lines.append('</agentyc_conversation>')
 
 		if output_format is not None:
 			schema = SchemaOptimizer.create_optimized_json_schema(output_format)
@@ -265,7 +264,7 @@ class ChatGitHubCopilot(BaseChatModel):
 		}
 
 	def _session_id(self, provided_session_id: Any) -> str:
-		prefix = str(provided_session_id).strip() if provided_session_id else 'traverse'
+		prefix = str(provided_session_id).strip() if provided_session_id else 'agentyc'
 		return f'{prefix}-{uuid4().hex[:8]}'
 
 	def _extract_response_text(self, response: Any) -> str:
@@ -305,7 +304,7 @@ class ChatGitHubCopilot(BaseChatModel):
 			return self.cwd
 
 		if self._managed_cwd is None:
-			self._managed_cwd = TemporaryDirectory(prefix='traverse-copilot-')
+			self._managed_cwd = TemporaryDirectory(prefix='agentyc-copilot-')
 
 		return self._managed_cwd.name
 

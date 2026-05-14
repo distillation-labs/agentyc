@@ -6,22 +6,22 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from traverse.browser.cloud.cloud import (
+from agentyc.browser.cloud.cloud import (
 	CloudBrowserAuthError,
 	CloudBrowserClient,
 	CloudBrowserError,
 )
-from traverse.browser.cloud.views import CreateBrowserRequest
-from traverse.browser.profile import BrowserProfile
-from traverse.browser.session import BrowserSession
-from traverse.sync.auth import CloudAuthConfig
+from agentyc.browser.cloud.views import CreateBrowserRequest
+from agentyc.browser.profile import BrowserProfile
+from agentyc.browser.session import BrowserSession
+from agentyc.sync.auth import CloudAuthConfig
 
 
 @pytest.fixture
 def temp_config_dir(monkeypatch):
 	"""Create temporary config directory."""
 	with tempfile.TemporaryDirectory() as tmpdir:
-		temp_dir = Path(tmpdir) / '.config' / 'traverse'
+		temp_dir = Path(tmpdir) / '.config' / 'agentyc'
 		temp_dir.mkdir(parents=True, exist_ok=True)
 
 		# Use monkeypatch to set the environment variable
@@ -51,7 +51,7 @@ class TestCloudBrowserClient:
 		mock_response_data = {
 			'id': 'test-browser-id',
 			'status': 'active',
-			'liveUrl': 'https://live.traverse.com?wss=test',
+			'liveUrl': 'https://live.agentyc.com?wss=test',
 			'cdpUrl': 'wss://test.proxy.daytona.works',
 			'timeoutAt': '2025-09-17T04:35:36.049892',
 			'startedAt': '2025-09-17T03:35:36.049974',
@@ -130,7 +130,7 @@ class TestCloudBrowserClient:
 		mock_response_data = {
 			'id': 'test-browser-id',
 			'status': 'active',
-			'liveUrl': 'https://live.traverse.com?wss=test',
+			'liveUrl': 'https://live.agentyc.com?wss=test',
 			'cdpUrl': 'wss://test.proxy.daytona.works',
 			'timeoutAt': '2025-09-17T04:35:36.049892',
 			'startedAt': '2025-09-17T03:35:36.049974',
@@ -172,7 +172,7 @@ class TestCloudBrowserClient:
 		mock_response_data = {
 			'id': 'test-browser-id',
 			'status': 'stopped',
-			'liveUrl': 'https://live.traverse.com?wss=test',
+			'liveUrl': 'https://live.agentyc.com?wss=test',
 			'cdpUrl': 'wss://test.proxy.daytona.works',
 			'timeoutAt': '2025-09-17T04:35:36.049892',
 			'startedAt': '2025-09-17T03:35:36.049974',

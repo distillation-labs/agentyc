@@ -22,7 +22,7 @@ def __getattr__(name: str):
 			from importlib import import_module
 
 			# Use relative import for current package
-			full_module_path = f'traverse.browser{module_path}'
+			full_module_path = f'agentyc.browser{module_path}'
 			module = import_module(full_module_path)
 			attr = getattr(module, attr_name)
 			# Cache the imported attribute in the module's globals

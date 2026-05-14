@@ -10,7 +10,7 @@ from bubus import BaseEvent
 from cdp_use.cdp.network import Cookie
 from pydantic import Field, PrivateAttr
 
-from traverse.browser.events import (
+from agentyc.browser.events import (
 	BrowserConnectedEvent,
 	BrowserStopEvent,
 	LoadStorageStateEvent,
@@ -18,8 +18,8 @@ from traverse.browser.events import (
 	StorageStateLoadedEvent,
 	StorageStateSavedEvent,
 )
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.utils import create_task_with_error_handling
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.utils import create_task_with_error_handling
 
 
 class StorageStateWatchdog(BaseWatchdog):

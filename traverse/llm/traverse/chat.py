@@ -1,7 +1,7 @@
 """
-ChatTraverse - Client for traverse cloud API
+ChatAgentyc - Client for agentyc cloud API
 
-This wraps the BaseChatModel protocol and sends requests to the traverse cloud API
+This wraps the BaseChatModel protocol and sends requests to the agentyc cloud API
 for optimized browser automation LLM inference.
 """
 
@@ -12,13 +12,12 @@ import random
 from typing import Any, TypeVar, overload
 
 import httpx
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.views import ChatInvokeCompletion
+from agentyc.observability import observe
 from pydantic import BaseModel
-
-from traverse.llm.base import BaseChatModel
-from traverse.llm.exceptions import ModelProviderError, ModelRateLimitError
-from traverse.llm.messages import BaseMessage
-from traverse.llm.views import ChatInvokeCompletion
-from traverse.observability import observe
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -28,15 +27,15 @@ logger = logging.getLogger(__name__)
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
-class ChatTraverse(BaseChatModel):
+class ChatAgentyc(BaseChatModel):
 	"""
-	Client for traverse cloud API.
+	Client for agentyc cloud API.
 
-	This sends requests to the traverse cloud API which uses optimized models
+	This sends requests to the agentyc cloud API which uses optimized models
 	and prompts for browser automation tasks.
 
 	Usage:
-		llm = ChatTraverse(model='bu-latest')
+		llm = ChatAgentyc(model='bu-latest')
 	"""
 
 	def __init__(
@@ -51,25 +50,25 @@ class ChatTraverse(BaseChatModel):
 		**kwargs,
 	):
 		"""
-		Initialize ChatTraverse client.
+		Initialize ChatAgentyc client.
 
 		Args:
 			model: Model name to use. Options:
 				- 'bu-latest' or 'bu-1-0': Default model
 				- 'bu-2-0': Latest premium model
-				- 'traverse/bu-30b-a3b-preview': Traverse Open Source Model
-			api_key: API key for traverse cloud. Defaults to TRAVERSE_API_KEY env var.
+				- 'agentyc/bu-30b-a3b-preview': Agentyc Open Source Model
+			api_key: API key for agentyc cloud. Defaults to TRAVERSE_API_KEY env var.
 			base_url: Base URL for the API. Defaults to TRAVERSE_LLM_URL env var or production URL.
 			timeout: Request timeout in seconds.
 			max_retries: Maximum number of retries for transient errors (default: 5).
 			retry_base_delay: Base delay in seconds for exponential backoff (default: 1.0).
 			retry_max_delay: Maximum delay in seconds between retries (default: 60.0).
 		"""
-		# Validate model name - allow bu-* and traverse/* patterns
+		# Validate model name - allow bu-* and agentyc/* patterns
 		valid_models = ['bu-latest', 'bu-1-0', 'bu-2-0']
-		is_valid = model in valid_models or model.startswith('traverse/')
+		is_valid = model in valid_models or model.startswith('agentyc/')
 		if not is_valid:
-			raise ValueError(f"Invalid model: '{model}'. Must be one of {valid_models} or start with 'traverse/'")
+			raise ValueError(f"Invalid model: '{model}'. Must be one of {valid_models} or start with 'agentyc/'")
 
 		# Normalize bu-latest to bu-1-0 for default models
 		if model == 'bu-latest':
@@ -79,7 +78,7 @@ class ChatTraverse(BaseChatModel):
 
 		self.fast = False
 		self.api_key = api_key or os.getenv('TRAVERSE_API_KEY')
-		self.base_url = base_url or os.getenv('TRAVERSE_LLM_URL', 'https://llm.api.traverse.com')
+		self.base_url = base_url or os.getenv('TRAVERSE_LLM_URL', 'https://llm.api.agentyc.com')
 		self.timeout = timeout
 		self.max_retries = max_retries
 		self.retry_base_delay = retry_base_delay
@@ -87,13 +86,13 @@ class ChatTraverse(BaseChatModel):
 
 		if not self.api_key:
 			raise ValueError(
-				'TRAVERSE_API_KEY is not set. To use ChatTraverse, get a key at:\n'
-				'https://cloud.traverse.com/new-api-key?utm_source=oss&utm_medium=chat_traverse'
+				'TRAVERSE_API_KEY is not set. To use ChatAgentyc, get a key at:\n'
+				'https://cloud.agentyc.com/new-api-key?utm_source=oss&utm_medium=chat_agentyc'
 			)
 
 	@property
 	def provider(self) -> str:
-		return 'traverse'
+		return 'agentyc'
 
 	@property
 	def name(self) -> str:
@@ -109,7 +108,7 @@ class ChatTraverse(BaseChatModel):
 		self, messages: list[BaseMessage], output_format: type[T], request_type: str = 'browser_agent', **kwargs: Any
 	) -> ChatInvokeCompletion[T]: ...
 
-	@observe(name='chat_traverse_ainvoke')
+	@observe(name='chat_agentyc_ainvoke')
 	async def ainvoke(
 		self,
 		messages: list[BaseMessage],
@@ -118,7 +117,7 @@ class ChatTraverse(BaseChatModel):
 		**kwargs: Any,
 	) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
 		"""
-		Send request to traverse cloud API.
+		Send request to agentyc cloud API.
 
 		Args:
 			messages: List of messages to send
@@ -131,7 +130,7 @@ class ChatTraverse(BaseChatModel):
 			ChatInvokeCompletion with structured response and usage info
 		"""
 		# Get ANONYMIZED_TELEMETRY setting from config
-		from traverse.config import CONFIG
+		from agentyc.config import CONFIG
 
 		anonymized_telemetry = CONFIG.ANONYMIZED_TELEMETRY
 
@@ -197,10 +196,10 @@ class ChatTraverse(BaseChatModel):
 				# Exhausted retries
 				if isinstance(e, httpx.TimeoutException):
 					raise ValueError(f'Request timed out after {self.timeout}s (retried {self.max_retries} times)')
-				raise ValueError(f'Failed to connect to traverse API after {self.max_retries} attempts: {e}')
+				raise ValueError(f'Failed to connect to agentyc API after {self.max_retries} attempts: {e}')
 
 			except Exception as e:
-				raise ValueError(f'Failed to connect to traverse API: {e}')
+				raise ValueError(f'Failed to connect to agentyc API: {e}')
 		else:
 			# Loop completed without break (all retries exhausted)
 			if last_error is not None:
@@ -237,7 +236,7 @@ class ChatTraverse(BaseChatModel):
 		# Parse usage info
 		usage = None
 		if 'usage' in result and result['usage'] is not None:
-			from traverse.llm.views import ChatInvokeUsage
+			from agentyc.llm.views import ChatInvokeUsage
 
 			usage = ChatInvokeUsage(**result['usage'])
 
@@ -273,13 +272,13 @@ class ChatTraverse(BaseChatModel):
 
 		if status_code == 401:
 			raise ModelProviderError(
-				message=f'TRAVERSE_API_KEY is invalid. Get a new key at:\nhttps://cloud.traverse.com/new-api-key?utm_source=oss&utm_medium=chat_traverse\n{error_detail}',
+				message=f'TRAVERSE_API_KEY is invalid. Get a new key at:\nhttps://cloud.agentyc.com/new-api-key?utm_source=oss&utm_medium=chat_agentyc\n{error_detail}',
 				status_code=401,
 				model=self.name,
 			)
 		elif status_code == 402:
 			raise ModelProviderError(
-				message=f'Traverse credits exhausted. Add more at:\nhttps://cloud.traverse.com/billing?utm_source=oss&utm_medium=chat_traverse\n{error_detail}',
+				message=f'Agentyc credits exhausted. Add more at:\nhttps://cloud.agentyc.com/billing?utm_source=oss&utm_medium=chat_agentyc\n{error_detail}',
 				status_code=402,
 				model=self.name,
 			)

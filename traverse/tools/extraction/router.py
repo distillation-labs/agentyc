@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urljoin
 
-from traverse.dom.views import EnhancedDOMTreeNode
+from agentyc.dom.views import EnhancedDOMTreeNode
 
 DeterministicExtractionStrategy = Literal[
 	'deterministic-links',

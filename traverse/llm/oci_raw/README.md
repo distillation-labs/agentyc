@@ -23,7 +23,7 @@ pip install oci
 ### Basic Usage
 
 ```python
-from traverse.llm import ChatOCIRaw
+from agentyc.llm import ChatOCIRaw
 
 # Configure the model
 model = ChatOCIRaw(
@@ -106,13 +106,13 @@ For the complete list of available models in Oracle Cloud Infrastructure Generat
 
 ### Tool Calling Support
 
-**Important**: Only models that support tool calling/function calling are compatible with traverse's structured extraction and tool-driven browser runtime.
+**Important**: Only models that support tool calling/function calling are compatible with agentyc's structured extraction and tool-driven browser runtime.
 
-According to Oracle's documentation, tool calling functionality is available exclusively through the API and is not supported for browser-based use. However, when using traverse with OCI models through this integration, the tool calling happens at the application level (not browser-based), making it compatible.
+According to Oracle's documentation, tool calling functionality is available exclusively through the API and is not supported for browser-based use. However, when using agentyc with OCI models through this integration, the tool calling happens at the application level (not browser-based), making it compatible.
 
 ### Image Support Models
 
-Several OCI models support image processing capabilities, which are useful when traverse needs to analyze webpage screenshots:
+Several OCI models support image processing capabilities, which are useful when agentyc needs to analyze webpage screenshots:
 
 #### Vision-Enabled Chat Models
 - **Meta Llama 3.2 90B Vision**: Supports both text and image inputs
@@ -124,7 +124,7 @@ Several OCI models support image processing capabilities, which are useful when 
 - **Cohere Embed English Light Image 3**: Lightweight version with image support
 - **Cohere Embed Multilingual Light Image 3**: Lightweight multilingual version with image support
 
-These vision-enabled models are particularly useful for traverse tasks that require understanding webpage content through screenshots, such as:
+These vision-enabled models are particularly useful for agentyc tasks that require understanding webpage content through screenshots, such as:
 - Identifying UI elements and buttons
 - Reading text from images
 - Understanding page layouts and visual context

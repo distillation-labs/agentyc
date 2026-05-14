@@ -1,7 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass
 
-from traverse.dom.views import SimplifiedNode
+from agentyc.dom.views import SimplifiedNode
 
 """
 Helper class for maintaining a union of rectangles (used for order of elements calculation)

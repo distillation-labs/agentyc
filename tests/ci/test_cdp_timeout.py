@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from traverse.browser._cdp_timeout import (
+from agentyc.browser._cdp_timeout import (
 	DEFAULT_CDP_REQUEST_TIMEOUT_S,
 	TimeoutWrappedCDPClient,
 	_coerce_valid_timeout,
@@ -55,7 +55,7 @@ async def test_send_raw_times_out_on_silent_server():
 
 	# Patch the parent class's send_raw so TimeoutWrappedCDPClient.send_raw's
 	# `super().send_raw(...)` call lands on our hanging stub.
-	with patch('traverse.browser._cdp_timeout.CDPClient.send_raw', _hanging_super_send_raw):
+	with patch('agentyc.browser._cdp_timeout.CDPClient.send_raw', _hanging_super_send_raw):
 		start = time.monotonic()
 		with pytest.raises(TimeoutError) as exc:
 			await client.send_raw('Target.getTargets')
@@ -77,7 +77,7 @@ async def test_send_raw_passes_through_when_fast():
 	async def _fast_super_send_raw(self, method, params=None, session_id=None):
 		return {'ok': True, 'method': method}
 
-	with patch('traverse.browser._cdp_timeout.CDPClient.send_raw', _fast_super_send_raw):
+	with patch('agentyc.browser._cdp_timeout.CDPClient.send_raw', _fast_super_send_raw):
 		result = await client.send_raw('Target.getTargets')
 
 	assert result == {'ok': True, 'method': 'Target.getTargets'}

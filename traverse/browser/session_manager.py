@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING
 
 from cdp_use.cdp.target import AttachedToTargetEvent, DetachedFromTargetEvent, SessionID, TargetID
 
-from traverse.utils import create_task_with_error_handling
+from agentyc.utils import create_task_with_error_handling
 
 if TYPE_CHECKING:
-	from traverse.browser.session import BrowserSession, CDPSession, Target
+	from agentyc.browser.session import BrowserSession, CDPSession, Target
 
 
 class SessionManager:
@@ -401,7 +401,7 @@ class SessionManager:
 			if '-32001' not in error_str and 'Session with given id not found' not in error_str:
 				self.logger.debug(f'[SessionManager] Auto-attach failed for {target_type}: {e}')
 
-		from traverse.browser.session import Target
+		from agentyc.browser.session import Target
 
 		async with self._lock:
 			# Track this session for the target
@@ -429,7 +429,7 @@ class SessionManager:
 				existing_target.title = target_info.get('title', existing_target.title)
 
 		# Create CDPSession (communication channel)
-		from traverse.browser.session import CDPSession
+		from agentyc.browser.session import CDPSession
 
 		assert self.browser_session._cdp_client_root is not None, 'Root CDP client required'
 
@@ -579,7 +579,7 @@ class SessionManager:
 		# Dispatch TabClosedEvent only for page/tab targets that are fully removed (not iframes/workers or partial detaches)
 		if target_fully_removed:
 			if target_type in ('page', 'tab'):
-				from traverse.browser.events import TabClosedEvent
+				from agentyc.browser.events import TabClosedEvent
 
 				self.browser_session.event_bus.dispatch(TabClosedEvent(target_id=target_id))
 				self.logger.debug(f'[SessionManager] Dispatched TabClosedEvent for page target {target_id[:8]}...')
@@ -669,7 +669,7 @@ class SessionManager:
 				self.logger.info(f'[SessionManager] Created new tab {new_target_id[:8]}... for agent')
 
 				# Dispatch TabCreatedEvent so watchdogs can initialize
-				from traverse.browser.events import TabCreatedEvent
+				from agentyc.browser.events import TabCreatedEvent
 
 				self.browser_session.event_bus.dispatch(TabCreatedEvent(url='about:blank', target_id=new_target_id))
 
@@ -701,7 +701,7 @@ class SessionManager:
 				target_url = target.url if target else 'about:blank'
 
 				# Dispatch focus changed event
-				from traverse.browser.events import AgentFocusChangedEvent
+				from agentyc.browser.events import AgentFocusChangedEvent
 
 				self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url=target_url))
 				return
@@ -723,7 +723,7 @@ class SessionManager:
 					self.browser_session.agent_focus_target_id = fallback_target_id
 					self.logger.warning(f'[SessionManager] ⚠️ Agent focus set to emergency fallback: {fallback_target_id[:8]}...')
 
-					from traverse.browser.events import AgentFocusChangedEvent, TabCreatedEvent
+					from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
 
 					self.browser_session.event_bus.dispatch(TabCreatedEvent(url='about:blank', target_id=fallback_target_id))
 					self.browser_session.event_bus.dispatch(

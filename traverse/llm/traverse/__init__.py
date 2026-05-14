@@ -1,3 +1,3 @@
-from traverse.llm.traverse.chat import ChatTraverse
+from agentyc.llm.agentyc.chat import ChatAgentyc
 
-__all__ = ['ChatTraverse']
+__all__ = ['ChatAgentyc']

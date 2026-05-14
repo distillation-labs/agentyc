@@ -1,6 +1,6 @@
 # @file purpose: Serializes enhanced DOM trees to HTML format including shadow roots
 
-from traverse.dom.views import EnhancedDOMTreeNode, NodeType
+from agentyc.dom.views import EnhancedDOMTreeNode, NodeType
 
 
 class HTMLSerializer:

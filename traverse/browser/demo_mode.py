@@ -8,19 +8,19 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from traverse.browser.session import BrowserSession
+from agentyc.browser.session import BrowserSession
 
 # Embedded JavaScript for demo panel (injected into browser pages)
 _DEMO_PANEL_SCRIPT = r"""(function () {
   // SESSION_ID_PLACEHOLDER will be replaced by DemoMode with actual session ID
   const SESSION_ID = '__TRAVERSE_SESSION_ID_PLACEHOLDER__';
-  const EXCLUDE_ATTR = 'data-traverse-exclude-' + SESSION_ID;
-  const PANEL_ID = 'traverse-demo-panel';
-  const STYLE_ID = 'traverse-demo-panel-style';
+  const EXCLUDE_ATTR = 'data-agentyc-exclude-' + SESSION_ID;
+  const PANEL_ID = 'agentyc-demo-panel';
+  const STYLE_ID = 'agentyc-demo-panel-style';
   const STORAGE_KEY = '__browserUseDemoLogs__';
   const STORAGE_HTML_KEY = '__browserUseDemoLogsHTML__';
   const PANEL_STATE_KEY = '__browserUseDemoPanelState__';
-  const TOGGLE_BUTTON_ID = 'traverse-demo-toggle';
+  const TOGGLE_BUTTON_ID = 'agentyc-demo-toggle';
   const MAX_MESSAGES = 100;
   const EXPANDED_IDS_KEY = '__browserUseExpandedEntries__';
   const LEVEL_ICONS = {
@@ -69,7 +69,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
     appendToHost(state.toggleButton);
     const savedWidth = loadPanelWidth();
     if (savedWidth) {
-      document.documentElement.style.setProperty('--traverse-demo-panel-width', `${savedWidth}px`);
+      document.documentElement.style.setProperty('--agentyc-demo-panel-width', `${savedWidth}px`);
     }
 
     if (!hydrateFromStoredMarkup()) {
@@ -120,7 +120,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         position: fixed;
         top: 0;
         right: 0;
-        width: var(--traverse-demo-panel-width, 340px);
+        width: var(--agentyc-demo-panel-width, 340px);
         max-width: calc(100vw - 64px);
         height: 100vh;
         display: flex;
@@ -146,7 +146,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         pointer-events: none;
       }
 
-      #${PANEL_ID} .traverse-demo-header {
+      #${PANEL_ID} .agentyc-demo-header {
         padding: 16px 18px 12px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.14);
         display: flex;
@@ -156,7 +156,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         flex-wrap: wrap;
       }
 
-      #${PANEL_ID} .traverse-demo-header h1 {
+      #${PANEL_ID} .agentyc-demo-header h1 {
         font-size: 15px;
         text-transform: uppercase;
         letter-spacing: 0.12em;
@@ -164,7 +164,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         color: #f8f9ff;
       }
 
-      #${PANEL_ID} .traverse-badge {
+      #${PANEL_ID} .agentyc-badge {
         font-size: 11px;
         padding: 2px 10px;
         border-radius: 999px;
@@ -174,18 +174,18 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         color: #f8f9ff;
       }
 
-      #${PANEL_ID} .traverse-logo img {
+      #${PANEL_ID} .agentyc-logo img {
         height: 36px;
       }
 
-      #${PANEL_ID} .traverse-header-actions {
+      #${PANEL_ID} .agentyc-header-actions {
         margin-left: auto;
         display: flex;
         align-items: center;
         gap: 8px;
       }
 
-      #${PANEL_ID} .traverse-close-btn {
+      #${PANEL_ID} .agentyc-close-btn {
         width: 28px;
         height: 28px;
         border-radius: 50%;
@@ -201,12 +201,12 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         transition: background 0.2s ease, border 0.2s ease;
       }
 
-      #${PANEL_ID} .traverse-close-btn:hover {
+      #${PANEL_ID} .agentyc-close-btn:hover {
         background: rgba(255, 255, 255, 0.15);
         border-color: rgba(255, 255, 255, 0.35);
       }
 
-      #${PANEL_ID} .traverse-demo-body {
+      #${PANEL_ID} .agentyc-demo-body {
         flex: 1;
         overflow-y: auto;
         scrollbar-width: thin;
@@ -214,41 +214,41 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         padding: 8px 0 12px;
       }
 
-      #${PANEL_ID} .traverse-demo-body::-webkit-scrollbar {
+      #${PANEL_ID} .agentyc-demo-body::-webkit-scrollbar {
         width: 8px;
       }
 
-      #${PANEL_ID} .traverse-demo-body::-webkit-scrollbar-thumb {
+      #${PANEL_ID} .agentyc-demo-body::-webkit-scrollbar-thumb {
         background: rgba(255, 255, 255, 0.25);
         border-radius: 999px;
       }
 
-      .traverse-demo-entry {
+      .agentyc-demo-entry {
         display: flex;
         gap: 12px;
         padding: 10px 18px;
         border-left: 2px solid transparent;
         border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-        animation: traverse-fade-in 0.25s ease;
+        animation: agentyc-fade-in 0.25s ease;
         background: #000000;
       }
 
-      .traverse-demo-entry:last-child {
+      .agentyc-demo-entry:last-child {
         border-bottom-color: transparent;
       }
 
-      .traverse-entry-icon {
+      .agentyc-entry-icon {
         font-size: 16px;
         line-height: 1.2;
         width: 20px;
       }
 
-      .traverse-entry-content {
+      .agentyc-entry-content {
         flex: 1;
         min-width: 0;
       }
 
-      .traverse-entry-meta {
+      .agentyc-entry-meta {
         font-size: 11px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
@@ -259,7 +259,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         gap: 12px;
       }
 
-      .traverse-entry-message {
+      .agentyc-entry-message {
         margin: 0;
         word-break: break-word;
         font-size: 12px;
@@ -269,40 +269,40 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         gap: 6px;
       }
 
-      .traverse-markdown-content {
+      .agentyc-markdown-content {
         margin: 0;
         line-height: 1.5;
       }
 
-      .traverse-markdown-content p {
+      .agentyc-markdown-content p {
         margin: 0 0 8px 0;
       }
 
-      .traverse-markdown-content p:last-child {
+      .agentyc-markdown-content p:last-child {
         margin-bottom: 0;
       }
 
-      .traverse-markdown-content h1,
-      .traverse-markdown-content h2,
-      .traverse-markdown-content h3 {
+      .agentyc-markdown-content h1,
+      .agentyc-markdown-content h2,
+      .agentyc-markdown-content h3 {
         margin: 8px 0 4px 0;
         font-weight: 600;
         color: #f8f9ff;
       }
 
-      .traverse-markdown-content h1 {
+      .agentyc-markdown-content h1 {
         font-size: 16px;
       }
 
-      .traverse-markdown-content h2 {
+      .agentyc-markdown-content h2 {
         font-size: 14px;
       }
 
-      .traverse-markdown-content h3 {
+      .agentyc-markdown-content h3 {
         font-size: 13px;
       }
 
-      .traverse-markdown-content code {
+      .agentyc-markdown-content code {
         background: rgba(255, 255, 255, 0.1);
         padding: 2px 6px;
         border-radius: 3px;
@@ -311,7 +311,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         color: #60a5fa;
       }
 
-      .traverse-markdown-content pre {
+      .agentyc-markdown-content pre {
         background: rgba(0, 0, 0, 0.3);
         padding: 8px 12px;
         border-radius: 4px;
@@ -320,7 +320,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         border: 1px solid rgba(255, 255, 255, 0.1);
       }
 
-      .traverse-markdown-content pre code {
+      .agentyc-markdown-content pre code {
         background: transparent;
         padding: 0;
         color: #f8f9ff;
@@ -328,41 +328,41 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         white-space: pre;
       }
 
-      .traverse-markdown-content ul,
-      .traverse-markdown-content ol {
+      .agentyc-markdown-content ul,
+      .agentyc-markdown-content ol {
         margin: 4px 0 4px 16px;
         padding: 0;
       }
 
-      .traverse-markdown-content li {
+      .agentyc-markdown-content li {
         margin: 2px 0;
       }
 
-      .traverse-markdown-content a {
+      .agentyc-markdown-content a {
         color: #60a5fa;
         text-decoration: underline;
       }
 
-      .traverse-markdown-content a:hover {
+      .agentyc-markdown-content a:hover {
         color: #93c5fd;
       }
 
-      .traverse-markdown-content strong {
+      .agentyc-markdown-content strong {
         font-weight: 600;
         color: #f8f9ff;
       }
 
-      .traverse-markdown-content em {
+      .agentyc-markdown-content em {
         font-style: italic;
       }
 
-      .traverse-demo-entry:not(.expanded) .traverse-markdown-content {
+      .agentyc-demo-entry:not(.expanded) .agentyc-markdown-content {
         max-height: 120px;
         overflow: hidden;
         mask-image: linear-gradient(to bottom, rgba(0,0,0,1), rgba(0,0,0,0));
       }
 
-      .traverse-entry-toggle {
+      .agentyc-entry-toggle {
         align-self: flex-start;
         background: rgba(255, 255, 255, 0.1);
         border: 1px solid rgba(255, 255, 255, 0.2);
@@ -373,14 +373,14 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         cursor: pointer;
       }
 
-      .traverse-demo-entry.level-info { border-left-color: #60a5fa; }
-      .traverse-demo-entry.level-action { border-left-color: #34d399; }
-      .traverse-demo-entry.level-thought { border-left-color: #f97316; }
-      .traverse-demo-entry.level-warning { border-left-color: #fbbf24; }
-      .traverse-demo-entry.level-success { border-left-color: #22c55e; }
-      .traverse-demo-entry.level-error { border-left-color: #f87171; }
+      .agentyc-demo-entry.level-info { border-left-color: #60a5fa; }
+      .agentyc-demo-entry.level-action { border-left-color: #34d399; }
+      .agentyc-demo-entry.level-thought { border-left-color: #f97316; }
+      .agentyc-demo-entry.level-warning { border-left-color: #fbbf24; }
+      .agentyc-demo-entry.level-success { border-left-color: #22c55e; }
+      .agentyc-demo-entry.level-error { border-left-color: #f87171; }
 
-      @keyframes traverse-fade-in {
+      @keyframes agentyc-fade-in {
         from { opacity: 0; transform: translateY(6px); }
         to { opacity: 1; transform: translateY(0); }
       }
@@ -389,7 +389,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
         #${PANEL_ID} {
           font-size: 12px;
         }
-        #${PANEL_ID} .traverse-demo-header {
+        #${PANEL_ID} .agentyc-demo-header {
           padding: 12px 16px 10px;
         }
       }
@@ -441,19 +441,19 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
     panel.setAttribute(EXCLUDE_ATTR, 'true');
 
     const header = document.createElement('header');
-    header.className = 'traverse-demo-header';
+    header.className = 'agentyc-demo-header';
     const title = document.createElement('div');
-    title.className = 'traverse-logo';
+    title.className = 'agentyc-logo';
     const logo = document.createElement('img');
-    logo.src = 'https://raw.githubusercontent.com/traverse/traverse/main/static/traverse-dark.png';
+    logo.src = 'https://raw.githubusercontent.com/agentyc/agentyc/main/static/agentyc-dark.png';
     logo.alt = 'Browser-use';
     logo.loading = 'lazy';
     title.appendChild(logo);
     const actions = document.createElement('div');
-    actions.className = 'traverse-header-actions';
+    actions.className = 'agentyc-header-actions';
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
-    closeBtn.className = 'traverse-close-btn';
+    closeBtn.className = 'agentyc-close-btn';
     closeBtn.setAttribute(EXCLUDE_ATTR, 'true');
     closeBtn.setAttribute('aria-label', 'Hide demo panel');
     closeBtn.dataset.role = 'close-toggle';
@@ -463,7 +463,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
     header.appendChild(actions);
 
     const body = document.createElement('div');
-    body.className = 'traverse-demo-body';
+    body.className = 'agentyc-demo-body';
     body.setAttribute('data-role', 'log-list');
 
     panel.appendChild(header);
@@ -544,7 +544,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
 
   function adjustLayout() {
     const width = computePanelWidth();
-    document.documentElement.style.setProperty('--traverse-demo-panel-width', `${width}px`);
+    document.documentElement.style.setProperty('--agentyc-demo-panel-width', `${width}px`);
     if (state.isOpen) {
       document.body.style.marginRight = `${width + 16}px`;
       if (state.toggleButton) {
@@ -608,8 +608,8 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
       const html = sessionStorage.getItem(STORAGE_HTML_KEY);
       if (html) {
         state.list.innerHTML = html;
-        for (const entryNode of state.list.querySelectorAll('.traverse-demo-entry')) {
-          const toggle = entryNode.querySelector('.traverse-entry-toggle');
+        for (const entryNode of state.list.querySelectorAll('.agentyc-demo-entry')) {
+          const toggle = entryNode.querySelector('.agentyc-entry-toggle');
           if (toggle) {
             toggle.addEventListener('click', () =>
               toggleEntryExpansion(entryNode, toggle, entryNode.getAttribute('data-id'))
@@ -665,35 +665,35 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
 
   function createEntryNode(entry) {
     const row = document.createElement('article');
-    row.className = `traverse-demo-entry level-${entry.level}`;
+    row.className = `agentyc-demo-entry level-${entry.level}`;
     row.setAttribute('data-id', entry.id);
 
     const icon = document.createElement('span');
-    icon.className = 'traverse-entry-icon';
+    icon.className = 'agentyc-entry-icon';
     icon.textContent = LEVEL_ICONS[entry.level] || LEVEL_ICONS.info;
 
     const content = document.createElement('div');
-    content.className = 'traverse-entry-content';
+    content.className = 'agentyc-entry-content';
 
     const meta = document.createElement('div');
-    meta.className = 'traverse-entry-meta';
+    meta.className = 'agentyc-entry-meta';
     const time = formatTime(entry.timestamp);
     const label = LEVEL_LABELS[entry.level] || entry.level;
     meta.innerHTML = `<span>${time}</span><span>${label}</span>`;
 
     const messageWrapper = document.createElement('div');
-    messageWrapper.className = 'traverse-entry-message';
+    messageWrapper.className = 'agentyc-entry-message';
     const messageText = entry.message.trim();
     const messageHtml = messageText;
     const message = document.createElement('div');
-    message.className = 'traverse-markdown-content';
+    message.className = 'agentyc-markdown-content';
     message.textContent = messageHtml;
     messageWrapper.appendChild(message);
 
     if (messageText.length > 160) {
       const toggle = document.createElement('button');
       toggle.type = 'button';
-      toggle.className = 'traverse-entry-toggle';
+      toggle.className = 'agentyc-entry-toggle';
       toggle.setAttribute(EXCLUDE_ATTR, 'true');
       toggle.textContent = 'Expand';
       toggle.addEventListener('click', () => toggleEntryExpansion(row, toggle, entry.id));
@@ -716,7 +716,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
       const id = node.getAttribute('data-id');
       if (id && expanded.has(id)) {
         node.classList.add('expanded');
-        const toggle = node.querySelector('.traverse-entry-toggle');
+        const toggle = node.querySelector('.agentyc-entry-toggle');
         if (toggle) {
           toggle.textContent = 'Collapse';
         }
@@ -792,7 +792,7 @@ _DEMO_PANEL_SCRIPT = r"""(function () {
   } else {
     boot();
   }
-  window.addEventListener('traverse-log', handleLogEvent);
+  window.addEventListener('agentyc-log', handleLogEvent);
 })();
 """
 
@@ -887,7 +887,7 @@ class DemoMode:
 		return f"""
 (() => {{
 	const detail = {payload};
-	const event = new CustomEvent('traverse-log', {{ detail }});
+	const event = new CustomEvent('agentyc-log', {{ detail }});
 	window.dispatchEvent(event);
 }})();
 """.strip()

@@ -11,22 +11,13 @@ from urllib.parse import urlparse, urlsplit, urlunparse
 from uuid import UUID
 
 import httpx
-from bubus import EventBus
-from cdp_use import CDPClient
-from cdp_use.cdp.fetch import AuthRequiredEvent, RequestPausedEvent
-from cdp_use.cdp.network import Cookie
-from cdp_use.cdp.target import SessionID, TargetID
-from cdp_use.cdp.target.commands import CreateTargetParameters
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
-from uuid_extensions import uuid7str
-
-from traverse.browser._cdp_timeout import TimeoutWrappedCDPClient
-from traverse.browser.cloud.cloud import CloudBrowserAuthError, CloudBrowserClient, CloudBrowserError
+from agentyc.browser._cdp_timeout import TimeoutWrappedCDPClient
+from agentyc.browser.cloud.cloud import CloudBrowserAuthError, CloudBrowserClient, CloudBrowserError
 
 # CDP logging is now handled by setup_logging() in logging_config.py
-# It automatically sets CDP logs to the same level as traverse logs
-from traverse.browser.cloud.views import CloudBrowserParams, CreateBrowserRequest, ProxyCountryCode
-from traverse.browser.events import (
+# It automatically sets CDP logs to the same level as agentyc logs
+from agentyc.browser.cloud.views import CloudBrowserParams, CreateBrowserRequest, ProxyCountryCode
+from agentyc.browser.events import (
 	AgentFocusChangedEvent,
 	BrowserConnectedEvent,
 	BrowserErrorEvent,
@@ -47,16 +38,24 @@ from traverse.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
-from traverse.browser.profile import BrowserProfile, ProxySettings
-from traverse.browser.views import BrowserStateSummary, TabInfo
-from traverse.dom.views import DOMRect, EnhancedDOMTreeNode, TargetInfo
-from traverse.observability import observe_debug
-from traverse.utils import _log_pretty_url, create_task_with_error_handling, is_new_tab_page
+from agentyc.browser.profile import BrowserProfile, ProxySettings
+from agentyc.browser.views import BrowserStateSummary, TabInfo
+from agentyc.dom.views import DOMRect, EnhancedDOMTreeNode, TargetInfo
+from agentyc.observability import observe_debug
+from agentyc.utils import _log_pretty_url, create_task_with_error_handling, is_new_tab_page
+from bubus import EventBus
+from cdp_use import CDPClient
+from cdp_use.cdp.fetch import AuthRequiredEvent, RequestPausedEvent
+from cdp_use.cdp.network import Cookie
+from cdp_use.cdp.target import SessionID, TargetID
+from cdp_use.cdp.target.commands import CreateTargetParameters
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from uuid_extensions import uuid7str
 
 if TYPE_CHECKING:
-	from traverse.actor.page import Page
-	from traverse.browser.demo_mode import DemoMode
-	from traverse.browser.watchdogs.captcha_watchdog import CaptchaWaitResult
+	from agentyc.actor.page import Page
+	from agentyc.browser.demo_mode import DemoMode
+	from agentyc.browser.watchdogs.captcha_watchdog import CaptchaWaitResult
 
 DEFAULT_BROWSER_PROFILE = BrowserProfile()
 
@@ -392,7 +391,7 @@ class BrowserSession(BaseModel):
 	@classmethod
 	def from_system_chrome(cls, profile_directory: str | None = None, **kwargs: Any) -> Self:
 		"""Create a BrowserSession using system's Chrome installation and profile"""
-		from traverse.browser.chrome_profiles import find_chrome_executable, get_chrome_profile_path, list_chrome_profiles
+		from agentyc.browser.chrome_profiles import find_chrome_executable, get_chrome_profile_path, list_chrome_profiles
 
 		executable_path = find_chrome_executable()
 		if executable_path is None:
@@ -420,7 +419,7 @@ class BrowserSession(BaseModel):
 			if profiles:
 				# Use first available profile
 				profile_directory = profiles[0]['directory']
-				logging.getLogger('traverse').info(f'Auto-selected Chrome profile: {profiles[0]["name"]} ({profile_directory})')
+				logging.getLogger('agentyc').info(f'Auto-selected Chrome profile: {profiles[0]["name"]} ({profile_directory})')
 			else:
 				profile_directory = 'Default'
 
@@ -434,7 +433,7 @@ class BrowserSession(BaseModel):
 	@classmethod
 	def list_chrome_profiles(cls) -> list[dict[str, str]]:
 		"""List available Chrome profiles on the system"""
-		from traverse.browser.chrome_profiles import list_chrome_profiles
+		from agentyc.browser.chrome_profiles import list_chrome_profiles
 
 		return list_chrome_profiles()
 
@@ -492,7 +491,7 @@ class BrowserSession(BaseModel):
 		if not self.browser_profile.demo_mode:
 			return None
 		if self._demo_mode is None:
-			from traverse.browser.demo_mode import DemoMode
+			from agentyc.browser.demo_mode import DemoMode
 
 			self._demo_mode = DemoMode(self)
 		return self._demo_mode
@@ -550,8 +549,8 @@ class BrowserSession(BaseModel):
 		"""Get instance-specific logger with session ID in the name"""
 		# **regenerate it every time** because our id and str(self) can change as browser connection state changes
 		# if self._logger is None or not self._cdp_client_root:
-		# 	self._logger = logging.getLogger(f'traverse.{self}')
-		return logging.getLogger(f'traverse.{self}')
+		# 	self._logger = logging.getLogger(f'agentyc.{self}')
+		return logging.getLogger(f'agentyc.{self}')
 
 	@cached_property
 	def _id_for_logs(self) -> str:
@@ -645,7 +644,7 @@ class BrowserSession(BaseModel):
 		self._reconnect_event.set()
 
 		# Check if handlers are already registered to prevent duplicates
-		from traverse.browser.watchdog_base import BaseWatchdog
+		from agentyc.browser.watchdog_base import BaseWatchdog
 
 		start_handlers = self.event_bus.handlers.get('BrowserStartEvent', [])
 		start_handler_names = [getattr(h, '__name__', str(h)) for h in start_handlers]
@@ -681,7 +680,7 @@ class BrowserSession(BaseModel):
 		self.logger.debug('🛑 kill() called - stopping browser with force=True and resetting state')
 
 		# First save storage state while CDP is still connected
-		from traverse.browser.events import SaveStorageStateEvent
+		from agentyc.browser.events import SaveStorageStateEvent
 
 		save_event = self.event_bus.dispatch(SaveStorageStateEvent())
 		await save_event
@@ -705,7 +704,7 @@ class BrowserSession(BaseModel):
 		self.logger.debug('⏸️  stop() called - stopping browser gracefully (force=False) and resetting state')
 
 		# First save storage state while CDP is still connected
-		from traverse.browser.events import SaveStorageStateEvent
+		from agentyc.browser.events import SaveStorageStateEvent
 
 		save_event = self.event_bus.dispatch(SaveStorageStateEvent())
 		await save_event
@@ -840,7 +839,7 @@ class BrowserSession(BaseModel):
 			if self.is_local and not isinstance(e, (CloudBrowserAuthError, CloudBrowserError)):
 				self.logger.warning(
 					'Local browser failed to start. Cloud browsers require no local install and work out of the box.\n'
-					'         Try: Browser(use_cloud=True)  |  Get an API key: https://cloud.traverse.com?utm_source=oss&utm_medium=browser_launch_failure'
+					'         Try: Browser(use_cloud=True)  |  Get an API key: https://cloud.agentyc.com?utm_source=oss&utm_medium=browser_launch_failure'
 				)
 			raise
 
@@ -1246,11 +1245,11 @@ class BrowserSession(BaseModel):
 				self.logger.debug(f'File already tracked: {event.path}')
 
 	def _cloud_session_id_from_cdp_url(self) -> str | None:
-		"""Derive cloud browser session ID from a Traverse CDP URL."""
+		"""Derive cloud browser session ID from a Agentyc CDP URL."""
 		if not self.cdp_url:
 			return None
 		host = urlparse(self.cdp_url).hostname or ''
-		match = re.match(r'^([0-9a-fA-F-]{36})\.cdp\d+\.traverse\.com$', host)
+		match = re.match(r'^([0-9a-fA-F-]{36})\.cdp\d+\.agentyc\.com$', host)
 		return match.group(1) if match else None
 
 	async def on_BrowserStopEvent(self, event: BrowserStopEvent) -> None:
@@ -1320,7 +1319,7 @@ class BrowserSession(BaseModel):
 		target_id = result['targetId']
 
 		# Import here to avoid circular import
-		from traverse.actor.page import Page as Target
+		from agentyc.actor.page import Page as Target
 
 		return Target(self, target_id)
 
@@ -1331,7 +1330,7 @@ class BrowserSession(BaseModel):
 		if not target_info:
 			return None
 
-		from traverse.actor.page import Page as Target
+		from agentyc.actor.page import Page as Target
 
 		return Target(self, target_info['targetId'])
 
@@ -1346,7 +1345,7 @@ class BrowserSession(BaseModel):
 	async def get_pages(self) -> list['Page']:
 		"""Get all available pages using SessionManager (source of truth)."""
 		# Import here to avoid circular import
-		from traverse.actor.page import Page as PageActor
+		from agentyc.actor.page import Page as PageActor
 
 		page_targets = self.session_manager.get_all_page_targets() if self.session_manager else []
 
@@ -1378,10 +1377,9 @@ class BrowserSession(BaseModel):
 
 	async def close_page(self, page: 'Union[Page, str]') -> None:
 		"""Close a page by Page object or target ID."""
-		from cdp_use.cdp.target.commands import CloseTargetParameters
-
 		# Import here to avoid circular import
-		from traverse.actor.page import Page as Target
+		from agentyc.actor.page import Page as Target
+		from cdp_use.cdp.target.commands import CloseTargetParameters
 
 		if isinstance(page, Target):
 			target_id = page._target_id
@@ -1613,21 +1611,21 @@ class BrowserSession(BaseModel):
 			self.logger.debug('Watchdogs already attached, skipping duplicate attachment')
 			return
 
-		from traverse.browser.watchdogs.aboutblank_watchdog import AboutBlankWatchdog
-		from traverse.browser.watchdogs.captcha_watchdog import CaptchaWatchdog
+		from agentyc.browser.watchdogs.aboutblank_watchdog import AboutBlankWatchdog
+		from agentyc.browser.watchdogs.captcha_watchdog import CaptchaWatchdog
 
-		# from traverse.browser.crash_watchdog import CrashWatchdog
-		from traverse.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
-		from traverse.browser.watchdogs.dom_watchdog import DOMWatchdog
-		from traverse.browser.watchdogs.downloads_watchdog import DownloadsWatchdog
-		from traverse.browser.watchdogs.har_recording_watchdog import HarRecordingWatchdog
-		from traverse.browser.watchdogs.local_browser_watchdog import LocalBrowserWatchdog
-		from traverse.browser.watchdogs.permissions_watchdog import PermissionsWatchdog
-		from traverse.browser.watchdogs.popups_watchdog import PopupsWatchdog
-		from traverse.browser.watchdogs.recording_watchdog import RecordingWatchdog
-		from traverse.browser.watchdogs.screenshot_watchdog import ScreenshotWatchdog
-		from traverse.browser.watchdogs.security_watchdog import SecurityWatchdog
-		from traverse.browser.watchdogs.storage_state_watchdog import StorageStateWatchdog
+		# from agentyc.browser.crash_watchdog import CrashWatchdog
+		from agentyc.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
+		from agentyc.browser.watchdogs.dom_watchdog import DOMWatchdog
+		from agentyc.browser.watchdogs.downloads_watchdog import DownloadsWatchdog
+		from agentyc.browser.watchdogs.har_recording_watchdog import HarRecordingWatchdog
+		from agentyc.browser.watchdogs.local_browser_watchdog import LocalBrowserWatchdog
+		from agentyc.browser.watchdogs.permissions_watchdog import PermissionsWatchdog
+		from agentyc.browser.watchdogs.popups_watchdog import PopupsWatchdog
+		from agentyc.browser.watchdogs.recording_watchdog import RecordingWatchdog
+		from agentyc.browser.watchdogs.screenshot_watchdog import ScreenshotWatchdog
+		from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
+		from agentyc.browser.watchdogs.storage_state_watchdog import StorageStateWatchdog
 
 		# Initialize CrashWatchdog
 		# CrashWatchdog.model_rebuild()
@@ -1799,9 +1797,9 @@ class BrowserSession(BaseModel):
 			is_localhost = parsed_url.hostname in ('localhost', '127.0.0.1', '::1')
 			async with httpx.AsyncClient(timeout=httpx.Timeout(30.0), trust_env=not is_localhost) as client:
 				headers = dict(self.browser_profile.headers or {})
-				from traverse.utils import get_traverse_version
+				from agentyc.utils import get_agentyc_version
 
-				headers.setdefault('User-Agent', f'traverse/{get_traverse_version()}')
+				headers.setdefault('User-Agent', f'agentyc/{get_agentyc_version()}')
 				version_info = await client.get(url, headers=headers)
 				self.logger.debug(f'Raw version info: {str(version_info)}')
 				self.browser_profile.cdp_url = version_info.json()['webSocketDebuggerUrl']
@@ -1815,9 +1813,9 @@ class BrowserSession(BaseModel):
 			# Create and store the CDP client for direct CDP communication
 			headers = dict(getattr(self.browser_profile, 'headers', None) or {})
 			if not self.is_local:
-				from traverse.utils import get_traverse_version
+				from agentyc.utils import get_agentyc_version
 
-				headers.setdefault('User-Agent', f'traverse/{get_traverse_version()}')
+				headers.setdefault('User-Agent', f'agentyc/{get_agentyc_version()}')
 			self._cdp_client_root = TimeoutWrappedCDPClient(
 				self.cdp_url,
 				additional_headers=headers or None,
@@ -1832,7 +1830,7 @@ class BrowserSession(BaseModel):
 			# 2. Discover and attach to all existing targets
 			# 3. Initialize sessions and enable lifecycle monitoring
 			# 4. Enable autoAttach for future targets
-			from traverse.browser.session_manager import SessionManager
+			from agentyc.browser.session_manager import SessionManager
 
 			self.session_manager = SessionManager(self)
 			await self.session_manager.start_monitoring()
@@ -1850,7 +1848,7 @@ class BrowserSession(BaseModel):
 			page_targets_from_manager = self.session_manager.get_all_page_targets()
 
 			# Check for chrome://newtab pages and redirect them to about:blank (in parallel)
-			from traverse.utils import is_new_tab_page
+			from agentyc.utils import is_new_tab_page
 
 			async def _redirect_newtab(target):
 				target_url = target.url
@@ -2113,9 +2111,9 @@ class BrowserSession(BaseModel):
 		# 3. Create new CDPClient with the same cdp_url
 		headers = dict(getattr(self.browser_profile, 'headers', None) or {})
 		if not self.is_local:
-			from traverse.utils import get_traverse_version
+			from agentyc.utils import get_agentyc_version
 
-			headers.setdefault('User-Agent', f'traverse/{get_traverse_version()}')
+			headers.setdefault('User-Agent', f'agentyc/{get_agentyc_version()}')
 		self._cdp_client_root = TimeoutWrappedCDPClient(
 			self.cdp_url,
 			additional_headers=headers or None,
@@ -2124,7 +2122,7 @@ class BrowserSession(BaseModel):
 		await self._cdp_client_root.start()
 
 		# 4. Re-initialize SessionManager
-		from traverse.browser.session_manager import SessionManager
+		from agentyc.browser.session_manager import SessionManager
 
 		self.session_manager = SessionManager(self)
 		await self.session_manager.start_monitoring()
@@ -2353,7 +2351,7 @@ class BrowserSession(BaseModel):
 			url: URL to navigate to
 			new_tab: Whether to open in a new tab
 		"""
-		from traverse.browser.events import NavigateToUrlEvent
+		from agentyc.browser.events import NavigateToUrlEvent
 
 		event = self.event_bus.dispatch(NavigateToUrlEvent(url=url, new_tab=new_tab))
 		await event
@@ -2409,7 +2407,7 @@ class BrowserSession(BaseModel):
 		Returns:
 			EnhancedDOMTreeNode at the coordinates, or None if no element found
 		"""
-		from traverse.dom.views import NodeType
+		from agentyc.dom.views import NodeType
 
 		# Get current page to access CDP session
 		page = await self.get_current_page()
@@ -2584,7 +2582,7 @@ class BrowserSession(BaseModel):
 		Returns:
 			The nearest file input element, or None if not found
 		"""
-		from traverse.dom.views import EnhancedDOMTreeNode
+		from agentyc.dom.views import EnhancedDOMTreeNode
 
 		def _find_in_descendants(n: EnhancedDOMTreeNode, depth: int) -> EnhancedDOMTreeNode | None:
 			if depth < 0:
@@ -2683,20 +2681,20 @@ class BrowserSession(BaseModel):
 				# Remove highlights via JavaScript - be thorough
 				script = """
 				(function() {
-					// Remove all traverse highlight elements
-					const highlights = document.querySelectorAll('[data-traverse-highlight]');
-					console.log('Removing', highlights.length, 'traverse highlight elements');
+					// Remove all agentyc highlight elements
+					const highlights = document.querySelectorAll('[data-agentyc-highlight]');
+					console.log('Removing', highlights.length, 'agentyc highlight elements');
 					highlights.forEach(el => el.remove());
 
 					// Also remove by ID in case selector missed anything
-					const highlightContainer = document.getElementById('traverse-debug-highlights');
+					const highlightContainer = document.getElementById('agentyc-debug-highlights');
 					if (highlightContainer) {
 						console.log('Removing highlight container by ID');
 						highlightContainer.remove();
 					}
 
 					// Final cleanup - remove any orphaned tooltips
-					const orphanedTooltips = document.querySelectorAll('[data-traverse-highlight="tooltip"]');
+					const orphanedTooltips = document.querySelectorAll('[data-agentyc-highlight="tooltip"]');
 					orphanedTooltips.forEach(el => el.remove());
 
 					return { removed: highlights.length };
@@ -2881,7 +2879,7 @@ class BrowserSession(BaseModel):
 
 				// Create container for all corners
 				const container = document.createElement('div');
-				container.setAttribute('data-traverse-interaction-highlight', 'true');
+				container.setAttribute('data-agentyc-interaction-highlight', 'true');
 				container.style.cssText = `
 					position: absolute;
 					left: ${{rect.x + scrollX}}px;
@@ -3003,7 +3001,7 @@ class BrowserSession(BaseModel):
 
 				// Create container
 				const container = document.createElement('div');
-				container.setAttribute('data-traverse-coordinate-highlight', 'true');
+				container.setAttribute('data-agentyc-coordinate-highlight', 'true');
 				container.style.cssText = `
 					position: absolute;
 					left: ${{x + scrollX}}px;
@@ -3142,14 +3140,14 @@ class BrowserSession(BaseModel):
 				console.log('Highlighting', interactiveElements.length, 'interactive elements');
 
 				// Double-check: Remove any existing highlight container first
-				const existingContainer = document.getElementById('traverse-debug-highlights');
+				const existingContainer = document.getElementById('agentyc-debug-highlights');
 				if (existingContainer) {{
 					console.log('⚠️ Found existing highlight container, removing it first');
 					existingContainer.remove();
 				}}
 
 				// Also remove any stray highlight elements
-				const strayHighlights = document.querySelectorAll('[data-traverse-highlight]');
+				const strayHighlights = document.querySelectorAll('[data-agentyc-highlight]');
 				if (strayHighlights.length > 0) {{
 					console.log('⚠️ Found', strayHighlights.length, 'stray highlight elements, removing them');
 					strayHighlights.forEach(el => el.remove());
@@ -3160,8 +3158,8 @@ class BrowserSession(BaseModel):
 
 				// Create container for all highlights - use FIXED positioning (key insight from v0.6.0)
 				const container = document.createElement('div');
-				container.id = 'traverse-debug-highlights';
-				container.setAttribute('data-traverse-highlight', 'container');
+				container.id = 'agentyc-debug-highlights';
+				container.setAttribute('data-agentyc-highlight', 'container');
 
 				container.style.cssText = `
 					position: absolute;
@@ -3192,7 +3190,7 @@ class BrowserSession(BaseModel):
 				// Add highlights for each element
 				interactiveElements.forEach((element, index) => {{
 					const highlight = document.createElement('div');
-					highlight.setAttribute('data-traverse-highlight', 'element');
+					highlight.setAttribute('data-agentyc-highlight', 'element');
 					highlight.setAttribute('data-element-id', element.backend_node_id);
 					highlight.style.cssText = `
 						position: absolute;
@@ -3593,7 +3591,7 @@ class BrowserSession(BaseModel):
 
 		# Always allow new tab pages (chrome://new-tab-page/, chrome://newtab/, about:blank)
 		# so they can be redirected to about:blank in connect()
-		from traverse.utils import is_new_tab_page
+		from agentyc.utils import is_new_tab_page
 
 		if is_new_tab_page(url):
 			url_allowed = True

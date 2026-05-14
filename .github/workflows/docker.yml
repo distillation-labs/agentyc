@@ -53,8 +53,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            traverse/traverse
-            ghcr.io/traverse/traverse
+            agentyc/agentyc
+            ghcr.io/agentyc/agentyc
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -72,5 +72,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=traverse/traverse:buildcache
-          cache-to: type=registry,ref=traverse/traverse:buildcache,mode=max
+          cache-from: type=registry,ref=agentyc/agentyc:buildcache
+          cache-to: type=registry,ref=agentyc/agentyc:buildcache,mode=max

@@ -5,10 +5,10 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from bubus import BaseEvent
 from cdp_use.cdp.page import CaptureScreenshotParameters
 
-from traverse.browser.events import ScreenshotEvent
-from traverse.browser.views import BrowserError
-from traverse.browser.watchdog_base import BaseWatchdog
-from traverse.observability import observe_debug
+from agentyc.browser.events import ScreenshotEvent
+from agentyc.browser.views import BrowserError
+from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.observability import observe_debug
 
 if TYPE_CHECKING:
 	pass

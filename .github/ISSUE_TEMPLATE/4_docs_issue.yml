@@ -1,5 +1,5 @@
 name: 📚 Documentation Issue
-description: Report an issue in the traverse documentation
+description: Report an issue in the agentyc documentation
 labels: ["documentation"]
 title: "Documentation: ..."
 body:
@@ -27,7 +27,7 @@ body:
     attributes:
       label: Documentation Page
       description: Which page or section of the documentation is this about?
-      placeholder: "e.g. https://docs.traverse.com/open-source/customize/browser/all-parameters > Display & Appearance > headless"
+      placeholder: "e.g. https://docs.agentyc.com/open-source/customize/browser/all-parameters > Display & Appearance > headless"
     validations:
       required: true
 

@@ -1,19 +1,19 @@
-"""MCP (Model Context Protocol) support for traverse."""
+"""MCP (Model Context Protocol) support for agentyc."""
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-	from traverse.mcp.client import MCPClient
-	from traverse.mcp.controller import MCPToolWrapper
-	from traverse.mcp.server import TraverseServer
+	from agentyc.mcp.client import MCPClient
+	from agentyc.mcp.controller import MCPToolWrapper
+	from agentyc.mcp.server import AgentycServer
 
 _LAZY_IMPORTS = {
-	'MCPClient': ('traverse.mcp.client', 'MCPClient'),
-	'MCPToolWrapper': ('traverse.mcp.controller', 'MCPToolWrapper'),
-	'TraverseServer': ('traverse.mcp.server', 'TraverseServer'),
+	'MCPClient': ('agentyc.mcp.client', 'MCPClient'),
+	'MCPToolWrapper': ('agentyc.mcp.controller', 'MCPToolWrapper'),
+	'AgentycServer': ('agentyc.mcp.server', 'AgentycServer'),
 }
 
-__all__ = ['MCPClient', 'MCPToolWrapper', 'TraverseServer']
+__all__ = ['MCPClient', 'MCPToolWrapper', 'AgentycServer']
 
 
 def __getattr__(name: str):

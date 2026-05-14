@@ -1,4 +1,4 @@
-# traverse
+# agentyc
 
 Lightweight, MCP-first browser automation for coding agents.
 
@@ -6,15 +6,15 @@ This repository currently ships a public stdio MCP server for deterministic brow
 
 ## What ships in `0.1.0`
 
-- A stdio MCP server exposed by the `traverse` console script.
+- A stdio MCP server exposed by the `agentyc` console script.
 - Deterministic browser tools for navigation, interaction, state inspection, screenshots, HTML access, file upload, tab management, and session cleanup.
 - Deterministic-only MCP extraction. `browser_extract_content` does not use an LLM in the public MCP server.
-- Python imports such as `BrowserSession`, `BrowserProfile`, `Tools`, and `TraverseServer` for direct integration.
+- Python imports such as `BrowserSession`, `BrowserProfile`, `Tools`, and `AgentycServer` for direct integration.
 
 ## Install
 
 ```bash
-uv tool install traverse
+uv tool install agentyc
 ```
 
 Or from source:
@@ -28,16 +28,16 @@ uv sync --dev
 ## Run The MCP Server
 
 ```bash
-traverse
+agentyc
 ```
 
 Optional timeout override:
 
 ```bash
-traverse --session-timeout-minutes 20
+agentyc --session-timeout-minutes 20
 ```
 
-The server uses stdio transport and advertises `server_name="traverse"` with `server_version="0.1.0"`.
+The server uses stdio transport and advertises `server_name="agentyc"` with `server_version="0.1.0"`.
 
 ## MCP Tool Surface
 
@@ -84,4 +84,4 @@ uv build
 - Package version: `0.1.0`
 - Build artifacts: `uv build`
 - Publish workflow: `.github/workflows/workflow.yml`
-- Trusted publisher repository: `distillation-labs/traverse`
+- Trusted publisher repository: `distillation-labs/agentyc`

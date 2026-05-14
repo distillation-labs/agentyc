@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from traverse.llm.openai.chat import ChatOpenAI
+from agentyc.llm.openai.chat import ChatOpenAI
 
 
 @dataclass

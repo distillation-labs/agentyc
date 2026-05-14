@@ -2,10 +2,10 @@
 
 from typing import Any
 
-from traverse.dom.serializer.clickable_elements import ClickableElementDetector
-from traverse.dom.serializer.paint_order import PaintOrderRemover
-from traverse.dom.utils import cap_text_length
-from traverse.dom.views import (
+from agentyc.dom.serializer.clickable_elements import ClickableElementDetector
+from agentyc.dom.serializer.paint_order import PaintOrderRemover
+from agentyc.dom.utils import cap_text_length
+from agentyc.dom.views import (
 	DOMRect,
 	DOMSelectorMap,
 	EnhancedDOMTreeNode,
@@ -524,13 +524,13 @@ class DOMTreeSerializer:
 			exclude_attr = None
 			attr_type = None
 			if self.session_id:
-				session_specific_attr = f'data-traverse-exclude-{self.session_id}'
+				session_specific_attr = f'data-agentyc-exclude-{self.session_id}'
 				exclude_attr = attributes.get(session_specific_attr)
 				if exclude_attr:
 					attr_type = 'session-specific'
 			# Fall back to legacy attribute if session-specific not found
 			if not exclude_attr:
-				exclude_attr = attributes.get('data-traverse-exclude')
+				exclude_attr = attributes.get('data-agentyc-exclude')
 			if isinstance(exclude_attr, str) and exclude_attr.lower() == 'true':
 				return None
 
@@ -710,7 +710,7 @@ class DOMTreeSerializer:
 			if is_interactive_assign and not node.original_node.snapshot_node:
 				import logging
 
-				logger = logging.getLogger('traverse.dom.serializer')
+				logger = logging.getLogger('agentyc.dom.serializer')
 				attrs = node.original_node.attributes or {}
 				attr_str = f'name={attrs.get("name", "")} id={attrs.get("id", "")} type={attrs.get("type", "")}'
 				in_shadow = self._is_inside_shadow_dom(node)

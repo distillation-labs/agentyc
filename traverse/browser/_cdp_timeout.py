@@ -9,7 +9,7 @@ lost its upstream) the future never resolves and the whole agent hangs.
 This module provides a thin subclass that wraps each `send_raw()` in
 `asyncio.wait_for`. Any CDP method that doesn't get a response within the
 cap raises `TimeoutError`, which propagates through existing
-error-handling paths in traverse instead of hanging indefinitely.
+error-handling paths in agentyc instead of hanging indefinitely.
 
 Configure the cap via:
 - `TRAVERSE_CDP_TIMEOUT_S` env var (process-wide default)
@@ -118,7 +118,7 @@ class TimeoutWrappedCDPClient(CDPClient):
 			)
 		except TimeoutError as e:
 			# Raise a plain TimeoutError so existing `except TimeoutError`
-			# handlers in traverse / tools treat this uniformly.
+			# handlers in agentyc / tools treat this uniformly.
 			raise TimeoutError(
 				f'CDP method {method!r} did not respond within {self._cdp_request_timeout_s:.0f}s. '
 				f'The browser may be unresponsive (silent WebSocket — container crashed or proxy lost upstream).'

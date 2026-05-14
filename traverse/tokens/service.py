@@ -15,11 +15,11 @@ import anyio
 import httpx
 from dotenv import load_dotenv
 
-from traverse.llm.base import BaseChatModel
-from traverse.llm.views import ChatInvokeUsage
-from traverse.tokens.custom_pricing import CUSTOM_MODEL_PRICING
-from traverse.tokens.mappings import MODEL_TO_LITELLM
-from traverse.tokens.views import (
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.views import ChatInvokeUsage
+from agentyc.tokens.custom_pricing import CUSTOM_MODEL_PRICING
+from agentyc.tokens.mappings import MODEL_TO_LITELLM
+from agentyc.tokens.views import (
 	CachedPricingData,
 	ModelPricing,
 	ModelUsageStats,
@@ -28,11 +28,11 @@ from traverse.tokens.views import (
 	TokenUsageEntry,
 	UsageSummary,
 )
-from traverse.utils import create_task_with_error_handling
+from agentyc.utils import create_task_with_error_handling
 
 load_dotenv()
 
-from traverse.config import CONFIG
+from agentyc.config import CONFIG
 
 logger = logging.getLogger(__name__)
 cost_logger = logging.getLogger('cost')
@@ -48,7 +48,7 @@ def xdg_cache_home() -> Path:
 class TokenCost:
 	"""Service for tracking token usage and calculating costs"""
 
-	CACHE_DIR_NAME = 'traverse/token_cost'
+	CACHE_DIR_NAME = 'agentyc/token_cost'
 	CACHE_DURATION = timedelta(days=1)
 	DEFAULT_PRICING_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 

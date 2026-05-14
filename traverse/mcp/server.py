@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
-# Set environment variables BEFORE any traverse imports to prevent early logging
+# Set environment variables BEFORE any agentyc imports to prevent early logging
 os.environ['TRAVERSE_LOGGING_LEVEL'] = 'critical'
 os.environ['TRAVERSE_SETUP_LOGGING'] = 'false'
 
@@ -35,12 +35,12 @@ if source_root not in sys.path:
 	sys.path.insert(0, source_root)
 
 # Import and configure logging to use stderr before other imports
-from traverse.logging_config import setup_logging
+from agentyc.logging_config import setup_logging
 
 
 def _configure_mcp_server_logging():
 	"""Configure logging for MCP server mode - redirect all logs to stderr to prevent JSON RPC interference."""
-	# Set environment to suppress traverse logging during server mode
+	# Set environment to suppress agentyc logging during server mode
 	os.environ['TRAVERSE_LOGGING_LEVEL'] = 'warning'
 	os.environ['TRAVERSE_SETUP_LOGGING'] = 'false'  # Prevent automatic logging setup
 
@@ -63,16 +63,16 @@ def _configure_mcp_server_logging():
 		logger_obj.propagate = False
 
 
-# Configure MCP server logging before any traverse imports to capture early log lines
+# Configure MCP server logging before any agentyc imports to capture early log lines
 _configure_mcp_server_logging()
 
 # Additional suppression - disable all logging completely for MCP mode
 logging.disable(logging.CRITICAL)
 
 if TYPE_CHECKING:
-	from traverse.browser import BrowserSession
-	from traverse.filesystem.file_system import FileSystem
-	from traverse.tools.service import Tools
+	from agentyc.browser import BrowserSession
+	from agentyc.filesystem.file_system import FileSystem
+	from agentyc.tools.service import Tools
 
 logger = logging.getLogger(__name__)
 
@@ -158,18 +158,18 @@ def get_parent_process_cmdline() -> str | None:
 		return None
 
 
-class TraverseServer:
-	"""MCP Server for traverse capabilities."""
+class AgentycServer:
+	"""MCP Server for agentyc capabilities."""
 
 	def __init__(self, session_timeout_minutes: int = 10):
 		# Ensure all logging goes to stderr (in case new loggers were created)
 		_ensure_all_loggers_use_stderr()
 
-		from traverse.config import load_traverse_config
-		from traverse.telemetry import ProductTelemetry
+		from agentyc.config import load_agentyc_config
+		from agentyc.telemetry import ProductTelemetry
 
-		self.server = Server('traverse')
-		self.config = load_traverse_config()
+		self.server = Server('agentyc')
+		self.config = load_agentyc_config()
 		self.browser_session: BrowserSession | None = None
 		self.tools: Tools | None = None
 		self.file_system: FileSystem | None = None
@@ -193,7 +193,7 @@ class TraverseServer:
 
 		@self.server.list_tools()
 		async def handle_list_tools() -> list[types.Tool]:
-			"""List all available traverse tools."""
+			"""List all available agentyc tools."""
 			return [
 				# Direct browser control tools
 				types.Tool(
@@ -276,7 +276,7 @@ class TraverseServer:
 							},
 							'path': {
 								'type': 'string',
-								'description': 'Local file path to upload. Use an absolute path for arbitrary files, or a filename from the traverse file system.',
+								'description': 'Local file path to upload. Use an absolute path for arbitrary files, or a filename from the agentyc file system.',
 							},
 						},
 						'required': ['path'],
@@ -429,12 +429,12 @@ class TraverseServer:
 
 		@self.server.list_resources()
 		async def handle_list_resources() -> list[types.Resource]:
-			"""List available resources (none for traverse)."""
+			"""List available resources (none for agentyc)."""
 			return []
 
 		@self.server.list_prompts()
 		async def handle_list_prompts() -> list[types.Prompt]:
-			"""List available prompts (none for traverse)."""
+			"""List available prompts (none for agentyc)."""
 			return []
 
 		@self.server.call_tool()
@@ -454,12 +454,12 @@ class TraverseServer:
 			finally:
 				# Capture telemetry for tool calls
 				duration = time.time() - start_time
-				from traverse.telemetry import MCPServerTelemetryEvent
-				from traverse.utils import get_traverse_version
+				from agentyc.telemetry import MCPServerTelemetryEvent
+				from agentyc.utils import get_agentyc_version
 
 				self._telemetry.capture(
 					MCPServerTelemetryEvent(
-						version=get_traverse_version(),
+						version=get_agentyc_version(),
 						action='tool_call',
 						tool_name=name,
 						duration_seconds=duration,
@@ -470,7 +470,7 @@ class TraverseServer:
 	async def _execute_tool(
 		self, tool_name: str, arguments: dict[str, Any]
 	) -> str | list[types.TextContent | types.ImageContent]:
-		"""Execute a traverse tool. Returns str for most tools, or a content list for tools with image output."""
+		"""Execute a agentyc tool. Returns str for most tools, or a content list for tools with image output."""
 
 		# Browser session management tools (don't require active session)
 		if tool_name == 'browser_list_sessions':
@@ -563,17 +563,17 @@ class TraverseServer:
 		logger.debug('Initializing browser session...')
 
 		# Get profile config
-		from traverse.browser import BrowserProfile, BrowserSession
-		from traverse.config import get_default_profile
-		from traverse.tools.service import Tools
+		from agentyc.browser import BrowserProfile, BrowserSession
+		from agentyc.config import get_default_profile
+		from agentyc.tools.service import Tools
 
 		profile_config = get_default_profile(self.config)
 
 		# Merge profile config with defaults and overrides
 		profile_data = {
-			'downloads_path': str(Path.home() / 'Downloads' / 'traverse-mcp'),
+			'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
 			'keep_alive': False,
-			'user_data_dir': '~/.config/traverse/profiles/default',
+			'user_data_dir': '~/.config/agentyc/profiles/default',
 			'device_scale_factor': 1.0,
 			'disable_security': False,
 			'headless': False,
@@ -602,21 +602,21 @@ class TraverseServer:
 		self.tools = Tools()
 		self.tools.set_coordinate_clicking(True)
 		self.file_system = None
-		file_system_path = profile_config.get('file_system_path', '~/.traverse-mcp')
+		file_system_path = profile_config.get('file_system_path', '~/.agentyc-mcp')
 		self._file_system_base_dir = Path(file_system_path).expanduser()
 
 		logger.debug('Browser session initialized')
 
 	def _ensure_extract_runtime(self) -> None:
 		if self.file_system is None:
-			from traverse.filesystem.file_system import FileSystem
+			from agentyc.filesystem.file_system import FileSystem
 
-			base_dir = self._file_system_base_dir or Path('~/.traverse-mcp').expanduser()
+			base_dir = self._file_system_base_dir or Path('~/.agentyc-mcp').expanduser()
 			self.file_system = FileSystem(base_dir=base_dir)
 
 	def _resolve_element_index(self, index: int | None = None, ref: str | None = None) -> int:
 		if ref is not None:
-			from traverse.mcp.state import parse_element_ref
+			from agentyc.mcp.state import parse_element_ref
 
 			return parse_element_ref(ref)
 		if index is None:
@@ -649,7 +649,7 @@ class TraverseServer:
 		if self.browser_session is None:
 			raise RuntimeError('No browser session active')
 
-		from traverse.mcp.state import make_element_ref, summarize_interactive_element
+		from agentyc.mcp.state import make_element_ref, summarize_interactive_element
 
 		resolved_index = self._resolve_element_index(index=index, ref=ref)
 		if ref is not None and self._last_state_elements_by_ref:
@@ -753,9 +753,8 @@ class TraverseServer:
 		if not self.tools:
 			raise RuntimeError('Tools not initialized')
 
+		from agentyc.actions import ActionModel
 		from pydantic import create_model
-
-		from traverse.actions import ActionModel
 
 		DynamicAction = self._action_model_cache.get(action_name)
 		if DynamicAction is None:
@@ -916,7 +915,7 @@ class TraverseServer:
 			error_code, error_message = validation_error
 			return f'Error [{error_code}]: {error_message}'
 
-		from traverse.browser.events import TypeTextEvent
+		from agentyc.browser.events import TypeTextEvent
 
 		# Conservative heuristic to detect potentially sensitive data
 		# Only flag very obvious patterns to minimize false positives
@@ -1017,7 +1016,7 @@ class TraverseServer:
 		if not self.browser_session:
 			return 'Error: No browser session active', None
 
-		from traverse.mcp.state import build_browser_state_payload, make_element_ref
+		from agentyc.mcp.state import build_browser_state_payload, make_element_ref
 
 		state = await self.browser_session.get_browser_state_summary(include_screenshot=include_screenshot)
 		try:
@@ -1126,9 +1125,8 @@ class TraverseServer:
 
 		# Use the extract action
 		# Create a dynamic action model that matches the tools's expectations
+		from agentyc.actions import ActionModel
 		from pydantic import create_model
-
-		from traverse.actions import ActionModel
 
 		# Create action model dynamically
 		ExtractAction = create_model(
@@ -1159,7 +1157,7 @@ class TraverseServer:
 		if not self.browser_session:
 			return 'Error: No browser session active'
 
-		from traverse.browser.events import ScrollEvent
+		from agentyc.browser.events import ScrollEvent
 
 		# Scroll by a standard amount (500 pixels)
 		event = self.browser_session.event_bus.dispatch(
@@ -1176,7 +1174,7 @@ class TraverseServer:
 		if not self.browser_session:
 			return 'Error: No browser session active'
 
-		from traverse.browser.events import GoBackEvent
+		from agentyc.browser.events import GoBackEvent
 
 		before_url = await self.browser_session.get_current_page_url()
 		event = self.browser_session.event_bus.dispatch(GoBackEvent())
@@ -1206,7 +1204,7 @@ class TraverseServer:
 		if not self.browser_session:
 			return 'Error: No browser session active'
 
-		from traverse.browser.events import SwitchTabEvent
+		from agentyc.browser.events import SwitchTabEvent
 
 		target_id = await self.browser_session.get_target_id_from_tab_id(tab_id)
 		event = self.browser_session.event_bus.dispatch(SwitchTabEvent(target_id=target_id))
@@ -1225,7 +1223,7 @@ class TraverseServer:
 		if not self.browser_session:
 			return 'Error: No browser session active'
 
-		from traverse.browser.events import CloseTabEvent
+		from agentyc.browser.events import CloseTabEvent
 
 		target_id = await self.browser_session.get_target_id_from_tab_id(tab_id)
 		event = self.browser_session.event_bus.dispatch(CloseTabEvent(target_id=target_id))
@@ -1366,7 +1364,7 @@ class TraverseServer:
 					logger.error(f'Error in cleanup task: {e}')
 					await asyncio.sleep(120)
 
-		from traverse.utils import create_task_with_error_handling
+		from agentyc.utils import create_task_with_error_handling
 
 		self._cleanup_task = create_task_with_error_handling(cleanup_loop(), name='mcp_cleanup_loop', suppress_exceptions=True)
 
@@ -1396,7 +1394,7 @@ class TraverseServer:
 						read_stream,
 						write_stream,
 						InitializationOptions(
-							server_name='traverse',
+							server_name='agentyc',
 							server_version='0.1.0',
 							capabilities=self.server.get_capabilities(
 								notification_options=NotificationOptions(),
@@ -1415,13 +1413,13 @@ async def main(session_timeout_minutes: int = 10):
 		print('MCP SDK is required. Install with: pip install mcp', file=sys.stderr)
 		sys.exit(1)
 
-	server = TraverseServer(session_timeout_minutes=session_timeout_minutes)
-	from traverse.telemetry import MCPServerTelemetryEvent
-	from traverse.utils import get_traverse_version
+	server = AgentycServer(session_timeout_minutes=session_timeout_minutes)
+	from agentyc.telemetry import MCPServerTelemetryEvent
+	from agentyc.utils import get_agentyc_version
 
 	server._telemetry.capture(
 		MCPServerTelemetryEvent(
-			version=get_traverse_version(),
+			version=get_agentyc_version(),
 			action='start',
 			parent_process_cmdline=get_parent_process_cmdline(),
 		)
@@ -1433,7 +1431,7 @@ async def main(session_timeout_minutes: int = 10):
 		duration = time.time() - server._start_time
 		server._telemetry.capture(
 			MCPServerTelemetryEvent(
-				version=get_traverse_version(),
+				version=get_agentyc_version(),
 				action='stop',
 				duration_seconds=duration,
 				parent_process_cmdline=get_parent_process_cmdline(),

@@ -14,7 +14,7 @@ class TestDisableExtensionsEnvVar:
 		original = os.environ.pop('TRAVERSE_DISABLE_EXTENSIONS', None)
 		try:
 			# Import fresh to get the default
-			from traverse.browser.profile import _get_enable_default_extensions_default
+			from agentyc.browser.profile import _get_enable_default_extensions_default
 
 			assert _get_enable_default_extensions_default() is True
 		finally:
@@ -46,7 +46,7 @@ class TestDisableExtensionsEnvVar:
 		original = os.environ.get('TRAVERSE_DISABLE_EXTENSIONS')
 		try:
 			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = env_value
-			from traverse.browser.profile import _get_enable_default_extensions_default
+			from agentyc.browser.profile import _get_enable_default_extensions_default
 
 			result = _get_enable_default_extensions_default()
 			assert result is expected_enabled, (
@@ -65,7 +65,7 @@ class TestDisableExtensionsEnvVar:
 			# Test with env var set to true (disable extensions)
 			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = 'true'
 
-			from traverse.browser.profile import BrowserProfile
+			from agentyc.browser.profile import BrowserProfile
 
 			profile = BrowserProfile(headless=True)
 			assert profile.enable_default_extensions is False, (
@@ -91,7 +91,7 @@ class TestDisableExtensionsEnvVar:
 		try:
 			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = 'true'
 
-			from traverse.browser.profile import BrowserProfile
+			from agentyc.browser.profile import BrowserProfile
 
 			# Explicitly set to True should override env var
 			profile = BrowserProfile(headless=True, enable_default_extensions=True)
@@ -109,7 +109,7 @@ class TestDisableExtensionsEnvVar:
 		try:
 			os.environ['TRAVERSE_DISABLE_EXTENSIONS'] = '1'
 
-			from traverse.browser import BrowserSession
+			from agentyc.browser import BrowserSession
 
 			session = BrowserSession(headless=True)
 			assert session.browser_profile.enable_default_extensions is False, (

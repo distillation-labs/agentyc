@@ -3,7 +3,7 @@ import json
 import re
 from typing import Any, overload
 
-from traverse.llm.messages import (
+from agentyc.llm.messages import (
 	AssistantMessage,
 	BaseMessage,
 	ContentPartImageParam,

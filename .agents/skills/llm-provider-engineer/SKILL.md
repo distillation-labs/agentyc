@@ -1,7 +1,7 @@
 ---
 name: llm-provider-engineer
 description: >
-  Use for adding, modifying, or debugging LLM provider integrations in traverse: the
+  Use for adding, modifying, or debugging LLM provider integrations in agentyc: the
   BaseChatModel Protocol, ChatInvokeCompletion/ChatInvokeUsage response shapes, token
   tracking, provider-specific quirks (Anthropic thinking, Google image tokens, cached
   tokens), output_format structured parsing, and multi-provider routing. Trigger when the
@@ -11,7 +11,7 @@ description: >
 when_to_use: >
   Especially useful for BaseChatModel Protocol compliance, ChatInvokeCompletion field mapping,
   provider-specific token fields, structured output via output_format, and adding a new
-  provider module under traverse/llm/.
+  provider module under agentyc/llm/.
 metadata:
   version: "0.1.0"
   category: llm-integration
@@ -31,13 +31,13 @@ and don't invent ones that don't exist on that provider.
 - Always return `ChatInvokeCompletion[T]` from `ainvoke` — never raw provider response objects.
 - Map `usage` fields precisely: `prompt_cached_tokens` is Anthropic/OpenAI, `prompt_image_tokens` is Google-only.
 - Use `output_format: type[T] | None` to gate structured parsing — never parse JSON manually in the provider.
-- Place provider modules under `traverse/llm/<provider-name>/` following the existing pattern.
+- Place provider modules under `agentyc/llm/<provider-name>/` following the existing pattern.
 - Run `uv run pyright` after adding a new provider — the Protocol check is type-enforced.
 
 ## BaseChatModel Protocol
 
 ```python
-from traverse.llm.base import BaseChatModel
+from agentyc.llm.base import BaseChatModel
 
 # Protocol surface (must implement all of these):
 # - model: str
@@ -98,15 +98,15 @@ Provider implementation must:
 1. Detect `output_format is not None`.
 2. Use the provider's native structured output (OpenAI `response_format`, Anthropic tool-use, etc.) when available.
 3. Fall back to JSON-mode + `output_format.model_validate_json(raw)` otherwise.
-4. Catch parse errors and raise a typed `LLMParseError` from `traverse.llm.exceptions`.
+4. Catch parse errors and raise a typed `LLMParseError` from `agentyc.llm.exceptions`.
 
 ## Adding a New Provider
 
-1. Create `traverse/llm/<provider>/` with `__init__.py` and `chat.py`.
+1. Create `agentyc/llm/<provider>/` with `__init__.py` and `chat.py`.
 2. Implement a class that satisfies `BaseChatModel` — use `isinstance` to verify.
 3. Map all response fields to `ChatInvokeCompletion` — never skip `usage`.
-4. Export the class from `traverse/llm/__init__.py`.
-5. Add provider to `traverse/llm/models.py` enum if applicable.
+4. Export the class from `agentyc/llm/__init__.py`.
+5. Add provider to `agentyc/llm/models.py` enum if applicable.
 6. Test with `uv run pytest -vxs tests/ci/test_llm_retries.py`.
 
 ## Provider-Specific Quirks
@@ -114,7 +114,7 @@ Provider implementation must:
 **Anthropic**:
 - Extended thinking returns a `thinking` block before the content block — extract and set `ChatInvokeCompletion.thinking`.
 - `prompt_cache_creation_tokens` is non-zero only on the first request that creates a cache entry.
-- Rate limit errors should trigger exponential backoff with jitter — use `traverse.llm.exceptions`.
+- Rate limit errors should trigger exponential backoff with jitter — use `agentyc.llm.exceptions`.
 
 **Google Gemini**:
 - Image tokens are reported separately from text tokens in `usageMetadata`.
@@ -144,7 +144,7 @@ Return:
 - returning raw provider SDK objects instead of `ChatInvokeCompletion`
 - setting `usage=None` to skip token accounting
 - parsing JSON manually instead of using `output_format`
-- raising provider-specific exceptions instead of `traverse.llm.exceptions` types
+- raising provider-specific exceptions instead of `agentyc.llm.exceptions` types
 - hardcoding provider names as strings instead of using the `provider` property
 - adding provider-specific fields to `ChatInvokeCompletion` (use `thinking` / existing fields or don't add)
 

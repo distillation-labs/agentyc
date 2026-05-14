@@ -12,9 +12,9 @@ import os
 
 from PIL import Image, ImageDraw, ImageFont
 
-from traverse.dom.views import DOMSelectorMap, EnhancedDOMTreeNode
-from traverse.observability import observe_debug
-from traverse.utils import time_execution_async
+from agentyc.dom.views import DOMSelectorMap, EnhancedDOMTreeNode
+from agentyc.observability import observe_debug
+from agentyc.utils import time_execution_async
 
 logger = logging.getLogger(__name__)
 

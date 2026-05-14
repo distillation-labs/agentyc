@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from traverse.mcp.server import main as mcp_main
+from agentyc.mcp.server import main as mcp_main
 
 
 def main() -> None:
 	"""Run the MCP server over stdio."""
-	parser = argparse.ArgumentParser(description='traverse MCP server')
+	parser = argparse.ArgumentParser(description='agentyc MCP server')
 	parser.add_argument(
 		'--session-timeout-minutes',
 		type=int,

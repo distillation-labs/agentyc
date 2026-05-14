@@ -1,6 +1,6 @@
 # LLM Provider Patterns
 
-Grounded in traverse's BaseChatModel Protocol and ChatInvokeCompletion response contract.
+Grounded in agentyc's BaseChatModel Protocol and ChatInvokeCompletion response contract.
 
 ## What Good Looks Like
 
@@ -12,8 +12,8 @@ Grounded in traverse's BaseChatModel Protocol and ChatInvokeCompletion response 
 - `output_format` drives structured parsing via the provider's native schema mechanism.
 - `stop_reason` is normalized to a plain string (`'end_turn'`, `'max_tokens'`, etc.).
 - `isinstance(llm, BaseChatModel)` is `True` at runtime — no subclassing required.
-- All new providers live under `traverse/llm/<provider>/chat.py`.
-- Provider-specific errors are translated to `traverse.llm.exceptions` types before propagating.
+- All new providers live under `agentyc/llm/<provider>/chat.py`.
+- Provider-specific errors are translated to `agentyc.llm.exceptions` types before propagating.
 
 ## What To Avoid
 

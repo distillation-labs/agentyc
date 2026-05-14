@@ -3,9 +3,9 @@ from typing import Any
 
 import pytest
 
-from traverse.browser import BrowserProfile, BrowserSession
-from traverse.browser.profile import ProxySettings
-from traverse.config import CONFIG
+from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.browser.profile import ProxySettings
+from agentyc.config import CONFIG
 
 
 def test_chromium_args_include_proxy_flags():
