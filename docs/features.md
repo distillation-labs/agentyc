@@ -2,7 +2,7 @@
 
 ## Public MCP Surface
 
-The public `0.1.0` release is centered on the stdio MCP server in `traverse.mcp.server`.
+The public `0.1.0` release is centered on the stdio MCP server in `agentyc.mcp.server`.
 
 Exposed MCP tools:
 
@@ -70,7 +70,7 @@ If no deterministic route matches, the MCP tool returns an explicit error instea
 - `browser_click` also supports viewport coordinates.
 - Ref-based actions attempt limited live recovery after small DOM drift.
 - Action failures use machine-readable prefixes such as `Error [stale_ref]` and `Error [target_disabled]`.
-- `browser_upload_file` accepts either an absolute local path or a file name from the traverse file system.
+- `browser_upload_file` accepts either an absolute local path or a file name from the agentyc file system.
 
 ## Session Model
 
@@ -85,6 +85,6 @@ The package also exposes Python imports including:
 - `BrowserSession`
 - `BrowserProfile`
 - `Tools`
-- `TraverseServer`
+- `AgentycServer`
 
-These are importable from `traverse`, but the primary public release surface is the MCP server and the documented tool set above.
+These are importable from `agentyc`, but the primary public release surface is the MCP server and the documented tool set above.
