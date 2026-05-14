@@ -312,7 +312,7 @@ class TraverseServer:
 				),
 				types.Tool(
 					name='browser_extract_content',
-					description='Deterministically extract content from the current page based on a query.',
+					description='Deterministically extract compatible content from the current page based on a query. This MCP tool does not use an LLM fallback.',
 					inputSchema={
 						'type': 'object',
 						'properties': {
