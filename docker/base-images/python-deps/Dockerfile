@@ -1,5 +1,5 @@
 ARG BASE_TAG=latest
-FROM traverse/base-chromium:${BASE_TAG}
+FROM agentyc/base-chromium:${BASE_TAG}
 
 ENV PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH" PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 
