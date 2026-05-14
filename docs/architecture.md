@@ -9,13 +9,13 @@
 └─────────────────────┬───────────────────────────────────┘
                       │  MCP stdio / Python API
 ┌─────────────────────▼───────────────────────────────────┐
-│                  TraverseServer (MCP)                 │
-│               traverse/mcp/server.py                 │
+│                  AgentycServer (MCP)                 │
+│               agentyc/mcp/server.py                 │
 └─────────────────────┬───────────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────────┐
 │                  Tools / Controller                     │
-│               traverse/tools/service.py              │
+│               agentyc/tools/service.py              │
 │  - Action schema registry                               │
 │  - Timeout guards (default 180s)                        │
 │  - Extraction router (deterministic paths)              │
@@ -24,7 +24,7 @@
            │                      │ (structured extraction)
 ┌──────────▼──────────┐  ┌───────▼──────────────────────┐
 │   BrowserSession    │  │       LLM Providers           │
-│  browser/session.py │  │  traverse/llm/             │
+│  browser/session.py │  │  agentyc/llm/             │
 │  - CDP connections  │  │  15+ providers                │
 │  - Event bus        │  └──────────────────────────────┘
 │  - Tab management   │
@@ -39,7 +39,7 @@
 
 ## Component Breakdown
 
-### BrowserSession (`traverse/browser/session.py`)
+### BrowserSession (`agentyc/browser/session.py`)
 
 The core session manager. One instance = one browser process (or remote cloud browser connection).
 
@@ -52,7 +52,7 @@ Responsibilities:
 
 **Lifecycle**: `async with BrowserSession(profile=...) as session` — session cleans up on exit.
 
-### Tools / Controller (`traverse/tools/service.py`)
+### Tools / Controller (`agentyc/tools/service.py`)
 
 The action layer between the agent and the browser. Takes an `ActionModel` (validated Pydantic), emits the right event on the session bus, waits for the result, returns an `ActionResult`.
 
@@ -60,9 +60,9 @@ Key behaviors:
 - Validates all action inputs via Pydantic schema before touching the browser
 - Wraps every operation in a per-action timeout (configurable, default 180s)
 - Routes extraction requests: deterministic extractor first, LLM fallback only when needed
-- Token cost accounting per action via `traverse/tokens/`
+- Token cost accounting per action via `agentyc/tokens/`
 
-### DomService (`traverse/dom/service.py`)
+### DomService (`agentyc/dom/service.py`)
 
 Converts a live browser page into a structured, indexable DOM representation.
 
@@ -75,7 +75,7 @@ Pipeline:
 
 The element index is stable within a single page load — agents reference elements by integer index (e.g. `click element 42`).
 
-### BrowserProfile (`traverse/browser/profile.py`)
+### BrowserProfile (`agentyc/browser/profile.py`)
 
 Encapsulates everything needed to launch a Chrome instance:
 - Chrome binary path and user data directory
@@ -103,7 +103,7 @@ result = await session.bus.emit(ClickElementEvent(index=5))
 session.bus.on(ClickElementEvent, self._handle_click)
 ```
 
-### Events (`traverse/browser/events.py`)
+### Events (`agentyc/browser/events.py`)
 
 **Action events** (emitted by Tools, handled by watchdogs):
 | Event | Trigger |
@@ -139,7 +139,7 @@ session.bus.on(ClickElementEvent, self._handle_click)
 
 ---
 
-## Watchdog Services (`traverse/browser/watchdogs/`)
+## Watchdog Services (`agentyc/browser/watchdogs/`)
 
 Each watchdog is an async service that registers event handlers and monitors a specific concern. They are initialized and torn down with `BrowserSession`.
 
@@ -185,7 +185,7 @@ SerializedDOMState
   (JSON: element_map, html_string, AX tree)
 ```
 
-### Extractors (`traverse/tools/extraction/router.py`)
+### Extractors (`agentyc/tools/extraction/router.py`)
 
 Six deterministic extractors run without LLM:
 
@@ -241,7 +241,7 @@ Agent calls session.get_state()
 MCP Client (Claude Desktop)
   │  stdio
   ▼
-TraverseServer.handle_tool_call(name, args)
+AgentycServer.handle_tool_call(name, args)
   │
   ├─ Parses args → ActionModel
   ├─ Looks up or creates BrowserSession for session_id
