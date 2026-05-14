@@ -1,40 +1,40 @@
 # syntax=docker/dockerfile:1
 # check=skip=SecretsUsedInArgOrEnv
 
-# This is the Dockerfile for traverse, it bundles the following dependencies:
-#     python3, pip, playwright, chromium, traverse and its dependencies.
+# This is the Dockerfile for agentyc, it bundles the following dependencies:
+#     python3, pip, playwright, chromium, agentyc and its dependencies.
 # Usage:
-#     git clone https://github.com/traverse/traverse.git && cd traverse
-#     docker build . -t traverse --no-cache
-#     docker run -v "$PWD/data":/data traverse
-#     docker run -v "$PWD/data":/data traverse --version
+#     git clone https://github.com/agentyc/agentyc.git && cd agentyc
+#     docker build . -t agentyc --no-cache
+#     docker run -v "$PWD/data":/data agentyc
+#     docker run -v "$PWD/data":/data agentyc --version
 # Multi-arch build:
 #     docker buildx create --use
-#     docker buildx build . --platform=linux/amd64,linux/arm64--push -t traverse/traverse:some-tag
+#     docker buildx build . --platform=linux/amd64,linux/arm64--push -t agentyc/agentyc:some-tag
 #
-# Read more: https://docs.traverse.com
+# Read more: https://docs.agentyc.com
 
 #########################################################################################
 
 
 FROM python:3.12-slim
 
-LABEL name="traverse" \
-    maintainer="Nick Sweeting <dockerfile@traverse.com>" \
+LABEL name="agentyc" \
+    maintainer="Nick Sweeting <dockerfile@agentyc.com>" \
     description="Make websites accessible for AI agents. Automate tasks online with ease." \
-    homepage="https://github.com/traverse/traverse" \
-    documentation="https://docs.traverse.com" \
-    org.opencontainers.image.title="traverse" \
-    org.opencontainers.image.vendor="traverse" \
+    homepage="https://github.com/agentyc/agentyc" \
+    documentation="https://docs.agentyc.com" \
+    org.opencontainers.image.title="agentyc" \
+    org.opencontainers.image.vendor="agentyc" \
     org.opencontainers.image.description="Make websites accessible for AI agents. Automate tasks online with ease." \
-    org.opencontainers.image.source="https://github.com/traverse/traverse" \
+    org.opencontainers.image.source="https://github.com/agentyc/agentyc" \
     com.docker.image.source.entrypoint="Dockerfile" \
     com.docker.desktop.extension.api.version=">= 1.4.7" \
     com.docker.desktop.extension.icon="https://avatars.githubusercontent.com/u/192012301?s=200&v=4" \
-    com.docker.extension.publisher-url="https://traverse.com" \
+    com.docker.extension.publisher-url="https://agentyc.com" \
     com.docker.extension.screenshots='[{"alt": "Screenshot of CLI splashscreen", "url": "https://github.com/user-attachments/assets/3606d851-deb1-439e-ad90-774e7960ded8"}, {"alt": "Screenshot of CLI running", "url": "https://github.com/user-attachments/assets/d018b115-95a4-4ac5-8259-b750bc5f56ad"}]' \
-    com.docker.extension.detailed-description='See here for detailed documentation: https://docs.traverse.com' \
-    com.docker.extension.changelog='See here for release notes: https://github.com/traverse/traverse/releases' \
+    com.docker.extension.detailed-description='See here for detailed documentation: https://docs.agentyc.com' \
+    com.docker.extension.changelog='See here for release notes: https://github.com/agentyc/agentyc/releases' \
     com.docker.extension.categories='web,utility-tools,ai'
 
 ARG TARGETPLATFORM
@@ -62,7 +62,7 @@ ENV TZ=UTC \
     IN_DOCKER=True
 
 # User config
-ENV TRAVERSE_USER="traverse" \
+ENV AGENTYC_USER="agentyc" \
     DEFAULT_PUID=911 \
     DEFAULT_PGID=911
 
@@ -73,7 +73,7 @@ ENV CODE_DIR=/app \
     PATH="/app/.venv/bin:$PATH"
 
 # Build shell config
-SHELL ["/bin/bash", "-o", "pipefail", "-o", "errexit", "-o", "errtrace", "-o", "nounset", "-c"] 
+SHELL ["/bin/bash", "-o", "pipefail", "-o", "errexit", "-o", "errtrace", "-o", "nounset", "-c"]
 
 # Force apt to leave downloaded binaries in /var/cache/apt (massively speeds up Docker builds)
 RUN echo 'Binary::apt::APT::Keep-Downloaded-Packages "1";' > /etc/apt/apt.conf.d/99keep-cache \
@@ -82,7 +82,7 @@ RUN echo 'Binary::apt::APT::Keep-Downloaded-Packages "1";' > /etc/apt/apt.conf.d
     && rm -f /etc/apt/apt.conf.d/docker-clean
 
 # Print debug info about build and save it to disk, for human eyes only, not used by anything else
-RUN (echo "[i] Docker build for Traverse $(cat /VERSION.txt) starting..." \
+RUN (echo "[i] Docker build for Agentyc $(cat /VERSION.txt) starting..." \
     && echo "PLATFORM=${TARGETPLATFORM} ARCH=$(uname -m) ($(uname -s) ${TARGETARCH} ${TARGETVARIANT})" \
     && echo "BUILD_START_TIME=$(date +"%Y-%m-%d %H:%M:%S %s") TZ=${TZ} LANG=${LANG}" \
     && echo \
@@ -98,17 +98,17 @@ RUN (echo "[i] Docker build for Traverse $(cat /VERSION.txt) starting..." \
     && echo -e '\n\n' \
     ) | tee -a /VERSION.txt
 
-# Create non-privileged user for traverse and chrome
-RUN echo "[*] Setting up $TRAVERSE_USER user uid=${DEFAULT_PUID}..." \
-    && groupadd --system $TRAVERSE_USER \
-    && useradd --system --create-home --gid $TRAVERSE_USER --groups audio,video $TRAVERSE_USER \
-    && usermod -u "$DEFAULT_PUID" "$TRAVERSE_USER" \
-    && groupmod -g "$DEFAULT_PGID" "$TRAVERSE_USER" \
+# Create non-privileged user for agentyc and chrome
+RUN echo "[*] Setting up $AGENTYC_USER user uid=${DEFAULT_PUID}..." \
+    && groupadd --system $AGENTYC_USER \
+    && useradd --system --create-home --gid $AGENTYC_USER --groups audio,video $AGENTYC_USER \
+    && usermod -u "$DEFAULT_PUID" "$AGENTYC_USER" \
+    && groupmod -g "$DEFAULT_PGID" "$AGENTYC_USER" \
     && mkdir -p /data \
-    && mkdir -p /home/$TRAVERSE_USER/.config \
-    && chown -R $TRAVERSE_USER:$TRAVERSE_USER /home/$TRAVERSE_USER \
-    && ln -s $DATA_DIR /home/$TRAVERSE_USER/.config/traverse \
-    && echo -e "\nTRAVERSE_USER=$TRAVERSE_USER PUID=$(id -u $TRAVERSE_USER) PGID=$(id -g $TRAVERSE_USER)\n\n" \
+    && mkdir -p /home/$AGENTYC_USER/.config \
+    && chown -R $AGENTYC_USER:$AGENTYC_USER /home/$AGENTYC_USER \
+    && ln -s $DATA_DIR /home/$AGENTYC_USER/.config/agentyc \
+    && echo -e "\nAGENTYC_USER=$AGENTYC_USER PUID=$(id -u $AGENTYC_USER) PGID=$(id -g $AGENTYC_USER)\n\n" \
     | tee -a /VERSION.txt
     # DEFAULT_PUID and DEFAULT_PID are overridden by PUID and PGID in /bin/docker_entrypoint.sh at runtime
     # https://docs.linuxserver.io/general/understanding-puid-and-pgid
@@ -167,34 +167,34 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/chromium /usr/bin/chromium-browser \
     && ln -s /usr/bin/chromium /app/chromium-browser \
-    && mkdir -p "/home/${TRAVERSE_USER}/.config/chromium/Crash Reports/pending/" \
-    && chown -R "$TRAVERSE_USER:$TRAVERSE_USER" "/home/${TRAVERSE_USER}/.config" \
+    && mkdir -p "/home/${AGENTYC_USER}/.config/chromium/Crash Reports/pending/" \
+    && chown -R "$AGENTYC_USER:$AGENTYC_USER" "/home/${AGENTYC_USER}/.config" \
     && ( \
         which chromium-browser && /usr/bin/chromium-browser --version \
         && echo -e '\n\n' \
     ) | tee -a /VERSION.txt
 
 RUN --mount=type=cache,target=/root/.cache,sharing=locked,id=cache-$TARGETARCH$TARGETVARIANT \
-     echo "[+] Installing traverse pip sub-dependencies..." \
+     echo "[+] Installing agentyc pip sub-dependencies..." \
      && ( \
         uv sync --all-extras --no-dev --no-install-project \
         && echo -e '\n\n' \
      ) | tee -a /VERSION.txt
 
-# Copy the rest of the traverse codebase
+# Copy the rest of the agentyc codebase
 COPY . /app
 
-# Install the traverse package and all of its optional dependencies
+# Install the agentyc package and all of its optional dependencies
 RUN --mount=type=cache,target=/root/.cache,sharing=locked,id=cache-$TARGETARCH$TARGETVARIANT \
-     echo "[+] Installing traverse pip library from source..." \
+     echo "[+] Installing agentyc pip library from source..." \
      && ( \
         uv sync --all-extras --locked --no-dev \
-        && python -c "import traverse; print('traverse installed successfully')" \
+        && python -c "import agentyc; print('agentyc installed successfully')" \
         && echo -e '\n\n' \
      ) | tee -a /VERSION.txt
 
 RUN mkdir -p "$DATA_DIR/profiles/default" \
-    && chown -R $TRAVERSE_USER:$TRAVERSE_USER "$DATA_DIR" "$DATA_DIR"/* \
+    && chown -R $AGENTYC_USER:$AGENTYC_USER "$DATA_DIR" "$DATA_DIR"/* \
     && ( \
         echo -e "\n\n[√] Finished Docker build successfully. Saving build summary in: /VERSION.txt" \
         && echo -e "PLATFORM=${TARGETPLATFORM} ARCH=$(uname -m) ($(uname -s) ${TARGETARCH} ${TARGETVARIANT})\n" \
@@ -202,7 +202,7 @@ RUN mkdir -p "$DATA_DIR/profiles/default" \
     ) | tee -a /VERSION.txt
 
 
-USER "$TRAVERSE_USER"
+USER "$AGENTYC_USER"
 VOLUME "$DATA_DIR"
 EXPOSE 9242
 EXPOSE 9222
@@ -210,4 +210,4 @@ EXPOSE 9222
 # HEALTHCHECK --interval=30s --timeout=20s --retries=15 \
 #     CMD curl --silent 'http://localhost:8000/health/' | grep -q 'OK'
 
-ENTRYPOINT ["traverse"]
+ENTRYPOINT ["agentyc"]
