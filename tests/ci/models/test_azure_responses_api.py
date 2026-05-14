@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from traverse.llm.azure.chat import RESPONSES_API_ONLY_MODELS, ChatAzureOpenAI
-from traverse.llm.messages import (
+from agentyc.llm.azure.chat import RESPONSES_API_ONLY_MODELS, ChatAzureOpenAI
+from agentyc.llm.messages import (
 	AssistantMessage,
 	ContentPartImageParam,
 	ContentPartTextParam,
@@ -15,7 +15,7 @@ from traverse.llm.messages import (
 	ToolCall,
 	UserMessage,
 )
-from traverse.llm.openai.responses_serializer import ResponsesAPIMessageSerializer
+from agentyc.llm.openai.responses_serializer import ResponsesAPIMessageSerializer
 
 
 class TestResponsesAPIMessageSerializer:
