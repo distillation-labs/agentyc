@@ -16,7 +16,7 @@ from statistics import mean
 from threading import Thread
 from typing import Any
 
-from traverse.dogfood import (
+from agentyc.dogfood import (
 	build_issue_body,
 	build_issue_title,
 	collect_fixture_regression_reasons,
@@ -78,7 +78,7 @@ def measure_import_ms() -> float:
 	command = [
 		sys.executable,
 		'-c',
-		'import time; start=time.perf_counter(); import traverse.mcp.server; print((time.perf_counter()-start)*1000)',
+		'import time; start=time.perf_counter(); import agentyc.mcp.server; print((time.perf_counter()-start)*1000)',
 	]
 	output = subprocess.check_output(command, text=True).strip()
 	return round(float(output), 1)
@@ -1100,7 +1100,7 @@ def make_release_notes_html() -> str:
 
 
 def serve_fixture_pack(fixtures: list[BenchmarkFixture]) -> ServedFixturePack:
-	root = tempfile.TemporaryDirectory(prefix='traverse-benchmark-')
+	root = tempfile.TemporaryDirectory(prefix='agentyc-benchmark-')
 	root_path = Path(root.name)
 	for fixture in fixtures:
 		(root_path / f'{fixture.slug}.html').write_text(fixture.html, encoding='utf-8')
@@ -1741,10 +1741,10 @@ async def main() -> None:
 		selected_fixtures = fixtures
 	import_ms = measure_import_ms()
 
-	from traverse.mcp.server import TraverseServer
+	from agentyc.mcp.server import AgentycServer
 
 	fixture_pack = serve_fixture_pack(selected_fixtures)
-	server = TraverseServer(session_timeout_minutes=1)
+	server = AgentycServer(session_timeout_minutes=1)
 
 	try:
 		_, session_init_ms = await benchmark_call(
