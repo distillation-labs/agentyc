@@ -5,7 +5,7 @@ import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar, cast, overload
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -83,7 +83,9 @@ class ChatGitHubCopilot(BaseChatModel):
 				model=self.name,
 			) from e
 
-		return copilot_sdk.CopilotClient, copilot_sdk.PermissionRequestResult
+		copilot_client = getattr(cast(Any, copilot_sdk), 'CopilotClient')
+		permission_request_result = getattr(cast(Any, copilot_sdk), 'PermissionRequestResult')
+		return copilot_client, permission_request_result
 
 	async def _ensure_client(self) -> Any:
 		if self._client is not None:
