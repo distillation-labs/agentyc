@@ -103,7 +103,7 @@ def set_target_window_context(target: Target | None, *, window_id: int | None = 
 		target.window_bounds = window_bounds
 
 
-async def initialize_existing_targets(manager: 'SessionManager') -> None:
+async def initialize_existing_targets(manager: SessionManager) -> None:
 	"""Discover and initialize all existing targets at startup."""
 	cdp_client = manager.browser_session._cdp_client_root
 	assert cdp_client is not None
@@ -179,7 +179,7 @@ async def initialize_existing_targets(manager: 'SessionManager') -> None:
 			pass
 
 
-async def enable_page_monitoring(manager: 'SessionManager', cdp_session: CDPSession) -> None:
+async def enable_page_monitoring(manager: SessionManager, cdp_session: CDPSession) -> None:
 	"""Enable lifecycle events and network monitoring for a page target."""
 	try:
 		await cdp_session.cdp_client.send.Page.enable(session_id=cdp_session.session_id)
