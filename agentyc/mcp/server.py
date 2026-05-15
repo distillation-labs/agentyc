@@ -10,12 +10,12 @@ os.environ['AGENTYC_LOGGING_LEVEL'] = 'critical'
 os.environ['AGENTYC_SETUP_LOGGING'] = 'false'
 
 import asyncio
-import json
 import logging
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 # Configure logging for MCP mode - redirect to stderr but preserve critical diagnostics
 logging.basicConfig(
@@ -181,6 +181,7 @@ try:
 	import mcp.types as types
 	from mcp.server import NotificationOptions, Server
 	from mcp.server.models import InitializationOptions
+
 	from agentyc.mcp.tool_schemas import get_tool_schemas
 
 	MCP_AVAILABLE = True
@@ -230,6 +231,10 @@ def get_parent_process_cmdline() -> str | None:
 
 class AgentycServer:
 	"""MCP Server for agentyc capabilities."""
+
+	_execute_tool: Callable[[str, dict[str, Any]], Awaitable[Any]]
+	_start_cleanup_task: Callable[[], Awaitable[None]]
+	_shutdown: Callable[[], Awaitable[None]]
 
 	def __init__(
 		self,
@@ -360,68 +365,73 @@ class AgentycServer:
 			await self._shutdown()
 
 
-AgentycServer._execute_tool = _execute_tool
-AgentycServer._init_browser_session = _init_browser_session
-AgentycServer._ensure_extract_runtime = _ensure_extract_runtime
-AgentycServer._resolve_element_index = _resolve_element_index
-AgentycServer._cache_state_payload = _cache_state_payload
-AgentycServer._refresh_selector_map = _refresh_selector_map
-AgentycServer._resolve_live_element = _resolve_live_element
-AgentycServer._resolve_upload_available_file_paths = _resolve_upload_available_file_paths
-AgentycServer._validate_actionable_element = _validate_actionable_element
-AgentycServer._classify_action_error = _classify_action_error
-AgentycServer._format_action_error = _format_action_error
-AgentycServer._run_tool_action = _run_tool_action
-AgentycServer._inject_extraction_metadata = _inject_extraction_metadata
-AgentycServer._navigate = _navigate
-AgentycServer._click = _click
-AgentycServer._type_text = _type_text
-AgentycServer._upload_file = _upload_file
-AgentycServer._get_browser_state = _get_browser_state
-AgentycServer._extract_content = _extract_content
-AgentycServer._scroll = _scroll
-AgentycServer._go_back = _go_back
-AgentycServer._go_forward = _go_forward
-AgentycServer._refresh = _refresh
-AgentycServer._press_key = _press_key
-AgentycServer._wait = _wait
-AgentycServer._evaluate = _evaluate
-AgentycServer._select_option = _select_option
-AgentycServer._get_dropdown_options = _get_dropdown_options
-AgentycServer._find_elements = _find_elements
-AgentycServer._wait_for_element = _wait_for_element
-AgentycServer._search_page = _search_page
-AgentycServer._get_html = _get_html
-AgentycServer._screenshot = _screenshot
-AgentycServer._get_viewport_coords = _get_viewport_coords
-AgentycServer._resolve_element_coords = _resolve_element_coords
-AgentycServer._hover = _hover
-AgentycServer._double_click = _double_click
-AgentycServer._drag_to = _drag_to
-AgentycServer._scroll_to_text = _scroll_to_text
-AgentycServer._save_state = _save_state
-AgentycServer._load_state = _load_state
-AgentycServer._wait_for_network_idle = _wait_for_network_idle
-AgentycServer._right_click = _right_click
-AgentycServer._get_cookies = _get_cookies
-AgentycServer._set_cookies = _set_cookies
-AgentycServer._clear_cookies = _clear_cookies
-AgentycServer._register_cdp_event_listeners = _register_cdp_event_listeners
-AgentycServer._get_console_logs = _get_console_logs
-AgentycServer._get_network_log = _get_network_log
-AgentycServer._get_focused_element = _get_focused_element
-AgentycServer._list_tabs = _list_tabs
-AgentycServer._switch_tab = _switch_tab
-AgentycServer._close_tab = _close_tab
-AgentycServer._track_session = _track_session
-AgentycServer._update_session_activity = _update_session_activity
-AgentycServer._update_session_url = _update_session_url
-AgentycServer._list_sessions = _list_sessions
-AgentycServer._close_session = _close_session
-AgentycServer._close_all_sessions = _close_all_sessions
-AgentycServer._cleanup_expired_sessions = _cleanup_expired_sessions
-AgentycServer._start_cleanup_task = _start_cleanup_task
-AgentycServer._shutdown = _shutdown
+_SERVER_METHODS: dict[str, Any] = {
+	'_execute_tool': _execute_tool,
+	'_init_browser_session': _init_browser_session,
+	'_ensure_extract_runtime': _ensure_extract_runtime,
+	'_resolve_element_index': _resolve_element_index,
+	'_cache_state_payload': _cache_state_payload,
+	'_refresh_selector_map': _refresh_selector_map,
+	'_resolve_live_element': _resolve_live_element,
+	'_resolve_upload_available_file_paths': _resolve_upload_available_file_paths,
+	'_validate_actionable_element': _validate_actionable_element,
+	'_classify_action_error': _classify_action_error,
+	'_format_action_error': _format_action_error,
+	'_run_tool_action': _run_tool_action,
+	'_inject_extraction_metadata': _inject_extraction_metadata,
+	'_navigate': _navigate,
+	'_click': _click,
+	'_type_text': _type_text,
+	'_upload_file': _upload_file,
+	'_get_browser_state': _get_browser_state,
+	'_extract_content': _extract_content,
+	'_scroll': _scroll,
+	'_go_back': _go_back,
+	'_go_forward': _go_forward,
+	'_refresh': _refresh,
+	'_press_key': _press_key,
+	'_wait': _wait,
+	'_evaluate': _evaluate,
+	'_select_option': _select_option,
+	'_get_dropdown_options': _get_dropdown_options,
+	'_find_elements': _find_elements,
+	'_wait_for_element': _wait_for_element,
+	'_search_page': _search_page,
+	'_get_html': _get_html,
+	'_screenshot': _screenshot,
+	'_get_viewport_coords': _get_viewport_coords,
+	'_resolve_element_coords': _resolve_element_coords,
+	'_hover': _hover,
+	'_double_click': _double_click,
+	'_drag_to': _drag_to,
+	'_scroll_to_text': _scroll_to_text,
+	'_save_state': _save_state,
+	'_load_state': _load_state,
+	'_wait_for_network_idle': _wait_for_network_idle,
+	'_right_click': _right_click,
+	'_get_cookies': _get_cookies,
+	'_set_cookies': _set_cookies,
+	'_clear_cookies': _clear_cookies,
+	'_register_cdp_event_listeners': _register_cdp_event_listeners,
+	'_get_console_logs': _get_console_logs,
+	'_get_network_log': _get_network_log,
+	'_get_focused_element': _get_focused_element,
+	'_list_tabs': _list_tabs,
+	'_switch_tab': _switch_tab,
+	'_close_tab': _close_tab,
+	'_track_session': _track_session,
+	'_update_session_activity': _update_session_activity,
+	'_update_session_url': _update_session_url,
+	'_list_sessions': _list_sessions,
+	'_close_session': _close_session,
+	'_close_all_sessions': _close_all_sessions,
+	'_cleanup_expired_sessions': _cleanup_expired_sessions,
+	'_start_cleanup_task': _start_cleanup_task,
+	'_shutdown': _shutdown,
+}
+
+for _method_name, _method in _SERVER_METHODS.items():
+	setattr(AgentycServer, _method_name, _method)
 
 
 async def main(
