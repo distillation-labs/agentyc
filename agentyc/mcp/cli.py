@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 
 from agentyc.mcp.server import main as mcp_main
 
 
 def _cmd_mcp(args: argparse.Namespace) -> None:
-	asyncio.run(mcp_main(session_timeout_minutes=args.session_timeout_minutes, cdp_url=args.cdp_url))
+	window_bounds = json.loads(args.shared_browser_window_bounds) if args.shared_browser_window_bounds else None
+	asyncio.run(
+		mcp_main(
+			session_timeout_minutes=args.session_timeout_minutes,
+			cdp_url=args.cdp_url,
+			runtime_label=args.runtime_label,
+			runtime_role=args.runtime_role,
+			parent_runtime_id=args.parent_runtime_id,
+			shared_browser_mode=args.shared_browser_mode,
+			shared_browser_window_bounds=window_bounds,
+			shared_browser_focus_policy=args.shared_browser_focus_policy,
+		)
+	)
 
 
 def _cmd_browser(args: argparse.Namespace) -> None:
@@ -95,7 +108,28 @@ def main() -> None:
 		'--cdp-url',
 		type=str,
 		default=None,
-		help='CDP WebSocket URL of a shared Chrome browser. When provided, attaches to the existing browser and creates a new tab instead of launching a separate browser process. Use `agentyc browser` to get this URL.',
+		help='CDP WebSocket URL of a shared Chrome browser. When provided, attaches to the existing browser and creates a collaboration target (tab by default, or a separate window in window mode) instead of launching a separate browser process. Use `agentyc browser` to get this URL.',
+	)
+	mcp_parser.add_argument('--runtime-label', type=str, default=None, help='Collaboration label for this runtime.')
+	mcp_parser.add_argument('--runtime-role', type=str, default='primary', help='Collaboration role for this runtime.')
+	mcp_parser.add_argument('--parent-runtime-id', type=str, default=None, help='Optional parent runtime identifier.')
+	mcp_parser.add_argument(
+		'--shared-browser-mode',
+		choices=('tab', 'window'),
+		default='tab',
+		help='When attaching to a shared browser, create a tab or a separate window.',
+	)
+	mcp_parser.add_argument(
+		'--shared-browser-window-bounds',
+		type=str,
+		default=None,
+		help='Optional JSON object for shared-browser window bounds, e.g. {"left":0,"top":0,"width":1280,"height":900}.',
+	)
+	mcp_parser.add_argument(
+		'--shared-browser-focus-policy',
+		choices=('preserve', 'activate'),
+		default='preserve',
+		help='Preserve human focus by default for internal attach/new-tab flows, or activate the runtime target.',
 	)
 
 	# browser subcommand: start Chrome with remote debugging
@@ -116,5 +150,23 @@ def main() -> None:
 		flat_parser = argparse.ArgumentParser(description='agentyc MCP server')
 		flat_parser.add_argument('--session-timeout-minutes', type=int, default=10)
 		flat_parser.add_argument('--cdp-url', type=str, default=None)
+		flat_parser.add_argument('--runtime-label', type=str, default=None)
+		flat_parser.add_argument('--runtime-role', type=str, default='primary')
+		flat_parser.add_argument('--parent-runtime-id', type=str, default=None)
+		flat_parser.add_argument('--shared-browser-mode', choices=('tab', 'window'), default='tab')
+		flat_parser.add_argument('--shared-browser-window-bounds', type=str, default=None)
+		flat_parser.add_argument('--shared-browser-focus-policy', choices=('preserve', 'activate'), default='preserve')
 		flat_args = flat_parser.parse_args()
-		asyncio.run(mcp_main(session_timeout_minutes=flat_args.session_timeout_minutes, cdp_url=flat_args.cdp_url))
+		window_bounds = json.loads(flat_args.shared_browser_window_bounds) if flat_args.shared_browser_window_bounds else None
+		asyncio.run(
+			mcp_main(
+				session_timeout_minutes=flat_args.session_timeout_minutes,
+				cdp_url=flat_args.cdp_url,
+				runtime_label=flat_args.runtime_label,
+				runtime_role=flat_args.runtime_role,
+				parent_runtime_id=flat_args.parent_runtime_id,
+				shared_browser_mode=flat_args.shared_browser_mode,
+				shared_browser_window_bounds=window_bounds,
+				shared_browser_focus_policy=flat_args.shared_browser_focus_policy,
+			)
+		)
