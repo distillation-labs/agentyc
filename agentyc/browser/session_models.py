@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Literal
 
 from cdp_use import CDPClient
@@ -12,13 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 def _short_runtime_id(runtime_id: str) -> str:
 	return runtime_id[-4:] if len(runtime_id) >= 4 else runtime_id
-
-
-def _runtime_color(runtime_id: str) -> str:
-	"""Derive a deterministic accent color from runtime_id."""
-	digest = hashlib.sha1(runtime_id.encode('utf-8')).hexdigest()
-	hue = int(digest[:6], 16) % 360
-	return f'hsl({hue} 72% 58%)'
 
 
 class BrowserWindowBounds(BaseModel):
@@ -53,8 +45,6 @@ class RuntimeOwnershipMetadata(BaseModel):
 	runtime_role: str = 'primary'
 	parent_runtime_id: str | None = None
 	title_prefix: str
-	overlay_label: str
-	accent_color: str
 
 	@classmethod
 	def create(
@@ -75,9 +65,7 @@ class RuntimeOwnershipMetadata(BaseModel):
 			runtime_label=resolved_label,
 			runtime_role=runtime_role,
 			parent_runtime_id=parent_runtime_id,
-			title_prefix=f'[agtyc:{short_id}] ',
-			overlay_label=resolved_label,
-			accent_color=_runtime_color(resolved_runtime_id),
+			title_prefix=f'[{resolved_label}] ',
 		)
 
 
@@ -92,8 +80,6 @@ class TargetOwnershipMetadata(BaseModel):
 	display_label: str
 	runtime: RuntimeOwnershipMetadata | None = None
 	title_prefix_applied: bool = False
-	overlay_enabled: bool = False
-	overlay_visible: bool = False
 	marker_version: int = 1
 
 	@classmethod
@@ -105,8 +91,6 @@ class TargetOwnershipMetadata(BaseModel):
 		current_runtime_id: str | None = None,
 		source: Literal['current_runtime', 'detected_runtime', 'explicit_runtime'] | None = None,
 		title_prefix_applied: bool = False,
-		overlay_enabled: bool = False,
-		overlay_visible: bool = False,
 	) -> TargetOwnershipMetadata:
 		is_current_runtime = current_runtime_id is not None and runtime.runtime_id == current_runtime_id
 		resolved_source = source or ('current_runtime' if is_current_runtime else 'detected_runtime')
@@ -117,8 +101,6 @@ class TargetOwnershipMetadata(BaseModel):
 			display_label=runtime.runtime_label,
 			runtime=runtime,
 			title_prefix_applied=title_prefix_applied,
-			overlay_enabled=overlay_enabled,
-			overlay_visible=overlay_visible,
 		)
 
 	@classmethod
@@ -129,8 +111,6 @@ class TargetOwnershipMetadata(BaseModel):
 		display_label: str = 'Human',
 		source: Literal['shared_browser_human', 'manual_human'] = 'shared_browser_human',
 		title_prefix_applied: bool = False,
-		overlay_enabled: bool = False,
-		overlay_visible: bool = False,
 	) -> TargetOwnershipMetadata:
 		return cls(
 			target_id=target_id,
@@ -139,8 +119,6 @@ class TargetOwnershipMetadata(BaseModel):
 			display_label=display_label,
 			runtime=None,
 			title_prefix_applied=title_prefix_applied,
-			overlay_enabled=overlay_enabled,
-			overlay_visible=overlay_visible,
 		)
 
 
