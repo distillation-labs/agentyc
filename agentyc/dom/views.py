@@ -318,6 +318,9 @@ class EnhancedAXNode:
 
 	properties: list[EnhancedAXProperty] | None
 	child_ids: list[str] | None
+	value: str | None = None
+	"""Live value of the control (current text for textboxes, selected option for comboboxes, etc.)
+	Sourced from AXNode.value in the CDP Accessibility tree — reflects typed text, not just the HTML attribute."""
 
 
 @dataclass(slots=True)

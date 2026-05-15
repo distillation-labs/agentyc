@@ -1625,3 +1625,152 @@ class TestMCPStateProtocolAndExtraction:
 		assert result.error is not None
 		assert 'No deterministic extraction route matched this query' in result.error
 		assert result.metadata is None
+
+
+class TestParallelTabExecution:
+	"""Verify that multiple AgentycServer instances can share one Chrome browser via cdp_url.
+
+	Each server gets its own isolated tab — actions taken in one should not affect the other.
+	"""
+
+	async def test_two_agents_operate_on_independent_tabs(self, base_url: str):
+		"""Two servers attach to the same browser. Each navigates to a different page.
+		Reading state from server A must not see server B's page and vice-versa.
+		"""
+		# Start a primary browser (keep_alive=True so the second agent can attach)
+		primary_session = BrowserSession(
+			browser_profile=BrowserProfile(
+				headless=True,
+				user_data_dir=None,
+				keep_alive=True,
+			)
+		)
+		await primary_session.start()
+
+		try:
+			# Get the CDP URL of the shared browser
+			cdp_url = primary_session.browser_profile.cdp_url
+			assert cdp_url, 'Primary session must expose a CDP URL for shared-browser attachment'
+
+			# Server A: the primary session itself (owns the first tab)
+			server_a = AgentycServer(cdp_url=cdp_url)
+			server_a.browser_session = primary_session
+			server_a.tools = Tools()
+			server_a.tools.set_coordinate_clicking(True)
+
+			# Server B: creates a new tab in the same browser via cdp_url
+			server_b = AgentycServer(cdp_url=cdp_url)
+			await server_b._init_browser_session(headless=True, user_data_dir=None)
+
+			try:
+				# Navigate each agent to a different page concurrently
+				await asyncio.gather(
+					server_a._navigate(f'{base_url}/accessible'),
+					server_b._navigate(f'{base_url}/status'),
+				)
+
+				# Each agent's state must reflect only its own tab
+				state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
+				state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
+
+				state_a = json.loads(state_a_json)
+				state_b = json.loads(state_b_json)
+
+				# Server A is on /accessible which has "Email address" and "Start checkout"
+				texts_a = {el.get('text', '') for el in state_a['interactive_elements']}
+				assert any('Email' in t or 'Start' in t for t in texts_a), (
+					f'Server A should be on /accessible, got elements: {texts_a}'
+				)
+
+				# Server B is on /status which has "Restart service"
+				texts_b = {el.get('text', '') for el in state_b['interactive_elements']}
+				assert any('Restart' in t for t in texts_b), (
+					f'Server B should be on /status, got elements: {texts_b}'
+				)
+
+				# The two sets of elements must be completely different (no bleed-over)
+				assert texts_a.isdisjoint(texts_b), f'Tab isolation violation — shared elements: {texts_a & texts_b}'
+
+			finally:
+				await server_b._shutdown()
+
+		finally:
+			await primary_session.kill()
+
+	async def test_parallel_actions_do_not_interfere(self, base_url: str):
+		"""Two agents fire click/type actions simultaneously on their own tabs.
+		Each action must succeed and land on the correct tab.
+		"""
+		primary_session = BrowserSession(
+			browser_profile=BrowserProfile(
+				headless=True,
+				user_data_dir=None,
+				keep_alive=True,
+			)
+		)
+		await primary_session.start()
+
+		try:
+			cdp_url = primary_session.browser_profile.cdp_url
+			assert cdp_url
+
+			server_a = AgentycServer(cdp_url=cdp_url)
+			server_a.browser_session = primary_session
+			server_a.tools = Tools()
+			server_a.tools.set_coordinate_clicking(True)
+
+			server_b = AgentycServer(cdp_url=cdp_url)
+			await server_b._init_browser_session(headless=True, user_data_dir=None)
+
+			try:
+				# Point each agent at the accessible form
+				await server_a._navigate(f'{base_url}/accessible')
+				await server_b._navigate(f'{base_url}/accessible')
+
+				# Grab the email input ref in each agent's own view
+				state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
+				state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
+				state_a = json.loads(state_a_json)
+				state_b = json.loads(state_b_json)
+
+				email_ref_a = next(
+					el['ref'] for el in state_a['interactive_elements'] if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+				)
+				email_ref_b = next(
+					el['ref'] for el in state_b['interactive_elements'] if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+				)
+
+				# Both agents type simultaneously into their own tabs
+				result_a, result_b = await asyncio.gather(
+					server_a._type_text(ref=email_ref_a, text='agent-a@example.com'),
+					server_b._type_text(ref=email_ref_b, text='agent-b@example.com'),
+				)
+
+				assert not result_a.startswith('Error'), f'Server A type failed: {result_a}'
+				assert not result_b.startswith('Error'), f'Server B type failed: {result_b}'
+
+				# Verify each tab has the correct value (not bleed-over from the other agent).
+				# Use get_browser_state which surfaces the live input `value` field.
+				post_state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
+				post_state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
+				post_state_a = json.loads(post_state_a_json)
+				post_state_b = json.loads(post_state_b_json)
+
+				values_a = {el.get('value', '') for el in post_state_a['interactive_elements']}
+				values_b = {el.get('value', '') for el in post_state_b['interactive_elements']}
+
+				assert any('agent-a' in v for v in values_a), (
+					f'Tab A should have agent-a value in elements, got values: {values_a}'
+				)
+				assert any('agent-b' in v for v in values_b), (
+					f'Tab B should have agent-b value in elements, got values: {values_b}'
+				)
+				# Confirm the values did NOT bleed across tabs
+				assert not any('agent-b' in v for v in values_a), f'agent-b value leaked into Tab A: {values_a}'
+				assert not any('agent-a' in v for v in values_b), f'agent-a value leaked into Tab B: {values_b}'
+
+			finally:
+				await server_b._shutdown()
+
+		finally:
+			await primary_session.kill()
