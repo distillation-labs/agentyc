@@ -8,137 +8,91 @@ import mcp.types as types
 def get_tool_schemas() -> list[types.Tool]:
 	"""Return the public MCP tool catalog."""
 	return [
-		# Direct browser control tools
 		types.Tool(
 			name='browser_navigate',
-			description='Navigate to a URL in the browser',
+			description='Navigate to a URL',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'url': {'type': 'string', 'description': 'The URL to navigate to'},
-					'new_tab': {'type': 'boolean', 'description': 'Whether to open in a new tab', 'default': False},
+					'url': {'type': 'string'},
+					'new_tab': {'type': 'boolean', 'default': False},
 				},
 				'required': ['url'],
 			},
 		),
 		types.Tool(
 			name='browser_click',
-			description='Click an element by ref or index, or at specific viewport coordinates. Prefer ref from browser_get_state for stable targeting.',
+			description='Click an element (ref preferred) or viewport coordinates.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {
-						'type': 'string',
-						'description': 'Stable element ref from browser_get_state (for example "e123"). Provide this OR index OR coordinate_x+coordinate_y.',
-					},
-					'index': {
-						'type': 'integer',
-						'description': 'Legacy numeric element index from browser_get_state. Equivalent to the backend node id. Provide this OR ref OR coordinate_x+coordinate_y.',
-					},
-					'coordinate_x': {
-						'type': 'integer',
-						'description': 'X coordinate in pixels from the left edge of the viewport. Must be used together with coordinate_y. Provide this OR ref/index.',
-					},
-					'coordinate_y': {
-						'type': 'integer',
-						'description': 'Y coordinate in pixels from the top edge of the viewport. Must be used together with coordinate_x. Provide this OR ref/index.',
-					},
-					'new_tab': {
-						'type': 'boolean',
-						'description': 'Whether to open any resulting navigation in a new tab',
-						'default': False,
-					},
+					'ref': {'type': 'string', 'description': 'Stable ref from browser_get_state (e.g. "e123")'},
+					'index': {'type': 'integer', 'description': 'Backend node id (legacy). Use ref instead.'},
+					'coordinate_x': {'type': 'integer', 'description': 'Viewport X — use with coordinate_y'},
+					'coordinate_y': {'type': 'integer', 'description': 'Viewport Y — use with coordinate_x'},
+					'new_tab': {'type': 'boolean', 'default': False},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_type',
-			description='Type text into an input field. Prefer ref from browser_get_state for stable targeting. Clears existing text by default; pass text="" to clear only.',
+			description='Type text into a field. Clears existing text first. Use text="" to clear only.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {
-						'type': 'string',
-						'description': 'Stable element ref from browser_get_state (for example "e123"). Provide this OR index.',
-					},
-					'index': {
-						'type': 'integer',
-						'description': 'Legacy numeric element index from browser_get_state. Equivalent to the backend node id.',
-					},
-					'text': {
-						'type': 'string',
-						'description': 'The text to type. Pass an empty string ("") to clear the field without typing.',
-					},
+					'ref': {'type': 'string', 'description': 'Stable ref (e.g. "e123")'},
+					'index': {'type': 'integer'},
+					'text': {'type': 'string', 'description': 'Text to type. Empty string clears the field.'},
 				},
 				'required': ['text'],
 			},
 		),
 		types.Tool(
 			name='browser_upload_file',
-			description='Upload a local file to a file input or upload control. Provide ref or index for the target control, and a path that is accessible to the MCP server.',
+			description='Upload a local file to a file input element.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {
-						'type': 'string',
-						'description': 'Stable element ref from browser_get_state (for example "e123"). Provide this OR index.',
-					},
-					'index': {
-						'type': 'integer',
-						'description': 'Legacy numeric element index from browser_get_state. Equivalent to the backend node id. Provide this OR ref.',
-					},
-					'path': {
-						'type': 'string',
-						'description': 'Local file path to upload. Use an absolute path for arbitrary files, or a filename from the agentyc file system.',
-					},
+					'ref': {'type': 'string', 'description': 'Stable ref (e.g. "e123")'},
+					'index': {'type': 'integer'},
+					'path': {'type': 'string', 'description': 'Absolute local file path to upload.'},
 				},
 				'required': ['path'],
 			},
 		),
 		types.Tool(
 			name='browser_get_state',
-			description='Get the current state of the page. Supports compact modes, stable refs, and lightweight unchanged-state checks.',
+			description='Get the current page state: URL, title, interactive elements with stable refs. Pass since_hash to skip unchanged re-reads.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'include_screenshot': {
-						'type': 'boolean',
-						'description': 'Whether to include a screenshot of the current page',
-						'default': False,
-					},
+					'include_screenshot': {'type': 'boolean', 'default': False},
 					'mode': {
 						'type': 'string',
 						'enum': ['auto', 'full', 'min', 'focus'],
-						'description': 'State detail level. auto prefers full on small pages and ranked compaction on large ones. full returns all interactive elements, min returns a compact ranked subset, focus returns a single referenced element.',
+						'description': 'auto: full on small pages, ranked subset on large. full: all elements. min: compact ranked subset. focus: single element.',
 						'default': 'auto',
 					},
-					'focus_ref': {
-						'type': 'string',
-						'description': 'Element ref to focus on when mode=focus.',
-					},
+					'focus_ref': {'type': 'string', 'description': 'Element ref for mode=focus.'},
 					'since_hash': {
 						'type': 'string',
-						'description': 'Previous state_hash from browser_get_state. If unchanged, returns changed=false with no interactive element payload.',
+						'description': 'Previous state_hash. Returns changed=false (no elements) if page unchanged — saves tokens.',
 					},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_extract_content',
-			description='Deterministically extract compatible content from the current page based on a query. This MCP tool does not use an LLM fallback.',
+			description='Deterministically extract structured content (tables, lists, links, images, form fields, key-values) by query. No LLM fallback.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'query': {'type': 'string', 'description': 'What information to extract from the page'},
-					'extract_links': {
-						'type': 'boolean',
-						'description': 'Whether to include links in the extraction',
-						'default': False,
-					},
+					'query': {'type': 'string', 'description': 'What to extract (e.g. "table rows", "all links", "form fields")'},
+					'extract_links': {'type': 'boolean', 'default': False},
 					'output_schema': {
 						'type': 'object',
-						'description': 'Optional JSON Schema for deterministic structured extraction. Compatible table, list, key-value, link-collection, form-field, and image queries can be answered without an LLM.',
 						'additionalProperties': True,
+						'description': 'Optional JSON Schema for structured output.',
 					},
 				},
 				'required': ['query'],
@@ -146,171 +100,144 @@ def get_tool_schemas() -> list[types.Tool]:
 		),
 		types.Tool(
 			name='browser_get_html',
-			description='Get the raw HTML of the current page or a specific element by CSS selector',
+			description='Get raw HTML of the current page or a CSS-selected element.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'selector': {
-						'type': 'string',
-						'description': 'Optional CSS selector to get HTML of a specific element. If omitted, returns full page HTML.',
-					},
+					'selector': {'type': 'string', 'description': 'CSS selector. Omit for full page.'},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_screenshot',
-			description='Take a screenshot of the current page. Returns viewport metadata as text and the screenshot as an image.',
+			description='Take a screenshot. Returns viewport metadata (text) and image.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'full_page': {
-						'type': 'boolean',
-						'description': 'Whether to capture the full scrollable page or just the visible viewport',
-						'default': False,
-					},
+					'full_page': {'type': 'boolean', 'description': 'Capture full scrollable page', 'default': False},
 				},
 			},
 		),
-		# Tab management
-		types.Tool(name='browser_list_tabs', description='List all open tabs', inputSchema={'type': 'object', 'properties': {}}),
+		types.Tool(name='browser_list_tabs', description='List all open tabs.', inputSchema={'type': 'object', 'properties': {}}),
 		types.Tool(
 			name='browser_switch_tab',
-			description='Switch to a different tab',
+			description='Switch to a tab by its 4-char tab_id.',
 			inputSchema={
 				'type': 'object',
-				'properties': {'tab_id': {'type': 'string', 'description': '4 Character Tab ID of the tab to switch to'}},
+				'properties': {'tab_id': {'type': 'string'}},
 				'required': ['tab_id'],
 			},
 		),
 		types.Tool(
 			name='browser_close_tab',
-			description='Close a tab',
+			description='Close a tab by its 4-char tab_id.',
 			inputSchema={
 				'type': 'object',
-				'properties': {'tab_id': {'type': 'string', 'description': '4 Character Tab ID of the tab to close'}},
+				'properties': {'tab_id': {'type': 'string'}},
 				'required': ['tab_id'],
 			},
 		),
-		# Browser session management tools
 		types.Tool(
 			name='browser_list_sessions',
-			description='List all active browser sessions with their details and last activity time',
+			description='List active browser sessions with status and last activity.',
 			inputSchema={'type': 'object', 'properties': {}},
 		),
 		types.Tool(
 			name='browser_close_session',
-			description='Close a specific browser session by its ID',
+			description='Close a browser session by ID (from browser_list_sessions).',
 			inputSchema={
 				'type': 'object',
-				'properties': {
-					'session_id': {
-						'type': 'string',
-						'description': 'The browser session ID to close (get from browser_list_sessions)',
-					}
-				},
+				'properties': {'session_id': {'type': 'string'}},
 				'required': ['session_id'],
 			},
 		),
 		types.Tool(
 			name='browser_close_all',
-			description='Close all active browser sessions and clean up resources',
+			description='Close all browser sessions.',
 			inputSchema={'type': 'object', 'properties': {}},
 		),
-		# Enhanced interaction tools
 		types.Tool(
 			name='browser_scroll',
-			description='Scroll the page or a specific element. pages=10 reaches the bottom quickly.',
+			description='Scroll the page or an element. pages=10 reaches the bottom fast.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
 					'direction': {'type': 'string', 'enum': ['up', 'down'], 'default': 'down'},
-					'pages': {
-						'type': 'number',
-						'description': '0.5=half, 1=full page (default), 10=to bottom/top',
-						'default': 1.0,
-					},
-					'ref': {'type': 'string', 'description': 'Scroll within element ref (e.g. "e123"). Omit for page scroll.'},
-					'index': {'type': 'integer', 'description': 'Scroll within element by backend node id. Provide this OR ref.'},
+					'pages': {'type': 'number', 'description': '0.5=half, 1=full (default), 10=to end', 'default': 1.0},
+					'ref': {'type': 'string', 'description': 'Scroll within element ref. Omit for page scroll.'},
+					'index': {'type': 'integer'},
 				},
 			},
 		),
 		types.Tool(
-			name='browser_go_back',
-			description='Go back to the previous page in browser history',
-			inputSchema={'type': 'object', 'properties': {}},
+			name='browser_go_back', description='Go back in browser history.', inputSchema={'type': 'object', 'properties': {}}
 		),
 		types.Tool(
 			name='browser_go_forward',
-			description='Go forward to the next page in browser history',
+			description='Go forward in browser history.',
 			inputSchema={'type': 'object', 'properties': {}},
 		),
 		types.Tool(
-			name='browser_refresh',
-			description='Refresh/reload the current page',
-			inputSchema={'type': 'object', 'properties': {}},
+			name='browser_refresh', description='Reload the current page.', inputSchema={'type': 'object', 'properties': {}}
 		),
 		types.Tool(
 			name='browser_press_key',
-			description='Send a keyboard key or shortcut. Examples: "Enter", "Tab", "Escape", "ArrowDown", "Control+a", "Meta+r".',
+			description='Send a key or shortcut (e.g. "Enter", "Tab", "Control+a", "Meta+r").',
 			inputSchema={
 				'type': 'object',
-				'properties': {'key': {'type': 'string', 'description': 'Key or shortcut (e.g. "Enter", "Tab", "Control+a")'}},
+				'properties': {'key': {'type': 'string', 'description': 'Key name or chord'}},
 				'required': ['key'],
 			},
 		),
 		types.Tool(
 			name='browser_wait',
-			description='Wait for a number of seconds. Prefer since_hash polling for dynamic content.',
+			description='Wait N seconds. Prefer since_hash polling for dynamic content.',
 			inputSchema={
 				'type': 'object',
-				'properties': {'seconds': {'type': 'number', 'description': 'Seconds to wait (max 30)', 'default': 2}},
+				'properties': {'seconds': {'type': 'number', 'default': 2}},
 			},
 		),
 		types.Tool(
 			name='browser_evaluate',
-			description='Execute JavaScript in the page context and return the result. Wrap in IIFE: (function(){ ... })(). Browser APIs only.',
+			description='Execute JavaScript in the page and return the result. Wrap in IIFE: (function(){ ... })()',
 			inputSchema={
 				'type': 'object',
-				'properties': {'code': {'type': 'string', 'description': 'JavaScript to evaluate'}},
+				'properties': {'code': {'type': 'string'}},
 				'required': ['code'],
 			},
 		),
 		types.Tool(
 			name='browser_select_option',
-			description='Select an option in a <select> dropdown by its visible text.',
+			description='Select an option in a <select> dropdown by its visible label.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {'type': 'string', 'description': 'Stable ref of the <select> (e.g. "e123"). Provide this OR index.'},
-					'index': {'type': 'integer', 'description': 'Backend node id of the <select>. Provide this OR ref.'},
-					'text': {'type': 'string', 'description': 'Exact visible text of the option to select'},
+					'ref': {'type': 'string', 'description': 'Stable ref of the <select>'},
+					'index': {'type': 'integer'},
+					'text': {'type': 'string', 'description': 'Exact visible option text'},
 				},
 				'required': ['text'],
 			},
 		),
 		types.Tool(
 			name='browser_get_dropdown_options',
-			description='Get all available options from a <select> or ARIA combobox element.',
+			description='List all options in a <select> or ARIA combobox.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {'type': 'string', 'description': 'Stable ref (e.g. "e123"). Provide this OR index.'},
-					'index': {'type': 'integer', 'description': 'Backend node id. Provide this OR ref.'},
+					'ref': {'type': 'string'},
+					'index': {'type': 'integer'},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_find_elements',
-			description='Find elements by CSS selector. Returns tag, text, and optionally attributes for each match.',
+			description='Find elements by CSS selector. Returns tag, text, and requested attributes.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
 					'selector': {'type': 'string', 'description': 'CSS selector (e.g. "table tr", "input[type=email]")'},
-					'attributes': {
-						'type': 'array',
-						'items': {'type': 'string'},
-						'description': 'Attributes to extract per element.',
-					},
+					'attributes': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Attributes to extract.'},
 					'max_results': {'type': 'integer', 'default': 50},
 				},
 				'required': ['selector'],
@@ -318,64 +245,56 @@ def get_tool_schemas() -> list[types.Tool]:
 		),
 		types.Tool(
 			name='browser_wait_for_element',
-			description='Poll until an element matching text or ref appears (or disappears). Use for dynamic content and post-action confirmation.',
+			description='Poll until an element (by text or ref) appears or disappears. Use for async content and action confirmation.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
 					'text': {'type': 'string', 'description': 'Text the element must contain (case-insensitive).'},
-					'ref': {'type': 'string', 'description': 'Element ref that must appear (e.g. "e123").'},
-					'appear': {
-						'type': 'boolean',
-						'description': 'True=wait for element to appear, False=wait to disappear',
-						'default': True,
-					},
-					'timeout_seconds': {
-						'type': 'number',
-						'description': 'Max seconds to wait (default 10, max 30)',
-						'default': 10,
-					},
+					'ref': {'type': 'string', 'description': 'Element ref to wait for.'},
+					'appear': {'type': 'boolean', 'description': 'true=wait to appear, false=wait to disappear', 'default': True},
+					'timeout_seconds': {'type': 'number', 'default': 10},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_search_page',
-			description='Search for text or a regex pattern on the current page. Returns matches with surrounding context. Equivalent to Ctrl+F.',
+			description='Search for text or regex on the page with surrounding context (like Ctrl+F).',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'pattern': {'type': 'string', 'description': 'Text or regex pattern to search for'},
-					'regex': {'type': 'boolean', 'description': 'Treat pattern as a regular expression', 'default': False},
-					'max_results': {'type': 'integer', 'description': 'Maximum matches to return', 'default': 25},
+					'pattern': {'type': 'string'},
+					'regex': {'type': 'boolean', 'default': False},
+					'max_results': {'type': 'integer', 'default': 25},
 				},
 				'required': ['pattern'],
 			},
 		),
 		types.Tool(
 			name='browser_get_focused_element',
-			description='Return the element that currently has keyboard focus. Useful after Tab or click to confirm which field is active.',
+			description='Return the element with keyboard focus. Useful after Tab or click to confirm which field is active.',
 			inputSchema={'type': 'object', 'properties': {}},
 		),
 		types.Tool(
 			name='browser_hover',
-			description='Hover over an element to trigger CSS :hover states and JS mouseover/mouseenter handlers. Essential for opening dropdown menus, tooltips, and hover-based UI. Use browser_get_state after hovering to see new elements.',
+			description='Hover over an element to trigger :hover states and mouseover handlers. Use before browser_get_state to reveal dropdown menus.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {'type': 'string', 'description': 'Element ref (e.g. e123)'},
-					'index': {'type': 'integer', 'description': 'Element index'},
-					'coordinate_x': {'type': 'integer', 'description': 'X viewport coordinate'},
-					'coordinate_y': {'type': 'integer', 'description': 'Y viewport coordinate'},
+					'ref': {'type': 'string'},
+					'index': {'type': 'integer'},
+					'coordinate_x': {'type': 'integer'},
+					'coordinate_y': {'type': 'integer'},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_double_click',
-			description='Double-click an element or viewport coordinates. Use for text selection, opening files/folders, or activating double-click handlers in rich editors and file managers.',
+			description='Double-click an element or coordinates. Use for text selection, file open, or double-click handlers.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {'type': 'string', 'description': 'Element ref (e.g. e123)'},
-					'index': {'type': 'integer', 'description': 'Element index from browser_state'},
+					'ref': {'type': 'string'},
+					'index': {'type': 'integer'},
 					'coordinate_x': {'type': 'integer'},
 					'coordinate_y': {'type': 'integer'},
 				},
@@ -383,111 +302,91 @@ def get_tool_schemas() -> list[types.Tool]:
 		),
 		types.Tool(
 			name='browser_drag_to',
-			description='Drag from one element or coordinate to another. Use for drag-and-drop in kanban boards, sortable lists, sliders, and file drop zones.',
+			description='Drag from source to target (kanban, sortable lists, sliders, file drop zones).',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'source_ref': {'type': 'string', 'description': 'Source element ref (e.g. e123)'},
-					'target_ref': {'type': 'string', 'description': 'Target element ref'},
+					'source_ref': {'type': 'string'},
+					'target_ref': {'type': 'string'},
 					'source_x': {'type': 'integer'},
 					'source_y': {'type': 'integer'},
 					'target_x': {'type': 'integer'},
 					'target_y': {'type': 'integer'},
-					'steps': {
-						'type': 'integer',
-						'description': 'Mouse movement interpolation steps (default: 10)',
-						'default': 10,
-					},
+					'steps': {'type': 'integer', 'default': 10},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_scroll_to_text',
-			description='Scroll the page until the given text string is visible in the viewport. Useful for locating content before interacting with it or verifying it exists.',
+			description='Scroll until the given text is visible in the viewport.',
 			inputSchema={
 				'type': 'object',
-				'properties': {
-					'text': {'type': 'string', 'description': 'Text to scroll to'},
-				},
+				'properties': {'text': {'type': 'string'}},
 				'required': ['text'],
 			},
 		),
 		types.Tool(
 			name='browser_save_state',
-			description='Save the current browser session state (cookies, localStorage, sessionStorage) to a file. Use to persist authentication between sessions. Pass the returned path to browser_load_state in a future session.',
+			description='Save cookies, localStorage, and sessionStorage to a file for auth persistence across sessions.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'path': {
-						'type': 'string',
-						'description': 'File path to save state to (e.g. /tmp/auth-state.json). Defaults to ~/.agentyc-mcp/browser-state.json',
-					},
+					'path': {'type': 'string', 'description': 'File path. Default: ~/.agentyc-mcp/browser-state.json'},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_load_state',
-			description='Restore browser session state (cookies, localStorage) from a file previously saved with browser_save_state. Call this early in a session to restore authentication.',
+			description='Restore browser state (cookies, localStorage) from a file saved by browser_save_state.',
 			inputSchema={
 				'type': 'object',
-				'properties': {
-					'path': {'type': 'string', 'description': 'File path to load state from'},
-				},
+				'properties': {'path': {'type': 'string'}},
 				'required': ['path'],
 			},
 		),
 		types.Tool(
 			name='browser_wait_for_network_idle',
-			description='Wait until the browser has no pending network requests for a specified duration. Use after triggering AJAX calls, form submissions, or SPA navigation to ensure data has loaded before reading state.',
+			description='Wait until no network requests are pending. Use after AJAX calls, form submissions, or SPA navigation.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'timeout_seconds': {
-						'type': 'number',
-						'description': 'Maximum time to wait (default: 10, max: 30)',
-						'default': 10,
-					},
-					'idle_duration_ms': {
-						'type': 'integer',
-						'description': 'How long network must be idle (ms, default: 500)',
-						'default': 500,
-					},
+					'timeout_seconds': {'type': 'number', 'default': 10},
+					'idle_duration_ms': {'type': 'integer', 'description': 'Quiet period required (ms)', 'default': 500},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_right_click',
-			description='Right-click an element or at specific coordinates to open a context menu. Use ref from browser_get_state for stable targeting.',
+			description='Right-click to open a context menu.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'ref': {'type': 'string', 'description': 'Stable element ref from browser_get_state (e.g. e42)'},
-					'index': {'type': 'integer', 'description': 'Element index (backend_node_id)'},
-					'coordinate_x': {'type': 'number', 'description': 'Viewport X coordinate'},
-					'coordinate_y': {'type': 'number', 'description': 'Viewport Y coordinate'},
+					'ref': {'type': 'string'},
+					'index': {'type': 'integer'},
+					'coordinate_x': {'type': 'number'},
+					'coordinate_y': {'type': 'number'},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_get_cookies',
-			description='Get all cookies for the current page URL. Returns name, value, domain, path, and flags. Useful for reading auth tokens and session state.',
+			description='Get cookies for the current page (name, value, domain, path, flags).',
 			inputSchema={'type': 'object', 'properties': {}},
 		),
 		types.Tool(
 			name='browser_set_cookies',
-			description='Set one or more cookies. Use to inject auth tokens or session cookies before navigating to a protected URL.',
+			description='Set cookies. Use to inject auth tokens before navigating to a protected URL.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
 					'cookies': {
 						'type': 'array',
-						'description': 'List of cookie objects to set',
 						'items': {
 							'type': 'object',
 							'properties': {
 								'name': {'type': 'string'},
 								'value': {'type': 'string'},
-								'domain': {'type': 'string', 'description': 'Cookie domain (e.g. .example.com)'},
+								'domain': {'type': 'string'},
 								'path': {'type': 'string', 'default': '/'},
 								'secure': {'type': 'boolean', 'default': False},
 								'httpOnly': {'type': 'boolean', 'default': False},
@@ -501,57 +400,40 @@ def get_tool_schemas() -> list[types.Tool]:
 		),
 		types.Tool(
 			name='browser_clear_cookies',
-			description='Clear cookies. Without arguments clears all cookies for the current page domain; pass a name to delete a specific cookie.',
+			description='Clear cookies. Omit name to clear all for current domain; pass name to delete one.',
 			inputSchema={
 				'type': 'object',
-				'properties': {
-					'name': {
-						'type': 'string',
-						'description': 'Name of a specific cookie to delete (omit to clear all for current domain)',
-					},
-				},
+				'properties': {'name': {'type': 'string', 'description': 'Specific cookie name to delete.'}},
 			},
 		),
 		types.Tool(
 			name='browser_get_console_logs',
-			description='Return recent browser console messages (log, warn, error, info). Captured natively via CDP Runtime domain - includes errors from page load, not just after JS injection. Essential for debugging JavaScript errors and SPA state issues.',
+			description='Return browser console messages (log/warn/error/info). Captured via CDP — includes page-load errors.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'level': {
-						'type': 'string',
-						'description': 'Filter by level: all, log, warn, error, info (default: all)',
-						'default': 'all',
-					},
-					'max_entries': {
-						'type': 'integer',
-						'description': 'Maximum number of entries to return (default: 50)',
-						'default': 50,
-					},
+					'level': {'type': 'string', 'description': 'all, log, warn, error, info', 'default': 'all'},
+					'max_entries': {'type': 'integer', 'default': 50},
 				},
 			},
 		),
 		types.Tool(
 			name='browser_get_network_log',
-			description='Return recent network requests captured via CDP Network domain. Shows XHR/Fetch API calls, their HTTP status codes, and timing - essential for debugging SPA data flows, API failures, and understanding what a form submission actually does.',
+			description='Return captured network requests (XHR/Fetch, status codes, timing). Essential for debugging SPA data flows and API failures.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
 					'type_filter': {
 						'type': 'string',
-						'description': 'Filter by request type: all, XHR, Fetch, Document, Script, Stylesheet, Image (default: all)',
+						'description': 'all, XHR, Fetch, Document, Script, Stylesheet, Image',
 						'default': 'all',
 					},
 					'status_filter': {
 						'type': 'string',
-						'description': 'Filter by status: all, errors (4xx/5xx/failed), success (2xx/3xx) (default: all)',
+						'description': 'all, errors (4xx/5xx), success (2xx/3xx)',
 						'default': 'all',
 					},
-					'max_entries': {
-						'type': 'integer',
-						'description': 'Maximum number of entries to return (default: 50)',
-						'default': 50,
-					},
+					'max_entries': {'type': 'integer', 'default': 50},
 				},
 			},
 		),
