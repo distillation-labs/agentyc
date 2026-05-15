@@ -19,6 +19,12 @@ Supported MCP CLI arguments:
 |----------|-------------|
 | `--session-timeout-minutes` | Idle timeout for the browser session tracked by the server |
 | `--cdp-url` | Attach to an existing Chrome or Chromium instance instead of launching a local browser |
+| `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
+| `--runtime-role` | Collaboration role string for this runtime, such as `primary` or `assistant` |
+| `--parent-runtime-id` | Optional parent runtime identifier for nested collaboration flows |
+| `--shared-browser-mode` | Create a shared-browser tab or a separate runtime window on attach |
+| `--shared-browser-window-bounds` | Optional JSON window bounds applied when shared-browser mode is `window` |
+| `--shared-browser-focus-policy` | Keep the human-focused surface active or explicitly activate the runtime target |
 
 The no-subcommand form is a backward-compatible alias for `agentyc mcp`.
 
@@ -127,16 +133,29 @@ Important fields:
 - `url`
 - `title`
 - `tabs`
+- `current_tab_id` and `current_tab` when the active tab can be resolved
+- `ownership` when the active tab is owned by a tracked runtime
+- `runtime` when ownership metadata includes a tracked runtime
 - `mode`
 - `effective_mode`
 - `state_hash`
 - `changed`
+- `focus_ref` when focus mode is requested
 - `interactive_element_count`
 - `interactive_elements`
+- `interactive_elements_truncated`, `interactive_elements_remaining`, and `compaction_strategy` when compact ranked state is used
 - `viewport`, `page`, and `scroll` when available
 - `screenshot_dimensions` when a screenshot is included
 
 Interactive elements use stable refs such as `e123`. Those refs are the preferred public targeting contract.
+
+`tabs` and `current_tab` can include collaboration metadata when available:
+
+- `tab_id`
+- `parent_tab_id`
+- `display_title`
+- `ownership`
+- `window_bounds`
 
 ### `browser_screenshot`
 
@@ -170,8 +189,12 @@ Supported deterministic route families:
 `browser_list_tabs` returns JSON objects with:
 
 - `tab_id`
+- optional `parent_tab_id`
 - `url`
 - `title`
+- optional `display_title`
+- optional `ownership`
+- optional `window_bounds`
 
 `browser_list_sessions` returns JSON objects with:
 
