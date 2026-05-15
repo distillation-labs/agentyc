@@ -27,8 +27,8 @@ from ._profile_types import (
 	RecordHarMode,
 	ViewportSize,
 )
-from .session_models import BrowserWindowBounds
 from ._profile_validation import optimize_large_domain_list
+from .session_models import BrowserWindowBounds
 
 
 class BrowserContextArgs(BaseModel):
@@ -86,7 +86,9 @@ class BrowserLaunchArgs(BaseModel):
 		description='Path to the chromium-based browser executable to use.',
 	)
 	headless: bool | None = Field(default=None, description='Whether to run the browser in headless or windowed mode.')
-	args: list[CliArgStr] = Field(default_factory=list, description='List of *extra* CLI args to pass to the browser when launching.')
+	args: list[CliArgStr] = Field(
+		default_factory=list, description='List of *extra* CLI args to pass to the browser when launching.'
+	)
 	ignore_default_args: list[CliArgStr] | Literal[True] = Field(
 		default_factory=lambda: [
 			'--enable-automation',
@@ -198,7 +200,9 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	cdp_url: str | None = Field(default=None, description='CDP URL for connecting to existing browser instance')
 	runtime_label: str | None = Field(default=None, description='Human-readable collaboration label for this runtime.')
 	runtime_role: str = Field(default='primary', description='Collaboration role for this runtime.')
-	parent_runtime_id: str | None = Field(default=None, description='Optional parent runtime identifier for nested collaboration flows.')
+	parent_runtime_id: str | None = Field(
+		default=None, description='Optional parent runtime identifier for nested collaboration flows.'
+	)
 	shared_browser_mode: Literal['tab', 'window'] | None = Field(
 		default=None,
 		description='When attaching to a shared browser, create a background tab or a separate window for this runtime.',
@@ -233,7 +237,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	)
 	enable_default_extensions: bool = Field(
 		default_factory=_get_enable_default_extensions_default,
-		description='Enable automation-optimized extensions: ad blocking (uBlock Origin), cookie handling (I still don\'t care about cookies), and URL cleaning (ClearURLs). All extensions work automatically without manual intervention. Extensions are automatically downloaded and loaded when enabled. Can be disabled via AGENTYC_DISABLE_EXTENSIONS=1 environment variable.',
+		description="Enable automation-optimized extensions: ad blocking (uBlock Origin), cookie handling (I still don't care about cookies), and URL cleaning (ClearURLs). All extensions work automatically without manual intervention. Extensions are automatically downloaded and loaded when enabled. Can be disabled via AGENTYC_DISABLE_EXTENSIONS=1 environment variable.",
 	)
 	captcha_solver: bool = Field(
 		default=True,
@@ -259,12 +263,16 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 		description='Enable cross-origin iframe support (OOPIF/Out-of-Process iframes). When False, only same-origin frames are processed to avoid complexity and hanging.',
 	)
 	max_iframes: int = Field(default=100, description='Maximum number of iframe documents to process to prevent crashes.')
-	max_iframe_depth: int = Field(ge=0, default=5, description='Maximum depth for cross-origin iframe recursion (default: 5 levels deep).')
+	max_iframe_depth: int = Field(
+		ge=0, default=5, description='Maximum depth for cross-origin iframe recursion (default: 5 levels deep).'
+	)
 	minimum_wait_page_load_time: float = Field(default=0.25, description='Minimum time to wait before capturing page state.')
 	wait_for_network_idle_page_load_time: float = Field(default=0.5, description='Time to wait for network idle.')
 	wait_between_actions: float = Field(default=0.1, description='Time to wait between actions.')
 	highlight_elements: bool = Field(default=True, description='Highlight interactive elements on the page.')
-	dom_highlight_elements: bool = Field(default=False, description='Highlight interactive elements in the DOM (only for debugging purposes).')
+	dom_highlight_elements: bool = Field(
+		default=False, description='Highlight interactive elements in the DOM (only for debugging purposes).'
+	)
 	filter_highlight_ids: bool = Field(
 		default=True,
 		description='Only show element IDs in highlights if llm_representation is less than 10 characters.',
@@ -282,7 +290,9 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 		description='Directory to save video recordings. If set, a video of the session will be recorded.',
 		validation_alias=AliasChoices('save_recording_path', 'record_video_dir'),
 	)
-	record_video_size: ViewportSize | None = Field(default=None, description='Video frame size. If not set, it will use the viewport size.')
+	record_video_size: ViewportSize | None = Field(
+		default=None, description='Video frame size. If not set, it will use the viewport size.'
+	)
 	record_video_framerate: int = Field(default=30, description='The framerate to use for the video recording.')
 
 	def __repr__(self) -> str:
