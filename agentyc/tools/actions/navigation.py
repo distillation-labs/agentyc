@@ -62,12 +62,8 @@ def register_navigation_actions(tools: Any) -> None:
 					await asyncio.sleep(3.0)
 					state = await browser_session.get_browser_state_summary(include_screenshot=False)
 					if state.url.lower().startswith(('http://', 'https://')) and page_appears_empty(state):
-						browser_session.logger.warning(
-							f'⚠️ Still empty after 3s, attempting page reload for {params.url}...'
-						)
-						reload_event = browser_session.event_bus.dispatch(
-							NavigateToUrlEvent(url=params.url, new_tab=False)
-						)
+						browser_session.logger.warning(f'⚠️ Still empty after 3s, attempting page reload for {params.url}...')
+						reload_event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=params.url, new_tab=False))
 						await reload_event
 						await reload_event.event_result(raise_if_any=False, raise_if_none=False)
 						await asyncio.sleep(5.0)
