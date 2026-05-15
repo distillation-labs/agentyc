@@ -10,7 +10,37 @@ permissions:
   id-token: write
 
 jobs:
+  release-gates:
+    runs-on: ubuntu-latest
+    env:
+      ANONYMIZED_TELEMETRY: 'false'
+      IN_DOCKER: 'True'
+      DOGFOOD_RELEASE_GATE: '1'
+      DOGFOOD_FAIL_ON_REGRESSION: '1'
+      DOGFOOD_MAX_IMPORT_MS: '2500'
+      DOGFOOD_MAX_SESSION_INIT_MS: '12000'
+      DOGFOOD_MIN_AVG_AUTO_PAYLOAD_REDUCTION_PCT: '8.0'
+      DOGFOOD_MIN_AVG_AUTO_RECALL: '0.99'
+      DOGFOOD_MIN_AVG_MIN_RECALL: '0.99'
+      DOGFOOD_MIN_AVG_DETERMINISTIC_RECALL: '0.99'
+      DOGFOOD_MIN_AVG_STRUCTURED_RECALL: '0.99'
+      DOGFOOD_MIN_AVG_ACTION_SUCCESS: '1.0'
+      DOGFOOD_MIN_COLLABORATION_REQUIRED_CHECK_PASS_RATE: '1.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          activate-environment: true
+
+      - run: uv sync --dev
+      - run: uv run --no-sync ruff check --no-fix --select PLE
+      - run: uv run python scripts/check_release_guards.py --watch-python-lines 800 --max-python-lines 1000 --artifact-file .release-guard.json
+      - run: ./scripts/dogfood.sh --artifact-dir .dogfood-artifacts
+
   publish:
+    needs: release-gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +51,5 @@ jobs:
           activate-environment: true
 
       - run: uv sync
-      - run: uv run --no-sync ruff check --no-fix --select PLE
       - run: uv build
       - run: uv publish --trusted-publishing always
