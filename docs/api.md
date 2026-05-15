@@ -17,7 +17,7 @@ Supported MCP CLI arguments:
 
 | Argument | Description |
 |----------|-------------|
-| `--session-timeout-minutes` | Idle timeout for the browser session tracked by the server |
+| `--session-timeout-minutes` | Idle timeout in minutes; `0` (default) keeps the session alive indefinitely |
 | `--cdp-url` | Attach to an existing Chrome or Chromium instance instead of launching a local browser |
 | `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
 | `--runtime-role` | Collaboration role string for this runtime, such as `primary` or `assistant` |
@@ -27,6 +27,22 @@ Supported MCP CLI arguments:
 | `--shared-browser-focus-policy` | Keep the human-focused surface active or explicitly activate the runtime target |
 
 The no-subcommand form is a backward-compatible alias for `agentyc mcp`.
+
+### Write The Skills Guide
+
+```bash
+agentyc init
+agentyc init --output .cursor/rules/agentyc.md
+agentyc init --print
+```
+
+Writes `agentyc/skills/SKILL.md` (shipped with the package) to a file your coding agent can read. The guide covers the `read → ref → act` loop, `since_hash` polling, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
+
+| Argument | Description |
+|----------|-------------|
+| `--output` | Destination path (default: `agentyc-skill.md`) |
+| `--print` | Print to stdout instead of writing a file |
+| `--force` | Overwrite if the destination already exists |
 
 ### Start A Shared Browser
 
