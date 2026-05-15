@@ -1932,8 +1932,10 @@ async def _scenario_drag_sortable(server) -> dict[str, Any]:
 		if coords is None or not isinstance(coords, dict):
 			raise ValueError(f'Could not resolve drag sources: refs={alpha_ref},{gamma_ref}, coords={coords_json}')
 		drag_result = await server._drag_to(
-			source_x=int(coords['ax']), source_y=int(coords['ay']),
-			target_x=int(coords['cx']), target_y=int(coords['cy']),
+			source_x=int(coords['ax']),
+			source_y=int(coords['ay']),
+			target_x=int(coords['cx']),
+			target_y=int(coords['cy']),
 		)
 	await asyncio.sleep(0.3)
 	status_html = await server._get_html('#status')
@@ -2317,8 +2319,12 @@ def summarize_results(results: dict[str, dict[str, Any]], collaboration: dict[st
 		'failing_action_cases': failing_action_cases,
 	}
 	if isinstance(collaboration, dict):
-		tab_runtime_pair = collaboration.get('tab_runtime_pair') if isinstance(collaboration.get('tab_runtime_pair'), dict) else {}
-		window_mode_probe = collaboration.get('window_mode_probe') if isinstance(collaboration.get('window_mode_probe'), dict) else {}
+		tab_runtime_pair = (
+			collaboration.get('tab_runtime_pair') if isinstance(collaboration.get('tab_runtime_pair'), dict) else {}
+		)
+		window_mode_probe = (
+			collaboration.get('window_mode_probe') if isinstance(collaboration.get('window_mode_probe'), dict) else {}
+		)
 		summary.update(
 			{
 				'collaboration_case_count': 1,
