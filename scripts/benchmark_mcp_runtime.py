@@ -2216,12 +2216,13 @@ async def run_fixture(
 
 	extract_results: dict[str, Any] = {}
 	if fixture.deterministic_query:
-		expected_json = replace_base_url(fixture.deterministic_query.expected_json, base_url)
+		dq = fixture.deterministic_query
+		expected_json = replace_base_url(dq.expected_json, base_url)
 		deterministic_extract, deterministic_ms = await benchmark_call(
 			lambda: server._extract_content(
-				fixture.deterministic_query.query,
-				extract_links=fixture.deterministic_query.extract_links,
-				output_schema=fixture.deterministic_query.output_schema,
+				dq.query,
+				extract_links=dq.extract_links,
+				output_schema=dq.output_schema,
 			)
 		)
 		match = (
@@ -2229,8 +2230,8 @@ async def run_fixture(
 				extract_structured_json(deterministic_extract) or {},
 				expected_json or {},
 			)
-			if fixture.deterministic_query.output_schema is not None
-			else calculate_text_matches(deterministic_extract, fixture.deterministic_query.expected_terms)
+			if dq.output_schema is not None
+			else calculate_text_matches(deterministic_extract, dq.expected_terms)
 		)
 		extract_results['deterministic'] = {
 			'latency_ms': round(deterministic_ms, 1),
@@ -2319,12 +2320,10 @@ def summarize_results(results: dict[str, dict[str, Any]], collaboration: dict[st
 		'failing_action_cases': failing_action_cases,
 	}
 	if isinstance(collaboration, dict):
-		tab_runtime_pair = (
-			collaboration.get('tab_runtime_pair') if isinstance(collaboration.get('tab_runtime_pair'), dict) else {}
-		)
-		window_mode_probe = (
-			collaboration.get('window_mode_probe') if isinstance(collaboration.get('window_mode_probe'), dict) else {}
-		)
+		_trp = collaboration.get('tab_runtime_pair')
+		tab_runtime_pair: dict = _trp if isinstance(_trp, dict) else {}
+		_wmp = collaboration.get('window_mode_probe')
+		window_mode_probe: dict = _wmp if isinstance(_wmp, dict) else {}
 		summary.update(
 			{
 				'collaboration_case_count': 1,
