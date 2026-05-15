@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import urlparse, urlunparse
 
-import httpx
 from cdp_use import CDPClient
 from cdp_use.cdp.fetch import AuthRequiredEvent, RequestPausedEvent
 from cdp_use.cdp.target import SessionID
 
-from agentyc.browser._cdp_timeout import TimeoutWrappedCDPClient
 from agentyc.browser.events import (
 	AgentFocusChangedEvent,
 	BrowserConnectedEvent,
@@ -24,16 +22,15 @@ from agentyc.browser.events import (
 	BrowserStartEvent,
 	BrowserStopEvent,
 	BrowserStoppedEvent,
-	FileDownloadedEvent,
-	NavigateToUrlEvent,
-	SwitchTabEvent,
-	TabClosedEvent,
 	TabCreatedEvent,
 )
 from agentyc.utils import create_task_with_error_handling, get_agentyc_version, is_new_tab_page
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
+
+
+SessionT = TypeVar('SessionT', bound='BrowserSession')
 
 
 async def attach_all_watchdogs(session: BrowserSession) -> None:
@@ -240,9 +237,21 @@ def _build_cdp_headers(session: BrowserSession) -> dict[str, str]:
 	return headers
 
 
+def _get_timeout_wrapped_cdp_client_class() -> type[CDPClient]:
+	from agentyc.browser import session as session_module
+
+	return cast(type[CDPClient], getattr(session_module, 'TimeoutWrappedCDPClient'))
+
+
+def _get_httpx_module() -> Any:
+	from agentyc.browser import session as session_module
+
+	return getattr(session_module, 'httpx')
+
+
 async def _create_root_cdp_client(session: BrowserSession) -> CDPClient:
 	assert session.cdp_url is not None, 'CDP URL is None.'
-	cdp_client = TimeoutWrappedCDPClient(
+	cdp_client = _get_timeout_wrapped_cdp_client_class()(
 		session.cdp_url,
 		additional_headers=_build_cdp_headers(session) or None,
 		max_ws_frame_size=200 * 1024 * 1024,
@@ -257,6 +266,7 @@ async def _initialize_session_manager(session: BrowserSession) -> None:
 	session.session_manager = SessionManager(session)
 	await session.session_manager.start_monitoring()
 	session.logger.debug('Event-driven session manager started')
+	assert session._cdp_client_root is not None
 	await session._cdp_client_root.send.Target.setAutoAttach(
 		params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
 	)
@@ -276,9 +286,7 @@ async def _redirect_new_tab_pages(session: BrowserSession, page_targets: list[An
 			session.logger.warning(f'Failed to redirect {target_url}: {e}')
 
 	redirect_tasks = [
-		_redirect_newtab(target)
-		for target in page_targets
-		if is_new_tab_page(target.url) and target.url != 'about:blank'
+		_redirect_newtab(target) for target in page_targets if is_new_tab_page(target.url) and target.url != 'about:blank'
 	]
 	if redirect_tasks:
 		await asyncio.gather(*redirect_tasks, return_exceptions=True)
@@ -295,6 +303,7 @@ async def _bootstrap_page_targets(session: BrowserSession) -> list[Any]:
 	await _redirect_new_tab_pages(session, page_targets)
 
 	if not page_targets:
+		assert session._cdp_client_root is not None
 		new_target = await session._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
 		target_id = new_target['targetId']
 		session.logger.debug(f'📄 Created new blank page: {target_id}')
@@ -326,7 +335,7 @@ async def _bootstrap_page_targets(session: BrowserSession) -> list[Any]:
 	return page_targets
 
 
-async def connect(session: BrowserSession, cdp_url: str | None = None) -> BrowserSession:
+async def connect(session: SessionT, cdp_url: str | None = None) -> SessionT:
 	"""Connect to a remote chromium-based browser via CDP using cdp-use."""
 	session.browser_profile.cdp_url = cdp_url or session.cdp_url
 	if not session.cdp_url:
@@ -343,6 +352,7 @@ async def connect(session: BrowserSession, cdp_url: str | None = None) -> Browse
 		session._cdp_client_root = None
 
 	if not session.cdp_url.startswith('ws'):
+		httpx = _get_httpx_module()
 		parsed_url = urlparse(session.cdp_url)
 		path = parsed_url.path.rstrip('/')
 		if not path.endswith('/json/version'):
