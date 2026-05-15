@@ -4,8 +4,9 @@ import asyncio
 import logging
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Self, Union, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, Union
 
+import httpx
 from bubus import EventBus
 from cdp_use import CDPClient
 from cdp_use.cdp.network import Cookie
@@ -14,18 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from uuid_extensions import uuid7str
 
 from agentyc.browser import session_connection, session_navigation, session_runtime, session_shared_browser, session_targets
+from agentyc.browser._cdp_timeout import TimeoutWrappedCDPClient
 from agentyc.browser.events import (
 	AgentFocusChangedEvent,
-	BrowserErrorEvent,
 	BrowserStartEvent,
-	BrowserStateRequestEvent,
 	BrowserStopEvent,
-	BrowserStoppedEvent,
 	CloseTabEvent,
 	FileDownloadedEvent,
 	NavigateToUrlEvent,
-	NavigationCompleteEvent,
-	NavigationStartedEvent,
 	SwitchTabEvent,
 	TabClosedEvent,
 	TabCreatedEvent,
@@ -37,20 +34,50 @@ from agentyc.browser.page import Page
 from agentyc.browser.profile import BrowserProfile, ProxySettings
 from agentyc.browser.session_dom import (
 	_get_element_bounds as session_dom_get_element_bounds,
+)
+from agentyc.browser.session_dom import (
 	add_highlights as session_dom_add_highlights,
+)
+from agentyc.browser.session_dom import (
 	find_file_input_near_element as session_dom_find_file_input_near_element,
+)
+from agentyc.browser.session_dom import (
 	get_dom_element_at_coordinates as session_dom_get_dom_element_at_coordinates,
+)
+from agentyc.browser.session_dom import (
 	get_dom_element_by_index as session_dom_get_dom_element_by_index,
+)
+from agentyc.browser.session_dom import (
 	get_element_by_index as session_dom_get_element_by_index,
+)
+from agentyc.browser.session_dom import (
 	get_element_coordinates as session_dom_get_element_coordinates,
+)
+from agentyc.browser.session_dom import (
 	get_index_by_class as session_dom_get_index_by_class,
+)
+from agentyc.browser.session_dom import (
 	get_index_by_id as session_dom_get_index_by_id,
+)
+from agentyc.browser.session_dom import (
 	get_selector_map as session_dom_get_selector_map,
+)
+from agentyc.browser.session_dom import (
 	highlight_coordinate_click as session_dom_highlight_coordinate_click,
+)
+from agentyc.browser.session_dom import (
 	highlight_interaction_element as session_dom_highlight_interaction_element,
+)
+from agentyc.browser.session_dom import (
 	is_file_input as session_dom_is_file_input,
+)
+from agentyc.browser.session_dom import (
 	remove_highlights as session_dom_remove_highlights,
+)
+from agentyc.browser.session_dom import (
 	screenshot_element as session_dom_screenshot_element,
+)
+from agentyc.browser.session_dom import (
 	update_cached_selector_map as session_dom_update_cached_selector_map,
 )
 from agentyc.browser.session_models import (
@@ -62,11 +89,19 @@ from agentyc.browser.session_models import (
 from agentyc.browser.views import BrowserStateSummary, TabInfo
 from agentyc.dom.views import DOMRect, EnhancedDOMTreeNode, TargetInfo
 from agentyc.observability import observe_debug
-from agentyc.utils import _log_pretty_url
 
 if TYPE_CHECKING:
 	from agentyc.browser.demo_mode import DemoMode
 	from agentyc.browser.watchdogs.captcha_watchdog import CaptchaWaitResult
+
+
+def __getattr__(name: str) -> Any:
+	if name == 'TimeoutWrappedCDPClient':
+		return TimeoutWrappedCDPClient
+	if name == 'httpx':
+		return httpx
+	raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 DEFAULT_BROWSER_PROFILE = BrowserProfile()
 
@@ -367,7 +402,9 @@ class BrowserSession(BaseModel):
 	_dom_watchdog: Any | None = PrivateAttr(default=None)
 	_screenshot_watchdog: Any | None = PrivateAttr(default=None)
 	_permissions_watchdog: Any | None = PrivateAttr(default=None)
+	_popups_watchdog: Any | None = PrivateAttr(default=None)
 	_recording_watchdog: Any | None = PrivateAttr(default=None)
+	_har_recording_watchdog: Any | None = PrivateAttr(default=None)
 	_captcha_watchdog: Any | None = PrivateAttr(default=None)
 	_watchdogs_attached: bool = PrivateAttr(default=False)
 
@@ -454,7 +491,9 @@ class BrowserSession(BaseModel):
 		wait_until: str = 'load',
 		nav_timeout: float | None = None,
 	) -> None:
-		await session_navigation._navigate_and_wait(self, url, target_id, timeout=timeout, wait_until=wait_until, nav_timeout=nav_timeout)
+		await session_navigation._navigate_and_wait(
+			self, url, target_id, timeout=timeout, wait_until=wait_until, nav_timeout=nav_timeout
+		)
 
 	@staticmethod
 	def _urls_match_for_navigation_ready(current_url: str, target_url: str) -> bool:
@@ -834,7 +873,9 @@ class BrowserSession(BaseModel):
 		quality: int | None = None,
 		clip: dict | None = None,
 	) -> bytes:
-		return await session_targets.take_screenshot(self, path=path, full_page=full_page, format=format, quality=quality, clip=clip)
+		return await session_targets.take_screenshot(
+			self, path=path, full_page=full_page, format=format, quality=quality, clip=clip
+		)
 
 	async def get_window_bounds(self, target_id: TargetID | None = None) -> dict[str, Any] | None:
 		return await session_shared_browser.get_window_bounds(self, target_id)
