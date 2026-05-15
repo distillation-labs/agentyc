@@ -47,6 +47,15 @@ Override the idle timeout for the browser session tracked by the server:
 agentyc --session-timeout-minutes 20
 ```
 
+Shared-browser collaboration flags are also available on `agentyc mcp` and the no-subcommand form:
+
+- `--runtime-label`
+- `--runtime-role`
+- `--parent-runtime-id`
+- `--shared-browser-mode`
+- `--shared-browser-window-bounds`
+- `--shared-browser-focus-policy`
+
 ## Shared Browser Mode
 
 Launch a Chrome or Chromium instance with remote debugging enabled and print its CDP WebSocket URL:
@@ -63,8 +72,10 @@ agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
 
 Current shared-browser behavior is intentionally narrow:
 
-- Each attached MCP server creates a fresh tab in the shared browser.
-- Focus and tab switching are still explicit MCP actions.
+- Each attached MCP server creates a collaboration target in the shared browser: a tab by default, or a separate window when `--shared-browser-mode window` is used.
+- Attach and `new_tab=true` flows update the runtime's focused target automatically.
+- Visible browser activation is controlled by `--shared-browser-focus-policy`: `preserve` avoids stealing the human-focused surface, while `activate` explicitly foregrounds the runtime target.
+- `browser_get_state` and `browser_list_tabs` surface ownership metadata, display titles, and optional window bounds for shared-browser targets.
 - Stock Chrome and CDP do not provide reliable per-tab color ownership cues.
 - Shared-browser workflows should be treated as best-effort collaboration, not hard isolation.
 
@@ -134,6 +145,7 @@ The public server exposes tools only. It does not publish MCP resources or promp
 - Stable element refs such as `e123` are derived from backend node ids.
 - `mode` supports `auto`, `full`, `min`, and `focus`.
 - `since_hash` allows unchanged-state checks without resending interactive element payloads.
+- Compact state payloads can surface `compaction_strategy`, truncation counts, ownership, and runtime metadata when relevant.
 - Screenshots are returned as MCP image content, with JSON metadata in a separate text payload.
 
 Prefer refs from `browser_get_state` over legacy numeric `index` arguments.
