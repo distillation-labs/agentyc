@@ -80,4 +80,6 @@ def detect_display_configuration(profile: Any) -> None:
 		assert profile.viewport is not None
 		assert profile.no_viewport is False
 
-	assert not (profile.headless and profile.no_viewport), 'headless=True and no_viewport=True cannot both be set at the same time'
+	assert not (profile.headless and profile.no_viewport), (
+		'headless=True and no_viewport=True cannot both be set at the same time'
+	)
