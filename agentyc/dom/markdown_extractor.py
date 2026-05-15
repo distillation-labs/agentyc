@@ -2,7 +2,7 @@
 Shared markdown extraction utilities for browser content processing.
 
 This module provides a unified interface for extracting clean markdown from browser content,
-used by both the tools service and page actor.
+used by both the tools service and browser page wrappers.
 """
 
 import re
@@ -29,11 +29,11 @@ async def extract_clean_markdown(
 	"""Extract clean markdown from browser content using enhanced DOM tree.
 
 	This unified function can extract markdown using either a browser session (for tools service)
-	or a DOM service with target ID (for page actor).
+	or a DOM service with target ID (for browser page wrappers).
 
 	Args:
 	    browser_session: Browser session to extract content from (tools service path)
-	    dom_service: DOM service instance (page actor path)
+	    dom_service: DOM service instance (DOM-service path)
 	    target_id: Target ID for the page (required when using dom_service)
 	    extract_links: Whether to preserve links in markdown
 	    extract_images: Whether to preserve inline image src URLs in markdown
@@ -53,7 +53,7 @@ async def extract_clean_markdown(
 		current_url = await browser_session.get_current_page_url()
 		method = 'enhanced_dom_tree'
 	elif dom_service is not None and target_id is not None:
-		# DOM service path (page actor)
+		# DOM service path
 		# Lazy fetch all_frames inside get_dom_tree if needed (for cross-origin iframes)
 		enhanced_dom_tree, _ = await dom_service.get_dom_tree(target_id=target_id, all_frames=None)
 		current_url = None  # Not available via DOM service
