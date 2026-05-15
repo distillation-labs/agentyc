@@ -11,10 +11,31 @@ from agentyc.dom.views import EnhancedDOMTreeNode
 
 StateMode = Literal['auto', 'full', 'min', 'focus']
 
-_DEFAULT_MIN_ELEMENTS = 25
+_DEFAULT_MIN_ELEMENTS = 30
 _DEFAULT_AUTO_FULL_THRESHOLD = 18
 _MAX_DUPLICATES_PER_SIGNATURE = 3
 _DIGITS_PATTERN = re.compile(r'\d+')
+
+# (tag, input_type) → implied ARIA role. Omit from serialized element to save tokens.
+_IMPLICIT_ROLE_MAP: dict[tuple[str, str], str] = {
+	('button', ''): 'button',
+	('a', ''): 'link',
+	('select', ''): 'combobox',
+	('textarea', ''): 'textbox',
+	('input', ''): 'textbox',
+	('input', 'text'): 'textbox',
+	('input', 'email'): 'textbox',
+	('input', 'password'): 'textbox',
+	('input', 'tel'): 'textbox',
+	('input', 'url'): 'textbox',
+	('input', 'number'): 'spinbutton',
+	('input', 'range'): 'slider',
+	('input', 'checkbox'): 'checkbox',
+	('input', 'radio'): 'radio',
+	('input', 'search'): 'searchbox',
+	('img', ''): 'img',
+}
+
 _GENERIC_ACTION_TEXTS = {
 	'add to cart',
 	'details',
@@ -166,6 +187,9 @@ def _build_unchanged_state_payload(
 		result['current_tab_id'] = current_tab['tab_id']
 	if focus_index is not None:
 		result['focus_ref'] = make_element_ref(focus_index)
+	# Always include scroll position so agents know where they are even when elements haven't changed
+	if state.page_info and (state.page_info.scroll_x != 0 or state.page_info.scroll_y != 0):
+		result['scroll'] = {'x': state.page_info.scroll_x, 'y': state.page_info.scroll_y}
 	return result
 
 
@@ -238,26 +262,41 @@ def build_browser_state_payload(
 			interactive_element_count=len(selector_map),
 		)
 
+	scroll_y: int | None = None
+	viewport_height: int | None = None
+	viewport_width: int | None = None
 	if state.page_info:
 		pi = state.page_info
+		scroll_y = pi.scroll_y
+		viewport_height = pi.viewport_height
+		viewport_width = pi.viewport_width
 		result['viewport'] = {
 			'width': pi.viewport_width,
 			'height': pi.viewport_height,
 		}
-		result['page'] = {
-			'width': pi.page_width,
-			'height': pi.page_height,
-		}
-		result['scroll'] = {
-			'x': pi.scroll_x,
-			'y': pi.scroll_y,
-		}
+		# Omit page dimensions when page fits in viewport (no scrolling needed)
+		if pi.page_width > pi.viewport_width or pi.page_height > pi.viewport_height:
+			result['page'] = {
+				'width': pi.page_width,
+				'height': pi.page_height,
+			}
+		# Omit scroll when at origin — default position, no information for the agent
+		if pi.scroll_x != 0 or pi.scroll_y != 0:
+			result['scroll'] = {
+				'x': pi.scroll_x,
+				'y': pi.scroll_y,
+			}
 
 	selected_elements: list[EnhancedDOMTreeNode]
 	if effective_mode == 'focus' and focus_index is not None:
 		selected_elements = [selector_map[focus_index]]
 	elif effective_mode == 'min':
-		selected_elements = select_elements_for_min_mode(selector_map=selector_map, max_elements=max_min_elements)
+		selected_elements = select_elements_for_min_mode(
+			selector_map=selector_map,
+			max_elements=max_min_elements,
+			scroll_y=scroll_y,
+			viewport_height=viewport_height,
+		)
 		if len(selector_map) > len(selected_elements):
 			result['interactive_elements_truncated'] = True
 			result['interactive_elements_remaining'] = len(selector_map) - len(selected_elements)
@@ -268,10 +307,10 @@ def build_browser_state_payload(
 	# Compact modes keep the stable ref and omit the redundant numeric index.
 	# Full/focus modes retain it for compatibility and easier debugging.
 	include_index = effective_mode != 'min'
-	viewport_w = state.page_info.viewport_width if state.page_info else None
-	viewport_h = state.page_info.viewport_height if state.page_info else None
 	result['interactive_elements'] = [
-		summarize_interactive_element(element, include_index=include_index, viewport_width=viewport_w, viewport_height=viewport_h)
+		summarize_interactive_element(
+			element, include_index=include_index, viewport_width=viewport_width, viewport_height=viewport_height
+		)
 		for element in selected_elements
 	]
 	return result
@@ -293,9 +332,14 @@ def select_elements_for_min_mode(
 	*,
 	selector_map: dict[int, EnhancedDOMTreeNode],
 	max_elements: int = _DEFAULT_MIN_ELEMENTS,
+	scroll_y: int | None = None,
+	viewport_height: int | None = None,
 ) -> list[EnhancedDOMTreeNode]:
 	signature_counts: defaultdict[str, int] = defaultdict(int)
 	scored_elements: list[tuple[float, int, int, EnhancedDOMTreeNode]] = []
+	# Proximity scoring window: boost elements within 2× viewport height of current scroll
+	prox_near = (scroll_y or 0) + (viewport_height or 900) * 1
+	prox_far = (scroll_y or 0) + (viewport_height or 900) * 2
 	for order, (backend_node_id, element) in enumerate(selector_map.items()):
 		signature = compaction_signature(element)
 		duplicate_index = signature_counts[signature]
@@ -308,6 +352,16 @@ def select_elements_for_min_mode(
 			score -= duplicate_index * 6
 		if duplicate_index >= _MAX_DUPLICATES_PER_SIGNATURE:
 			score -= 50
+		# Boost elements near the current viewport — most likely targets for the next action
+		_snap = getattr(element, 'snapshot_node', None)
+		if _snap is not None and scroll_y is not None and viewport_height is not None:
+			rects = getattr(_snap, 'clientRects', None)
+			if rects is not None:
+				el_abs_y = (scroll_y or 0) + getattr(rects, 'y', 9999)
+				if el_abs_y <= prox_near:
+					score += 18
+				elif el_abs_y <= prox_far:
+					score += 9
 		scored_elements.append((score, order, backend_node_id, element))
 
 	selected_elements: list[tuple[float, int, int, EnhancedDOMTreeNode]] = []
@@ -396,8 +450,13 @@ def summarize_interactive_element(
 	context = derive_element_context(element)
 	if context:
 		info['context'] = context
+	tag = element.tag_name.lower()
 	if element.ax_node and element.ax_node.role:
-		info['role'] = element.ax_node.role
+		role = element.ax_node.role
+		input_type_lower = element.attributes.get('type', '').lower()
+		implied = _IMPLICIT_ROLE_MAP.get((tag, input_type_lower)) or _IMPLICIT_ROLE_MAP.get((tag, ''))
+		if role.lower() != implied:
+			info['role'] = role
 	if element.attributes.get('placeholder'):
 		info['placeholder'] = element.attributes['placeholder']
 	if element.attributes.get('href'):
@@ -407,7 +466,6 @@ def summarize_interactive_element(
 	# Current value for input-like elements — agents need pre-filled state.
 	# AX node.value is authoritative: it reflects the live DOM property (typed text),
 	# whereas element.attributes['value'] is the static HTML attribute (initial value only).
-	tag = element.tag_name.lower()
 	if tag in {'input', 'textarea', 'select'} or 'contenteditable' in element.attributes:
 		ax_value = getattr(element.ax_node, 'value', None) if element.ax_node else None
 		value = ax_value or element.attributes.get('value') or element.node_value
