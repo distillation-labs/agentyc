@@ -9,6 +9,13 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 import anyio
+from bubus import BaseEvent
+from cdp_use.cdp.browser import DownloadProgressEvent as CDPDownloadProgressEvent
+from cdp_use.cdp.browser import DownloadWillBeginEvent
+from cdp_use.cdp.network import ResponseReceivedEvent
+from cdp_use.cdp.target import SessionID, TargetID
+from pydantic import PrivateAttr
+
 from agentyc.browser.events import (
 	BrowserLaunchEvent,
 	BrowserStateRequestEvent,
@@ -22,12 +29,6 @@ from agentyc.browser.events import (
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
 from agentyc.utils import create_task_with_error_handling
-from bubus import BaseEvent
-from cdp_use.cdp.browser import DownloadProgressEvent as CDPDownloadProgressEvent
-from cdp_use.cdp.browser import DownloadWillBeginEvent
-from cdp_use.cdp.network import ResponseReceivedEvent
-from cdp_use.cdp.target import SessionID, TargetID
-from pydantic import PrivateAttr
 
 if TYPE_CHECKING:
 	pass

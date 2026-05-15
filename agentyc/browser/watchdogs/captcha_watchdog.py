@@ -13,6 +13,9 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, Protocol, cast
 
+from bubus import BaseEvent
+from pydantic import PrivateAttr
+
 from agentyc.browser.events import (
 	BrowserConnectedEvent,
 	BrowserStoppedEvent,
@@ -21,8 +24,6 @@ from agentyc.browser.events import (
 	_get_timeout,
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
-from bubus import BaseEvent
-from pydantic import PrivateAttr
 
 CaptchaResultType = Literal['success', 'failed', 'timeout', 'unknown']
 

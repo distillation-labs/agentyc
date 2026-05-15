@@ -4,7 +4,8 @@ import asyncio
 import json
 import os
 
-from agentyc.actor.utils import get_key_info
+from cdp_use.cdp.input.commands import DispatchKeyEventParameters
+
 from agentyc.browser.events import (
 	ClickCoordinateEvent,
 	ClickElementEvent,
@@ -20,11 +21,11 @@ from agentyc.browser.events import (
 	UploadFileEvent,
 	WaitEvent,
 )
+from agentyc.browser.keymap import get_key_info
 from agentyc.browser.views import BrowserError, URLNotAllowedError
 from agentyc.browser.watchdog_base import BaseWatchdog
 from agentyc.dom.service import EnhancedDOMTreeNode
 from agentyc.observability import observe_debug
-from cdp_use.cdp.input.commands import DispatchKeyEventParameters
 
 # Import EnhancedDOMTreeNode and rebuild event models that have forward references to it
 # This must be done after all imports are complete

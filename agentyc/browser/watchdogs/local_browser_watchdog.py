@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import psutil
+from bubus import BaseEvent
+from pydantic import PrivateAttr
+
 from agentyc.browser.events import (
 	BrowserKillEvent,
 	BrowserLaunchEvent,
@@ -18,8 +21,6 @@ from agentyc.browser.events import (
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
 from agentyc.observability import observe_debug
-from bubus import BaseEvent
-from pydantic import PrivateAttr
 
 if TYPE_CHECKING:
 	from agentyc.browser.profile import BrowserChannel

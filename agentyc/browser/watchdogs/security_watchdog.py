@@ -2,6 +2,8 @@
 
 from typing import TYPE_CHECKING, ClassVar
 
+from bubus import BaseEvent
+
 from agentyc.browser.events import (
 	BrowserErrorEvent,
 	NavigateToUrlEvent,
@@ -9,7 +11,6 @@ from agentyc.browser.events import (
 	TabCreatedEvent,
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
-from bubus import BaseEvent
 
 if TYPE_CHECKING:
 	pass

@@ -13,6 +13,8 @@ from pydantic import Field, PrivateAttr
 from agentyc.browser.events import (
 	BrowserConnectedEvent,
 	BrowserErrorEvent,
+	BrowserReconnectedEvent,
+	BrowserReconnectingEvent,
 	BrowserStoppedEvent,
 	TabClosedEvent,
 	TabCreatedEvent,
@@ -41,6 +43,8 @@ class CrashWatchdog(BaseWatchdog):
 	# Event contracts
 	LISTENS_TO: ClassVar[list[type[BaseEvent]]] = [
 		BrowserConnectedEvent,
+		BrowserReconnectingEvent,
+		BrowserReconnectedEvent,
 		BrowserStoppedEvent,
 		TabCreatedEvent,
 		TabClosedEvent,
@@ -59,13 +63,19 @@ class CrashWatchdog(BaseWatchdog):
 	_targets_with_listeners: set[str] = PrivateAttr(default_factory=set)  # Track targets that already have event listeners
 
 	async def on_BrowserConnectedEvent(self, event: BrowserConnectedEvent) -> None:
-		"""Start monitoring when browser is connected."""
-		# logger.debug('[CrashWatchdog] Browser connected event received, beginning monitoring')
+		"""Attach to existing page targets and start monitoring."""
+		await self._attach_existing_page_targets()
+		await self._start_monitoring()
 
-		create_task_with_error_handling(
-			self._start_monitoring(), name='start_crash_monitoring', logger_instance=self.logger, suppress_exceptions=True
-		)
-		# logger.debug(f'[CrashWatchdog] Monitoring task started: {self._monitoring_task and not self._monitoring_task.done()}')
+	async def on_BrowserReconnectingEvent(self, event: BrowserReconnectingEvent) -> None:
+		"""Stop monitoring before the CDP client is replaced during reconnect."""
+		await self._stop_monitoring()
+
+	async def on_BrowserReconnectedEvent(self, event: BrowserReconnectedEvent) -> None:
+		"""Re-attach to existing targets after reconnect with a fresh CDP client."""
+		await self._stop_monitoring()
+		await self._attach_existing_page_targets()
+		await self._start_monitoring()
 
 	async def on_BrowserStoppedEvent(self, event: BrowserStoppedEvent) -> None:
 		"""Stop monitoring when browser stops."""
@@ -74,8 +84,7 @@ class CrashWatchdog(BaseWatchdog):
 
 	async def on_TabCreatedEvent(self, event: TabCreatedEvent) -> None:
 		"""Attach to new tab."""
-		assert self.browser_session.agent_focus_target_id is not None, 'No current target ID'
-		await self.attach_to_target(self.browser_session.agent_focus_target_id)
+		await self.attach_to_target(event.target_id)
 
 	async def on_TabClosedEvent(self, event: TabClosedEvent) -> None:
 		"""Clean up tracking when tab closes."""
@@ -94,9 +103,16 @@ class CrashWatchdog(BaseWatchdog):
 
 			# Create temporary session for monitoring without switching focus
 			cdp_session = await self.browser_session.get_or_create_cdp_session(target_id, focus=False)
+			attached_session_id = cdp_session.session_id
 
 			# Register crash event handler
 			def on_target_crashed(event: TargetCrashedEvent, session_id: SessionID | None = None):
+				if session_id is not None and session_id != attached_session_id:
+					return
+				event_target_id = event.get('targetId')
+				if event_target_id and event_target_id != target_id:
+					return
+
 				# Create and track the task
 				task = create_task_with_error_handling(
 					self._on_target_crash_cdp(target_id),
@@ -119,6 +135,15 @@ class CrashWatchdog(BaseWatchdog):
 
 		except Exception as e:
 			self.logger.warning(f'[CrashWatchdog] Failed to attach to target {target_id}: {e}')
+
+	async def _attach_existing_page_targets(self) -> None:
+		"""Attach crash monitoring to all current page targets."""
+		session_manager = self.browser_session.session_manager
+		if session_manager is None:
+			return
+
+		for target in session_manager.get_all_page_targets():
+			await self.attach_to_target(target.target_id)
 
 	async def _on_request_cdp(self, event: dict) -> None:
 		"""Track new network request from CDP event."""
