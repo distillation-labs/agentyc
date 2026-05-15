@@ -132,9 +132,7 @@ def register_extraction_actions(tools: Any) -> None:
 				try:
 					validated_structured = structured_model.model_validate(deterministic_result.structured_data)
 				except Exception as error:
-					return ActionResult(
-						error=f'Deterministic structured extraction did not match the provided schema: {error}'
-					)
+					return ActionResult(error=f'Deterministic structured extraction did not match the provided schema: {error}')
 
 				deterministic_result_data: dict[str, Any] = validated_structured.model_dump(mode='json')
 				extracted_content = (
