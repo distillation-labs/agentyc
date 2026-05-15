@@ -182,9 +182,7 @@ class Tools(Generic[Context]):
 				}
 				action_params = {key: value for key, value in kwargs.items() if key not in special_param_names}
 				special_kwargs = {
-					key: value
-					for key, value in kwargs.items()
-					if key in special_param_names and key != 'browser_session'
+					key: value for key, value in kwargs.items() if key in special_param_names and key != 'browser_session'
 				}
 				params_instance = action.param_model(**action_params)
 				dynamic_action_model = create_model(
