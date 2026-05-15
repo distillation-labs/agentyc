@@ -50,9 +50,7 @@ def match_url_with_domain_pattern(url: str, domain_pattern: str, log_warnings: b
 		if '*' in pattern_domain:
 			if pattern_domain.count('*.') > 1 or pattern_domain.count('.*') > 1:
 				if log_warnings:
-					logging.getLogger(__name__).error(
-						f'⛔️ Multiple wildcards in pattern=[{domain_pattern}] are not supported'
-					)
+					logging.getLogger(__name__).error(f'⛔️ Multiple wildcards in pattern=[{domain_pattern}] are not supported')
 				return False
 
 			if pattern_domain.endswith('.*'):
@@ -80,9 +78,7 @@ def match_url_with_domain_pattern(url: str, domain_pattern: str, log_warnings: b
 
 		return False
 	except Exception as e:
-		logging.getLogger(__name__).error(
-			f'⛔️ Error matching URL {url} with pattern {domain_pattern}: {type(e).__name__}: {e}'
-		)
+		logging.getLogger(__name__).error(f'⛔️ Error matching URL {url} with pattern {domain_pattern}: {type(e).__name__}: {e}')
 		return False
 
 
