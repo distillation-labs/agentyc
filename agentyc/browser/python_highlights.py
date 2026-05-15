@@ -10,10 +10,11 @@ import io
 import logging
 import os
 
+from PIL import Image, ImageDraw, ImageFont
+
 from agentyc.dom.views import DOMSelectorMap, EnhancedDOMTreeNode
 from agentyc.observability import observe_debug
 from agentyc.utils import time_execution_async
-from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 

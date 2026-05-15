@@ -2,7 +2,7 @@
 
 cdp_use's `send_raw()` awaits a future that only resolves when the browser
 sends a matching response. If the server goes silent mid-session (observed
-failure mode against remote cloud browsers: WebSocket stays "alive" at the
+failure mode against remote browser endpoints: WebSocket stays "alive" at the
 TCP/keepalive layer while the browser container is dead or the proxy has
 lost its upstream) the future never resolves and the whole agent hangs.
 
