@@ -39,6 +39,7 @@ def register_done_action(tools: Any, output_model: type[Any] | None, display_fil
 				long_term_memory=f'Task completed. Success Status: {params.success}',
 				attachments=attachments,
 			)
+
 		return
 
 	@tools.registry.action(
