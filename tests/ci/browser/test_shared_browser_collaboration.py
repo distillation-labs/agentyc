@@ -82,7 +82,7 @@ async def test_shared_attach_marks_unclaimed_tabs_as_human_owned():
 		target_id='target-other',
 		target_type='page',
 		title='Builds',
-		display_title='[agtyc:abcd] Builds',
+		display_title='[Runtime abcd] Builds',
 		ownership=TargetOwnershipMetadata.for_runtime(
 			target_id='target-other',
 			runtime=RuntimeOwnershipMetadata.create(
