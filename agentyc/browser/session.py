@@ -2029,6 +2029,84 @@ class BrowserSession(BaseModel):
 
 		task.add_done_callback(_on_message_handler_done)
 
+	@property
+	def runtime_metadata(self) -> RuntimeOwnershipMetadata:
+		return self._runtime_metadata
+
+	def _tab_display_title(self, target: Target) -> str:
+		display_title = target.display_title or target.title
+		if target.ownership and target.ownership.runtime.runtime_id == self.runtime_metadata.runtime_id:
+			return apply_title_prefix(display_title, self.runtime_metadata)
+		return display_title
+
+	async def _apply_runtime_markers_to_target(
+		self,
+		target_id: TargetID,
+		*,
+		include_overlay: bool = True,
+		include_title_prefix: bool = True,
+	) -> None:
+		if not self.session_manager:
+			return
+		target = self.session_manager.get_target(target_id)
+		if not target or target.target_type not in ('page', 'tab'):
+			return
+		try:
+			cdp_session = await self.get_or_create_cdp_session(target_id, focus=False)
+			script = build_runtime_marker_script(
+				runtime=self.runtime_metadata,
+				target_id=target_id,
+				include_overlay=include_overlay,
+				include_title_prefix=include_title_prefix,
+				exclude_session_id=self.id,
+			)
+			await cdp_session.cdp_client.send.Runtime.evaluate(
+				params={'expression': script, 'returnByValue': True},
+				session_id=cdp_session.session_id,
+			)
+			self.session_manager.set_target_ownership(target_id, self.runtime_metadata)
+			managed_target = self.session_manager.get_target(target_id)
+			if managed_target and managed_target.ownership:
+				managed_target.ownership.overlay_enabled = include_overlay
+				managed_target.ownership.overlay_visible = include_overlay
+				managed_target.ownership.title_prefix_applied = include_title_prefix
+		except Exception as exc:
+			self.logger.debug(f'Failed to apply runtime markers to target {target_id[-8:]}: {exc}')
+
+	async def _set_collaboration_overlay_visibility(self, visible: bool, target_id: TargetID | None = None) -> None:
+		if not self.session_manager:
+			return
+		target_ids = [target_id] if target_id else [target.target_id for target in self.session_manager.get_all_page_targets()]
+		for current_target_id in target_ids:
+			try:
+				cdp_session = await self.get_or_create_cdp_session(current_target_id, focus=False)
+				await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': build_marker_visibility_script(visible), 'returnByValue': True},
+					session_id=cdp_session.session_id,
+				)
+				target = self.session_manager.get_target(current_target_id)
+				if target and target.ownership:
+					target.ownership.overlay_visible = visible
+			except Exception:
+				pass
+
+	async def get_target_runtime_metadata(self, target_id: TargetID | None = None) -> dict[str, Any] | None:
+		resolved_target_id = target_id or self.agent_focus_target_id
+		if not resolved_target_id:
+			return None
+		target = self.session_manager.get_target(resolved_target_id) if self.session_manager else None
+		if target and target.ownership:
+			return target.ownership.runtime.model_dump(mode='json')
+		try:
+			cdp_session = await self.get_or_create_cdp_session(resolved_target_id, focus=False)
+			result = await cdp_session.cdp_client.send.Runtime.evaluate(
+				params={'expression': build_runtime_metadata_probe_script(), 'returnByValue': True},
+				session_id=cdp_session.session_id,
+			)
+			return result.get('result', {}).get('value')
+		except Exception:
+			return None
+
 	async def get_tabs(self) -> list[TabInfo]:
 		"""Get information about all open tabs using cached target data."""
 		tabs = []
@@ -2082,7 +2160,10 @@ class BrowserSession(BaseModel):
 				target_id=target_id,
 				url=url,
 				title=title,
+				display_title=self._tab_display_title(target),
 				parent_target_id=None,
+				ownership=target.ownership.runtime if target.ownership else None,
+				window_bounds=target.window_bounds,
 			)
 			tabs.append(tab_info)
 
@@ -2101,7 +2182,7 @@ class BrowserSession(BaseModel):
 		return {
 			'targetId': target.target_id,
 			'url': target.url,
-			'title': target.title,
+			'title': self._tab_display_title(target),
 			'type': target.target_type,
 			'attached': True,
 			'canAccessOpener': False,
@@ -2118,7 +2199,7 @@ class BrowserSession(BaseModel):
 		"""Get the title of the current page."""
 		if self.agent_focus_target_id:
 			target = self.session_manager.get_target(self.agent_focus_target_id)
-			return target.title
+			return self._tab_display_title(target)
 		return 'Unknown page title'
 
 	async def navigate_to(self, url: str, new_tab: bool = False) -> None:
@@ -2447,7 +2528,11 @@ class BrowserSession(BaseModel):
 
 	async def remove_highlights(self) -> None:
 		"""Remove highlights from the page using CDP."""
-		if not self.browser_profile.highlight_elements and not self.browser_profile.dom_highlight_elements:
+		if (
+			not self.browser_profile.highlight_elements
+			and not self.browser_profile.dom_highlight_elements
+			and not self.session_manager
+		):
 			return
 
 		try:
@@ -2487,6 +2572,7 @@ class BrowserSession(BaseModel):
 					self.logger.debug(f'Successfully removed {removed_count} highlight elements')
 				else:
 					self.logger.debug('Highlight removal completed')
+				await self._set_collaboration_overlay_visibility(False)
 
 		except Exception as e:
 			self.logger.warning(f'Failed to remove highlights: {e}')
