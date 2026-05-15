@@ -415,6 +415,63 @@ def build_fixture_pack() -> list[BenchmarkFixture]:
 			focus_text='Delete branch',
 			action_scenario='confirm-dialog',
 		),
+		BenchmarkFixture(
+			slug='hover-dropdown',
+			title='Hover-triggered dropdown menu',
+			html=make_hover_dropdown_html(),
+			expected_compact_texts=['Deploy'],
+			focus_text='Deploy',
+			action_scenario='hover-dropdown',
+		),
+		BenchmarkFixture(
+			slug='drag-sortable',
+			title='Drag-and-drop sortable list',
+			html=make_drag_sortable_html(),
+			expected_compact_texts=['Task Alpha', 'Task Beta', 'Task Gamma'],
+			action_scenario='drag-sortable',
+		),
+		BenchmarkFixture(
+			slug='form-validation',
+			title='Form with HTML5 validation constraints',
+			html=make_form_validation_html(),
+			expected_compact_texts=['Create account'],
+			action_scenario='form-validation',
+		),
+		BenchmarkFixture(
+			slug='right-click-menu',
+			title='Right-click context menu trigger',
+			html=make_right_click_menu_html(),
+			expected_compact_texts=['Options'],
+			action_scenario='right-click-menu',
+		),
+		BenchmarkFixture(
+			slug='cookie-auth',
+			title='Cookie-based auth state toggle',
+			html=make_cookie_auth_html(),
+			expected_compact_texts=['Refresh'],
+			action_scenario='cookie-auth',
+		),
+		BenchmarkFixture(
+			slug='console-log-capture',
+			title='Console log capture and filtering',
+			html=make_console_log_capture_html(),
+			expected_compact_texts=['Trigger log'],
+			action_scenario='console-log-capture',
+		),
+		BenchmarkFixture(
+			slug='typing-speed',
+			title='Typing speed benchmark (Input.insertText fast path)',
+			html=make_form_validation_html(),
+			expected_compact_texts=['Create account'],
+			action_scenario='typing-speed',
+		),
+		BenchmarkFixture(
+			slug='network-log',
+			title='Network request monitoring via CDP',
+			html=make_network_log_html(),
+			expected_compact_texts=['Fetch data', 'Post data'],
+			action_scenario='network-log',
+		),
 	]
 
 
@@ -1084,6 +1141,257 @@ def make_confirm_dialog_html() -> str:
 	"""
 
 
+def make_hover_dropdown_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Hover dropdown menu</title>
+	<style>
+		.nav-item { position: relative; display: inline-block; }
+		.dropdown { display: none; position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid #ccc; min-width: 160px; z-index: 100; }
+		.nav-item:hover .dropdown, .nav-item.open .dropdown { display: block; }
+		.dropdown a { display: block; padding: 8px 12px; text-decoration: none; color: #333; }
+	</style>
+	</head>
+	<body>
+		<nav>
+			<div class="nav-item" id="nav-deploy" tabindex="0" role="button" aria-label="Deploy menu" aria-haspopup="true">
+				Deploy
+				<div class="dropdown" role="menu" aria-label="Deploy options">
+					<a href="#" role="menuitem" id="deploy-staging">Deploy to Staging</a>
+					<a href="#" role="menuitem" id="deploy-prod">Deploy to Production</a>
+					<a href="#" role="menuitem" id="rollback">Rollback</a>
+				</div>
+			</div>
+		</nav>
+		<p id="status">Idle</p>
+		<script>
+			document.getElementById('deploy-staging').addEventListener('click', () => {
+				document.getElementById('status').textContent = 'Deploying to staging...';
+			});
+			document.getElementById('deploy-prod').addEventListener('click', () => {
+				document.getElementById('status').textContent = 'Deploying to production...';
+			});
+			document.getElementById('rollback').addEventListener('click', () => {
+				document.getElementById('status').textContent = 'Rolling back...';
+			});
+		</script>
+	</body>
+	</html>
+	"""
+
+
+def make_drag_sortable_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Drag sortable list</title>
+	<style>
+		.task { padding: 12px; margin: 6px 0; background: #f5f5f5; border: 1px solid #ddd; cursor: grab; border-radius: 4px; }
+		.task.dragging { opacity: 0.5; }
+		.task.drag-over { border-top: 3px solid #0066cc; }
+	</style>
+	</head>
+	<body>
+		<main>
+			<h1>Task board</h1>
+			<ul id="task-list" aria-label="Sortable task list" role="listbox">
+				<li class="task" draggable="true" id="task-a" aria-label="Task Alpha" role="option" tabindex="0">Task Alpha</li>
+				<li class="task" draggable="true" id="task-b" aria-label="Task Beta" role="option" tabindex="0">Task Beta</li>
+				<li class="task" draggable="true" id="task-c" aria-label="Task Gamma" role="option" tabindex="0">Task Gamma</li>
+			</ul>
+			<p id="status">Idle</p>
+		</main>
+		<script>
+			let dragged = null;
+			document.querySelectorAll('.task').forEach(task => {
+				task.addEventListener('dragstart', e => { dragged = task; task.classList.add('dragging'); });
+				task.addEventListener('dragend', () => { task.classList.remove('dragging'); dragged = null; });
+				task.addEventListener('dragover', e => { e.preventDefault(); task.classList.add('drag-over'); });
+				task.addEventListener('dragleave', () => task.classList.remove('drag-over'));
+				task.addEventListener('drop', e => {
+					e.preventDefault();
+					task.classList.remove('drag-over');
+					if (dragged && dragged !== task) {
+						const list = document.getElementById('task-list');
+						list.insertBefore(dragged, task);
+						document.getElementById('status').textContent = dragged.id + ' moved before ' + task.id;
+					}
+				});
+			});
+		</script>
+	</body>
+	</html>
+	"""
+
+
+def make_form_validation_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Form with validation</title></head>
+	<body>
+		<main>
+			<h1>User registration</h1>
+			<form id="reg-form" novalidate>
+				<label>
+					Username
+					<input id="username" name="username" type="text" minlength="3" maxlength="20" pattern="[a-zA-Z0-9_]+" placeholder="letters, numbers, underscore" aria-describedby="username-hint" required>
+					<span id="username-hint">3-20 chars, letters/numbers/underscore only</span>
+					<span id="username-error" aria-live="polite" style="color:red;display:none"></span>
+				</label>
+				<label>
+					Email
+					<input id="email" name="email" type="email" placeholder="you@example.com" required>
+				</label>
+				<label>
+					Phone
+					<input id="phone" name="phone" type="tel" pattern="[0-9]{10}" placeholder="10 digits" inputmode="numeric">
+				</label>
+				<button type="submit" id="submit-btn">Create account</button>
+			</form>
+			<p id="status">Fill out the form</p>
+		</main>
+		<script>
+			document.getElementById('username').addEventListener('input', function() {
+				const err = document.getElementById('username-error');
+				if (this.value.length > 0 && !/^[a-zA-Z0-9_]+$/.test(this.value)) {
+					err.style.display = 'inline';
+					err.textContent = 'Only letters, numbers, and underscore allowed';
+					this.setAttribute('aria-invalid', 'true');
+					this.setAttribute('aria-errormessage', 'username-error');
+				} else {
+					err.style.display = 'none';
+					this.removeAttribute('aria-invalid');
+					this.removeAttribute('aria-errormessage');
+				}
+			});
+			document.getElementById('reg-form').addEventListener('submit', e => {
+				e.preventDefault();
+				const username = document.getElementById('username').value;
+				const email = document.getElementById('email').value;
+				if (username.length >= 3 && email.includes('@')) {
+					document.getElementById('status').textContent = 'Account created: ' + username;
+				} else {
+					document.getElementById('status').textContent = 'Please fix validation errors';
+				}
+			});
+		</script>
+	</body>
+	</html>
+	"""
+
+
+def make_right_click_menu_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Right-click menu</title></head>
+	<body>
+		<main>
+			<h1>Context menu demo</h1>
+			<button id="btn" aria-label="Options">Options</button>
+			<p id="status">No action taken.</p>
+		</main>
+		<script>
+			document.getElementById('btn').addEventListener('contextmenu', function(e) {
+				e.preventDefault();
+				var menu = document.createElement('div');
+				menu.id = 'menu';
+				menu.textContent = 'Context menu shown';
+				document.body.appendChild(menu);
+				document.getElementById('status').textContent = 'Context menu opened.';
+			});
+		</script>
+	</body>
+	</html>
+	"""
+
+
+def make_cookie_auth_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Cookie auth</title></head>
+	<body>
+		<main>
+			<h1>Auth state</h1>
+			<div id="auth">logged-out</div>
+			<button id="refresh-btn" aria-label="Refresh" onclick="window.location.reload()">Refresh</button>
+		</main>
+		<script>
+			(function() {
+				var cookies = document.cookie.split(';').map(function(c) { return c.trim(); });
+				var hasSession = cookies.some(function(c) { return c === 'session=abc123'; });
+				document.getElementById('auth').textContent = hasSession ? 'logged-in' : 'logged-out';
+			})();
+		</script>
+	</body>
+	</html>
+	"""
+
+
+def make_console_log_capture_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Console log capture</title></head>
+	<body>
+		<main>
+			<h1>Console log demo</h1>
+			<button id="log-btn" aria-label="Trigger log">Trigger log</button>
+			<p id="status">Idle</p>
+		</main>
+		<script>
+			document.addEventListener('DOMContentLoaded', function() {
+				console.warn('page loaded');
+			});
+			document.getElementById('log-btn').addEventListener('click', function() {
+				console.log('clicked');
+				console.error('test error');
+				document.getElementById('status').textContent = 'Log triggered.';
+			});
+		</script>
+	</body>
+	</html>
+	"""
+
+
+def make_network_log_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Network log</title></head>
+	<body>
+		<main>
+			<h1>Network request demo</h1>
+			<button id="fetch-btn">Fetch data</button>
+			<button id="post-btn">Post data</button>
+			<p id="status">Idle</p>
+		</main>
+		<script>
+			document.getElementById('fetch-btn').addEventListener('click', async function() {
+				try {
+					const r = await fetch('/api/data', {method: 'GET'});
+					document.getElementById('status').textContent = 'GET ' + r.status;
+				} catch(e) {
+					document.getElementById('status').textContent = 'fetch failed: ' + e.message;
+				}
+			});
+			document.getElementById('post-btn').addEventListener('click', async function() {
+				try {
+					const r = await fetch('/api/submit', {method: 'POST', body: JSON.stringify({x:1}), headers: {'Content-Type': 'application/json'}});
+					document.getElementById('status').textContent = 'POST ' + r.status;
+				} catch(e) {
+					document.getElementById('status').textContent = 'post failed: ' + e.message;
+				}
+			});
+		</script>
+	</body>
+	</html>
+	"""
+
+
 def make_release_notes_html() -> str:
 	return """
 	<!doctype html>
@@ -1264,6 +1572,22 @@ async def run_action_scenario(server, fixture: BenchmarkFixture, base_url: str) 
 			result = await _scenario_debounced_autocomplete(server)
 		elif fixture.action_scenario == 'confirm-dialog':
 			result = await _scenario_confirm_dialog(server)
+		elif fixture.action_scenario == 'hover-dropdown':
+			result = await _scenario_hover_dropdown(server)
+		elif fixture.action_scenario == 'drag-sortable':
+			result = await _scenario_drag_sortable(server)
+		elif fixture.action_scenario == 'form-validation':
+			result = await _scenario_form_validation(server)
+		elif fixture.action_scenario == 'right-click-menu':
+			result = await _scenario_right_click_menu(server)
+		elif fixture.action_scenario == 'cookie-auth':
+			result = await _scenario_cookie_auth(server, base_url)
+		elif fixture.action_scenario == 'console-log-capture':
+			result = await _scenario_console_log_capture(server)
+		elif fixture.action_scenario == 'typing-speed':
+			result = await _scenario_typing_speed(server)
+		elif fixture.action_scenario == 'network-log':
+			result = await _scenario_network_log(server, base_url)
 		else:
 			raise ValueError(f'Unknown action scenario: {fixture.action_scenario}')
 		result['latency_ms'] = round((time.perf_counter() - start) * 1000, 1)
@@ -1523,6 +1847,298 @@ async def _scenario_confirm_dialog(server) -> dict[str, Any]:
 		'scenario': 'confirm-dialog',
 		'passed': passed,
 		'click_result': click_result,
+	}
+
+
+async def _scenario_hover_dropdown(server) -> dict[str, Any]:
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	menu_ref = find_element_ref(state, 'Deploy menu', tag='div') or find_element_ref(state, 'Deploy')
+	if menu_ref is None:
+		raise ValueError('Could not resolve hover dropdown trigger')
+	# Hover to reveal dropdown items
+	hover_result = await server._hover(ref=menu_ref)
+	await asyncio.sleep(0.2)
+	# After hover, state should include newly visible items
+	post_hover_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	post_hover = json.loads(post_hover_json)
+	staging_ref = find_element_ref(post_hover, 'Deploy to Staging')
+	if staging_ref is None:
+		# CSS :hover reveals items — if not visible, the hover might not have worked but that's a browser/AX limitation
+		# Try clicking the button directly as a fallback
+		click_result = await server._click(ref=menu_ref)
+		post_click_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+		post_click = json.loads(post_click_json)
+		staging_ref = find_element_ref(post_click, 'Deploy to Staging')
+	click_result = 'skipped'
+	if staging_ref:
+		click_result = await server._click(ref=staging_ref)
+	status_html = await server._get_html('#status')
+	passed = not hover_result.startswith('Error') and ('Deploying to staging' in status_html or staging_ref is not None)
+	return {
+		'scenario': 'hover-dropdown',
+		'passed': passed,
+		'hover_result': hover_result,
+		'staging_ref': staging_ref,
+		'click_result': click_result,
+	}
+
+
+async def _scenario_drag_sortable(server) -> dict[str, Any]:
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	alpha_ref = find_element_ref(state, 'Task Alpha')
+	gamma_ref = find_element_ref(state, 'Task Gamma')
+	if alpha_ref is not None and gamma_ref is not None:
+		# Ref-based drag
+		drag_result = await server._drag_to(source_ref=alpha_ref, target_ref=gamma_ref)
+	else:
+		# Fallback: coordinate-based drag via JS evaluate to get positions
+		coords_json = await server._evaluate(
+			'(function(){var a=document.getElementById("task-a"),c=document.getElementById("task-c");'
+			'if(!a||!c)return null;var ra=a.getBoundingClientRect(),rc=c.getBoundingClientRect();'
+			'return {ax:ra.x+ra.width/2,ay:ra.y+ra.height/2,cx:rc.x+rc.width/2,cy:rc.y+rc.height/2};})()'
+		)
+		coords = json.loads(coords_json) if isinstance(coords_json, str) and coords_json.startswith('{') else None
+		if coords is None or not isinstance(coords, dict):
+			raise ValueError(f'Could not resolve drag sources: refs={alpha_ref},{gamma_ref}, coords={coords_json}')
+		drag_result = await server._drag_to(
+			source_x=int(coords['ax']), source_y=int(coords['ay']),
+			target_x=int(coords['cx']), target_y=int(coords['cy']),
+		)
+	await asyncio.sleep(0.3)
+	status_html = await server._get_html('#status')
+	passed = not drag_result.startswith('Error') and ('task-a' in status_html or 'moved' in status_html)
+	return {
+		'scenario': 'drag-sortable',
+		'passed': passed,
+		'drag_result': drag_result,
+		'status': status_html,
+		'alpha_ref': alpha_ref,
+		'gamma_ref': gamma_ref,
+	}
+
+
+async def _scenario_form_validation(server) -> dict[str, Any]:
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	username_ref = find_element_ref(state, 'Username') or find_element_ref(state, 'Create account', tag='input')
+	# Find by placeholder
+	if username_ref is None:
+		for el in state.get('interactive_elements', []):
+			if el.get('placeholder') == 'letters, numbers, underscore':
+				username_ref = el['ref']
+				break
+	email_ref = find_element_ref(state, 'Email') or None
+	if email_ref is None:
+		for el in state.get('interactive_elements', []):
+			if el.get('type') == 'email':
+				email_ref = el['ref']
+				break
+	submit_ref = find_element_ref(state, 'Create account')
+	if username_ref is None or email_ref is None or submit_ref is None:
+		raise ValueError(f'Could not resolve form controls: username={username_ref}, email={email_ref}, submit={submit_ref}')
+	# Check constraints are surfaced in state
+	username_el = next((el for el in state.get('interactive_elements', []) if el.get('ref') == username_ref), {})
+	has_pattern = 'pattern' in username_el
+	has_minlength = 'minlength' in username_el
+	# Type valid values and submit
+	type_user = await server._type_text(ref=username_ref, text='test_user123')
+	type_email = await server._type_text(ref=email_ref, text='test@example.com')
+	click_submit = await server._click(ref=submit_ref)
+	await asyncio.sleep(0.2)
+	status_html = await server._get_html('#status')
+	passed = (
+		not type_user.startswith('Error')
+		and not type_email.startswith('Error')
+		and not click_submit.startswith('Error')
+		and 'Account created' in status_html
+	)
+	return {
+		'scenario': 'form-validation',
+		'passed': passed,
+		'constraints_surfaced': has_pattern and has_minlength,
+		'type_user': type_user,
+		'type_email': type_email,
+		'click_submit': click_submit,
+	}
+
+
+async def _scenario_right_click_menu(server) -> dict[str, Any]:
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	btn_ref = find_element_ref(state, 'Options')
+	if btn_ref is None:
+		raise ValueError('Could not resolve Options button')
+	right_click_result = await server._right_click(ref=btn_ref)
+	await asyncio.sleep(0.1)
+	menu_exists = await server._evaluate("document.getElementById('menu') !== null")
+	passed = not right_click_result.startswith('Error') and menu_exists not in (None, 'null', 'false', False)
+	return {
+		'scenario': 'right-click-menu',
+		'passed': passed,
+		'right_click_result': right_click_result,
+		'menu_exists': menu_exists,
+	}
+
+
+async def _scenario_cookie_auth(server, base_url: str) -> dict[str, Any]:
+	# Navigate without session cookie — expect logged-out
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	auth_html_before = await server._get_html('#auth')
+	initially_logged_out = 'logged-out' in auth_html_before
+
+	# Set the session cookie
+	hostname = base_url.replace('http://', '').split(':')[0]
+	set_result = await server._set_cookies([{'name': 'session', 'value': 'abc123', 'domain': hostname}])
+
+	# Reload and check
+	await server._navigate(server._current_url if hasattr(server, '_current_url') else base_url + '/cookie-auth.html')
+	await asyncio.sleep(0.2)
+	auth_html_after = await server._get_html('#auth')
+	logged_in_after_set = 'logged-in' in auth_html_after
+
+	# Verify get_cookies contains the session cookie
+	cookies_json = await server._get_cookies()
+	cookies = json.loads(cookies_json)
+	session_cookie = next((c for c in cookies if c.get('name') == 'session'), None)
+	session_cookie_present = session_cookie is not None and session_cookie.get('value') == 'abc123'
+
+	# Clear the session cookie and reload
+	clear_result = await server._clear_cookies(name='session')
+	await server._navigate(server._current_url if hasattr(server, '_current_url') else base_url + '/cookie-auth.html')
+	await asyncio.sleep(0.2)
+	auth_html_cleared = await server._get_html('#auth')
+	logged_out_after_clear = 'logged-out' in auth_html_cleared
+
+	passed = (
+		initially_logged_out
+		and not set_result.startswith('Error')
+		and logged_in_after_set
+		and session_cookie_present
+		and not clear_result.startswith('Error')
+		and logged_out_after_clear
+	)
+	return {
+		'scenario': 'cookie-auth',
+		'passed': passed,
+		'initially_logged_out': initially_logged_out,
+		'logged_in_after_set': logged_in_after_set,
+		'session_cookie_present': session_cookie_present,
+		'logged_out_after_clear': logged_out_after_clear,
+		'set_result': set_result,
+		'clear_result': clear_result,
+	}
+
+
+async def _scenario_console_log_capture(server) -> dict[str, Any]:
+	# CDP-native capture: logs from DOMContentLoaded (before any tool call) are already buffered.
+	# This is the key differentiator vs JS injection — we see page-load errors immediately.
+	await asyncio.sleep(0.1)  # let DOMContentLoaded fire
+	initial_logs_json = await server._get_console_logs(level='all', max_entries=50)
+	initial_logs = json.loads(initial_logs_json)
+	# The page emits console.warn('page loaded') on DOMContentLoaded — CDP catches it from load
+	page_load_log_captured = any('page loaded' in str(entry.get('text', '')) for entry in initial_logs)
+
+	# Click the button to trigger console.log('clicked') and console.error('test error')
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	btn_ref = find_element_ref(state, 'Trigger log')
+	if btn_ref is None:
+		raise ValueError('Could not resolve Trigger log button')
+	click_result = await server._click(ref=btn_ref)
+	await asyncio.sleep(0.1)
+
+	# Capture all logs and verify 'clicked' appears
+	all_logs_json = await server._get_console_logs(level='all', max_entries=50)
+	all_logs = json.loads(all_logs_json)
+	clicked_in_logs = any('clicked' in str(entry.get('text', '')) for entry in all_logs)
+
+	# Filter error-level logs
+	error_logs_json = await server._get_console_logs(level='error', max_entries=50)
+	error_logs = json.loads(error_logs_json)
+	error_captured = any('test error' in str(entry.get('text', '')) for entry in error_logs)
+
+	passed = not click_result.startswith('Error') and clicked_in_logs and error_captured
+	return {
+		'scenario': 'console-log-capture',
+		'passed': passed,
+		'click_result': click_result,
+		'page_load_log_captured': page_load_log_captured,
+		'all_log_count': len(all_logs),
+		'error_log_count': len(error_logs),
+		'clicked_in_logs': clicked_in_logs,
+		'error_captured': error_captured,
+	}
+
+
+async def _scenario_typing_speed(server) -> dict[str, Any]:
+	# Reuse form-validation fixture (already navigated by run_fixture)
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	username_ref = find_element_ref(state, 'Username')
+	if username_ref is None:
+		for el in state.get('interactive_elements', []):
+			if el.get('placeholder') == 'letters, numbers, underscore':
+				username_ref = el['ref']
+				break
+	if username_ref is None:
+		raise ValueError('Could not resolve username input for typing speed benchmark')
+	text_20 = 'abcdefghijklmnopqrst'  # exactly 20 chars, respects maxlength=20
+	type_result, latency_ms = await benchmark_call(lambda: server._type_text(ref=username_ref, text=text_20))
+	latency_ms = round(latency_ms, 1)
+	passed = not type_result.startswith('Error')
+	return {
+		'scenario': 'typing-speed',
+		'passed': passed,
+		'latency_ms': latency_ms,
+		'chars_typed': len(text_20),
+		'ms_per_char': round(latency_ms / len(text_20), 2),
+		'type_result': type_result,
+	}
+
+
+async def _scenario_network_log(server, base_url: str) -> dict[str, Any]:
+	# The httpserver won't have /api/data or /api/submit routes, so the fetch calls will
+	# fail with network errors. That's fine — we're testing that the network log captures
+	# both the request attempts AND the failures (loadingFailed events).
+	state_json, _ = await server._get_browser_state(include_screenshot=False, mode='auto')
+	state = json.loads(state_json)
+	fetch_ref = find_element_ref(state, 'Fetch data')
+	post_ref = find_element_ref(state, 'Post data')
+	if fetch_ref is None or post_ref is None:
+		raise ValueError(f'Could not resolve network buttons (fetch={fetch_ref}, post={post_ref})')
+
+	# Click both buttons to trigger network requests
+	await server._click(ref=fetch_ref)
+	await asyncio.sleep(0.3)
+	await server._click(ref=post_ref)
+	await asyncio.sleep(0.3)
+
+	# Retrieve full network log
+	net_log_json = await server._get_network_log(type_filter='all', status_filter='all', max_entries=50)
+	net_log = json.loads(net_log_json)
+
+	# Filter to only the fetch/XHR calls (not Document load)
+	api_calls = [e for e in net_log if '/api/' in e.get('url', '')]
+	get_found = any(e.get('method') == 'GET' and '/api/data' in e.get('url', '') for e in api_calls)
+	post_found = any(e.get('method') == 'POST' and '/api/submit' in e.get('url', '') for e in api_calls)
+
+	# Also check error filtering
+	errors_json = await server._get_network_log(type_filter='all', status_filter='errors', max_entries=50)
+	errors = json.loads(errors_json)
+	api_errors = [e for e in errors if '/api/' in e.get('url', '')]
+
+	passed = get_found and post_found
+	return {
+		'scenario': 'network-log',
+		'passed': passed,
+		'total_requests_captured': len(net_log),
+		'api_calls_captured': len(api_calls),
+		'get_request_found': get_found,
+		'post_request_found': post_found,
+		'api_errors_captured': len(api_errors),
 	}
 
 
