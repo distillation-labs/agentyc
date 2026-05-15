@@ -2,9 +2,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from agentyc.browser.collaboration import apply_title_prefix, extract_title_prefix, strip_title_prefix
+from agentyc.browser.profile import BrowserProfile
 from agentyc.browser.session import BrowserSession
 from agentyc.browser.session_manager import SessionManager
-from agentyc.browser.profile import BrowserProfile
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 
 
