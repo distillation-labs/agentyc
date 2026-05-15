@@ -5,7 +5,8 @@ events, ensuring the session pool always reflects the current browser state.
 """
 
 import asyncio
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, cast
 
 from cdp_use.cdp.target import AttachedToTargetEvent, DetachedFromTargetEvent, SessionID, TargetID
 
@@ -67,11 +68,11 @@ class SessionManager:
 			runtime_role='detected',
 		)
 
-	def _apply_target_info(self, target: Target, target_info: dict) -> None:
-		raw_title = target_info.get('title', target.display_title or target.title or 'Unknown title')
+	def _apply_target_info(self, target: Target, target_info: Mapping[str, Any]) -> None:
+		raw_title = str(target_info.get('title', target.display_title or target.title or 'Unknown title'))
 		target.display_title = raw_title
 		target.title = strip_title_prefix(raw_title) or target.title
-		target.url = target_info.get('url', target.url)
+		target.url = str(target_info.get('url', target.url))
 		ownership_metadata = self._runtime_metadata_from_target_info(target.target_id, raw_title)
 		if ownership_metadata:
 			target.ownership = TargetOwnershipMetadata(target_id=target.target_id, runtime=ownership_metadata, title_prefix_applied=True)
@@ -464,13 +465,13 @@ class SessionManager:
 					url=target_info.get('url', 'about:blank'),
 					title='Unknown title',
 				)
-				self._apply_target_info(target, target_info)
+				self._apply_target_info(target, cast(Mapping[str, Any], target_info))
 				self._targets[target_id] = target
 				self.logger.debug(f'[SessionManager] Created target {target_id[:8]}... (type={target_type})')
 			else:
 				# Update existing target info
 				existing_target = self._targets[target_id]
-				self._apply_target_info(existing_target, target_info)
+				self._apply_target_info(existing_target, cast(Mapping[str, Any], target_info))
 
 		# Create CDPSession (communication channel)
 		assert self.browser_session._cdp_client_root is not None, 'Root CDP client required'
@@ -532,7 +533,7 @@ class SessionManager:
 			# Update target if it exists (source of truth for url/title)
 			if target_id in self._targets:
 				target = self._targets[target_id]
-				self._apply_target_info(target, target_info)
+				self._apply_target_info(target, cast(Mapping[str, Any], target_info))
 
 	async def _handle_target_detached(self, event: DetachedFromTargetEvent) -> None:
 		"""Handle Target.detachedFromTarget event.
