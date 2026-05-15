@@ -94,6 +94,11 @@ async def _resolve_live_element(
 				score += weight
 				if field_name in {'text', 'placeholder', 'href'}:
 					strong_match = True
+			elif field_name in {'text', 'placeholder'} and len(min(reference_value, candidate_value, key=len)) >= 4:
+				# Partial match for transitional text like "Submit" → "Submitting..."
+				if reference_value in candidate_value or candidate_value in reference_value:
+					score += weight // 2
+					strong_match = True
 		if reference_summary.get('disabled') == candidate_summary.get('disabled'):
 			score += 1
 		if strong_match and score > best_score:
@@ -130,6 +135,16 @@ def _validate_actionable_element(self, element: Any, *, action_name: str) -> tup
 	return None
 
 
+_ERROR_HINTS: dict[str, str] = {
+	'stale_ref': 'Call browser_get_state() to get fresh refs before retrying.',
+	'target_not_visible': 'Try browser_scroll() to bring the element into view, then retry.',
+	'target_disabled': 'Wait for the element to become enabled or check for a prerequisite step.',
+	'navigation_timeout': 'Try browser_wait_for_network_idle() or increase the timeout, then get state.',
+	'target_blocked': 'A dialog or overlay may be covering the element. Check browser_get_state() for overlays.',
+	'browser_connection': 'The browser may have crashed. Call browser_list_sessions() to check session health.',
+}
+
+
 def _classify_action_error(self, message: str, *, default_code: str) -> str:
 	normalized = message.lower()
 	if 'not found' in normalized or 'page may have changed' in normalized or 'stale' in normalized:
@@ -153,7 +168,9 @@ def _classify_action_error(self, message: str, *, default_code: str) -> str:
 
 def _format_action_error(self, message: str, *, default_code: str) -> str:
 	error_code = self._classify_action_error(message, default_code=default_code)
-	return f'Error [{error_code}]: {message}'
+	hint = _ERROR_HINTS.get(error_code, '')
+	suffix = f' Hint: {hint}' if hint else ''
+	return f'Error [{error_code}]: {message}{suffix}'
 
 
 async def _run_tool_action(
@@ -231,8 +248,12 @@ async def _navigate(self, url: str, new_tab: bool = False) -> str:
 			await self._cdp_client_for_runtime.send.Runtime.enable(session_id=_cdp_s.session_id)
 		except Exception:
 			pass
+	from agentyc.mcp.state import truncate_text
+
 	after_url = await self.browser_session.get_current_page_url()
-	return f'Navigated to: {after_url}'
+	after_title = await self.browser_session.get_current_page_title()
+	title_hint = f' | "{truncate_text(after_title, 60)}"' if after_title and after_title != 'Unknown page title' else ''
+	return f'Navigated to: {after_url}{title_hint}'
 
 
 async def _click(
@@ -297,12 +318,22 @@ async def _click(
 			default_code='invalid_target',
 		)
 
+	pre_click_url = await self.browser_session.get_current_page_url()
 	action_result = await self._run_tool_action('click', {'index': resolved_index})
 	if action_result.error:
 		return self._format_action_error(action_result.error, default_code='click_failed')
+	after_url = await self.browser_session.get_current_page_url()
+	label = ref or resolved_index
+	base_msg = f'Clicked element {label}'
 	if drift_recovered:
-		return f'Clicked element {ref or resolved_index} (recovered after DOM drift)'
-	return f'Clicked element {ref or resolved_index}'
+		base_msg += ' (recovered after DOM drift)'
+	if after_url and after_url != pre_click_url:
+		from agentyc.mcp.state import truncate_text
+
+		after_title = await self.browser_session.get_current_page_title()
+		title_hint = f' | "{truncate_text(after_title, 60)}"' if after_title and after_title != 'Unknown page title' else ''
+		return f'{base_msg} → {after_url}{title_hint}'
+	return base_msg
 
 
 async def _type_text(self, text: str, index: int | None = None, ref: str | None = None) -> str:
@@ -474,7 +505,7 @@ async def _get_browser_state(
 			}
 
 	self._cache_state_payload(result)
-	return json.dumps(result, indent=2), screenshot_b64
+	return json.dumps(result, separators=(',', ':')), screenshot_b64
 
 
 async def _extract_content(
