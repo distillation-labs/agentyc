@@ -101,6 +101,8 @@ Important behavior:
 - `state_hash` summarizes the page and interactive elements.
 - `auto` mode falls back to ranked compaction when pages are dense.
 - `focus` mode narrows the payload to one referenced element.
+- Unchanged `since_hash` responses use a metadata-only fast path.
+- Shared-browser payloads can expose ownership, runtime metadata, display titles, parent tab ids, and optional window bounds.
 
 This module is the reason the public docs should talk about refs and compaction, not old integer-only element targeting.
 
@@ -144,7 +146,10 @@ When `--cdp-url` is provided:
 
 - The server attaches to an already-running browser.
 - `BrowserProfile.keep_alive` is set so the shared browser is not torn down when the MCP session ends.
-- A fresh tab is created for that MCP server instance.
+- The attached runtime creates a collaboration target: a tab by default, or a separate window when `shared_browser_mode='window'`.
+- Optional `shared_browser_window_bounds` can be applied when the runtime uses a separate window.
+- The runtime updates its focused target automatically on attach and other internal new-target flows.
+- Visible browser activation is policy-driven through `shared_browser_focus_policy` rather than assumed.
 
 This is the public contract that exists today. Any richer collaboration UX should be described as directional unless it is implemented in the source-of-truth modules above.
 
