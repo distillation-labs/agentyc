@@ -47,9 +47,7 @@ async def export_storage_state(session: BrowserSession, output_path: str | Path 
 	return storage_state
 
 
-async def get_or_create_cdp_session(
-	session: BrowserSession, target_id: TargetID | None = None, focus: bool = True
-) -> CDPSession:
+async def get_or_create_cdp_session(session: BrowserSession, target_id: TargetID | None = None, focus: bool = True) -> CDPSession:
 	"""Get CDP session for a target from the event-driven pool."""
 	assert session._cdp_client_root is not None, 'Root CDP client not initialized'
 	assert session.session_manager is not None, 'SessionManager not initialized'
@@ -105,9 +103,7 @@ async def get_or_create_cdp_session(
 	return cdp_session
 
 
-async def set_extra_headers(
-	session: BrowserSession, headers: dict[str, str], target_id: TargetID | None = None
-) -> None:
+async def set_extra_headers(session: BrowserSession, headers: dict[str, str], target_id: TargetID | None = None) -> None:
 	"""Set extra HTTP headers using CDP Network.setExtraHTTPHeaders."""
 	if target_id is None:
 		if not session.agent_focus_target_id:
@@ -202,7 +198,7 @@ async def _cdp_set_cookies(session: BrowserSession, cookies: list[Cookie]) -> No
 		return
 	cdp_session = await get_or_create_cdp_session(session, target_id=None)
 	await cdp_session.cdp_client.send.Storage.setCookies(
-		params={'cookies': cookies},
+		params=cast(Any, {'cookies': cookies}),
 		session_id=cdp_session.session_id,
 	)
 
@@ -212,19 +208,15 @@ async def _cdp_clear_cookies(session: BrowserSession) -> None:
 	await cdp_session.cdp_client.send.Storage.clearCookies(session_id=cdp_session.session_id)
 
 
-async def _cdp_grant_permissions(
-	session: BrowserSession, permissions: list[str], origin: str | None = None
-) -> None:
-	params = {'permissions': permissions}
+async def _cdp_grant_permissions(session: BrowserSession, permissions: list[str], origin: str | None = None) -> None:
+	params: dict[str, Any] = {'permissions': permissions}
 	if origin:
 		params['origin'] = origin
 	await get_or_create_cdp_session(session)
 	raise NotImplementedError('Not implemented yet')
 
 
-async def _cdp_set_geolocation(
-	session: BrowserSession, latitude: float, longitude: float, accuracy: float = 100
-) -> None:
+async def _cdp_set_geolocation(session: BrowserSession, latitude: float, longitude: float, accuracy: float = 100) -> None:
 	await session.cdp_client.send.Emulation.setGeolocationOverride(
 		params={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy}
 	)
@@ -298,7 +290,7 @@ async def _cdp_get_origins(session: BrowserSession) -> list[dict[str, Any]]:
 			frames_result = await cdp_session.cdp_client.send.Page.getFrameTree(session_id=cdp_session.session_id)
 			unique_origins = set()
 
-			def _extract_origins(frame_tree: dict[str, Any]) -> None:
+			def _extract_origins(frame_tree: Any) -> None:
 				frame = frame_tree.get('frame', {})
 				origin = frame.get('securityOrigin')
 				if origin and origin != 'null':
@@ -425,7 +417,7 @@ async def get_all_frames(session: BrowserSession) -> tuple[dict[str, dict], dict
 		try:
 			frame_tree_result = await cdp_session.cdp_client.send.Page.getFrameTree(session_id=cdp_session.session_id)
 
-			def process_frame_tree(node: dict[str, Any], parent_frame_id: str | None = None) -> None:
+			def process_frame_tree(node: Any, parent_frame_id: str | None = None) -> None:
 				frame = node.get('frame', {})
 				current_frame_id = frame.get('id')
 				if not current_frame_id:
@@ -482,9 +474,7 @@ async def get_all_frames(session: BrowserSession) -> tuple[dict[str, dict], dict
 	return all_frames, target_sessions
 
 
-async def _populate_frame_metadata(
-	session: BrowserSession, all_frames: dict[str, dict], target_sessions: dict[str, str]
-) -> None:
+async def _populate_frame_metadata(session: BrowserSession, all_frames: dict[str, dict], target_sessions: dict[str, str]) -> None:
 	for frame_id_iter, frame_info in all_frames.items():
 		parent_frame_id = frame_info.get('parentFrameId')
 		if parent_frame_id and parent_frame_id in all_frames:
