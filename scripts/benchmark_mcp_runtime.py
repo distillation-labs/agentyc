@@ -23,6 +23,7 @@ from agentyc.dogfood import (
 	create_github_issue,
 	default_artifact_root,
 	detect_regressions,
+	evaluate_release_gate,
 	write_json,
 	write_text,
 )
@@ -1407,6 +1408,22 @@ def make_release_notes_html() -> str:
 	"""
 
 
+def make_collaboration_runtime_html(runtime_name: str, button_label: str) -> str:
+	return f"""
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>{runtime_name}</title></head>
+	<body>
+		<main>
+			<h1>{runtime_name}</h1>
+			<p>Shared-browser ownership benchmark page for {runtime_name}.</p>
+			<button aria-label="{button_label}">{button_label}</button>
+		</main>
+	</body>
+	</html>
+	"""
+
+
 def serve_fixture_pack(fixtures: list[BenchmarkFixture]) -> ServedFixturePack:
 	root = tempfile.TemporaryDirectory(prefix='agentyc-benchmark-')
 	root_path = Path(root.name)
@@ -1415,6 +1432,18 @@ def serve_fixture_pack(fixtures: list[BenchmarkFixture]) -> ServedFixturePack:
 		for relative_path, content in fixture.extra_files.items():
 			(root_path / relative_path).write_text(content, encoding='utf-8')
 	(root_path / 'release-notes.html').write_text(make_release_notes_html(), encoding='utf-8')
+	(root_path / 'collaboration-runtime-a.html').write_text(
+		make_collaboration_runtime_html('Collaboration Runtime A', 'Runtime A action'),
+		encoding='utf-8',
+	)
+	(root_path / 'collaboration-runtime-b.html').write_text(
+		make_collaboration_runtime_html('Collaboration Runtime B', 'Runtime B action'),
+		encoding='utf-8',
+	)
+	(root_path / 'collaboration-window.html').write_text(
+		make_collaboration_runtime_html('Collaboration Window Runtime', 'Window runtime action'),
+		encoding='utf-8',
+	)
 
 	handler = partial(QuietHandler, directory=root.name)
 	server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
@@ -2249,7 +2278,7 @@ async def run_fixture(
 	return result
 
 
-def summarize_results(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def summarize_results(results: dict[str, dict[str, Any]], collaboration: dict[str, Any] | None = None) -> dict[str, Any]:
 	auto_reductions = [fixture['state']['auto']['payload_reduction_pct'] for fixture in results.values()]
 	min_reductions = [fixture['state']['min']['payload_reduction_pct'] for fixture in results.values()]
 	auto_recalls = [fixture['state']['auto']['recall']['recall'] for fixture in results.values()]
@@ -2271,7 +2300,7 @@ def summarize_results(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
 		slug for slug, fixture in results.items() if fixture.get('action_reliability', {}).get('passed') is False
 	]
 	compacted_pages = [slug for slug, fixture in results.items() if fixture['state']['auto'].get('effective_mode') == 'min']
-	return {
+	summary = {
 		'fixture_count': len(results),
 		'auto_compacted_pages': compacted_pages,
 		'avg_auto_payload_reduction_pct': round(mean(auto_reductions), 1) if auto_reductions else 0.0,
@@ -2287,6 +2316,27 @@ def summarize_results(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
 		'avg_action_success': round(mean(action_scores), 3) if action_scores else 0.0,
 		'failing_action_cases': failing_action_cases,
 	}
+	if isinstance(collaboration, dict):
+		tab_runtime_pair = collaboration.get('tab_runtime_pair') if isinstance(collaboration.get('tab_runtime_pair'), dict) else {}
+		window_mode_probe = collaboration.get('window_mode_probe') if isinstance(collaboration.get('window_mode_probe'), dict) else {}
+		summary.update(
+			{
+				'collaboration_case_count': 1,
+				'collaboration_passed': bool(collaboration.get('passed')),
+				'collaboration_latency_ms': collaboration.get('latency_ms'),
+				'collaboration_required_check_count': tab_runtime_pair.get('required_check_count', 0),
+				'collaboration_required_checks_passed': tab_runtime_pair.get('required_checks_passed', 0),
+				'collaboration_required_check_pass_rate': round(
+					(tab_runtime_pair.get('required_checks_passed', 0) / tab_runtime_pair.get('required_check_count', 1)),
+					3,
+				)
+				if tab_runtime_pair.get('required_check_count')
+				else 0.0,
+				'collaboration_window_mode_exercised': bool(window_mode_probe.get('exercised')),
+				'collaboration_window_mode_passed': bool(window_mode_probe.get('passed')),
+			}
+		)
+	return summary
 
 
 def should_capture_fixture_artifacts(result: dict[str, Any]) -> bool:
@@ -2305,6 +2355,198 @@ async def capture_fixture_artifacts(server, fixture: BenchmarkFixture, result: d
 	write_text(fixture_root / 'page.html', html)
 	if screenshot_b64:
 		(fixture_root / 'screenshot.png').write_bytes(base64.b64decode(screenshot_b64))
+
+
+def _ownership_runtime_id(payload: dict[str, Any] | None) -> str | None:
+	if not isinstance(payload, dict):
+		return None
+	ownership = payload.get('ownership')
+	if not isinstance(ownership, dict):
+		return None
+	runtime = ownership.get('runtime')
+	if not isinstance(runtime, dict):
+		return None
+	runtime_id = runtime.get('runtime_id')
+	return str(runtime_id) if isinstance(runtime_id, str) else None
+
+
+def _interactive_texts(payload: dict[str, Any]) -> set[str]:
+	return {normalize_text(element.get('text', '')) for element in payload.get('interactive_elements', []) if element.get('text')}
+
+
+def _collaboration_runtime_snapshot(state: dict[str, Any], runtime_id: str) -> dict[str, Any]:
+	current_tab = state.get('current_tab') if isinstance(state.get('current_tab'), dict) else {}
+	peer_runtime_tabs = 0
+	for tab in state.get('tabs', []):
+		if not isinstance(tab, dict):
+			continue
+		tab_runtime_id = _ownership_runtime_id(tab)
+		if tab_runtime_id is not None and tab_runtime_id != runtime_id:
+			peer_runtime_tabs += 1
+	return {
+		'runtime_id': runtime_id,
+		'tab_id': current_tab.get('tab_id'),
+		'ownership_runtime_id': _ownership_runtime_id(current_tab),
+		'url': current_tab.get('url') or state.get('url'),
+		'display_title': current_tab.get('display_title'),
+		'window_bounds': current_tab.get('window_bounds'),
+		'tab_count': len(state.get('tabs', [])),
+		'peer_runtime_tabs_visible': peer_runtime_tabs,
+	}
+
+
+async def _run_window_mode_probe(cdp_url: str, base_url: str) -> dict[str, Any]:
+	from agentyc.mcp.server import AgentycServer
+
+	requested_bounds = {'left': 40, 'top': 50, 'width': 1000, 'height': 700}
+	server = AgentycServer(
+		cdp_url=cdp_url,
+		runtime_label='benchmark-window-runtime',
+		runtime_role='benchmark-collaboration',
+		shared_browser_mode='window',
+		shared_browser_window_bounds=requested_bounds,
+	)
+	start = time.perf_counter()
+	try:
+		await server._init_browser_session(headless=True, user_data_dir=None)
+		await server._navigate(f'{base_url}/collaboration-window.html')
+		(state_json, _), state_latency_ms = await benchmark_call(
+			lambda: server._get_browser_state(include_screenshot=False, mode='auto')
+		)
+		state = json.loads(state_json)
+		runtime_id = server.browser_session.runtime_metadata.runtime_id
+		snapshot = _collaboration_runtime_snapshot(state, runtime_id)
+		observed_bounds = snapshot.get('window_bounds')
+		checks = {
+			'runtime_owner_matches': snapshot.get('ownership_runtime_id') == runtime_id,
+			'window_bounds_present': isinstance(observed_bounds, dict),
+		}
+		if isinstance(observed_bounds, dict):
+			checks['window_width_matches_request'] = observed_bounds.get('width') == requested_bounds['width']
+			checks['window_height_matches_request'] = observed_bounds.get('height') == requested_bounds['height']
+		exercised = isinstance(observed_bounds, dict)
+		passed = exercised and all(checks.values())
+		return {
+			'required': False,
+			'exercised': exercised,
+			'passed': passed,
+			'latency_ms': round((time.perf_counter() - start) * 1000, 1),
+			'state_latency_ms': round(state_latency_ms, 1),
+			'requested_window_bounds': requested_bounds,
+			'observed_window_bounds': observed_bounds,
+			'checks': [{'key': key, 'passed': value} for key, value in checks.items()],
+			'runtime': snapshot,
+		}
+	except Exception as exc:
+		return {
+			'required': False,
+			'exercised': False,
+			'passed': False,
+			'latency_ms': round((time.perf_counter() - start) * 1000, 1),
+			'error': str(exc),
+			'requested_window_bounds': requested_bounds,
+		}
+	finally:
+		await server._shutdown()
+
+
+async def run_collaboration_benchmark(base_url: str) -> dict[str, Any]:
+	from agentyc.browser import BrowserProfile, BrowserSession
+	from agentyc.mcp.server import AgentycServer
+
+	primary_session = BrowserSession(
+		browser_profile=BrowserProfile(
+			headless=True,
+			user_data_dir=None,
+			keep_alive=True,
+		)
+	)
+	await primary_session.start()
+
+	start = time.perf_counter()
+	server_a: AgentycServer | None = None
+	server_b: AgentycServer | None = None
+	try:
+		cdp_url = primary_session.browser_profile.cdp_url
+		if not cdp_url:
+			raise RuntimeError('Shared-browser collaboration benchmark requires a browser CDP URL')
+
+		server_a = AgentycServer(
+			cdp_url=cdp_url,
+			runtime_label='benchmark-runtime-a',
+			runtime_role='benchmark-collaboration',
+			shared_browser_mode='tab',
+		)
+		server_b = AgentycServer(
+			cdp_url=cdp_url,
+			runtime_label='benchmark-runtime-b',
+			runtime_role='benchmark-collaboration',
+			shared_browser_mode='tab',
+		)
+		await server_a._init_browser_session(headless=True, user_data_dir=None)
+		await server_b._init_browser_session(headless=True, user_data_dir=None)
+
+		navigation_start = time.perf_counter()
+		await asyncio.gather(
+			server_a._navigate(f'{base_url}/collaboration-runtime-a.html'),
+			server_b._navigate(f'{base_url}/collaboration-runtime-b.html'),
+		)
+		navigation_latency_ms = round((time.perf_counter() - navigation_start) * 1000, 1)
+
+		(state_a_json, _), state_a_latency_ms = await benchmark_call(
+			lambda: server_a._get_browser_state(include_screenshot=False, mode='auto')
+		)
+		(state_b_json, _), state_b_latency_ms = await benchmark_call(
+			lambda: server_b._get_browser_state(include_screenshot=False, mode='auto')
+		)
+		state_a = json.loads(state_a_json)
+		state_b = json.loads(state_b_json)
+
+		runtime_a_id = server_a.browser_session.runtime_metadata.runtime_id
+		runtime_b_id = server_b.browser_session.runtime_metadata.runtime_id
+		snapshot_a = _collaboration_runtime_snapshot(state_a, runtime_a_id)
+		snapshot_b = _collaboration_runtime_snapshot(state_b, runtime_b_id)
+		texts_a = _interactive_texts(state_a)
+		texts_b = _interactive_texts(state_b)
+
+		checks = {
+			'distinct_runtime_ids': runtime_a_id != runtime_b_id,
+			'distinct_current_tabs': snapshot_a.get('tab_id') != snapshot_b.get('tab_id'),
+			'runtime_a_current_tab_owner_matches': snapshot_a.get('ownership_runtime_id') == runtime_a_id,
+			'runtime_b_current_tab_owner_matches': snapshot_b.get('ownership_runtime_id') == runtime_b_id,
+			'runtime_a_sees_peer_runtime_tab': snapshot_a.get('peer_runtime_tabs_visible', 0) >= 1,
+			'runtime_b_sees_peer_runtime_tab': snapshot_b.get('peer_runtime_tabs_visible', 0) >= 1,
+			'runtime_a_state_isolated': 'runtime a action' in texts_a and 'runtime b action' not in texts_a,
+			'runtime_b_state_isolated': 'runtime b action' in texts_b and 'runtime a action' not in texts_b,
+		}
+		required_checks_passed = sum(1 for value in checks.values() if value)
+		tab_runtime_pair = {
+			'passed': required_checks_passed == len(checks),
+			'latency_ms': round((time.perf_counter() - start) * 1000, 1),
+			'navigation_latency_ms': navigation_latency_ms,
+			'state_latency_ms': {
+				'runtime_a': round(state_a_latency_ms, 1),
+				'runtime_b': round(state_b_latency_ms, 1),
+			},
+			'required_check_count': len(checks),
+			'required_checks_passed': required_checks_passed,
+			'checks': [{'key': key, 'passed': value} for key, value in checks.items()],
+			'runtime_a': snapshot_a,
+			'runtime_b': snapshot_b,
+		}
+		window_mode_probe = await _run_window_mode_probe(cdp_url, base_url)
+		return {
+			'passed': tab_runtime_pair['passed'],
+			'latency_ms': round((time.perf_counter() - start) * 1000, 1),
+			'tab_runtime_pair': tab_runtime_pair,
+			'window_mode_probe': window_mode_probe,
+		}
+	finally:
+		if server_b is not None:
+			await server_b._shutdown()
+		if server_a is not None:
+			await server_a._shutdown()
+		await primary_session.kill()
 
 
 async def main() -> None:
@@ -2327,6 +2569,16 @@ async def main() -> None:
 	)
 	parser.add_argument('--open-issue', action='store_true', help='Open a GitHub issue when dogfood regressions are detected.')
 	parser.add_argument(
+		'--fail-on-regression',
+		action='store_true',
+		help='Exit non-zero when regressions or release-gate threshold failures are detected.',
+	)
+	parser.add_argument(
+		'--release-gate',
+		action='store_true',
+		help='Evaluate release-gate thresholds and include the result in the benchmark report.',
+	)
+	parser.add_argument(
 		'--artifact-dir',
 		type=Path,
 		help='Write dogfood artifacts to this directory instead of the default user-level dogfood path.',
@@ -2346,6 +2598,47 @@ async def main() -> None:
 		'--issue-title-prefix',
 		default='[dogfood]',
 		help='Prefix to use for auto-opened issue titles.',
+	)
+	parser.add_argument('--max-import-ms', type=float, help='Fail the release gate when import time exceeds this threshold.')
+	parser.add_argument(
+		'--max-session-init-ms',
+		type=float,
+		help='Fail the release gate when browser session init time exceeds this threshold.',
+	)
+	parser.add_argument(
+		'--min-avg-auto-payload-reduction-pct',
+		type=float,
+		help='Fail the release gate when average auto payload reduction drops below this threshold.',
+	)
+	parser.add_argument(
+		'--min-avg-auto-recall',
+		type=float,
+		help='Fail the release gate when average auto recall drops below this threshold.',
+	)
+	parser.add_argument(
+		'--min-avg-min-recall',
+		type=float,
+		help='Fail the release gate when average min recall drops below this threshold.',
+	)
+	parser.add_argument(
+		'--min-avg-deterministic-recall',
+		type=float,
+		help='Fail the release gate when average deterministic extraction recall drops below this threshold.',
+	)
+	parser.add_argument(
+		'--min-avg-structured-recall',
+		type=float,
+		help='Fail the release gate when average structured extraction recall drops below this threshold.',
+	)
+	parser.add_argument(
+		'--min-avg-action-success',
+		type=float,
+		help='Fail the release gate when average action success drops below this threshold.',
+	)
+	parser.add_argument(
+		'--min-collaboration-required-check-pass-rate',
+		type=float,
+		help='Fail the release gate when the shared-browser collaboration required-check pass rate drops below this threshold.',
 	)
 	args = parser.parse_args()
 
@@ -2370,15 +2663,33 @@ async def main() -> None:
 		results: dict[str, dict[str, Any]] = {}
 		for fixture in selected_fixtures:
 			results[fixture.slug] = await run_fixture(server, fixture, fixture_pack.base_url)
+		collaboration = await run_collaboration_benchmark(fixture_pack.base_url)
 
 		output = {
 			'import_ms': import_ms,
 			'session_init_ms': round(session_init_ms, 1),
-			'summary': summarize_results(results),
+			'summary': summarize_results(results, collaboration),
+			'collaboration': collaboration,
 			'fixtures': results,
 		}
 
 		regressions = detect_regressions(results)
+		release_gate = None
+		if args.release_gate:
+			release_gate = evaluate_release_gate(
+				output,
+				preset=args.preset or 'all-fixtures',
+				max_import_ms=args.max_import_ms,
+				max_session_init_ms=args.max_session_init_ms,
+				min_avg_auto_payload_reduction_pct=args.min_avg_auto_payload_reduction_pct,
+				min_avg_auto_recall=args.min_avg_auto_recall,
+				min_avg_min_recall=args.min_avg_min_recall,
+				min_avg_deterministic_recall=args.min_avg_deterministic_recall,
+				min_avg_structured_recall=args.min_avg_structured_recall,
+				min_avg_action_success=args.min_avg_action_success,
+				min_collaboration_required_check_pass_rate=args.min_collaboration_required_check_pass_rate,
+			)
+			output['release_gate'] = release_gate
 		artifact_root: Path | None = None
 		if args.artifact_dir is not None:
 			artifact_root = args.artifact_dir.expanduser()
@@ -2417,7 +2728,14 @@ async def main() -> None:
 			write_json(artifact_root / 'report.json', output)
 
 		print(json.dumps(output, indent=None if args.json else 2, sort_keys=False))
+		should_fail = False
+		if args.fail_on_regression and regressions:
+			should_fail = True
+		if args.fail_on_regression and release_gate is not None and not release_gate['passed']:
+			should_fail = True
 		if args.open_issue and regressions:
+			should_fail = True
+		if should_fail:
 			raise SystemExit(1)
 	finally:
 		await server._shutdown()
