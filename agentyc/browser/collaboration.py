@@ -42,7 +42,7 @@ def build_runtime_marker_script(
 		'excludeSessionId': exclude_session_id,
 	}
 	payload_json = json.dumps(marker_payload, ensure_ascii=True)
-	return f"""
+	return rf"""
 	(function() {{
 		const payload = {payload_json};
 		const runtime = payload.runtime;
