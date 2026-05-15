@@ -252,9 +252,7 @@ async def remove_highlights(session: BrowserSession) -> None:
 		session.logger.warning(f'Failed to remove highlights: {e}')
 
 
-async def get_element_coordinates(
-	session: BrowserSession, backend_node_id: int, cdp_session: CDPSession
-) -> DOMRect | None:
+async def get_element_coordinates(session: BrowserSession, backend_node_id: int, cdp_session: CDPSession) -> DOMRect | None:
 	"""Get element coordinates for a backend node ID using multiple methods."""
 	session_id = cdp_session.session_id
 	quads = []
@@ -324,9 +322,7 @@ async def get_element_coordinates(
 				if 'result' in js_result and 'value' in js_result['result']:
 					rect_data = js_result['result']['value']
 					if rect_data['width'] > 0 and rect_data['height'] > 0:
-						return DOMRect(
-							x=rect_data['x'], y=rect_data['y'], width=rect_data['width'], height=rect_data['height']
-						)
+						return DOMRect(x=rect_data['x'], y=rect_data['y'], width=rect_data['width'], height=rect_data['height'])
 		except Exception as e:
 			session.logger.debug(f'JavaScript getBoundingClientRect failed: {e}')
 
@@ -772,9 +768,7 @@ async def _get_element_bounds(session: BrowserSession, selector: str) -> dict | 
 	if not node_id:
 		return None
 
-	box_result = await cdp_session.cdp_client.send.DOM.getBoxModel(
-		params={'nodeId': node_id}, session_id=cdp_session.session_id
-	)
+	box_result = await cdp_session.cdp_client.send.DOM.getBoxModel(params={'nodeId': node_id}, session_id=cdp_session.session_id)
 
 	box_model = box_result.get('model')
 	if not box_model:
