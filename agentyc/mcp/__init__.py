@@ -4,16 +4,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
 	from agentyc.mcp.client import MCPClient
-	from agentyc.mcp.controller import MCPToolWrapper
 	from agentyc.mcp.server import AgentycServer
 
 _LAZY_IMPORTS = {
 	'MCPClient': ('agentyc.mcp.client', 'MCPClient'),
-	'MCPToolWrapper': ('agentyc.mcp.controller', 'MCPToolWrapper'),
 	'AgentycServer': ('agentyc.mcp.server', 'AgentycServer'),
 }
 
-__all__ = ['MCPClient', 'MCPToolWrapper', 'AgentycServer']
+__all__ = ['MCPClient', 'AgentycServer']
 
 
 def __getattr__(name: str):

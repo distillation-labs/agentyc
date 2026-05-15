@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 from typing import Any, TypeVar, cast, overload
 from uuid import uuid4
 
+from pydantic import BaseModel
+
 from agentyc.llm.base import BaseChatModel
 from agentyc.llm.exceptions import ModelProviderError
 from agentyc.llm.messages import (
@@ -21,7 +23,6 @@ from agentyc.llm.messages import (
 )
 from agentyc.llm.schema import SchemaOptimizer
 from agentyc.llm.views import ChatInvokeCompletion
-from pydantic import BaseModel
 
 T = TypeVar('T', bound=BaseModel)
 

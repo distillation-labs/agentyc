@@ -1,11 +1,12 @@
 import logging
 import os
 
-from agentyc.telemetry.views import BaseTelemetryEvent
-from agentyc.utils import singleton
 from dotenv import load_dotenv
 from posthog import Posthog
 from uuid_extensions import uuid7str
+
+from agentyc.telemetry.views import BaseTelemetryEvent
+from agentyc.utils import singleton
 
 load_dotenv()
 

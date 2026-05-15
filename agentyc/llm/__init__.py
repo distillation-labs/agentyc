@@ -26,6 +26,7 @@ from agentyc.llm.messages import (
 
 # Type stubs for lazy imports
 if TYPE_CHECKING:
+	from agentyc.llm.agentyc.chat import ChatAgentyc
 	from agentyc.llm.anthropic.chat import ChatAnthropic
 	from agentyc.llm.aws.chat_anthropic import ChatAnthropicBedrock
 	from agentyc.llm.aws.chat_bedrock import ChatAWSBedrock
@@ -40,7 +41,6 @@ if TYPE_CHECKING:
 	from agentyc.llm.ollama.chat import ChatOllama
 	from agentyc.llm.openai.chat import ChatOpenAI
 	from agentyc.llm.openrouter.chat import ChatOpenRouter
-	from agentyc.llm.agentyc.chat import ChatAgentyc
 	from agentyc.llm.vercel.chat import ChatVercel
 
 	# Type stubs for model instances - enables IDE autocomplete

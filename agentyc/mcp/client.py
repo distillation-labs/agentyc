@@ -27,12 +27,13 @@ import logging
 import time
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, create_model
+
 from agentyc.actions import ActionResult
 from agentyc.telemetry import MCPClientTelemetryEvent, ProductTelemetry
 from agentyc.tools.registry.service import Registry
 from agentyc.tools.service import Tools
 from agentyc.utils import create_task_with_error_handling, get_agentyc_version
-from pydantic import BaseModel, ConfigDict, Field, create_model
 
 logger = logging.getLogger(__name__)
 

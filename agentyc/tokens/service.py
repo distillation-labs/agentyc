@@ -13,6 +13,8 @@ from typing import Any
 
 import anyio
 import httpx
+from dotenv import load_dotenv
+
 from agentyc.llm.base import BaseChatModel
 from agentyc.llm.views import ChatInvokeUsage
 from agentyc.tokens.custom_pricing import CUSTOM_MODEL_PRICING
@@ -27,7 +29,6 @@ from agentyc.tokens.views import (
 	UsageSummary,
 )
 from agentyc.utils import create_task_with_error_handling
-from dotenv import load_dotenv
 
 load_dotenv()
 

@@ -4,11 +4,6 @@ from dataclasses import dataclass
 from typing import Any, TypeVar, overload
 
 import httpx
-from agentyc.llm.base import BaseChatModel
-from agentyc.llm.cerebras.serializer import CerebrasMessageSerializer
-from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
-from agentyc.llm.messages import BaseMessage
-from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from openai import (
 	APIConnectionError,
 	APIError,
@@ -19,6 +14,12 @@ from openai import (
 )
 from openai.types.chat import ChatCompletion
 from pydantic import BaseModel
+
+from agentyc.llm.base import BaseChatModel
+from agentyc.llm.cerebras.serializer import CerebrasMessageSerializer
+from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
+from agentyc.llm.messages import BaseMessage
+from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 T = TypeVar('T', bound=BaseModel)
 

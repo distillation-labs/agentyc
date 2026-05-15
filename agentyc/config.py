@@ -59,24 +59,6 @@ class OldConfig:
 		return os.getenv('ANONYMIZED_TELEMETRY', 'true').lower()[:1] in 'ty1'
 
 	@property
-	def AGENTYC_CLOUD_SYNC(self) -> bool:
-		return os.getenv('AGENTYC_CLOUD_SYNC', str(self.ANONYMIZED_TELEMETRY)).lower()[:1] in 'ty1'
-
-	@property
-	def AGENTYC_CLOUD_API_URL(self) -> str:
-		url = os.getenv('AGENTYC_CLOUD_API_URL', 'https://api.agentyc.com')
-		assert '://' in url, 'AGENTYC_CLOUD_API_URL must be a valid URL'
-		return url
-
-	@property
-	def AGENTYC_CLOUD_UI_URL(self) -> str:
-		url = os.getenv('AGENTYC_CLOUD_UI_URL', '')
-		# Allow empty string as default, only validate if set
-		if url and '://' not in url:
-			raise AssertionError('AGENTYC_CLOUD_UI_URL must be a valid URL if set')
-		return url
-
-	@property
 	def AGENTYC_MODEL_PRICING_URL(self) -> str:
 		url = os.getenv('AGENTYC_MODEL_PRICING_URL', '')
 		if url and '://' not in url:
@@ -197,9 +179,6 @@ class FlatEnvConfig(BaseSettings):
 	AGENTYC_DEBUG_LOG_FILE: str | None = Field(default=None)
 	AGENTYC_INFO_LOG_FILE: str | None = Field(default=None)
 	ANONYMIZED_TELEMETRY: bool = Field(default=True)
-	AGENTYC_CLOUD_SYNC: bool | None = Field(default=None)
-	AGENTYC_CLOUD_API_URL: str = Field(default='https://api.agentyc.com')
-	AGENTYC_CLOUD_UI_URL: str = Field(default='')
 	AGENTYC_MODEL_PRICING_URL: str = Field(default='')
 
 	# Path configuration

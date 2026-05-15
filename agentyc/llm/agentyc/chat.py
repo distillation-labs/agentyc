@@ -12,12 +12,13 @@ import random
 from typing import Any, TypeVar, overload
 
 import httpx
+from pydantic import BaseModel
+
 from agentyc.llm.base import BaseChatModel
 from agentyc.llm.exceptions import ModelProviderError, ModelRateLimitError
 from agentyc.llm.messages import BaseMessage
 from agentyc.llm.views import ChatInvokeCompletion
 from agentyc.observability import observe
-from pydantic import BaseModel
 
 T = TypeVar('T', bound=BaseModel)
 

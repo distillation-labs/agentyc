@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from agentyc.tools.registry.views import ActionModel
 from pydantic import BaseModel, model_validator
+
+from agentyc.tools.registry.views import ActionModel
 
 
 class ActionResult(BaseModel):

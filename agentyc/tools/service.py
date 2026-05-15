@@ -11,6 +11,8 @@ try:
 	from lmnr import Laminar  # type: ignore
 except ImportError:
 	Laminar = None  # type: ignore
+from pydantic import BaseModel
+
 from agentyc.actions import ActionModel, ActionResult
 from agentyc.browser import BrowserSession
 from agentyc.browser.events import (
@@ -61,7 +63,6 @@ from agentyc.tools.views import (
 	UploadFileAction,
 )
 from agentyc.utils import create_task_with_error_handling, sanitize_surrogates, time_execution_sync
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 

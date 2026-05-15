@@ -1152,8 +1152,9 @@ class AgentycServer:
 		if not self.tools:
 			raise RuntimeError('Tools not initialized')
 
-		from agentyc.actions import ActionModel
 		from pydantic import create_model
+
+		from agentyc.actions import ActionModel
 
 		DynamicAction = self._action_model_cache.get(action_name)
 		if DynamicAction is None:
@@ -1537,8 +1538,9 @@ class AgentycServer:
 
 		# Use the extract action
 		# Create a dynamic action model that matches the tools's expectations
-		from agentyc.actions import ActionModel
 		from pydantic import create_model
+
+		from agentyc.actions import ActionModel
 
 		# Create action model dynamically
 		ExtractAction = create_model(
@@ -1743,7 +1745,7 @@ class AgentycServer:
 		elapsed = 0.0
 		last_hash: str | None = None
 
-		from agentyc.mcp.state import build_browser_state_payload, parse_element_ref
+		from agentyc.mcp.state import parse_element_ref
 
 		ref_index: int | None = None
 		if ref:
