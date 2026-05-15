@@ -246,7 +246,6 @@ async def remove_highlights(session: BrowserSession) -> None:
 				session.logger.debug(f'Successfully removed {removed_count} highlight elements')
 			else:
 				session.logger.debug('Highlight removal completed')
-			await session._set_collaboration_overlay_visibility(False)
 
 	except Exception as e:
 		session.logger.warning(f'Failed to remove highlights: {e}')
