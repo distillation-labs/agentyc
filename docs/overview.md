@@ -49,8 +49,9 @@ The public server is not an autonomous agent framework. It does not ship a plann
 
 agentyc supports attaching multiple MCP server processes to the same Chrome instance through `--cdp-url`, but the implementation should be described narrowly.
 
-- Each attached server creates its own fresh tab.
-- Focus remains an explicit browser action.
+- Each attached server creates its own collaboration target: a tab by default, or a separate window when configured.
+- Attach and `new_tab=true` flows update the runtime's focused target automatically.
+- Visible activation is controlled by a focus policy: `preserve` avoids stealing the human-focused surface, while `activate` foregrounds the runtime target.
 - Stock Chrome and CDP do not offer reliable per-tab color ownership.
 - Shared-browser collaboration is best-effort operational behavior, not a strict isolation guarantee.
 
