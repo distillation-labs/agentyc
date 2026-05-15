@@ -17,6 +17,7 @@ from agentyc.browser.events import FileDownloadedEvent
 from agentyc.browser.watchdogs.downloads_helpers import check_url_for_pdf, get_unique_filename, is_chrome_pdf_viewer_url
 from agentyc.utils import create_task_with_error_handling
 
+
 class DownloadsNetworkMixin:
     """Network-driven download detection and fetch helpers."""
 
