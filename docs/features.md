@@ -86,7 +86,10 @@ Important behavior:
 
 - Stable refs look like `e123` and map to backend node ids.
 - `since_hash` returns `changed=false` when the page signature is unchanged.
+- Unchanged `since_hash` responses keep `url`, `title`, `state_hash`, `current_tab_id`, and optional `focus_ref`, but omit the interactive element payload.
 - Compact modes can omit the legacy numeric `index` field.
+- Compact ranked payloads can report `interactive_elements_truncated`, `interactive_elements_remaining`, and `compaction_strategy`.
+- Shared-browser payloads can include `current_tab`, `ownership`, `runtime`, `display_title`, `parent_tab_id`, and `window_bounds`.
 - Screenshots are delivered as MCP image content, not embedded base64 inside the JSON state payload.
 
 ## Deterministic Extraction
@@ -124,8 +127,10 @@ The MCP server records browser diagnostics directly from CDP event streams.
 
 The CLI supports a shared-browser mode through `agentyc browser` plus `agentyc mcp --cdp-url ...`.
 
-- Attaching through `--cdp-url` creates a fresh tab in the shared browser.
+- Attaching through `--cdp-url` creates a shared-browser tab by default, or a separate runtime window when `--shared-browser-mode window` is used.
 - The attached server keeps that browser alive with `keep_alive=True` for the session.
+- Attach and `new_tab=true` flows automatically track the runtime's current target.
+- Visible activation is controlled by `--shared-browser-focus-policy`.
 - Chrome tab ownership cues are not a reliable public contract.
 - Separate windows and explicit focus changes are still the most dependable operator model.
 
