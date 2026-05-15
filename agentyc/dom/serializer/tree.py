@@ -60,10 +60,7 @@ class SerializerTreeMixin:
 					is_visible = True
 
 			is_file_input = (
-				node.tag_name
-				and node.tag_name.lower() == 'input'
-				and node.attributes
-				and node.attributes.get('type') == 'file'
+				node.tag_name and node.tag_name.lower() == 'input' and node.attributes and node.attributes.get('type') == 'file'
 			)
 			if not is_visible and is_file_input:
 				is_visible = True
