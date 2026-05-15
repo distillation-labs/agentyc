@@ -51,6 +51,13 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 		profile = BrowserProfile(**profile_data)
 		self.browser_session = BrowserSession(browser_profile=profile)
 		await self.browser_session.start()
+		try:
+			cdp_root = self.browser_session._cdp_client_root
+			if cdp_root is not None:
+				ctx_result = await cdp_root.send.Target.createBrowserContext()
+				self.browser_session._browser_context_id = ctx_result['browserContextId']
+		except Exception as _ctx_e:
+			logger.debug(f'Browser context creation failed (non-critical): {_ctx_e}')
 		new_page = await self.browser_session.create_collaborative_page('about:blank')
 		new_target_id = new_page._target_id
 		from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
@@ -158,6 +165,13 @@ async def _close_session(self, session_id: str) -> str:
 	session = session_data['session']
 
 	try:
+		browser_context_id = getattr(session, '_browser_context_id', None)
+		if browser_context_id:
+			with suppress(Exception):
+				cdp_root = getattr(session, '_cdp_client_root', None)
+				if cdp_root:
+					await cdp_root.send.Target.disposeBrowserContext(params={'browserContextId': browser_context_id})
+			session._browser_context_id = None
 		if hasattr(session, 'kill'):
 			await session.kill()
 		del self.active_sessions[session_id]
@@ -196,7 +210,10 @@ async def _close_all_sessions(self) -> str:
 
 
 async def _cleanup_expired_sessions(self) -> None:
-	"""Background task to clean up expired sessions."""
+	"""Background task to clean up expired sessions. Skipped when session_timeout_minutes <= 0."""
+	if self.session_timeout_minutes <= 0:
+		return
+
 	current_time = time.time()
 	timeout_seconds = self.session_timeout_minutes * 60
 
