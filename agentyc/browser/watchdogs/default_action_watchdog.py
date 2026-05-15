@@ -1823,147 +1823,86 @@ class DefaultActionWatchdog(BaseWatchdog):
 				if not cleared_successfully:
 					self.logger.warning('⚠️ Text field clearing failed, typing may append to existing text')
 
-			# Step 4: Type the text character by character using proper human-like key events
-			# This emulates exactly how a human would type, which modern websites expect
-			if is_sensitive:
-				# Note: sensitive_key_name is not passed to this low-level method,
-				# but we could extend the signature if needed for more granular logging
-				self.logger.debug('🎯 Typing <sensitive> character by character')
-			else:
-				self.logger.debug(f'🎯 Typing text character by character: "{text}"')
-
-			# Detect contenteditable elements (may have leaf-start bug where first char is dropped)
+			# Step 4: Fast-path via Input.insertText (single CDP call, fires native input events).
+			# Input.insertText is supported by all modern frameworks (React, Vue, Angular).
+			# Falls back to char-by-char for masked inputs or keydown-dependent legacy validators.
 			_attrs = element_node.attributes or {}
 			_is_contenteditable = _attrs.get('contenteditable') in ('true', '') or (
 				_attrs.get('role') == 'textbox' and element_node.tag_name not in ('input', 'textarea')
 			)
 
-			# For contenteditable: after typing first char, check if dropped and retype if needed
-			_check_first_char = _is_contenteditable and len(text) > 0 and clear
-			_first_char = text[0] if _check_first_char else None
-
-			for i, char in enumerate(text):
-				# Handle newline characters as Enter key
-				if char == '\n':
-					# Send proper Enter key sequence
-					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-						params={
-							'type': 'keyDown',
-							'key': 'Enter',
-							'code': 'Enter',
-							'windowsVirtualKeyCode': 13,
-						},
+			_fast_path_used = False
+			if text:
+				try:
+					await cdp_session.cdp_client.send.Input.insertText(
+						params={'text': text},
 						session_id=cdp_session.session_id,
 					)
+					_fast_path_used = True
+					self.logger.debug(f'🎯 insertText fast path: {len(text)} chars in 1 CDP call')
+				except Exception as _e:
+					self.logger.debug(f'insertText unavailable, falling back to char-by-char: {_e}')
 
-					# Small delay to emulate human typing speed
-					await asyncio.sleep(0.001)
-
-					# Send char event with carriage return
-					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-						params={
-							'type': 'char',
-							'text': '\r',
-							'key': 'Enter',
-						},
-						session_id=cdp_session.session_id,
-					)
-
-					# Send keyUp event
-					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-						params={
-							'type': 'keyUp',
-							'key': 'Enter',
-							'code': 'Enter',
-							'windowsVirtualKeyCode': 13,
-						},
-						session_id=cdp_session.session_id,
-					)
-				else:
-					# Handle regular characters
-					# Get proper modifiers, VK code, and base key for the character
-					modifiers, vk_code, base_key = self._get_char_modifiers_and_vk(char)
-					key_code = self._get_key_code_for_char(base_key)
-
-					# self.logger.debug(f'🎯 Typing character {i + 1}/{len(text)}: "{char}" (base_key: {base_key}, code: {key_code}, modifiers: {modifiers}, vk: {vk_code})')
-
-					# Step 1: Send keyDown event (NO text parameter)
-					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-						params={
-							'type': 'keyDown',
-							'key': base_key,
-							'code': key_code,
-							'modifiers': modifiers,
-							'windowsVirtualKeyCode': vk_code,
-						},
-						session_id=cdp_session.session_id,
-					)
-
-					# Small delay to emulate human typing speed
-					await asyncio.sleep(0.005)
-
-					# Step 2: Send char event (WITH text parameter) - this is crucial for text input
-					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-						params={
-							'type': 'char',
-							'text': char,
-							'key': char,
-						},
-						session_id=cdp_session.session_id,
-					)
-
-					# Step 3: Send keyUp event (NO text parameter)
-					await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-						params={
-							'type': 'keyUp',
-							'key': base_key,
-							'code': key_code,
-							'modifiers': modifiers,
-							'windowsVirtualKeyCode': vk_code,
-						},
-						session_id=cdp_session.session_id,
-					)
-
-				# After first char on contenteditable: check if dropped and retype if needed
-				if i == 0 and _check_first_char and _first_char:
-					check_result = await cdp_session.cdp_client.send.Runtime.evaluate(
-						params={'expression': 'document.activeElement.textContent'},
-						session_id=cdp_session.session_id,
-					)
-					content = check_result.get('result', {}).get('value', '')
-					if _first_char not in content:
-						self.logger.debug(f'🎯 First char "{_first_char}" was dropped (leaf-start bug), retyping')
-						# Retype the first character - cursor now past leaf-start
-						modifiers, vk_code, base_key = self._get_char_modifiers_and_vk(_first_char)
+			if not _fast_path_used and text:
+				# Char-by-char fallback: emulates keydown+char+keyup per character.
+				# Needed for masked inputs and legacy apps that gate input on keyCode.
+				_check_first_char = _is_contenteditable and len(text) > 0 and clear
+				_first_char = text[0] if _check_first_char else None
+				for i, char in enumerate(text):
+					if char == '\n':
+						await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+							params={'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13},
+							session_id=cdp_session.session_id,
+						)
+						await asyncio.sleep(0.001)
+						await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+							params={'type': 'char', 'text': '\r', 'key': 'Enter'},
+							session_id=cdp_session.session_id,
+						)
+						await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+							params={'type': 'keyUp', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13},
+							session_id=cdp_session.session_id,
+						)
+					else:
+						modifiers, vk_code, base_key = self._get_char_modifiers_and_vk(char)
 						key_code = self._get_key_code_for_char(base_key)
 						await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-							params={
-								'type': 'keyDown',
-								'key': base_key,
-								'code': key_code,
-								'modifiers': modifiers,
-								'windowsVirtualKeyCode': vk_code,
-							},
+							params={'type': 'keyDown', 'key': base_key, 'code': key_code, 'modifiers': modifiers, 'windowsVirtualKeyCode': vk_code},
 							session_id=cdp_session.session_id,
 						)
 						await asyncio.sleep(0.005)
 						await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-							params={'type': 'char', 'text': _first_char, 'key': _first_char},
+							params={'type': 'char', 'text': char, 'key': char},
 							session_id=cdp_session.session_id,
 						)
 						await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
-							params={
-								'type': 'keyUp',
-								'key': base_key,
-								'code': key_code,
-								'modifiers': modifiers,
-								'windowsVirtualKeyCode': vk_code,
-							},
+							params={'type': 'keyUp', 'key': base_key, 'code': key_code, 'modifiers': modifiers, 'windowsVirtualKeyCode': vk_code},
 							session_id=cdp_session.session_id,
 						)
-
-				# Small delay between characters to look human (realistic typing speed)
-				await asyncio.sleep(0.001)
+					if i == 0 and _check_first_char and _first_char:
+						check_result = await cdp_session.cdp_client.send.Runtime.evaluate(
+							params={'expression': 'document.activeElement.textContent'},
+							session_id=cdp_session.session_id,
+						)
+						content = check_result.get('result', {}).get('value', '')
+						if _first_char not in content:
+							self.logger.debug(f'🎯 First char "{_first_char}" was dropped (leaf-start bug), retyping')
+							modifiers, vk_code, base_key = self._get_char_modifiers_and_vk(_first_char)
+							key_code = self._get_key_code_for_char(base_key)
+							await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+								params={'type': 'keyDown', 'key': base_key, 'code': key_code, 'modifiers': modifiers, 'windowsVirtualKeyCode': vk_code},
+								session_id=cdp_session.session_id,
+							)
+							await asyncio.sleep(0.005)
+							await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+								params={'type': 'char', 'text': _first_char, 'key': _first_char},
+								session_id=cdp_session.session_id,
+							)
+							await cdp_session.cdp_client.send.Input.dispatchKeyEvent(
+								params={'type': 'keyUp', 'key': base_key, 'code': key_code, 'modifiers': modifiers, 'windowsVirtualKeyCode': vk_code},
+								session_id=cdp_session.session_id,
+							)
+					await asyncio.sleep(0.001)
 
 			# Step 4: Trigger framework-aware DOM events after typing completion
 			# Modern JavaScript frameworks (React, Vue, Angular) rely on these events
