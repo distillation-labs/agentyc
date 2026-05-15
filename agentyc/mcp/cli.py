@@ -5,8 +5,39 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
+from pathlib import Path
 
 from agentyc.mcp.server import main as mcp_main
+
+_SKILL_FILE = Path(__file__).parent.parent / 'skills' / 'SKILL.md'
+
+
+def _cmd_init(args: argparse.Namespace) -> None:
+	"""Write the agentyc skills guide to a file or print it."""
+	if not _SKILL_FILE.exists():
+		print('Skills file not found in package. Please reinstall agentyc.', file=sys.stderr)
+		sys.exit(1)
+
+	content = _SKILL_FILE.read_text()
+
+	if args.print:
+		print(content)
+		return
+
+	dest = Path(args.output)
+	if dest.exists() and not args.force:
+		print(f'{dest} already exists. Use --force to overwrite.', file=sys.stderr)
+		sys.exit(1)
+
+	dest.parent.mkdir(parents=True, exist_ok=True)
+	dest.write_text(content)
+	print(f'Written to {dest}')
+	print()
+	print('Add this file to your coding agent context:')
+	print(f'  Claude Code:  add "{dest}" to CLAUDE.md with @{dest}')
+	print('  Cursor:       copy to .cursor/rules/agentyc.md')
+	print('  Copilot:      append to .github/copilot-instructions.md')
 
 
 def _cmd_mcp(args: argparse.Namespace) -> None:
@@ -101,8 +132,8 @@ def main() -> None:
 	mcp_parser.add_argument(
 		'--session-timeout-minutes',
 		type=int,
-		default=10,
-		help='Idle timeout for managed browser sessions',
+		default=0,
+		help='Idle timeout in minutes for managed browser sessions. 0 (default) disables automatic cleanup and keeps sessions alive indefinitely.',
 	)
 	mcp_parser.add_argument(
 		'--cdp-url',
@@ -132,6 +163,17 @@ def main() -> None:
 		help='Preserve human focus by default for internal attach/new-tab flows, or activate the runtime target.',
 	)
 
+	# init subcommand: write skills guide to a file
+	init_parser = sub.add_parser('init', help='Write the agentyc skills guide to a file for your coding agent')
+	init_parser.add_argument(
+		'--output',
+		type=str,
+		default='agentyc-skill.md',
+		help='Destination file path (default: agentyc-skill.md)',
+	)
+	init_parser.add_argument('--print', action='store_true', help='Print the skills guide to stdout instead of writing a file')
+	init_parser.add_argument('--force', action='store_true', help='Overwrite the destination file if it already exists')
+
 	# browser subcommand: start Chrome with remote debugging
 	browser_parser = sub.add_parser('browser', help='Start Chrome with remote debugging and print the CDP WebSocket URL')
 	browser_parser.add_argument('--port', type=int, default=9222, help='Remote debugging port (default: 9222)')
@@ -140,7 +182,9 @@ def main() -> None:
 
 	args = parser.parse_args()
 
-	if args.command == 'browser':
+	if args.command == 'init':
+		_cmd_init(args)
+	elif args.command == 'browser':
 		_cmd_browser(args)
 	elif args.command == 'mcp':
 		_cmd_mcp(args)
@@ -148,7 +192,7 @@ def main() -> None:
 		# No subcommand: backward-compatible MCP server mode
 		# Re-parse with the flat mcp args for backward compat
 		flat_parser = argparse.ArgumentParser(description='agentyc MCP server')
-		flat_parser.add_argument('--session-timeout-minutes', type=int, default=10)
+		flat_parser.add_argument('--session-timeout-minutes', type=int, default=0)
 		flat_parser.add_argument('--cdp-url', type=str, default=None)
 		flat_parser.add_argument('--runtime-label', type=str, default=None)
 		flat_parser.add_argument('--runtime-role', type=str, default='primary')
