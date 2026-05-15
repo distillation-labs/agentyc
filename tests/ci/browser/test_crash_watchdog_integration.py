@@ -22,7 +22,9 @@ async def test_attach_all_watchdogs_registers_crash_watchdog_once():
 
 	await session.attach_all_watchdogs()
 
-	connected_handlers_after = [getattr(handler, '__name__', '') for handler in session.event_bus.handlers['BrowserConnectedEvent']]
+	connected_handlers_after = [
+		getattr(handler, '__name__', '') for handler in session.event_bus.handlers['BrowserConnectedEvent']
+	]
 	created_handlers_after = [getattr(handler, '__name__', '') for handler in session.event_bus.handlers['TabCreatedEvent']]
 	assert connected_handlers_after.count('CrashWatchdog.on_BrowserConnectedEvent') == 1
 	assert created_handlers_after.count('CrashWatchdog.on_TabCreatedEvent') == 1
@@ -40,8 +42,9 @@ async def test_crash_watchdog_attaches_existing_page_targets_on_connect(monkeypa
 	attach_to_target = AsyncMock()
 	start_monitoring = AsyncMock()
 
-	with patch.object(CrashWatchdog, 'attach_to_target', attach_to_target), patch.object(
-		CrashWatchdog, '_start_monitoring', start_monitoring
+	with (
+		patch.object(CrashWatchdog, 'attach_to_target', attach_to_target),
+		patch.object(CrashWatchdog, '_start_monitoring', start_monitoring),
 	):
 		await watchdog.on_BrowserConnectedEvent(BrowserConnectedEvent(cdp_url='ws://example.test/devtools/browser/123'))
 
@@ -79,8 +82,9 @@ async def test_crash_watchdog_reconnect_clears_listener_state_before_reattach(mo
 	watchdog = CrashWatchdog(event_bus=session.event_bus, browser_session=session)
 	watchdog._targets_with_listeners.add('page-1')
 
-	with patch.object(BrowserSession, 'get_or_create_cdp_session', get_or_create_cdp_session), patch.object(
-		CrashWatchdog, '_start_monitoring', start_monitoring
+	with (
+		patch.object(BrowserSession, 'get_or_create_cdp_session', get_or_create_cdp_session),
+		patch.object(CrashWatchdog, '_start_monitoring', start_monitoring),
 	):
 		await watchdog.on_BrowserReconnectedEvent(
 			BrowserReconnectedEvent(cdp_url='ws://example.test/devtools/browser/123', attempt=1, downtime_seconds=0.25)
