@@ -264,18 +264,49 @@ async def _wait_for_network_idle(self, timeout_seconds: float = 10.0, idle_durat
 	try:
 		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
 		if hasattr(cdp_session, '_lifecycle_events'):
+			# Snapshot current idle count — only a NEW networkIdle event (after we started) signals true idle.
+			initial_idle_count = sum(1 for e in cdp_session._lifecycle_events if e.get('name') == 'networkIdle')
 			deadline = start + timeout
 			while _time.monotonic() < deadline:
-				events = list(cdp_session._lifecycle_events)
-				if any(e.get('name') == 'networkIdle' for e in events):
+				current_idle_count = sum(1 for e in cdp_session._lifecycle_events if e.get('name') == 'networkIdle')
+				if current_idle_count > initial_idle_count:
 					elapsed = _time.monotonic() - start
 					return f'Network idle after {elapsed:.1f}s'
 				await asyncio.sleep(0.2)
-			elapsed = _time.monotonic() - start
-			return f'Network idle wait timed out after {elapsed:.1f}s — proceeding'
-		await asyncio.sleep(min(idle_needed * 2, 2.0))
+
+		# Fallback: poll the Performance API for time since the last completed resource fetch.
+		# This catches AJAX/fetch activity that doesn't trigger a page lifecycle event.
+		_JS_SINCE_LAST_RESOURCE = (
+			'(function(){'
+			'var e=performance.getEntriesByType("resource");'
+			'if(!e.length)return -1;'
+			'var l=e[e.length-1];'
+			'return l.responseEnd>0?(performance.now()-l.responseEnd):0;'
+			'})()'
+		)
+		idle_start: float | None = None
+		deadline = start + timeout
+		while _time.monotonic() < deadline:
+			try:
+				result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={'expression': _JS_SINCE_LAST_RESOURCE, 'returnByValue': True},
+					session_id=cdp_session.session_id,
+				)
+				ms_since_last = float((result.get('result') or {}).get('value', 0) or 0)
+				if ms_since_last < 0 or ms_since_last >= idle_duration_ms:
+					if idle_start is None:
+						idle_start = _time.monotonic()
+					elif _time.monotonic() - idle_start >= idle_needed:
+						elapsed = _time.monotonic() - start
+						return f'Network idle after {elapsed:.1f}s'
+				else:
+					idle_start = None
+			except Exception:
+				pass
+			await asyncio.sleep(0.2)
+
 		elapsed = _time.monotonic() - start
-		return f'Waited {elapsed:.1f}s for network activity to settle'
+		return f'Network idle wait timed out after {elapsed:.1f}s — proceeding'
 	except Exception as e:
 		await asyncio.sleep(min(idle_needed, 1.0))
 		return f'Network idle wait completed (fallback mode): {e}'
@@ -320,7 +351,7 @@ async def _get_cookies(self) -> str:
 			{k: v for k, v in c.items() if k in ('name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'expires')}
 			for c in cookies
 		]
-		return json.dumps(simplified, indent=2)
+		return json.dumps(simplified)
 	except Exception as e:
 		return self._format_action_error(str(e), default_code='action_failed')
 
@@ -496,7 +527,7 @@ async def _get_console_logs(self, level: str = 'all', max_entries: int = 50) -> 
 	if level != 'all':
 		entries = [e for e in entries if e.get('level') == level]
 	entries = entries[-max_entries:]
-	return json.dumps(entries, indent=2)
+	return json.dumps(entries)
 
 
 async def _get_network_log(self, type_filter: str = 'all', status_filter: str = 'all', max_entries: int = 50) -> str:
@@ -513,9 +544,9 @@ async def _get_network_log(self, type_filter: str = 'all', status_filter: str = 
 		entries = [e for e in entries if not e.get('error') and 200 <= (e.get('status') or 0) < 400]
 	entries = entries[-max_entries:]
 	if not entries:
-		return json.dumps([], indent=2)
+		return json.dumps([])
 	display = [{k: v for k, v in e.items() if k != 'request_id' and v is not None} for e in entries]
-	return json.dumps(display, indent=2)
+	return json.dumps(display)
 
 
 async def _get_focused_element(self) -> str:
@@ -550,7 +581,7 @@ async def _get_focused_element(self) -> str:
 	value = result.get('result', {}).get('value')
 	if value is None:
 		return 'No element has focus (or focus is on document body)'
-	return json.dumps(value, indent=2)
+	return json.dumps(value)
 
 
 async def _list_tabs(self) -> str:
@@ -562,7 +593,7 @@ async def _list_tabs(self) -> str:
 
 	tabs_info = await self.browser_session.get_tabs()
 	tabs = [serialize_tab_info(tab) for tab in tabs_info]
-	return json.dumps(tabs, indent=2)
+	return json.dumps(tabs)
 
 
 async def _switch_tab(self, tab_id: str) -> str:
