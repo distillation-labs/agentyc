@@ -227,7 +227,11 @@ class DomServiceBuildMixin:
 						f'frameId={node.get("frameId")}, nodeId={node["nodeId"]}'
 					)
 
-			if (node['nodeName'].upper() == 'IFRAME' or node['nodeName'].upper() == 'FRAME') and snapshot_data and snapshot_data.bounds:
+			if (
+				(node['nodeName'].upper() == 'IFRAME' or node['nodeName'].upper() == 'FRAME')
+				and snapshot_data
+				and snapshot_data.bounds
+			):
 				updated_html_frames.append(dom_tree_node)
 				total_frame_offset.x += snapshot_data.bounds.x
 				total_frame_offset.y += snapshot_data.bounds.y
@@ -272,7 +276,7 @@ class DomServiceBuildMixin:
 				if any(token in elem_id.lower() or token in elem_name.lower() for token in ['city', 'state', 'zip']):
 					self.logger.debug(
 						f"🔍 DEBUG: Form element {dom_tree_node.tag_name} id='{elem_id}' name='{elem_name}' - visible={dom_tree_node.is_visible}, "
-						f"bounds={dom_tree_node.snapshot_node.bounds if dom_tree_node.snapshot_node else 'NO_SNAPSHOT'}"
+						f'bounds={dom_tree_node.snapshot_node.bounds if dom_tree_node.snapshot_node else "NO_SNAPSHOT"}'
 					)
 
 			if self.cross_origin_iframes and node['nodeName'].upper() == 'IFRAME' and node.get('contentDocument', None) is None:
