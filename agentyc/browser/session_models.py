@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import Any, Literal
 
 from cdp_use import CDPClient
 from cdp_use.cdp.target import SessionID, TargetID
@@ -87,11 +87,61 @@ class TargetOwnershipMetadata(BaseModel):
 	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid', revalidate_instances='never')
 
 	target_id: TargetID
-	runtime: RuntimeOwnershipMetadata
+	owner_kind: Literal['agent', 'human', 'runtime']
+	source: Literal['current_runtime', 'detected_runtime', 'explicit_runtime', 'shared_browser_human', 'manual_human']
+	display_label: str
+	runtime: RuntimeOwnershipMetadata | None = None
 	title_prefix_applied: bool = False
 	overlay_enabled: bool = False
 	overlay_visible: bool = False
 	marker_version: int = 1
+
+	@classmethod
+	def for_runtime(
+		cls,
+		*,
+		target_id: TargetID,
+		runtime: RuntimeOwnershipMetadata,
+		current_runtime_id: str | None = None,
+		source: Literal['current_runtime', 'detected_runtime', 'explicit_runtime'] | None = None,
+		title_prefix_applied: bool = False,
+		overlay_enabled: bool = False,
+		overlay_visible: bool = False,
+	) -> 'TargetOwnershipMetadata':
+		is_current_runtime = current_runtime_id is not None and runtime.runtime_id == current_runtime_id
+		resolved_source = source or ('current_runtime' if is_current_runtime else 'detected_runtime')
+		return cls(
+			target_id=target_id,
+			owner_kind='agent' if is_current_runtime else 'runtime',
+			source=resolved_source,
+			display_label=runtime.runtime_label,
+			runtime=runtime,
+			title_prefix_applied=title_prefix_applied,
+			overlay_enabled=overlay_enabled,
+			overlay_visible=overlay_visible,
+		)
+
+	@classmethod
+	def human(
+		cls,
+		*,
+		target_id: TargetID,
+		display_label: str = 'Human',
+		source: Literal['shared_browser_human', 'manual_human'] = 'shared_browser_human',
+		title_prefix_applied: bool = False,
+		overlay_enabled: bool = False,
+		overlay_visible: bool = False,
+	) -> 'TargetOwnershipMetadata':
+		return cls(
+			target_id=target_id,
+			owner_kind='human',
+			source=source,
+			display_label=display_label,
+			runtime=None,
+			title_prefix_applied=title_prefix_applied,
+			overlay_enabled=overlay_enabled,
+			overlay_visible=overlay_visible,
+		)
 
 
 class Target(BaseModel):
