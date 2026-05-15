@@ -170,6 +170,7 @@ class SwitchTabEvent(BaseEvent[TargetID]):
 	"""Switch to a different tab."""
 
 	target_id: TargetID | None = Field(default=None, description='None means switch to the most recently opened tab')
+	activate_target: bool = True
 
 	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_SwitchTabEvent', 10.0))  # seconds
 
