@@ -1,8 +1,8 @@
 """Test Google model button click."""
 
-from tests.ci.models.model_test_helper import run_model_button_click_test
-
 from agentyc.llm.google.chat import ChatGoogle
+
+from tests.ci.models.model_test_helper import run_model_button_click_test
 
 
 async def test_google_gemini_flash_latest(httpserver):
