@@ -130,7 +130,11 @@ class SerializerIndexingMixin:
 				attrs = node.original_node.attributes or {}
 				attr_str = f'name={attrs.get("name", "")} id={attrs.get("id", "")} type={attrs.get("type", "")}'
 				in_shadow = self._is_inside_shadow_dom(node)
-				if in_shadow and node.original_node.tag_name and node.original_node.tag_name.lower() in ['input', 'button', 'select', 'textarea', 'a']:
+				if (
+					in_shadow
+					and node.original_node.tag_name
+					and node.original_node.tag_name.lower() in ['input', 'button', 'select', 'textarea', 'a']
+				):
 					logger.debug(
 						f'🔍 INCLUDING shadow DOM <{node.original_node.tag_name}> (no snapshot_node but in shadow DOM): '
 						f'backendNodeId={node.original_node.backend_node_id} {attr_str}'
