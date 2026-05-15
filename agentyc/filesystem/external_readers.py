@@ -14,7 +14,9 @@ async def read_external_file_structured(full_filename: str, supported_extensions
 			_, extension = full_filename.rsplit('.', 1)
 			extension = extension.lower()
 		except Exception:
-			result['message'] = f'Error: Invalid filename format {full_filename}. Must be alphanumeric with a supported extension.'
+			result['message'] = (
+				f'Error: Invalid filename format {full_filename}. Must be alphanumeric with a supported extension.'
+			)
 			return result
 
 		special_extensions = {'docx', 'pdf', 'jpg', 'jpeg', 'png'}
