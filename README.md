@@ -27,6 +27,22 @@ source .venv/bin/activate
 uv sync --dev
 ```
 
+## Bootstrap Your Agent
+
+Run this once in your project directory to write a usage guide your coding agent can read:
+
+```bash
+agentyc init
+```
+
+This writes `agentyc-skill.md` — covering the read→ref→act loop, `since_hash` polling, extraction routes, auth persistence, and common pitfalls. Point Claude Code, Cursor, or Copilot at it.
+
+```bash
+agentyc init --print          # print to stdout instead of writing a file
+agentyc init --force          # overwrite an existing file
+agentyc init --output my.md   # custom destination
+```
+
 ## Run The MCP Server
 
 Start the stdio MCP server:
@@ -41,7 +57,7 @@ Equivalent explicit form:
 agentyc mcp
 ```
 
-Override the idle timeout for the browser session tracked by the server:
+Override the idle timeout for the browser session (default: never auto-close):
 
 ```bash
 agentyc --session-timeout-minutes 20
