@@ -158,23 +158,35 @@ class DomServiceFetchMixin:
 				'snapshot': create_task_with_error_handling(create_snapshot_request(), name='get_snapshot'),
 				'dom_tree': create_task_with_error_handling(create_dom_tree_request(), name='get_dom_tree'),
 				'ax_tree': create_task_with_error_handling(
-					self._get_ax_tree_for_all_frames(target_id) if has_frames_hint else self._get_ax_tree_for_current_frame(target_id),
+					self._get_ax_tree_for_all_frames(target_id)
+					if has_frames_hint
+					else self._get_ax_tree_for_current_frame(target_id),
 					name='get_ax_tree_with_frames' if has_frames_hint else 'get_ax_tree_current_frame',
 				),
-				'device_pixel_ratio': create_task_with_error_handling(self._get_viewport_ratio(target_id), name='get_viewport_ratio'),
+				'device_pixel_ratio': create_task_with_error_handling(
+					self._get_viewport_ratio(target_id), name='get_viewport_ratio'
+				),
 			}
 			done, pending = await asyncio.wait(tasks.values(), timeout=10.0)
 			if pending:
 				for task in pending:
 					task.cancel()
 				retry_map = {
-					tasks['snapshot']: lambda: create_task_with_error_handling(create_snapshot_request(), name='get_snapshot_retry'),
-					tasks['dom_tree']: lambda: create_task_with_error_handling(create_dom_tree_request(), name='get_dom_tree_retry'),
+					tasks['snapshot']: lambda: create_task_with_error_handling(
+						create_snapshot_request(), name='get_snapshot_retry'
+					),
+					tasks['dom_tree']: lambda: create_task_with_error_handling(
+						create_dom_tree_request(), name='get_dom_tree_retry'
+					),
 					tasks['ax_tree']: lambda: create_task_with_error_handling(
-						self._get_ax_tree_for_all_frames(target_id) if has_frames_hint else self._get_ax_tree_for_current_frame(target_id),
+						self._get_ax_tree_for_all_frames(target_id)
+						if has_frames_hint
+						else self._get_ax_tree_for_current_frame(target_id),
 						name='get_ax_tree_with_frames_retry' if has_frames_hint else 'get_ax_tree_current_frame_retry',
 					),
-					tasks['device_pixel_ratio']: lambda: create_task_with_error_handling(self._get_viewport_ratio(target_id), name='get_viewport_ratio_retry'),
+					tasks['device_pixel_ratio']: lambda: create_task_with_error_handling(
+						self._get_viewport_ratio(target_id), name='get_viewport_ratio_retry'
+					),
 				}
 				for key, task in tasks.items():
 					if task in pending and task in retry_map:
@@ -212,7 +224,9 @@ class DomServiceFetchMixin:
 		else:
 			tasks = {
 				'snapshot': create_task_with_error_handling(create_snapshot_request(), name='get_snapshot'),
-				'device_pixel_ratio': create_task_with_error_handling(self._get_viewport_ratio(target_id), name='get_viewport_ratio'),
+				'device_pixel_ratio': create_task_with_error_handling(
+					self._get_viewport_ratio(target_id), name='get_viewport_ratio'
+				),
 			}
 			try:
 				dom_tree = await asyncio.wait_for(create_dom_tree_request(), timeout=10.0)
@@ -235,9 +249,15 @@ class DomServiceFetchMixin:
 				for task in pending:
 					task.cancel()
 				retry_map = {
-					tasks['snapshot']: lambda: create_task_with_error_handling(create_snapshot_request(), name='get_snapshot_retry'),
-					tasks['ax_tree']: lambda: create_task_with_error_handling(create_ax_tree_request(dom_tree), name=f'{ax_tree_name}_retry'),
-					tasks['device_pixel_ratio']: lambda: create_task_with_error_handling(self._get_viewport_ratio(target_id), name='get_viewport_ratio_retry'),
+					tasks['snapshot']: lambda: create_task_with_error_handling(
+						create_snapshot_request(), name='get_snapshot_retry'
+					),
+					tasks['ax_tree']: lambda: create_task_with_error_handling(
+						create_ax_tree_request(dom_tree), name=f'{ax_tree_name}_retry'
+					),
+					tasks['device_pixel_ratio']: lambda: create_task_with_error_handling(
+						self._get_viewport_ratio(target_id), name='get_viewport_ratio_retry'
+					),
 				}
 				for key, task in tasks.items():
 					if task in pending and task in retry_map:
