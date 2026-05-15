@@ -134,7 +134,7 @@ Always use `uuid7str` (time-ordered UUIDs) for new IDs — not `uuid4`.
 - `service.py`: class with methods that operate on views. May import from `views.py` but not reverse.
 - Test both layers independently: unit-test models in isolation, integration-test services with real dependencies.
 - When `views.py` gets crowded, split along domain boundaries into focused modules such as `validators.py`, `types.py`, `aliases.py`, `builders.py`, or feature-specific `views_*.py` files.
-- Prefer reusable validators and aliases over re-declaring the same constraints across multiple model files.
+- Prefer reusable validators and aliases over redeclaring the same constraints across multiple model files.
 
 ## Output Format
 
