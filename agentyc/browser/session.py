@@ -11,6 +11,7 @@ from urllib.parse import urlparse, urlsplit, urlunparse
 import httpx
 from bubus import EventBus
 from cdp_use import CDPClient
+from cdp_use.cdp.browser import Bounds
 from cdp_use.cdp.fetch import AuthRequiredEvent, RequestPausedEvent
 from cdp_use.cdp.network import Cookie
 from cdp_use.cdp.target import SessionID, TargetID
@@ -19,6 +20,13 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from uuid_extensions import uuid7str
 
 from agentyc.browser._cdp_timeout import TimeoutWrappedCDPClient
+from agentyc.browser.collaboration import (
+	apply_title_prefix,
+	build_marker_visibility_script,
+	build_runtime_marker_script,
+	build_runtime_metadata_probe_script,
+	strip_title_prefix,
+)
 from agentyc.browser.events import (
 	AgentFocusChangedEvent,
 	BrowserConnectedEvent,
@@ -45,7 +53,14 @@ from agentyc.browser.events import (
 # It automatically sets CDP logs to the same level as agentyc logs
 from agentyc.browser.page import Page
 from agentyc.browser.profile import BrowserProfile, ProxySettings
+from agentyc.browser.session_models import (
+	BrowserWindowBounds,
+	CDPSession,
+	RuntimeOwnershipMetadata,
+	Target,
+)
 from agentyc.browser.views import BrowserStateSummary, TabInfo
+from agentyc.browser.windowing import build_create_target_params, normalize_window_bounds, window_context_from_cdp
 from agentyc.dom.views import DOMRect, EnhancedDOMTreeNode, TargetInfo
 from agentyc.observability import observe_debug
 from agentyc.utils import _log_pretty_url, create_task_with_error_handling, is_new_tab_page
@@ -59,39 +74,6 @@ DEFAULT_BROWSER_PROFILE = BrowserProfile()
 _LOGGED_UNIQUE_SESSION_IDS = set()  # track unique session IDs that have been logged to make sure we always assign a unique enough id to new sessions and avoid ambiguity in logs
 red = '\033[91m'
 reset = '\033[0m'
-
-
-class Target(BaseModel):
-	"""Browser target (page, iframe, worker) - the actual entity being controlled.
-
-	A target represents a browsing context with its own URL, title, and type.
-	Multiple CDP sessions can attach to the same target for communication.
-	"""
-
-	model_config = ConfigDict(arbitrary_types_allowed=True, revalidate_instances='never')
-
-	target_id: TargetID
-	target_type: str  # 'page', 'iframe', 'worker', etc.
-	url: str = 'about:blank'
-	title: str = 'Unknown title'
-
-
-class CDPSession(BaseModel):
-	"""CDP communication channel to a target.
-
-	A session is a connection that allows sending CDP commands to a specific target.
-	Multiple sessions can attach to the same target.
-	"""
-
-	model_config = ConfigDict(arbitrary_types_allowed=True, revalidate_instances='never')
-
-	cdp_client: CDPClient
-	target_id: TargetID
-	session_id: SessionID
-
-	# Lifecycle monitoring (populated by SessionManager)
-	_lifecycle_events: Any = PrivateAttr(default=None)
-	_lifecycle_lock: Any = PrivateAttr(default=None)
 
 
 class BrowserSession(BaseModel):
@@ -240,6 +222,9 @@ class BrowserSession(BaseModel):
 
 	# Cache of original viewport size for coordinate conversion (set when browser state is captured)
 	_original_viewport_size: tuple[int, int] | None = PrivateAttr(default=None)
+	_runtime_metadata: RuntimeOwnershipMetadata = PrivateAttr(default=None)
+	_target_init_scripts: dict[str, set[str]] = PrivateAttr(default_factory=dict)
+	_global_init_script_targets: dict[str, set[str]] = PrivateAttr(default_factory=dict)
 
 	@classmethod
 	def from_system_chrome(cls, profile_directory: str | None = None, **kwargs: Any) -> Self:
@@ -486,6 +471,7 @@ class BrowserSession(BaseModel):
 	def model_post_init(self, __context) -> None:
 		"""Register event handlers after model initialization."""
 		self._connection_lock = asyncio.Lock()
+		self._runtime_metadata = RuntimeOwnershipMetadata.create(session_id=self.id, runtime_role='primary')
 		# Initialize reconnect event as set (no reconnection pending)
 		self._reconnect_event = asyncio.Event()
 		self._reconnect_event.set()
