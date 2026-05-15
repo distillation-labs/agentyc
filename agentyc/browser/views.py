@@ -5,7 +5,7 @@ from bubus import BaseEvent
 from cdp_use.cdp.target import TargetID
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_serializer
 
-from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata
+from agentyc.browser.session_models import BrowserWindowBounds, TargetOwnershipMetadata
 from agentyc.dom.views import DOMInteractedElement, SerializedDOMState
 
 # Known placeholder image data for about:blank pages - a 4x4 white PNG
@@ -33,7 +33,7 @@ class TabInfo(BaseModel):
 	parent_target_id: TargetID | None = Field(
 		default=None, serialization_alias='parent_tab_id', validation_alias=AliasChoices('parent_tab_id', 'parent_target_id')
 	)  # parent page that contains this popup or cross-origin iframe
-	ownership: RuntimeOwnershipMetadata | None = None
+	ownership: TargetOwnershipMetadata | None = None
 	window_bounds: BrowserWindowBounds | None = None
 
 	@field_serializer('target_id')
@@ -100,6 +100,7 @@ class BrowserStateSummary:
 	url: str
 	title: str
 	tabs: list[TabInfo]
+	current_tab_id: TargetID | None = None
 	screenshot: str | None = field(default=None, repr=False)
 	page_info: PageInfo | None = None  # Enhanced page information
 
