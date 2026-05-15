@@ -8,6 +8,8 @@ from pytest_httpserver import HTTPServer
 
 from agentyc.actions import ActionResult
 from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata
+from agentyc.browser.views import TabInfo
 from agentyc.dom.serializer.serializer import DOMTreeSerializer
 from agentyc.dom.service import DomService
 from agentyc.dom.views import DOMRect, EnhancedAXNode, EnhancedDOMTreeNode, EnhancedSnapshotNode, NodeType
@@ -499,11 +501,17 @@ class _StubElement:
 		return self.backend_node_id * 10
 
 
-def _stub_state(selector_map: dict[int, _StubElement] | None = None):
+def _stub_state(
+	selector_map: dict[int, _StubElement] | None = None,
+	*,
+	tabs: list[object] | None = None,
+	current_tab_id: str | None = None,
+):
 	return SimpleNamespace(
 		url='https://example.com',
 		title='Example page',
-		tabs=[SimpleNamespace(url='https://example.com', title='Example page')],
+		tabs=tabs or [SimpleNamespace(url='https://example.com', title='Example page')],
+		current_tab_id=current_tab_id,
 		screenshot='c2NyZWVuc2hvdA==',
 		page_info=SimpleNamespace(
 			viewport_width=1280,
@@ -1026,6 +1034,52 @@ class TestMCPStateProtocolAndExtraction:
 		unchanged_payload = json.loads(unchanged_json)
 		assert unchanged_payload['changed'] is False
 		assert unchanged_payload['interactive_elements'] == []
+		assert unchanged_payload['current_tab_id'] == payload['current_tab_id']
+		assert 'current_tab' not in unchanged_payload
+		assert 'tabs' not in unchanged_payload
+		assert 'viewport' not in unchanged_payload
+		assert 'page' not in unchanged_payload
+		assert 'scroll' not in unchanged_payload
+
+	def test_browser_state_payload_uses_metadata_only_fast_path_for_unchanged_since_hash(self):
+		state = _stub_state(
+			tabs=[
+				TabInfo(
+					target_id='target-owned-1234',
+					url='https://example.com',
+					title='Example page',
+					display_title='[agtyc:1234]Example page',
+					ownership={
+						'target_id': 'target-owned-1234',
+						'owner_kind': 'agent',
+						'source': 'current_runtime',
+						'display_label': 'Agent 1234',
+						'runtime': RuntimeOwnershipMetadata.create(
+							session_id='session-1234',
+							runtime_id='runtime-1234',
+							runtime_label='Agent 1234',
+						),
+					},
+					window_bounds=BrowserWindowBounds(left=10, top=20, width=1200, height=800),
+				)
+			],
+			current_tab_id='target-owned-1234',
+		)
+		state_hash = build_browser_state_payload(state, mode='min')['state_hash']
+
+		payload = build_browser_state_payload(state, mode='min', since_hash=state_hash)
+
+		assert payload == {
+			'url': 'https://example.com',
+			'title': 'Example page',
+			'mode': 'min',
+			'effective_mode': 'min',
+			'state_hash': state_hash,
+			'changed': False,
+			'interactive_element_count': 2,
+			'interactive_elements': [],
+			'current_tab_id': '1234',
+		}
 
 	async def test_browser_get_state_auto_uses_full_on_small_pages(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/accessible')
@@ -1039,6 +1093,99 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['mode'] == 'auto'
 		assert payload['effective_mode'] == 'full'
 		assert len(payload['interactive_elements']) == payload['interactive_element_count']
+
+	def test_browser_state_payload_includes_collaboration_metadata_for_current_tab(self):
+		runtime = RuntimeOwnershipMetadata.create(
+			session_id='session-1234',
+			runtime_id='runtime-1234',
+			runtime_label='Agent 1234',
+		)
+		other_runtime = RuntimeOwnershipMetadata.create(
+			session_id='session-5678',
+			runtime_id='runtime-5678',
+			runtime_label='Agent 5678',
+		)
+		payload = build_browser_state_payload(
+			_stub_state(
+				tabs=[
+					TabInfo(
+						target_id='target-owned-1234',
+						url='https://example.com',
+						title='Example page',
+						display_title=f'{runtime.title_prefix}Example page',
+						ownership={
+							'target_id': 'target-owned-1234',
+							'owner_kind': 'agent',
+							'source': 'current_runtime',
+							'display_label': runtime.runtime_label,
+							'runtime': runtime,
+						},
+						window_bounds=BrowserWindowBounds(left=10, top=20, width=1200, height=800),
+					),
+					TabInfo(
+						target_id='target-owned-5678',
+						url='https://example.com/status',
+						title='Status page',
+						display_title=f'{other_runtime.title_prefix}Status page',
+						ownership={
+							'target_id': 'target-owned-5678',
+							'owner_kind': 'runtime',
+							'source': 'detected_runtime',
+							'display_label': other_runtime.runtime_label,
+							'runtime': other_runtime,
+						},
+					),
+				],
+				current_tab_id='target-owned-1234',
+			),
+			mode='min',
+		)
+
+		assert payload['tabs'][0]['tab_id'] == '1234'
+		assert payload['tabs'][0]['ownership']['owner_kind'] == 'agent'
+		assert payload['tabs'][0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
+		assert payload['tabs'][0]['window_bounds']['width'] == 1200
+		assert payload['current_tab_id'] == '1234'
+		assert payload['current_tab']['tab_id'] == '1234'
+		assert payload['current_tab']['display_title'].startswith('[agtyc:1234]')
+		assert payload['current_tab']['window_bounds']['height'] == 800
+		assert payload['ownership']['runtime']['runtime_id'] == runtime.runtime_id
+		assert payload['runtime']['runtime_id'] == runtime.runtime_id
+
+	async def test_browser_list_tabs_includes_collaboration_metadata(self):
+		runtime = RuntimeOwnershipMetadata.create(
+			session_id='session-1234',
+			runtime_id='runtime-1234',
+			runtime_label='Agent 1234',
+		)
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_tabs = AsyncMock(
+			return_value=[
+				TabInfo(
+					target_id='target-owned-1234',
+					url='https://example.com',
+					title='Example page',
+					display_title=f'{runtime.title_prefix}Example page',
+					ownership={
+						'target_id': 'target-owned-1234',
+						'owner_kind': 'agent',
+						'source': 'current_runtime',
+						'display_label': runtime.runtime_label,
+						'runtime': runtime,
+					},
+					window_bounds=BrowserWindowBounds(left=10, top=20, width=1200, height=800),
+				)
+			]
+		)
+
+		result = json.loads(await server._list_tabs())
+
+		assert result[0]['tab_id'] == '1234'
+		assert result[0]['display_title'].startswith('[agtyc:1234]')
+		assert result[0]['ownership']['owner_kind'] == 'agent'
+		assert result[0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
+		assert result[0]['window_bounds']['left'] == 10
 
 	async def test_extract_links_can_run_without_llm(
 		self, tools: Tools, browser_session: BrowserSession, base_url: str, tmp_path
@@ -1675,6 +1822,21 @@ class TestParallelTabExecution:
 
 				state_a = json.loads(state_a_json)
 				state_b = json.loads(state_b_json)
+
+				assert (
+					state_a['current_tab']['ownership']['runtime']['runtime_id']
+					== server_a.browser_session.runtime_metadata.runtime_id
+				)
+				assert (
+					state_b['current_tab']['ownership']['runtime']['runtime_id']
+					== server_b.browser_session.runtime_metadata.runtime_id
+				)
+				assert state_a['current_tab']['tab_id'] != state_b['current_tab']['tab_id']
+				assert any(
+					tab.get('ownership', {}).get('runtime', {}).get('runtime_id')
+					== server_b.browser_session.runtime_metadata.runtime_id
+					for tab in state_a['tabs']
+				)
 
 				# Server A is on /accessible which has "Email address" and "Start checkout"
 				texts_a = {el.get('text', '') for el in state_a['interactive_elements']}
