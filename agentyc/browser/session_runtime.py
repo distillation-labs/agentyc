@@ -82,7 +82,7 @@ async def reset(session: BrowserSession) -> None:
 	session.logger.info('✅ Browser session reset complete')
 
 
-def model_post_init(session: BrowserSession, __context: Any) -> None:
+def model_post_init(session: BrowserSession, context: Any) -> None:
 	session._connection_lock = asyncio.Lock()
 	session._runtime_metadata = RuntimeOwnershipMetadata.create(
 		session_id=session.id,
@@ -168,7 +168,9 @@ async def on_FileDownloadedEvent(session: BrowserSession, event: FileDownloadedE
 	session.logger.debug(f'FileDownloadedEvent received: {event.file_name} at {event.path}')
 	if event.path and event.path not in session._downloaded_files:
 		session._downloaded_files.append(event.path)
-		session.logger.info(f'📁 Tracked download: {event.file_name} ({len(session._downloaded_files)} total downloads in session)')
+		session.logger.info(
+			f'📁 Tracked download: {event.file_name} ({len(session._downloaded_files)} total downloads in session)'
+		)
 	else:
 		if not event.path:
 			session.logger.warning(f'FileDownloadedEvent has no path: {event}')
