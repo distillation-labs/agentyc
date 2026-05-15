@@ -1846,9 +1846,7 @@ class TestParallelTabExecution:
 
 				# Server B is on /status which has "Restart service"
 				texts_b = {el.get('text', '') for el in state_b['interactive_elements']}
-				assert any('Restart' in t for t in texts_b), (
-					f'Server B should be on /status, got elements: {texts_b}'
-				)
+				assert any('Restart' in t for t in texts_b), f'Server B should be on /status, got elements: {texts_b}'
 
 				# The two sets of elements must be completely different (no bleed-over)
 				assert texts_a.isdisjoint(texts_b), f'Tab isolation violation — shared elements: {texts_a & texts_b}'
@@ -1896,10 +1894,14 @@ class TestParallelTabExecution:
 				state_b = json.loads(state_b_json)
 
 				email_ref_a = next(
-					el['ref'] for el in state_a['interactive_elements'] if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+					el['ref']
+					for el in state_a['interactive_elements']
+					if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
 				)
 				email_ref_b = next(
-					el['ref'] for el in state_b['interactive_elements'] if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+					el['ref']
+					for el in state_b['interactive_elements']
+					if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
 				)
 
 				# Both agents type simultaneously into their own tabs
