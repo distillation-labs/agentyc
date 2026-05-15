@@ -39,13 +39,13 @@ The MCP server primarily consumes the default `browser_profile` entry and select
 ### MCP Server
 
 ```bash
-agentyc --session-timeout-minutes 10
 agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
+agentyc --session-timeout-minutes 30  # auto-close after 30 min idle; 0 = never (default)
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--session-timeout-minutes` | Idle timeout for the tracked browser session |
+| `--session-timeout-minutes` | Idle timeout in minutes for the tracked browser session. `0` (default) disables automatic cleanup — sessions stay alive until the MCP server process exits. |
 | `--cdp-url` | Attach to an existing browser instead of launching a local one |
 | `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
 | `--runtime-role` | Collaboration role string for this runtime |
@@ -75,7 +75,7 @@ agentyc browser --port 9222 --detach
 | `AGENTYC_HEADLESS` | Override `headless` in the default browser profile |
 | `AGENTYC_ALLOWED_DOMAINS` | Comma-separated allowlist override |
 | `AGENTYC_DISABLE_EXTENSIONS` | Disable bundled browser extensions |
-| `AGENTYC_ACTION_TIMEOUT_S` | Per-action timeout used by `agentyc.tools.service` |
+| `AGENTYC_ACTION_TIMEOUT_S` | Per-action timeout parsed by `agentyc.tools.runtime` and enforced in `Tools.act()` |
 
 ### Proxy
 
