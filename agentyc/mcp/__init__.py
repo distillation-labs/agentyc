@@ -1,21 +1,19 @@
-"""MCP (Model Context Protocol) support for agentyc."""
+"""Server-facing MCP surface for agentyc."""
 
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-	from agentyc.mcp.client import MCPClient
 	from agentyc.mcp.server import AgentycServer
 
 _LAZY_IMPORTS = {
-	'MCPClient': ('agentyc.mcp.client', 'MCPClient'),
 	'AgentycServer': ('agentyc.mcp.server', 'AgentycServer'),
 }
 
-__all__ = ['MCPClient', 'AgentycServer']
+__all__ = ['AgentycServer']
 
 
 def __getattr__(name: str):
-	"""Lazy import MCP surfaces so server import does not pull client code into the hot path."""
+	"""Lazy import the MCP server surface."""
 	if name in _LAZY_IMPORTS:
 		module_path, attr_name = _LAZY_IMPORTS[name]
 		from importlib import import_module
