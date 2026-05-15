@@ -120,7 +120,9 @@ class SerializerCompoundMixin:
 				simplified.is_compound_component = True
 
 		elif element_type == 'select':
-			base_components = [{'role': 'button', 'name': 'Dropdown Toggle', 'valuemin': None, 'valuemax': None, 'valuenow': None}]
+			base_components = [
+				{'role': 'button', 'name': 'Dropdown Toggle', 'valuemin': None, 'valuemax': None, 'valuenow': None}
+			]
 			options_info = self._extract_select_options(node)
 			if options_info:
 				options_component = {
