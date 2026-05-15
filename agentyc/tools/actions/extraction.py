@@ -13,6 +13,7 @@ from agentyc.tools.extraction.router import (
 	get_deterministic_extraction_strategy,
 	maybe_extract_deterministic_content,
 )
+from agentyc.tools.extraction.strategy import _build_no_route_error
 from agentyc.tools.views import ExtractAction
 from agentyc.utils import sanitize_surrogates
 
@@ -198,6 +199,4 @@ def register_extraction_actions(tools: Any) -> None:
 				)
 			)
 
-		return ActionResult(
-			error='No deterministic extraction route matched this query. Use a more specific query or browser_get_state/browser_get_html.'
-		)
+		return ActionResult(error=_build_no_route_error(query))
