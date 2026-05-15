@@ -341,6 +341,7 @@ class DOMWatchdog(BaseWatchdog):
 					url=page_url,
 					title='Empty Tab',
 					tabs=tabs_info,
+					current_tab_id=self.browser_session.agent_focus_target_id,
 					screenshot=screenshot_b64,
 					page_info=page_info,
 					pixels_above=0,
@@ -479,6 +480,7 @@ class DOMWatchdog(BaseWatchdog):
 				url=page_url,
 				title=title,
 				tabs=tabs_info,
+				current_tab_id=self.browser_session.agent_focus_target_id,
 				screenshot=screenshot_b64,
 				page_info=page_info,
 				pixels_above=0,
@@ -510,6 +512,7 @@ class DOMWatchdog(BaseWatchdog):
 				url=page_url if 'page_url' in locals() else '',
 				title='Error',
 				tabs=[],
+				current_tab_id=self.browser_session.agent_focus_target_id if self.browser_session else None,
 				screenshot=None,
 				page_info=PageInfo(
 					viewport_width=1280,
