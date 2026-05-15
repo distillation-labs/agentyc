@@ -65,7 +65,7 @@ class RuntimeOwnershipMetadata(BaseModel):
 		runtime_label: str | None = None,
 		runtime_role: str = 'primary',
 		parent_runtime_id: str | None = None,
-	) -> 'RuntimeOwnershipMetadata':
+	) -> RuntimeOwnershipMetadata:
 		resolved_runtime_id = runtime_id or session_id
 		short_id = _short_runtime_id(resolved_runtime_id)
 		resolved_label = runtime_label or f'Runtime {short_id}'
@@ -107,7 +107,7 @@ class TargetOwnershipMetadata(BaseModel):
 		title_prefix_applied: bool = False,
 		overlay_enabled: bool = False,
 		overlay_visible: bool = False,
-	) -> 'TargetOwnershipMetadata':
+	) -> TargetOwnershipMetadata:
 		is_current_runtime = current_runtime_id is not None and runtime.runtime_id == current_runtime_id
 		resolved_source = source or ('current_runtime' if is_current_runtime else 'detected_runtime')
 		return cls(
@@ -131,7 +131,7 @@ class TargetOwnershipMetadata(BaseModel):
 		title_prefix_applied: bool = False,
 		overlay_enabled: bool = False,
 		overlay_visible: bool = False,
-	) -> 'TargetOwnershipMetadata':
+	) -> TargetOwnershipMetadata:
 		return cls(
 			target_id=target_id,
 			owner_kind='human',
