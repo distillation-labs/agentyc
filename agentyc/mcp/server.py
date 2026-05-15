@@ -238,7 +238,7 @@ class AgentycServer:
 
 	def __init__(
 		self,
-		session_timeout_minutes: int = 10,
+		session_timeout_minutes: int = 0,
 		cdp_url: str | None = None,
 		*,
 		runtime_label: str | None = None,
@@ -435,7 +435,7 @@ for _method_name, _method in _SERVER_METHODS.items():
 
 
 async def main(
-	session_timeout_minutes: int = 10,
+	session_timeout_minutes: int = 0,
 	cdp_url: str | None = None,
 	*,
 	runtime_label: str | None = None,
