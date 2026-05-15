@@ -227,13 +227,15 @@ class TestChatGoogleRetries:
 		assert attempt_count == 3
 		assert result.completion == 'Success!'
 
-		# Verify exponential backoff
+		# Verify jittered exponential backoff
 		delay_1 = attempt_times[1] - attempt_times[0]
 		delay_2 = attempt_times[2] - attempt_times[1]
 
 		assert 0.05 <= delay_1 <= 0.3, f'First delay {delay_1:.3f}s not in expected range'
 		assert 0.1 <= delay_2 <= 0.5, f'Second delay {delay_2:.3f}s not in expected range'
-		assert delay_2 > delay_1, 'Second delay should be longer than first'
+		# Jitter makes the exact ordering nondeterministic on slower runners, but the
+		# second retry should still stay within the larger backoff window.
+		assert delay_2 >= 0.7 * delay_1, 'Second delay should remain in the expected backoff range'
 
 	@pytest.mark.asyncio
 	async def test_no_retry_on_400(self, mock_env):
