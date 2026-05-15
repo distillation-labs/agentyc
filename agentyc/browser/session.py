@@ -265,6 +265,7 @@ class BrowserSession(BaseModel):
 	_runtime_metadata: RuntimeOwnershipMetadata | None = PrivateAttr(default=None)
 	_target_init_scripts: dict[str, set[str]] = PrivateAttr(default_factory=dict)
 	_global_init_script_targets: dict[str, set[str]] = PrivateAttr(default_factory=dict)
+	_browser_context_id: str | None = PrivateAttr(default=None)
 
 	@classmethod
 	def from_system_chrome(cls, profile_directory: str | None = None, **kwargs: Any) -> Self:
@@ -623,18 +624,13 @@ class BrowserSession(BaseModel):
 		self,
 		target_id: TargetID,
 		*,
-		include_overlay: bool = True,
 		include_title_prefix: bool = True,
 	) -> None:
 		await session_shared_browser._apply_runtime_markers_to_target(
 			self,
 			target_id,
-			include_overlay=include_overlay,
 			include_title_prefix=include_title_prefix,
 		)
-
-	async def _set_collaboration_overlay_visibility(self, visible: bool, target_id: TargetID | None = None) -> None:
-		await session_shared_browser._set_collaboration_overlay_visibility(self, visible, target_id)
 
 	async def get_target_runtime_metadata(self, target_id: TargetID | None = None) -> dict[str, Any] | None:
 		return await session_shared_browser.get_target_runtime_metadata(self, target_id)
