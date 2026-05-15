@@ -4,22 +4,26 @@ from typing import Any
 
 from agentyc.filesystem.errors import FileSystemError
 from agentyc.filesystem.external_readers import read_external_file_structured
-from agentyc.filesystem.file_types import BaseFile
-from agentyc.filesystem.file_types import CsvFile
-from agentyc.filesystem.file_types import DocxFile
-from agentyc.filesystem.file_types import FILE_TYPE_CLASSES
-from agentyc.filesystem.file_types import FILE_TYPE_NAME_MAP
-from agentyc.filesystem.file_types import HtmlFile
-from agentyc.filesystem.file_types import JsonFile
-from agentyc.filesystem.file_types import JsonlFile
-from agentyc.filesystem.file_types import MarkdownFile
-from agentyc.filesystem.file_types import PdfFile
-from agentyc.filesystem.file_types import TxtFile
-from agentyc.filesystem.file_types import XmlFile
-from agentyc.filesystem.filename_policy import build_filename_error_message
-from agentyc.filesystem.filename_policy import is_valid_filename
-from agentyc.filesystem.filename_policy import parse_filename
-from agentyc.filesystem.filename_policy import resolve_filename
+from agentyc.filesystem.file_types import (
+	FILE_TYPE_CLASSES,
+	FILE_TYPE_NAME_MAP,
+	BaseFile,
+	CsvFile,
+	DocxFile,
+	HtmlFile,
+	JsonFile,
+	JsonlFile,
+	MarkdownFile,
+	PdfFile,
+	TxtFile,
+	XmlFile,
+)
+from agentyc.filesystem.filename_policy import (
+	build_filename_error_message,
+	is_valid_filename,
+	parse_filename,
+	resolve_filename,
+)
 from agentyc.filesystem.filename_policy import sanitize_filename as _sanitize_filename
 from agentyc.filesystem.state import FileSystemState
 
@@ -226,7 +230,9 @@ class FileSystem:
 
 			lines = content.splitlines()
 			line_count = len(lines)
-			whole_file_description = f'<file>\n{file_obj.full_name} - {line_count} lines\n<content>\n{content}\n</content>\n</file>\n'
+			whole_file_description = (
+				f'<file>\n{file_obj.full_name} - {line_count} lines\n<content>\n{content}\n</content>\n</file>\n'
+			)
 			if len(content) < int(1.5 * display_chars):
 				description += whole_file_description
 				continue
