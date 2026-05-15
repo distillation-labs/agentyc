@@ -52,6 +52,7 @@ class SignalHandler:
 
 		try:
 			if self.is_windows:
+
 				def windows_handler(sig, frame):
 					print('\n\n🛑 Got Ctrl+C. Exiting immediately on Windows...\n', file=stderr)
 					if self.custom_exit_callback:
