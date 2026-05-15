@@ -50,6 +50,20 @@ Responsibilities:
 
 The server advertises no MCP resources and no MCP prompts.
 
+### Internal MCP Sub-Modules
+
+`AgentycServer`'s method body is organized across five internal modules. These are not part of the public contract but are useful for navigating the source:
+
+| Module | Responsibility |
+|--------|---------------|
+| `agentyc.mcp.tool_schemas` | Returns the full `list[types.Tool]` catalog passed to MCP |
+| `agentyc.mcp.tool_dispatch` | Routes each tool name to its handler via `_execute_tool` |
+| `agentyc.mcp.action_runtime` | Browser action implementations (navigate, click, type, extract, scroll, etc.) |
+| `agentyc.mcp.cdp_tools` | CDP-specific tool implementations (tabs, cookies, console logs, network log, hover, drag, etc.) |
+| `agentyc.mcp.session_lifecycle` | Session tracking, idle cleanup, and browser initialization via `_init_browser_session` |
+
+Methods from those modules are bound onto `AgentycServer` at import time through `_SERVER_METHODS` in `server.py`.
+
 ## Tool Runtime Layer
 
 `agentyc.tools.service.Tools` is the execution layer for validated browser actions.
