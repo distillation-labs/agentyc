@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -161,7 +162,7 @@ def get_parent_process_cmdline() -> str | None:
 class AgentycServer:
 	"""MCP Server for agentyc capabilities."""
 
-	def __init__(self, session_timeout_minutes: int = 10):
+	def __init__(self, session_timeout_minutes: int = 10, cdp_url: str | None = None):
 		# Ensure all logging goes to stderr (in case new loggers were created)
 		_ensure_all_loggers_use_stderr()
 
@@ -176,6 +177,7 @@ class AgentycServer:
 		self._file_system_base_dir: Path | None = None
 		self._telemetry = ProductTelemetry()
 		self._start_time = time.time()
+		self._cdp_url = cdp_url  # shared-browser CDP URL for parallel tab mode
 
 		# Session management
 		self.active_sessions: dict[str, dict[str, Any]] = {}  # session_id -> session info
@@ -184,6 +186,13 @@ class AgentycServer:
 		self._last_state_elements_by_ref: dict[str, dict[str, Any]] = {}
 		self._last_state_cache_url: str | None = None
 		self._action_model_cache: dict[str, Any] = {}
+
+		# CDP event capture buffers — populated by native CDP events, not JS injection
+		self._console_log_buffer: deque[dict[str, Any]] = deque(maxlen=500)
+		self._network_log_buffer: deque[dict[str, Any]] = deque(maxlen=500)
+		self._network_pending: dict[str, dict[str, Any]] = {}  # requestId -> in-flight entry
+		self._cdp_events_registered: bool = False
+		self._cdp_client_for_runtime: Any = None  # set after _register_cdp_event_listeners
 
 		# Setup handlers
 		self._setup_handlers()
@@ -358,26 +367,6 @@ class AgentycServer:
 						},
 					},
 				),
-				types.Tool(
-					name='browser_scroll',
-					description='Scroll the page',
-					inputSchema={
-						'type': 'object',
-						'properties': {
-							'direction': {
-								'type': 'string',
-								'enum': ['up', 'down'],
-								'description': 'Direction to scroll',
-								'default': 'down',
-							}
-						},
-					},
-				),
-				types.Tool(
-					name='browser_go_back',
-					description='Go back to the previous page',
-					inputSchema={'type': 'object', 'properties': {}},
-				),
 				# Tab management
 				types.Tool(
 					name='browser_list_tabs', description='List all open tabs', inputSchema={'type': 'object', 'properties': {}}
@@ -424,6 +413,291 @@ class AgentycServer:
 					name='browser_close_all',
 					description='Close all active browser sessions and clean up resources',
 					inputSchema={'type': 'object', 'properties': {}},
+				),
+				# Enhanced interaction tools
+				types.Tool(
+					name='browser_scroll',
+					description='Scroll the page or a specific element. pages=10 reaches the bottom quickly.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'direction': {'type': 'string', 'enum': ['up', 'down'], 'default': 'down'},
+							'pages': {'type': 'number', 'description': '0.5=half, 1=full page (default), 10=to bottom/top', 'default': 1.0},
+							'ref': {'type': 'string', 'description': 'Scroll within element ref (e.g. "e123"). Omit for page scroll.'},
+							'index': {'type': 'integer', 'description': 'Scroll within element by backend node id. Provide this OR ref.'},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_go_back',
+					description='Go back to the previous page in browser history',
+					inputSchema={'type': 'object', 'properties': {}},
+				),
+				types.Tool(
+					name='browser_go_forward',
+					description='Go forward to the next page in browser history',
+					inputSchema={'type': 'object', 'properties': {}},
+				),
+				types.Tool(
+					name='browser_refresh',
+					description='Refresh/reload the current page',
+					inputSchema={'type': 'object', 'properties': {}},
+				),
+				types.Tool(
+					name='browser_press_key',
+					description='Send a keyboard key or shortcut. Examples: "Enter", "Tab", "Escape", "ArrowDown", "Control+a", "Meta+r".',
+					inputSchema={
+						'type': 'object',
+						'properties': {'key': {'type': 'string', 'description': 'Key or shortcut (e.g. "Enter", "Tab", "Control+a")'}},
+						'required': ['key'],
+					},
+				),
+				types.Tool(
+					name='browser_wait',
+					description='Wait for a number of seconds. Prefer since_hash polling for dynamic content.',
+					inputSchema={
+						'type': 'object',
+						'properties': {'seconds': {'type': 'number', 'description': 'Seconds to wait (max 30)', 'default': 2}},
+					},
+				),
+				types.Tool(
+					name='browser_evaluate',
+					description='Execute JavaScript in the page context and return the result. Wrap in IIFE: (function(){ ... })(). Browser APIs only.',
+					inputSchema={
+						'type': 'object',
+						'properties': {'code': {'type': 'string', 'description': 'JavaScript to evaluate'}},
+						'required': ['code'],
+					},
+				),
+				types.Tool(
+					name='browser_select_option',
+					description='Select an option in a <select> dropdown by its visible text.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'ref': {'type': 'string', 'description': 'Stable ref of the <select> (e.g. "e123"). Provide this OR index.'},
+							'index': {'type': 'integer', 'description': 'Backend node id of the <select>. Provide this OR ref.'},
+							'text': {'type': 'string', 'description': 'Exact visible text of the option to select'},
+						},
+						'required': ['text'],
+					},
+				),
+				types.Tool(
+					name='browser_get_dropdown_options',
+					description='Get all available options from a <select> or ARIA combobox element.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'ref': {'type': 'string', 'description': 'Stable ref (e.g. "e123"). Provide this OR index.'},
+							'index': {'type': 'integer', 'description': 'Backend node id. Provide this OR ref.'},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_find_elements',
+					description='Find elements by CSS selector. Returns tag, text, and optionally attributes for each match.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'selector': {'type': 'string', 'description': 'CSS selector (e.g. "table tr", "input[type=email]")'},
+							'attributes': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Attributes to extract per element.'},
+							'max_results': {'type': 'integer', 'default': 50},
+						},
+						'required': ['selector'],
+					},
+				),
+				types.Tool(
+					name='browser_wait_for_element',
+					description='Poll until an element matching text or ref appears (or disappears). Use for dynamic content and post-action confirmation.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'text': {'type': 'string', 'description': 'Text the element must contain (case-insensitive).'},
+							'ref': {'type': 'string', 'description': 'Element ref that must appear (e.g. "e123").'},
+							'appear': {'type': 'boolean', 'description': 'True=wait for element to appear, False=wait to disappear', 'default': True},
+							'timeout_seconds': {'type': 'number', 'description': 'Max seconds to wait (default 10, max 30)', 'default': 10},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_search_page',
+					description='Search for text or a regex pattern on the current page. Returns matches with surrounding context. Equivalent to Ctrl+F.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'pattern': {'type': 'string', 'description': 'Text or regex pattern to search for'},
+							'regex': {'type': 'boolean', 'description': 'Treat pattern as a regular expression', 'default': False},
+							'max_results': {'type': 'integer', 'description': 'Maximum matches to return', 'default': 25},
+						},
+						'required': ['pattern'],
+					},
+				),
+				types.Tool(
+					name='browser_get_focused_element',
+					description='Return the element that currently has keyboard focus. Useful after Tab or click to confirm which field is active.',
+					inputSchema={'type': 'object', 'properties': {}},
+				),
+				types.Tool(
+					name='browser_hover',
+					description='Hover over an element to trigger CSS :hover states and JS mouseover/mouseenter handlers. Essential for opening dropdown menus, tooltips, and hover-based UI. Use browser_get_state after hovering to see new elements.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'ref': {'type': 'string', 'description': 'Element ref (e.g. e123)'},
+							'index': {'type': 'integer', 'description': 'Element index'},
+							'coordinate_x': {'type': 'integer', 'description': 'X viewport coordinate'},
+							'coordinate_y': {'type': 'integer', 'description': 'Y viewport coordinate'},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_double_click',
+					description='Double-click an element or viewport coordinates. Use for text selection, opening files/folders, or activating double-click handlers in rich editors and file managers.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'ref': {'type': 'string', 'description': 'Element ref (e.g. e123)'},
+							'index': {'type': 'integer', 'description': 'Element index from browser_state'},
+							'coordinate_x': {'type': 'integer'},
+							'coordinate_y': {'type': 'integer'},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_drag_to',
+					description='Drag from one element or coordinate to another. Use for drag-and-drop in kanban boards, sortable lists, sliders, and file drop zones.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'source_ref': {'type': 'string', 'description': 'Source element ref (e.g. e123)'},
+							'target_ref': {'type': 'string', 'description': 'Target element ref'},
+							'source_x': {'type': 'integer'},
+							'source_y': {'type': 'integer'},
+							'target_x': {'type': 'integer'},
+							'target_y': {'type': 'integer'},
+							'steps': {'type': 'integer', 'description': 'Mouse movement interpolation steps (default: 10)', 'default': 10},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_scroll_to_text',
+					description='Scroll the page until the given text string is visible in the viewport. Useful for locating content before interacting with it or verifying it exists.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'text': {'type': 'string', 'description': 'Text to scroll to'},
+						},
+						'required': ['text'],
+					},
+				),
+				types.Tool(
+					name='browser_save_state',
+					description='Save the current browser session state (cookies, localStorage, sessionStorage) to a file. Use to persist authentication between sessions. Pass the returned path to browser_load_state in a future session.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'path': {'type': 'string', 'description': 'File path to save state to (e.g. /tmp/auth-state.json). Defaults to ~/.agentyc-mcp/browser-state.json'},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_load_state',
+					description='Restore browser session state (cookies, localStorage) from a file previously saved with browser_save_state. Call this early in a session to restore authentication.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'path': {'type': 'string', 'description': 'File path to load state from'},
+						},
+						'required': ['path'],
+					},
+				),
+				types.Tool(
+					name='browser_wait_for_network_idle',
+					description='Wait until the browser has no pending network requests for a specified duration. Use after triggering AJAX calls, form submissions, or SPA navigation to ensure data has loaded before reading state.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'timeout_seconds': {'type': 'number', 'description': 'Maximum time to wait (default: 10, max: 30)', 'default': 10},
+							'idle_duration_ms': {'type': 'integer', 'description': 'How long network must be idle (ms, default: 500)', 'default': 500},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_right_click',
+					description='Right-click an element or at specific coordinates to open a context menu. Use ref from browser_get_state for stable targeting.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'ref': {'type': 'string', 'description': 'Stable element ref from browser_get_state (e.g. e42)'},
+							'index': {'type': 'integer', 'description': 'Element index (backend_node_id)'},
+							'coordinate_x': {'type': 'number', 'description': 'Viewport X coordinate'},
+							'coordinate_y': {'type': 'number', 'description': 'Viewport Y coordinate'},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_get_cookies',
+					description='Get all cookies for the current page URL. Returns name, value, domain, path, and flags. Useful for reading auth tokens and session state.',
+					inputSchema={'type': 'object', 'properties': {}},
+				),
+				types.Tool(
+					name='browser_set_cookies',
+					description='Set one or more cookies. Use to inject auth tokens or session cookies before navigating to a protected URL.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'cookies': {
+								'type': 'array',
+								'description': 'List of cookie objects to set',
+								'items': {
+									'type': 'object',
+									'properties': {
+										'name': {'type': 'string'},
+										'value': {'type': 'string'},
+										'domain': {'type': 'string', 'description': 'Cookie domain (e.g. .example.com)'},
+										'path': {'type': 'string', 'default': '/'},
+										'secure': {'type': 'boolean', 'default': False},
+										'httpOnly': {'type': 'boolean', 'default': False},
+									},
+									'required': ['name', 'value'],
+								},
+							},
+						},
+						'required': ['cookies'],
+					},
+				),
+				types.Tool(
+					name='browser_clear_cookies',
+					description='Clear cookies. Without arguments clears all cookies for the current page domain; pass a name to delete a specific cookie.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'name': {'type': 'string', 'description': 'Name of a specific cookie to delete (omit to clear all for current domain)'},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_get_console_logs',
+					description='Return recent browser console messages (log, warn, error, info). Captured natively via CDP Runtime domain — includes errors from page load, not just after JS injection. Essential for debugging JavaScript errors and SPA state issues.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'level': {'type': 'string', 'description': 'Filter by level: all, log, warn, error, info (default: all)', 'default': 'all'},
+							'max_entries': {'type': 'integer', 'description': 'Maximum number of entries to return (default: 50)', 'default': 50},
+						},
+					},
+				),
+				types.Tool(
+					name='browser_get_network_log',
+					description='Return recent network requests captured via CDP Network domain. Shows XHR/Fetch API calls, their HTTP status codes, and timing — essential for debugging SPA data flows, API failures, and understanding what a form submission actually does.',
+					inputSchema={
+						'type': 'object',
+						'properties': {
+							'type_filter': {'type': 'string', 'description': 'Filter by request type: all, XHR, Fetch, Document, Script, Stylesheet, Image (default: all)', 'default': 'all'},
+							'status_filter': {'type': 'string', 'description': 'Filter by status: all, errors (4xx/5xx/failed), success (2xx/3xx) (default: all)', 'default': 'all'},
+							'max_entries': {'type': 'integer', 'description': 'Maximum number of entries to return (default: 50)', 'default': 50},
+						},
+					},
 				),
 			]
 
@@ -581,6 +855,24 @@ class AgentycServer:
 					max_results=arguments.get('max_results', 50),
 				)
 
+			elif tool_name == 'browser_wait_for_element':
+				return await self._wait_for_element(
+					text=arguments.get('text'),
+					ref=arguments.get('ref'),
+					appear=arguments.get('appear', True),
+					timeout_seconds=arguments.get('timeout_seconds', 10),
+				)
+
+			elif tool_name == 'browser_search_page':
+				return await self._search_page(
+					pattern=arguments['pattern'],
+					regex=arguments.get('regex', False),
+					max_results=arguments.get('max_results', 25),
+				)
+
+			elif tool_name == 'browser_get_focused_element':
+				return await self._get_focused_element()
+
 			elif tool_name == 'browser_list_tabs':
 				return await self._list_tabs()
 
@@ -590,10 +882,53 @@ class AgentycServer:
 			elif tool_name == 'browser_close_tab':
 				return await self._close_tab(arguments['tab_id'])
 
+			elif tool_name == 'browser_hover':
+				return await self._hover(ref=arguments.get('ref'), index=arguments.get('index'), coordinate_x=arguments.get('coordinate_x'), coordinate_y=arguments.get('coordinate_y'))
+
+			elif tool_name == 'browser_double_click':
+				return await self._double_click(ref=arguments.get('ref'), index=arguments.get('index'), coordinate_x=arguments.get('coordinate_x'), coordinate_y=arguments.get('coordinate_y'))
+
+			elif tool_name == 'browser_drag_to':
+				return await self._drag_to(source_ref=arguments.get('source_ref'), target_ref=arguments.get('target_ref'), source_x=arguments.get('source_x'), source_y=arguments.get('source_y'), target_x=arguments.get('target_x'), target_y=arguments.get('target_y'), steps=arguments.get('steps', 10))
+
+			elif tool_name == 'browser_scroll_to_text':
+				return await self._scroll_to_text(arguments['text'])
+
+			elif tool_name == 'browser_save_state':
+				return await self._save_state(path=arguments.get('path'))
+
+			elif tool_name == 'browser_load_state':
+				return await self._load_state(path=arguments['path'])
+
+			elif tool_name == 'browser_wait_for_network_idle':
+				return await self._wait_for_network_idle(timeout_seconds=arguments.get('timeout_seconds', 10.0), idle_duration_ms=arguments.get('idle_duration_ms', 500))
+
+			elif tool_name == 'browser_right_click':
+				return await self._right_click(ref=arguments.get('ref'), index=arguments.get('index'), coordinate_x=arguments.get('coordinate_x'), coordinate_y=arguments.get('coordinate_y'))
+
+			elif tool_name == 'browser_get_cookies':
+				return await self._get_cookies()
+
+			elif tool_name == 'browser_set_cookies':
+				return await self._set_cookies(arguments['cookies'])
+
+			elif tool_name == 'browser_clear_cookies':
+				return await self._clear_cookies(name=arguments.get('name'))
+
+			elif tool_name == 'browser_get_console_logs':
+				return await self._get_console_logs(level=arguments.get('level', 'all'), max_entries=arguments.get('max_entries', 50))
+
+			elif tool_name == 'browser_get_network_log':
+				return await self._get_network_log(type_filter=arguments.get('type_filter', 'all'), status_filter=arguments.get('status_filter', 'all'), max_entries=arguments.get('max_entries', 50))
+
 		return f'Unknown tool: {tool_name}'
 
 	async def _init_browser_session(self, allowed_domains: list[str] | None = None, **kwargs):
-		"""Initialize browser session using config"""
+		"""Initialize browser session using config.
+
+		When self._cdp_url is set (parallel tab mode), attaches to the shared browser
+		and creates a new isolated tab instead of launching a new browser process.
+		"""
 		if self.browser_session:
 			return
 
@@ -609,31 +944,49 @@ class AgentycServer:
 
 		profile_config = get_default_profile(self.config)
 
-		# Merge profile config with defaults and overrides
-		profile_data = {
-			'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
-			'keep_alive': False,
-			'user_data_dir': '~/.config/agentyc/profiles/default',
-			'device_scale_factor': 1.0,
-			'disable_security': False,
-			'headless': False,
-			**profile_config,  # Config values override defaults
-		}
+		cdp_url = self._cdp_url or kwargs.pop('cdp_url', None)
 
-		# Tool parameter overrides (highest priority)
-		if allowed_domains is not None:
-			profile_data['allowed_domains'] = allowed_domains
-
-		# Merge any additional kwargs that are valid BrowserProfile fields
-		for key, value in kwargs.items():
-			profile_data[key] = value
-
-		# Create browser profile
-		profile = BrowserProfile(**profile_data)
-
-		# Create browser session
-		self.browser_session = BrowserSession(browser_profile=profile)
-		await self.browser_session.start()
+		if cdp_url:
+			# Parallel tab mode: attach to shared browser, create a new tab for this agent.
+			# keep_alive=True so we don't kill the shared browser when this session ends.
+			profile_data: dict[str, Any] = {
+				'cdp_url': cdp_url,
+				'keep_alive': True,
+				'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
+				'device_scale_factor': 1.0,
+				'disable_security': False,
+				**profile_config,
+			}
+			if allowed_domains is not None:
+				profile_data['allowed_domains'] = allowed_domains
+			for key, value in kwargs.items():
+				profile_data[key] = value
+			profile = BrowserProfile(**profile_data)
+			self.browser_session = BrowserSession(browser_profile=profile)
+			await self.browser_session.start()
+			# Open a fresh tab so this agent has its own isolated context within the shared browser
+			new_target_id = await self.browser_session._cdp_create_new_page('about:blank')
+			from agentyc.browser.events import TabCreatedEvent
+			await self.browser_session.event_bus.dispatch(TabCreatedEvent(target_id=new_target_id, url='about:blank'))
+			self.browser_session.agent_focus_target_id = new_target_id
+		else:
+			# Normal mode: launch a new browser process.
+			profile_data = {
+				'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
+				'keep_alive': False,
+				'user_data_dir': '~/.config/agentyc/profiles/default',
+				'device_scale_factor': 1.0,
+				'disable_security': False,
+				'headless': False,
+				**profile_config,
+			}
+			if allowed_domains is not None:
+				profile_data['allowed_domains'] = allowed_domains
+			for key, value in kwargs.items():
+				profile_data[key] = value
+			profile = BrowserProfile(**profile_data)
+			self.browser_session = BrowserSession(browser_profile=profile)
+			await self.browser_session.start()
 
 		# Track the session for management
 		self._track_session(self.browser_session)
@@ -644,6 +997,12 @@ class AgentycServer:
 		self.file_system = None
 		file_system_path = profile_config.get('file_system_path', '~/.agentyc-mcp')
 		self._file_system_base_dir = Path(file_system_path).expanduser()
+
+		# Register native CDP event listeners for console and network capture
+		try:
+			await self._register_cdp_event_listeners()
+		except Exception as _e:
+			logger.debug(f'CDP event listener registration failed (non-critical): {_e}')
 
 		logger.debug('Browser session initialized')
 
@@ -839,12 +1198,10 @@ class AgentycServer:
 
 		# Update session activity
 		self._update_session_activity(self.browser_session.id)
-		before_url = await self.browser_session.get_current_page_url()
 		before_tabs = len(await self.browser_session.get_tabs())
 		action_result = await self._run_tool_action('navigate', {'url': url, 'new_tab': new_tab})
 		if action_result.error:
 			return self._format_action_error(action_result.error, default_code='navigation_failed')
-		after_url = await self.browser_session.get_current_page_url()
 		if new_tab:
 			after_tabs = len(await self.browser_session.get_tabs())
 			if after_tabs <= before_tabs:
@@ -853,12 +1210,17 @@ class AgentycServer:
 					default_code='postcondition_failed',
 				)
 			return f'Opened new tab with URL: {url}'
-		if after_url == before_url and url != before_url:
-			return self._format_action_error(
-				f'Navigation to {url} did not change the active page URL.',
-				default_code='postcondition_failed',
-			)
-		return f'Navigated to: {url}'
+		# Ensure Runtime is enabled for the current session after navigation.
+		# Idempotent — safe to call on every navigate. Enables console log capture
+		# even when the tab was switched or a new tab was opened before this navigate.
+		if self._cdp_client_for_runtime:
+			try:
+				_cdp_s = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+				await self._cdp_client_for_runtime.send.Runtime.enable(session_id=_cdp_s.session_id)
+			except Exception:
+				pass
+		after_url = await self.browser_session.get_current_page_url()
+		return f'Navigated to: {after_url}'
 
 	async def _click(
 		self,
@@ -993,14 +1355,24 @@ class AgentycServer:
 			actual_value = input_metadata.get('actual_value')
 		if actual_value is not None and actual_value != text:
 			if is_potentially_sensitive:
+				# For sensitive inputs don't leak the actual value in the error
 				return self._format_action_error(
-					f'Element {ref or resolved_index} did not retain the requested sensitive value after typing.',
+					f'Element {ref or resolved_index} did not retain the typed sensitive value — the field may be read-only or disabled.',
 					default_code='postcondition_failed',
 				)
-			return self._format_action_error(
-				f"Element {ref or resolved_index} ended with value '{actual_value}' instead of requested text '{text}'.",
-				default_code='postcondition_failed',
-			)
+			# Allow format-only changes (phone, credit-card, date formatters strip/reorder punctuation).
+			# If stripping non-alphanumeric characters from both produces the same result it is a
+			# formatting transformation, not a content mismatch — no error needed.
+			import re as _re
+
+			_strip = lambda s: _re.sub(r'[^a-zA-Z0-9]', '', s).lower()
+			if _strip(text) and _strip(text) == _strip(actual_value):
+				pass  # format-only change, proceed normally
+			else:
+				return self._format_action_error(
+					f"Element {ref or resolved_index} ended with value '{actual_value}' after typing '{text}' — the field may have transformed or rejected the input.",
+					default_code='postcondition_failed',
+				)
 
 		if is_potentially_sensitive:
 			if sensitive_key_name:
@@ -1192,22 +1564,33 @@ class AgentycServer:
 		extracted_content = action_result.extracted_content or 'No content extracted'
 		return self._inject_extraction_metadata(extracted_content, action_result.metadata)
 
-	async def _scroll(self, direction: str = 'down') -> str:
-		"""Scroll the page."""
+	async def _scroll(
+		self,
+		direction: str = 'down',
+		pages: float = 1.0,
+		ref: str | None = None,
+		index: int | None = None,
+	) -> str:
+		"""Scroll the page or a specific element."""
 		if not self.browser_session:
 			return 'Error: No browser session active'
 
-		from agentyc.browser.events import ScrollEvent
+		self._update_session_activity(self.browser_session.id)
 
-		# Scroll by a standard amount (500 pixels)
-		event = self.browser_session.event_bus.dispatch(
-			ScrollEvent(
-				direction=direction,  # type: ignore
-				amount=500,
-			)
-		)
-		await event
-		return f'Scrolled {direction}'
+		payload: dict[str, Any] = {'down': direction == 'down', 'pages': pages}
+		if ref is not None or index is not None:
+			element, resolved_index, _ = await self._resolve_live_element(index=index, ref=ref)
+			if element is None:
+				return self._format_action_error(
+					f'Element {ref or index} not found for scroll.',
+					default_code='stale_ref',
+				)
+			payload['index'] = resolved_index
+
+		action_result = await self._run_tool_action('scroll', payload)
+		if action_result.error:
+			return self._format_action_error(action_result.error, default_code='scroll_failed')
+		return action_result.extracted_content or f'Scrolled {direction}'
 
 	async def _go_back(self) -> str:
 		"""Go back in browser history."""
@@ -1216,17 +1599,705 @@ class AgentycServer:
 
 		from agentyc.browser.events import GoBackEvent
 
-		before_url = await self.browser_session.get_current_page_url()
 		event = self.browser_session.event_bus.dispatch(GoBackEvent())
 		await event
 		await event.event_result(raise_if_any=True, raise_if_none=False)
 		after_url = await self.browser_session.get_current_page_url()
-		if after_url == before_url:
+		return f'Navigated back to: {after_url}'
+
+	async def _go_forward(self) -> str:
+		"""Go forward in browser history."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+
+		from agentyc.browser.events import GoForwardEvent
+
+		event = self.browser_session.event_bus.dispatch(GoForwardEvent())
+		await event
+		await event.event_result(raise_if_any=True, raise_if_none=False)
+		after_url = await self.browser_session.get_current_page_url()
+		return f'Navigated forward to: {after_url}'
+
+	async def _refresh(self) -> str:
+		"""Refresh the current page."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+
+		from agentyc.browser.events import RefreshEvent
+
+		self._update_session_activity(self.browser_session.id)
+		event = self.browser_session.event_bus.dispatch(RefreshEvent())
+		await event
+		await event.event_result(raise_if_any=True, raise_if_none=False)
+		after_url = await self.browser_session.get_current_page_url()
+		return f'Refreshed page: {after_url}'
+
+	async def _press_key(self, key: str) -> str:
+		"""Send a keyboard key or shortcut."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+
+		from agentyc.browser.events import SendKeysEvent
+
+		self._update_session_activity(self.browser_session.id)
+		event = self.browser_session.event_bus.dispatch(SendKeysEvent(keys=key))
+		await event
+		await event.event_result(raise_if_any=True, raise_if_none=False)
+		return f'Pressed key: {key}'
+
+	async def _wait(self, seconds: float = 2) -> str:
+		"""Wait for a number of seconds (max 30)."""
+		actual = min(max(float(seconds), 0), 30)
+		await asyncio.sleep(actual)
+		return f'Waited {actual:.1f}s'
+
+	async def _evaluate(self, code: str) -> str:
+		"""Execute JavaScript in the page context."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+
+		self._update_session_activity(self.browser_session.id)
+		action_result = await self._run_tool_action('evaluate', {'code': code})
+		if action_result.error:
+			return self._format_action_error(action_result.error, default_code='evaluate_failed')
+		return action_result.extracted_content or 'undefined'
+
+	async def _select_option(self, text: str, ref: str | None = None, index: int | None = None) -> str:
+		"""Select an option in a <select> or ARIA dropdown."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		if ref is None and index is None:
+			return 'Error: Provide either ref or index'
+
+		self._update_session_activity(self.browser_session.id)
+		element, resolved_index, drift_recovered = await self._resolve_live_element(index=index, ref=ref)
+		if element is None:
 			return self._format_action_error(
-				'Go back did not change the active page URL.',
-				default_code='postcondition_failed',
+				f'Element {ref or index} not found. Refresh browser state before retrying.',
+				default_code='stale_ref',
 			)
-		return 'Navigated back'
+
+		action_result = await self._run_tool_action('select_dropdown', {'index': resolved_index, 'text': text})
+		if action_result.error:
+			return self._format_action_error(action_result.error, default_code='select_failed')
+		msg = action_result.extracted_content or f"Selected '{text}' in element {ref or resolved_index}"
+		if drift_recovered:
+			msg = f'{msg} (recovered after DOM drift)'
+		return msg
+
+	async def _get_dropdown_options(self, ref: str | None = None, index: int | None = None) -> str:
+		"""Get all options from a dropdown element."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		if ref is None and index is None:
+			return 'Error: Provide either ref or index'
+
+		self._update_session_activity(self.browser_session.id)
+		element, resolved_index, _ = await self._resolve_live_element(index=index, ref=ref)
+		if element is None:
+			return self._format_action_error(
+				f'Element {ref or index} not found. Refresh browser state before retrying.',
+				default_code='stale_ref',
+			)
+
+		action_result = await self._run_tool_action('dropdown_options', {'index': resolved_index})
+		if action_result.error:
+			return self._format_action_error(action_result.error, default_code='dropdown_failed')
+		return action_result.extracted_content or 'No options found'
+
+	async def _find_elements(
+		self,
+		selector: str,
+		attributes: list[str] | None = None,
+		max_results: int = 50,
+	) -> str:
+		"""Find elements by CSS selector."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+
+		self._update_session_activity(self.browser_session.id)
+		payload: dict[str, Any] = {'selector': selector, 'max_results': max_results}
+		if attributes:
+			payload['attributes'] = attributes
+
+		action_result = await self._run_tool_action('find_elements', payload)
+		if action_result.error:
+			return self._format_action_error(action_result.error, default_code='find_elements_failed')
+		return action_result.extracted_content or 'No elements found'
+
+	async def _wait_for_element(
+		self,
+		text: str | None = None,
+		ref: str | None = None,
+		appear: bool = True,
+		timeout_seconds: float = 10,
+	) -> str:
+		"""Poll until an element matching text or ref appears or disappears."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		if not text and not ref:
+			return 'Error: Provide either text or ref to wait for'
+
+		timeout = min(max(float(timeout_seconds), 0.5), 30)
+		interval = 0.5
+		elapsed = 0.0
+		last_hash: str | None = None
+
+		from agentyc.mcp.state import build_browser_state_payload, parse_element_ref
+
+		ref_index: int | None = None
+		if ref:
+			try:
+				ref_index = parse_element_ref(ref)
+			except ValueError as e:
+				return f'Error: {e}'
+
+		while elapsed < timeout:
+			state = await self.browser_session.get_browser_state_summary(include_screenshot=False)
+			selector_map = state.dom_state.selector_map
+
+			if ref_index is not None:
+				found = ref_index in selector_map
+			else:
+				assert text is not None
+				needle = text.lower()
+				found = any(
+					needle in (element.get_meaningful_text_for_llm() or '').lower()
+					for element in selector_map.values()
+				)
+
+			if found == appear:
+				verb = 'appeared' if appear else 'disappeared'
+				target = ref or f'"{text}"'
+				return f'Element {target} {verb} after {elapsed:.1f}s'
+
+			await asyncio.sleep(interval)
+			elapsed += interval
+
+		verb = 'appear' if appear else 'disappear'
+		target = ref or f'"{text}"'
+		return f'Error [timeout]: Element {target} did not {verb} within {timeout:.0f}s'
+
+	async def _search_page(self, pattern: str, regex: bool = False, max_results: int = 25) -> str:
+		"""Search for text or regex pattern on the current page."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+
+		self._update_session_activity(self.browser_session.id)
+		action_result = await self._run_tool_action(
+			'search_page',
+			{'pattern': pattern, 'regex': regex, 'max_results': max_results, 'context_chars': 150},
+		)
+		if action_result.error:
+			return self._format_action_error(action_result.error, default_code='search_failed')
+		return action_result.extracted_content or f'No matches found for: {pattern}'
+
+	async def _get_viewport_coords(self, backend_node_id: int) -> tuple[float, float] | None:
+		"""Get viewport-relative center coordinates for an element using DOM.getContentQuads.
+
+		This is the same approach used by the click watchdog — `getContentQuads` returns live
+		viewport coordinates (not cached snapshot data, which may be stale or zeroed in headless mode).
+		"""
+		try:
+			cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)  # type: ignore[union-attr]
+			result = await cdp_session.cdp_client.send.DOM.getContentQuads(
+				params={'backendNodeId': backend_node_id},
+				session_id=cdp_session.session_id,
+			)
+			quads = result.get('quads', [])
+			if not quads:
+				return None
+			quad = quads[0]
+			if len(quad) < 8:
+				return None
+			cx = sum(quad[i] for i in range(0, 8, 2)) / 4
+			cy = sum(quad[i] for i in range(1, 8, 2)) / 4
+			return cx, cy
+		except Exception:
+			return None
+
+	async def _resolve_element_coords(self, ref: str | None, index: int | None, fallback_x: int | None, fallback_y: int | None) -> tuple[float, float]:
+		"""Resolve element ref/index to viewport coordinates using live CDP quads.
+
+		Falls back to absolute_position (snapshot data) when getContentQuads is unavailable.
+		Raises ValueError if coordinates cannot be determined.
+		"""
+		if fallback_x is not None and fallback_y is not None:
+			return float(fallback_x), float(fallback_y)
+		if ref is None and index is None:
+			raise ValueError('Provide ref/index or explicit coordinates')
+		resolved_index = self._resolve_element_index(index=index, ref=ref)
+		# Try live CDP quads first (most accurate — viewport-relative, reflects current scroll)
+		coords = await self._get_viewport_coords(resolved_index)
+		if coords:
+			return coords
+		# Fallback: cached snapshot absolute_position (document coords, usually == viewport for top of page)
+		element = await self.browser_session.get_dom_element_by_index(resolved_index)  # type: ignore[union-attr]
+		if element is None:
+			await self._refresh_selector_map()
+			element = await self.browser_session.get_dom_element_by_index(resolved_index)  # type: ignore[union-attr]
+		if element is None:
+			raise ValueError(f'Element {ref or resolved_index} not found. Refresh state first.')
+		if element.absolute_position:
+			p = element.absolute_position
+			return p.x + p.width / 2, p.y + p.height / 2
+		raise ValueError(f'Could not determine coordinates for element {ref or resolved_index}')
+
+	async def _hover(self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None) -> str:
+		"""Hover over element to trigger CSS :hover and JS mouseover/mouseenter."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		try:
+			x, y = await self._resolve_element_coords(ref, index, coordinate_x, coordinate_y)
+			cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+				params={'type': 'mouseMoved', 'x': x, 'y': y, 'button': 'none'},
+				session_id=cdp_session.session_id,
+			)
+			await asyncio.sleep(0.1)
+			label = ref or (f'index {index}' if index else f'({coordinate_x},{coordinate_y})')
+			return f'Hovered over {label}. Use browser_get_state to see hover-triggered elements (dropdowns, tooltips, etc.).'
+		except ValueError as e:
+			return self._format_action_error(str(e), default_code='stale_ref')
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+
+	async def _double_click(self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None) -> str:
+		"""Double-click an element."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		try:
+			x, y = await self._resolve_element_coords(ref, index, coordinate_x, coordinate_y)
+			cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+			sid = cdp_session.session_id
+			for _ in range(2):
+				await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+					params={'type': 'mousePressed', 'x': x, 'y': y, 'button': 'left', 'clickCount': 2},
+					session_id=sid,
+				)
+				await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+					params={'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'clickCount': 2},
+					session_id=sid,
+				)
+			label = ref or (f'index {index}' if index else f'({coordinate_x},{coordinate_y})')
+			return f'Double-clicked {label}'
+		except ValueError as e:
+			return self._format_action_error(str(e), default_code='stale_ref')
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+
+	async def _drag_to(self, source_ref: str | None = None, target_ref: str | None = None, source_x: int | None = None, source_y: int | None = None, target_x: int | None = None, target_y: int | None = None, steps: int = 10) -> str:
+		"""Drag from one element or coordinate to another."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		try:
+			sx, sy = await self._resolve_element_coords(source_ref, None, source_x, source_y)
+			tx, ty = await self._resolve_element_coords(target_ref, None, target_x, target_y)
+
+			cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+			sid = cdp_session.session_id
+
+			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+				params={'type': 'mouseMoved', 'x': sx, 'y': sy}, session_id=sid
+			)
+			await asyncio.sleep(0.05)
+			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+				params={'type': 'mousePressed', 'x': sx, 'y': sy, 'button': 'left', 'clickCount': 1}, session_id=sid
+			)
+			await asyncio.sleep(0.05)
+
+			n = max(steps, 2)
+			for i in range(1, n + 1):
+				mx = sx + (tx - sx) * i / n
+				my = sy + (ty - sy) * i / n
+				await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+					params={'type': 'mouseMoved', 'x': mx, 'y': my, 'button': 'left'}, session_id=sid
+				)
+				await asyncio.sleep(0.02)
+
+			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+				params={'type': 'mouseReleased', 'x': tx, 'y': ty, 'button': 'left', 'clickCount': 1}, session_id=sid
+			)
+
+			return f'Dragged from ({sx:.0f},{sy:.0f}) to ({tx:.0f},{ty:.0f})'
+		except ValueError as e:
+			return self._format_action_error(str(e), default_code='invalid_argument')
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+
+	async def _scroll_to_text(self, text: str) -> str:
+		"""Scroll page until given text is visible in the viewport."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		from agentyc.browser.events import ScrollToTextEvent
+
+		event = self.browser_session.event_bus.dispatch(ScrollToTextEvent(text=text))
+		await event
+		try:
+			await event.event_result(raise_if_any=True, raise_if_none=False)
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='not_found')
+		return f'Scrolled to text: {text!r}'
+
+	async def _save_state(self, path: str | None = None) -> str:
+		"""Save browser session state (cookies, localStorage) to a file."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		from agentyc.browser.events import SaveStorageStateEvent
+
+		save_path = path or str(Path.home() / '.agentyc-mcp' / 'browser-state.json')
+		event = self.browser_session.event_bus.dispatch(SaveStorageStateEvent(path=save_path))
+		await event
+		try:
+			await event.event_result(raise_if_any=True, raise_if_none=False)
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+		return f'Browser state saved to: {save_path}'
+
+	async def _load_state(self, path: str) -> str:
+		"""Restore browser session state from a file."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		from agentyc.browser.events import LoadStorageStateEvent
+
+		event = self.browser_session.event_bus.dispatch(LoadStorageStateEvent(path=path))
+		await event
+		try:
+			await event.event_result(raise_if_any=True, raise_if_none=False)
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+		return f'Browser state loaded from: {path}'
+
+	async def _wait_for_network_idle(self, timeout_seconds: float = 10.0, idle_duration_ms: int = 500) -> str:
+		"""Wait until no pending network requests for idle_duration_ms."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		timeout = min(timeout_seconds, 30.0)
+		idle_needed = idle_duration_ms / 1000.0
+		import time as _time
+
+		start = _time.monotonic()
+		try:
+			cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+			if hasattr(cdp_session, '_lifecycle_events'):
+				deadline = start + timeout
+				while _time.monotonic() < deadline:
+					events = list(cdp_session._lifecycle_events)
+					if any(e.get('name') == 'networkIdle' for e in events):
+						elapsed = _time.monotonic() - start
+						return f'Network idle after {elapsed:.1f}s'
+					await asyncio.sleep(0.2)
+				elapsed = _time.monotonic() - start
+				return f'Network idle wait timed out after {elapsed:.1f}s — proceeding'
+			else:
+				await asyncio.sleep(min(idle_needed * 2, 2.0))
+				elapsed = _time.monotonic() - start
+				return f'Waited {elapsed:.1f}s for network activity to settle'
+		except Exception as e:
+			await asyncio.sleep(min(idle_needed, 1.0))
+			return f'Network idle wait completed (fallback mode): {e}'
+
+	async def _right_click(self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None) -> str:
+		"""Right-click an element to open its context menu."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		try:
+			cx, cy = await self._resolve_element_coords(ref=ref, index=index, fallback_x=coordinate_x, fallback_y=coordinate_y)
+		except ValueError as e:
+			return self._format_action_error(str(e), default_code='element_not_found')
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		for event_type in ('mousePressed', 'mouseReleased'):
+			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+				params={'type': event_type, 'x': cx, 'y': cy, 'button': 'right', 'clickCount': 1, 'buttons': 2},
+				session_id=cdp_session.session_id,
+			)
+		return f'Right-clicked at ({cx:.0f},{cy:.0f})'
+
+	async def _get_cookies(self) -> str:
+		"""Return all cookies for the current page URL."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		try:
+			url = await self.browser_session.get_current_page_url()
+			result = await cdp_session.cdp_client.send.Network.getCookies(
+				params={'urls': [url]},
+				session_id=cdp_session.session_id,
+			)
+			cookies = result.get('cookies', [])
+			if not cookies:
+				return 'No cookies found for the current page'
+			simplified = [
+				{k: v for k, v in c.items() if k in ('name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'expires')}
+				for c in cookies
+			]
+			return json.dumps(simplified, indent=2)
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+
+	async def _set_cookies(self, cookies: list[dict[str, Any]]) -> str:
+		"""Set one or more cookies."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		try:
+			await cdp_session.cdp_client.send.Network.setCookies(
+				params=cast(Any, {'cookies': cookies}),
+				session_id=cdp_session.session_id,
+			)
+			names = [c.get('name', '?') for c in cookies]
+			return f'Set {len(cookies)} cookie(s): {", ".join(names)}'
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+
+	async def _clear_cookies(self, name: str | None = None) -> str:
+		"""Clear cookies — all for the current domain, or a specific cookie by name."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		try:
+			if name:
+				url = await self.browser_session.get_current_page_url()
+				await cdp_session.cdp_client.send.Network.deleteCookies(
+					params={'name': name, 'url': url},
+					session_id=cdp_session.session_id,
+				)
+				return f'Deleted cookie: {name}'
+			else:
+				await cdp_session.cdp_client.send.Network.clearBrowserCookies(
+					session_id=cdp_session.session_id,
+				)
+				return 'Cleared all browser cookies'
+		except Exception as e:
+			return self._format_action_error(str(e), default_code='action_failed')
+
+	async def _register_cdp_event_listeners(self) -> None:
+		"""Register native CDP event listeners for console and network capture.
+
+		Called once after session start. Uses Runtime.consoleAPICalled (not JS injection)
+		so logs are captured from page load, including errors in <script> tags.
+		Network events are filtered by session_id so parallel tabs don't bleed into each other.
+		"""
+		if self._cdp_events_registered or not self.browser_session:
+			return
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		our_session_id = cdp_session.session_id
+
+		# Enable Runtime domain for all current sessions so consoleAPICalled events fire.
+		# Must be done for EACH session (each open tab), not just the focus tab.
+		sm = getattr(self.browser_session, 'session_manager', None)
+		all_sids: list[str] = list(sm.get_all_sessions().keys()) if sm else [our_session_id]
+		if not all_sids:
+			all_sids = [our_session_id]
+		for _sid in all_sids:
+			try:
+				await cdp_session.cdp_client.send.Runtime.enable(session_id=_sid)
+			except Exception:
+				pass
+
+		# Store the cdp_client reference so _ensure_runtime_enabled can use it for new sessions
+		self._cdp_client_for_runtime = cdp_session.cdp_client
+
+		# --- Console capture ---
+		def _arg_to_str(arg: Any) -> str:
+			if isinstance(arg, dict):
+				# RemoteObject: prefer description (e.g. "Error: msg"), then value, then type
+				return str(arg.get('description') or arg.get('value') or arg.get('type') or '')
+			return str(arg)
+
+		def _ms_to_ts(ts_ms: float) -> str:
+			# Runtime.Timestamp is milliseconds since epoch (not seconds)
+			import datetime as _dt
+			try:
+				dt = _dt.datetime.utcfromtimestamp(ts_ms / 1000.0)
+				return dt.strftime('%H:%M:%S.') + f'{int(ts_ms % 1000):03d}'
+			except (OSError, OverflowError, ValueError):
+				return ''
+
+		def _is_our_session(session_id: str | None) -> bool:
+			# Accept events from any session belonging to this browser instance.
+			# SessionManager._sessions maps SessionID -> CDPSession; checking membership
+			# automatically handles tab switches and new tab opens.
+			if self.browser_session is None:
+				return False
+			sm = getattr(self.browser_session, 'session_manager', None)
+			if sm is None:
+				return True  # no session manager — accept all
+			sessions: dict[str, Any] = getattr(sm, '_sessions', {}) or {}
+			return session_id in sessions
+
+		def on_console_api_called(event: Any, session_id: str | None = None) -> None:
+			if not _is_our_session(session_id):
+				return
+			if not isinstance(event, dict):
+				return
+			level = str(event.get('type', 'log'))
+			# Normalize: CDP uses 'warning' but convention is 'warn'
+			if level == 'warning':
+				level = 'warn'
+			args = event.get('args') or []
+			text = ' '.join(_arg_to_str(a) for a in args).strip()
+			if not text:
+				return
+			self._console_log_buffer.append({'level': level, 'time': _ms_to_ts(event.get('timestamp') or 0), 'text': text})
+
+		def on_exception_thrown(event: Any, session_id: str | None = None) -> None:
+			if not _is_our_session(session_id):
+				return
+			if not isinstance(event, dict):
+				return
+			details = event.get('exceptionDetails') or {}
+			msg = details.get('text') or ''
+			exc = details.get('exception') or {}
+			desc = exc.get('description') or exc.get('value') or ''
+			text = f'{msg} {desc}'.strip() or 'Unknown exception'
+			url = details.get('url', '')
+			line = details.get('lineNumber', '')
+			if url:
+				text = f'{text} at {url}:{line}'
+			# exceptionDetails.timestamp is also in milliseconds
+			ts_ms = event.get('timestamp') or 0
+			self._console_log_buffer.append({'level': 'error', 'time': _ms_to_ts(ts_ms), 'text': text})
+
+		cdp_session.cdp_client.register.Runtime.consoleAPICalled(on_console_api_called)
+		cdp_session.cdp_client.register.Runtime.exceptionThrown(on_exception_thrown)
+
+		# --- Network capture ---
+		# Network domain is already enabled by SessionManager; just register handlers.
+		def on_request_will_be_sent(event: Any, session_id: str | None = None) -> None:
+			if not _is_our_session(session_id):
+				return
+			if not isinstance(event, dict):
+				return
+			req_id = event.get('requestId', '')
+			req = event.get('request') or {}
+			entry: dict[str, Any] = {
+				'request_id': req_id,
+				'url': req.get('url', ''),
+				'method': req.get('method', 'GET'),
+				'type': event.get('type', 'Other'),
+				'status': None,
+				'status_text': None,
+				'error': None,
+				'start_time': event.get('timestamp', time.time()),
+				'duration_ms': None,
+			}
+			self._network_pending[req_id] = entry
+
+		def on_response_received(event: Any, session_id: str | None = None) -> None:
+			if not _is_our_session(session_id):
+				return
+			if not isinstance(event, dict):
+				return
+			req_id = event.get('requestId', '')
+			entry = self._network_pending.get(req_id)
+			if entry is None:
+				return
+			resp = event.get('response') or {}
+			entry['status'] = resp.get('status')
+			entry['status_text'] = resp.get('statusText')
+			now = event.get('timestamp', time.time())
+			start = entry['start_time']
+			entry['duration_ms'] = round((now - start) * 1000, 1)
+			self._network_log_buffer.append(dict(entry))
+			self._network_pending.pop(req_id, None)
+
+		def on_loading_failed(event: Any, session_id: str | None = None) -> None:
+			if not _is_our_session(session_id):
+				return
+			if not isinstance(event, dict):
+				return
+			req_id = event.get('requestId', '')
+			entry = self._network_pending.get(req_id)
+			if entry is None:
+				return
+			entry['error'] = event.get('errorText', 'Failed')
+			now = event.get('timestamp', time.time())
+			entry['duration_ms'] = round((now - entry['start_time']) * 1000, 1)
+			self._network_log_buffer.append(dict(entry))
+			self._network_pending.pop(req_id, None)
+
+		cdp_session.cdp_client.register.Network.requestWillBeSent(on_request_will_be_sent)
+		cdp_session.cdp_client.register.Network.responseReceived(on_response_received)
+		cdp_session.cdp_client.register.Network.loadingFailed(on_loading_failed)
+
+		self._cdp_events_registered = True
+
+	async def _get_console_logs(self, level: str = 'all', max_entries: int = 50) -> str:
+		"""Return recent browser console messages from the CDP-native capture buffer."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		entries = list(self._console_log_buffer)
+		if level != 'all':
+			entries = [e for e in entries if e.get('level') == level]
+		entries = entries[-max_entries:]
+		return json.dumps(entries, indent=2)
+
+	async def _get_network_log(self, type_filter: str = 'all', status_filter: str = 'all', max_entries: int = 50) -> str:
+		"""Return recent network requests captured via CDP Network domain events."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+		self._update_session_activity(self.browser_session.id)
+		entries = list(self._network_log_buffer)
+		# Filter by request type (xhr, fetch, document, etc.)
+		if type_filter != 'all':
+			entries = [e for e in entries if e.get('type', '').lower() == type_filter.lower()]
+		# Filter by status category
+		if status_filter == 'errors':
+			entries = [e for e in entries if e.get('error') or (e.get('status') or 0) >= 400]
+		elif status_filter == 'success':
+			entries = [e for e in entries if not e.get('error') and 200 <= (e.get('status') or 0) < 400]
+		entries = entries[-max_entries:]
+		if not entries:
+			return json.dumps([], indent=2)
+		# Strip internal fields not useful to the agent
+		display = [{k: v for k, v in e.items() if k != 'request_id' and v is not None} for e in entries]
+		return json.dumps(display, indent=2)
+
+	async def _get_focused_element(self) -> str:
+		"""Return information about the element that currently has keyboard focus."""
+		if not self.browser_session:
+			return 'Error: No browser session active'
+
+		self._update_session_activity(self.browser_session.id)
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		if not cdp_session:
+			return 'Error: No active CDP session'
+
+		js = """(function() {
+			const el = document.activeElement;
+			if (!el || el.tagName === 'BODY' || el.tagName === 'HTML') return null;
+			return {
+				tag: el.tagName.toLowerCase(),
+				id: el.id || null,
+				name: el.getAttribute('name') || null,
+				type: el.getAttribute('type') || null,
+				placeholder: el.getAttribute('placeholder') || null,
+				ariaLabel: el.getAttribute('aria-label') || null,
+				value: el.value !== undefined ? String(el.value).substring(0, 100) : (el.textContent || '').trim().substring(0, 100),
+				role: el.getAttribute('role') || null
+			};
+		})()"""
+
+		result = await cdp_session.cdp_client.send.Runtime.evaluate(
+			params={'expression': js, 'returnByValue': True},
+			session_id=cdp_session.session_id,
+		)
+		value = result.get('result', {}).get('value')
+		if value is None:
+			return 'No element has focus (or focus is on document body)'
+		return json.dumps(value, indent=2)
 
 	async def _list_tabs(self) -> str:
 		"""List all open tabs."""
@@ -1287,9 +2358,21 @@ class AgentycServer:
 		}
 
 	def _update_session_activity(self, session_id: str) -> None:
-		"""Update the last activity time for a session."""
+		"""Update the last activity time for a session and schedule a URL refresh."""
 		if session_id in self.active_sessions:
 			self.active_sessions[session_id]['last_activity'] = time.time()
+			asyncio.create_task(self._update_session_url(session_id))
+
+	async def _update_session_url(self, session_id: str) -> None:
+		"""Refresh the stored URL for a tracked session."""
+		if session_id not in self.active_sessions or not self.browser_session:
+			return
+		try:
+			url = await self.browser_session.get_current_page_url()
+			if session_id in self.active_sessions:
+				self.active_sessions[session_id]['url'] = url
+		except Exception:
+			pass
 
 	async def _list_sessions(self) -> str:
 		"""List all active browser sessions."""
@@ -1327,11 +2410,9 @@ class AgentycServer:
 		session = session_data['session']
 
 		try:
-			# Close the session
+			# kill() terminates the browser process; prefer it for force-close
 			if hasattr(session, 'kill'):
 				await session.kill()
-			elif hasattr(session, 'close'):
-				await session.close()
 
 			# Remove from tracking
 			del self.active_sessions[session_id]
@@ -1448,12 +2529,12 @@ class AgentycServer:
 			await self._shutdown()
 
 
-async def main(session_timeout_minutes: int = 10):
+async def main(session_timeout_minutes: int = 10, cdp_url: str | None = None):
 	if not MCP_AVAILABLE:
 		print('MCP SDK is required. Install with: pip install mcp', file=sys.stderr)
 		sys.exit(1)
 
-	server = AgentycServer(session_timeout_minutes=session_timeout_minutes)
+	server = AgentycServer(session_timeout_minutes=session_timeout_minutes, cdp_url=cdp_url)
 	from agentyc.telemetry import MCPServerTelemetryEvent
 	from agentyc.utils import get_agentyc_version
 
