@@ -47,6 +47,8 @@ tests/
 - Move a test to `tests/ci/` once it passes reliably with no external dependencies.
 - Group browser interaction tests under `tests/ci/browser/`, MCP tests under `tests/ci/`, etc.
 - Each event or feature gets its own `test_action_EventName.py` file.
+- Split oversized test modules by feature, event, or behavior; extract shared fixtures and helpers instead of growing one monolithic async test file.
+- Treat 700-800 lines as the general upper bound for active test implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
 
 ## pytest-httpserver Patterns
 
@@ -96,6 +98,7 @@ async def browser_session():
 - Always `await session.stop()` in the fixture teardown — browser processes leak otherwise.
 - Use `headless=True` in all CI fixtures; never open a visible browser in CI.
 - Create a fresh session per test, not per module, unless the test explicitly validates session reuse.
+- Prefer feature-specific fixtures, page builders, and async helper functions in `conftest.py` or nearby helper modules over repeated setup embedded in large test files.
 
 ## LLM Fixtures (the one real mock)
 
@@ -143,6 +146,7 @@ Return:
 - passing `event_loop` as a fixture argument
 - storing browser state across test functions
 - asserting on internal private attributes instead of public API outputs
+- letting one test module accumulate unrelated scenarios when fixtures or helper modules would keep the tests smaller and easier to debug
 
 ## References
 

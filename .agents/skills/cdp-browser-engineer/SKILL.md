@@ -66,6 +66,8 @@ cdp_client.register.Target.targetCreated(self._on_target_created)
 - Access the currently focused target via `browser_session.active_target`.
 - Attach to new targets using `cdp_client.send.Target.attachToTarget(...)` and store the returned `SessionID`.
 - Use `browser_session.event_bus` to publish/subscribe to lifecycle events — do not couple components directly.
+- Keep `BrowserSession` thin where possible: split target management, event registration, overlays/highlights, domain-specific helpers, and lifecycle wiring by concern instead of growing one giant session file.
+- Treat 700-800 lines as the general upper bound for active implementation files, scrutinize files above 800 lines for modular refactor, and treat files above 1000 lines as priority candidates.
 
 ## Watchdog Pattern
 
@@ -95,6 +97,7 @@ Do NOT read or mutate watchdog-local state from other watchdogs. Shared state be
 - Always pass `session_id` scoped to the active target when calling DOM APIs.
 - Use `DOMTreeSerializer` for converting raw CDP output to structured `EnhancedDOMTreeNode` objects.
 - Element highlight state lives in `DomService` — call its methods rather than issuing raw CDP highlight commands.
+- Prefer extracting shared CDP helpers, parser/formatter modules, and feature-specific watchdog helpers instead of duplicating protocol glue across session code.
 
 ## Output Format
 
@@ -114,6 +117,7 @@ Return:
 - creating a second `CDPClient` instance instead of reusing `browser_session.cdp_client`
 - accessing the active target URL directly instead of listening to navigation events
 - bypassing `DomService` for DOM queries to avoid "unnecessary" abstraction
+- adding more unrelated responsibilities to a giant `BrowserSession` or watchdog file instead of splitting by target plumbing, event handling, overlay logic, or domain helpers
 
 ## References
 

@@ -31,6 +31,8 @@ in `service.py`, and encode invariants as validators rather than helper methods.
 - Use `PrivateAttr` for mutable runtime state that must not be serialized or validated.
 - Use `Field(default_factory=uuid7str)` for all ID fields.
 - Never use `Optional[X]` — use `X | None` and set a default where appropriate.
+- Extend `views.py` / `service.py` into smaller typed modules when the surface grows: split views, validators, aliases/types, and builders rather than creating mega model files.
+- Treat 700-800 lines as the general upper bound for active implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
 
 ## ConfigDict Patterns
 
@@ -131,6 +133,8 @@ Always use `uuid7str` (time-ordered UUIDs) for new IDs — not `uuid4`.
 - `views.py`: all `BaseModel` subclasses, enums, type aliases, and constants.
 - `service.py`: class with methods that operate on views. May import from `views.py` but not reverse.
 - Test both layers independently: unit-test models in isolation, integration-test services with real dependencies.
+- When `views.py` gets crowded, split along domain boundaries into focused modules such as `validators.py`, `types.py`, `aliases.py`, `builders.py`, or feature-specific `views_*.py` files.
+- Prefer reusable validators and aliases over re-declaring the same constraints across multiple model files.
 
 ## Output Format
 
@@ -150,6 +154,7 @@ Return:
 - `validate_assignment=True` on service models with PrivateAttr (resets private state)
 - mixing service logic into `BaseModel` subclasses
 - using `dict` kwargs where a typed model would make the contract explicit
+- growing mega model files that mix unrelated views, validators, aliases, and builders in one place
 
 ## References
 

@@ -89,6 +89,8 @@ For Contextro, prefer the existing benchmark surfaces:
 - Route tasks to the smallest capable model or component.
 - Preserve stable response shapes, checkpoints, and resume artifacts.
 - Decompose work into orchestration, state, formatting, and domain logic.
+- Prefer reusable, modular architecture over large all-in-one flows; extract shared logic before duplicating it.
+- Keep active implementation files legible: treat 700-800 lines as the general upper bound, review files above 800 lines for refactor opportunities, and treat files above 1000 lines as priority modular-refactor candidates.
 - Benchmark the whole pipeline, not one stage in isolation.
 - Translate recurring review comments into docs, tests, lints, or evals.
 
@@ -169,6 +171,7 @@ Prefer:
 - one benchmarked change at a time
 - thin entrypoints with logic moved into focused modules
 - explicit boundaries between orchestration, state, formatting, and domain logic
+- domain-appropriate module splits such as service/views/types/validators/helpers, parser/formatter pairs, and lifecycle wiring helpers
 - structure that can be tested and observed
 - reusable system surfaces over prompt-only behavior
 

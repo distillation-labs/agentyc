@@ -31,6 +31,8 @@ output shape intentional.
 - Use typed Python signatures so FastMCP can build useful schemas.
 - Make annotations and metadata match the real behavior.
 - Reach for result objects only when you need explicit control.
+- Treat 700-800 lines as the general upper bound for active server and tool implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
+- Prefer thin server and tool entrypoints with shared logic extracted into validators, adapters, serializers, transport helpers, and domain modules instead of growing `server.py` or giant tool modules.
 
 ## Component Guidance
 
@@ -85,6 +87,7 @@ output shape intentional.
 - Use session state intentionally; it is request/session scoped, not global state.
 - Use visibility controls with `enable()` / `disable()` instead of ad hoc flags.
 - Dynamic component sets should rely on list-changed notifications and providers.
+- Split transport adapters, middleware, tool implementations, and result-shaping helpers by concern rather than centralizing them in one oversized server module.
 
 ## Deployment And Server Behavior
 
@@ -115,6 +118,7 @@ Return:
 - marking mutating tools as readOnlyHint
 - choosing HTTP for a local subprocess by default
 - ignoring list-changed notifications for dynamic surfaces
+- growing monolithic server or tool files instead of extracting reusable adapters, validators, and output-shaping helpers
 
 ## References
 

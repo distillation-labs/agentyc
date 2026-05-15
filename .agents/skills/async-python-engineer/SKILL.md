@@ -31,6 +31,8 @@ background tasks. The session lifecycle is the unit of correctness.
 - Use `asyncio.gather(*coros, return_exceptions=True)` when you need all results regardless of failures.
 - Prefer `async with` context managers for resource lifecycle over manual `try/finally` pairs.
 - Use `asyncio.Event` or `asyncio.Queue` for inter-coroutine signaling, not bare `await asyncio.sleep(0)` polling.
+- Do not keep piling lifecycle, task orchestration, watchdog behavior, and event wiring into one giant async file; split by concern into focused modules and helpers.
+- Treat 700-800 lines as the general upper bound for active implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
 
 ## bubus EventBus Patterns
 
@@ -106,6 +108,7 @@ Emit stop events before cancelling tasks so watchdogs can flush state.
 - Use `asyncio.timeout(seconds)` or `asyncio.wait_for(coro, timeout=seconds)` for bounded waits.
 - Never use bare `asyncio.sleep(long_timeout)` as a guard — use `asyncio.wait_for`.
 - For producer/consumer fan-out, use `asyncio.Queue` with explicit maxsize.
+- Keep entrypoints thin: push reusable cancellation, lifecycle transitions, watchdog wiring, and task supervision into dedicated async helpers or modules.
 
 ## Output Format
 
@@ -125,6 +128,7 @@ Return:
 - mutating shared state from multiple concurrent tasks without an asyncio Lock
 - using `loop.run_until_complete(...)` inside an already-running event loop
 - emitting events after CDP disconnect (triggers cascading errors in watchdogs)
+- growing monolithic lifecycle or watchdog files instead of splitting task supervision, event wiring, and shutdown helpers by concern
 
 ## References
 
