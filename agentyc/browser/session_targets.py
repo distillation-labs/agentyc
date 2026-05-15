@@ -575,7 +575,6 @@ async def take_screenshot(
 	clip: dict[str, Any] | None = None,
 ) -> bytes:
 	cdp_session = await get_or_create_cdp_session(session)
-	await session._set_collaboration_overlay_visibility(False, target_id=cdp_session.target_id)
 	params: CaptureScreenshotParameters = {'format': format, 'captureBeyondViewport': full_page}
 	if quality is not None and format == 'jpeg':
 		params['quality'] = quality
@@ -588,10 +587,7 @@ async def take_screenshot(
 			'scale': 1,
 		}
 	params = CaptureScreenshotParameters(**params)
-	try:
-		result = await cdp_session.cdp_client.send.Page.captureScreenshot(params=params, session_id=cdp_session.session_id)
-	finally:
-		await session._set_collaboration_overlay_visibility(True, target_id=cdp_session.target_id)
+	result = await cdp_session.cdp_client.send.Page.captureScreenshot(params=params, session_id=cdp_session.session_id)
 	if not result or 'data' not in result:
 		raise Exception('Screenshot failed - no data returned')
 	screenshot_data = base64.b64decode(result['data'])
