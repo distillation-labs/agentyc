@@ -147,9 +147,7 @@ def test_evaluate_release_gate_reports_threshold_and_regression_failures() -> No
 	assert gate['regression_count'] == 2
 	assert any(check['key'] == 'avg_auto_recall' and check['passed'] is False for check in gate['checks'])
 	assert any(check['key'] == 'avg_action_success' and check['passed'] is False for check in gate['checks'])
-	assert any(
-		check['key'] == 'collaboration_required_check_pass_rate' and check['passed'] is False for check in gate['checks']
-	)
+	assert any(check['key'] == 'collaboration_required_check_pass_rate' and check['passed'] is False for check in gate['checks'])
 	assert any('fixture regressions detected' in failure for failure in gate['failures'])
 	assert any('collaboration required checks failed' in failure for failure in gate['failures'])
 
