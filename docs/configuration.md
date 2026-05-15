@@ -47,6 +47,12 @@ agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
 |--------|-------------|
 | `--session-timeout-minutes` | Idle timeout for the tracked browser session |
 | `--cdp-url` | Attach to an existing browser instead of launching a local one |
+| `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
+| `--runtime-role` | Collaboration role string for this runtime |
+| `--parent-runtime-id` | Optional parent runtime identifier for nested collaboration flows |
+| `--shared-browser-mode` | Create a shared-browser tab or separate runtime window on attach |
+| `--shared-browser-window-bounds` | Optional JSON bounds for the runtime window when `--shared-browser-mode window` is used |
+| `--shared-browser-focus-policy` | Preserve the human-focused surface or explicitly activate the runtime target |
 
 ### Shared Browser Launcher
 
@@ -116,7 +122,7 @@ When the MCP server launches a local browser, it sets these public defaults in `
 - `disable_security=False`
 - `headless=False` unless overridden by config or env
 
-When attaching through `--cdp-url`, the server instead sets `keep_alive=True` and creates a fresh tab in the shared browser.
+When attaching through `--cdp-url`, the server instead sets `keep_alive=True` and creates a collaboration target in the shared browser: a tab by default, or a separate window when `--shared-browser-mode window` is selected.
 
 ## Security-Relevant Controls
 
@@ -133,8 +139,10 @@ When attaching through `--cdp-url`, the server instead sets `keep_alive=True` an
 Current shared-browser behavior should be understood operationally:
 
 - The MCP server attaches to an existing CDP endpoint.
-- It opens a fresh tab for its own work.
-- Tab focus remains explicit and mutable.
+- It creates a shared-browser tab by default, or a separate runtime window when configured.
+- Attach and `new_tab=true` flows update the runtime's focused target automatically.
+- Visible activation is policy-driven: `preserve` avoids foregrounding the runtime target, while `activate` calls into the Browser/Target domains to foreground it.
+- Shared-browser state surfaces ownership metadata, runtime labels, display titles, and optional window bounds.
 - Chrome does not expose reliable per-tab ownership coloring.
 
 For stronger visual separation, separate windows remain more dependable than assuming tab-level ownership cues.
