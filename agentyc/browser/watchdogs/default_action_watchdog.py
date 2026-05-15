@@ -1,13 +1,13 @@
 """Default browser action handlers using CDP."""
 
 from agentyc.browser.events import (
-    ClickCoordinateEvent,
-    ClickElementEvent,
-    GetDropdownOptionsEvent,
-    ScrollEvent,
-    SelectDropdownOptionEvent,
-    TypeTextEvent,
-    UploadFileEvent,
+	ClickCoordinateEvent,
+	ClickElementEvent,
+	GetDropdownOptionsEvent,
+	ScrollEvent,
+	SelectDropdownOptionEvent,
+	TypeTextEvent,
+	UploadFileEvent,
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
 from agentyc.browser.watchdogs.default_action_clicks import DefaultActionClickMixin
@@ -27,10 +27,10 @@ UploadFileEvent.model_rebuild()
 
 
 class DefaultActionWatchdog(
-    DefaultActionClickMixin,
-    DefaultActionTextMixin,
-    DefaultActionNavigationMixin,
-    DefaultActionDropdownMixin,
-    BaseWatchdog,
+	DefaultActionClickMixin,
+	DefaultActionTextMixin,
+	DefaultActionNavigationMixin,
+	DefaultActionDropdownMixin,
+	BaseWatchdog,
 ):
-    """Handles default browser actions like click, type, and scroll using CDP."""
+	"""Handles default browser actions like click, type, and scroll using CDP."""
