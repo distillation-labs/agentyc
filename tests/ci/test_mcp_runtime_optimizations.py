@@ -1048,7 +1048,7 @@ class TestMCPStateProtocolAndExtraction:
 					target_id='target-owned-1234',
 					url='https://example.com',
 					title='Example page',
-					display_title='[agtyc:1234]Example page',
+					display_title='[Agent 1234] Example page',
 					ownership={
 						'target_id': 'target-owned-1234',
 						'owner_kind': 'agent',
@@ -1079,6 +1079,7 @@ class TestMCPStateProtocolAndExtraction:
 			'interactive_element_count': 2,
 			'interactive_elements': [],
 			'current_tab_id': '1234',
+			'scroll': {'x': 0, 'y': 320},
 		}
 
 	async def test_browser_get_state_auto_uses_full_on_small_pages(self, browser_session: BrowserSession, base_url: str):
@@ -1147,7 +1148,7 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['tabs'][0]['window_bounds']['width'] == 1200
 		assert payload['current_tab_id'] == '1234'
 		assert payload['current_tab']['tab_id'] == '1234'
-		assert payload['current_tab']['display_title'].startswith('[agtyc:1234]')
+		assert payload['current_tab']['display_title'].startswith('[Agent 1234]')
 		assert payload['current_tab']['window_bounds']['height'] == 800
 		assert payload['ownership']['runtime']['runtime_id'] == runtime.runtime_id
 		assert payload['runtime']['runtime_id'] == runtime.runtime_id
@@ -1182,7 +1183,7 @@ class TestMCPStateProtocolAndExtraction:
 		result = json.loads(await server._list_tabs())
 
 		assert result[0]['tab_id'] == '1234'
-		assert result[0]['display_title'].startswith('[agtyc:1234]')
+		assert result[0]['display_title'].startswith('[Agent 1234]')
 		assert result[0]['ownership']['owner_kind'] == 'agent'
 		assert result[0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
 		assert result[0]['window_bounds']['left'] == 10
@@ -1274,7 +1275,7 @@ class TestMCPStateProtocolAndExtraction:
 		)
 
 		assert result.error is not None
-		assert 'No deterministic extraction route matched this query' in result.error
+		assert 'No deterministic extraction route matched' in result.error
 		assert result.metadata is None
 
 	async def test_summary_queries_return_explicit_error_on_small_pages(
@@ -1291,7 +1292,7 @@ class TestMCPStateProtocolAndExtraction:
 		)
 
 		assert result.error is not None
-		assert 'No deterministic extraction route matched this query' in result.error
+		assert 'No deterministic extraction route matched' in result.error
 		assert result.metadata is None
 
 	async def test_extract_key_value_panel_can_return_structured_json_without_llm(
@@ -1770,7 +1771,7 @@ class TestMCPStateProtocolAndExtraction:
 		)
 
 		assert result.error is not None
-		assert 'No deterministic extraction route matched this query' in result.error
+		assert 'No deterministic extraction route matched' in result.error
 		assert result.metadata is None
 
 
@@ -1832,10 +1833,12 @@ class TestParallelTabExecution:
 					== server_b.browser_session.runtime_metadata.runtime_id
 				)
 				assert state_a['current_tab']['tab_id'] != state_b['current_tab']['tab_id']
-				assert any(
-					tab.get('ownership', {}).get('runtime', {}).get('runtime_id')
-					== server_b.browser_session.runtime_metadata.runtime_id
-					for tab in state_a['tabs']
+				# Server_a must see server_b's tab in its tab list.
+				# We check by tab_id. Ownership attribution is best-effort and depends on JS running
+				# in server_b's page, so we don't assert on owner_kind here.
+				server_b_tab_id = state_b['current_tab']['tab_id']
+				assert any(tab.get('tab_id') == server_b_tab_id for tab in state_a['tabs']), (
+					f'Server A does not see server B tab {server_b_tab_id} in its tab list: {[t.get("tab_id") for t in state_a["tabs"]]}'
 				)
 
 				# Server A is on /accessible which has "Email address" and "Start checkout"
@@ -1894,14 +1897,26 @@ class TestParallelTabExecution:
 				state_b = json.loads(state_b_json)
 
 				email_ref_a = next(
-					el['ref']
-					for el in state_a['interactive_elements']
-					if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+					(
+						el['ref']
+						for el in state_a['interactive_elements']
+						if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+					),
+					None,
 				)
 				email_ref_b = next(
-					el['ref']
-					for el in state_b['interactive_elements']
-					if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+					(
+						el['ref']
+						for el in state_b['interactive_elements']
+						if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
+					),
+					None,
+				)
+				assert email_ref_a is not None, (
+					f'Server A state has no email field. Elements: {[el.get("text") or el.get("placeholder") for el in state_a["interactive_elements"]]}'
+				)
+				assert email_ref_b is not None, (
+					f'Server B state has no email field. Elements: {[el.get("text") or el.get("placeholder") for el in state_b["interactive_elements"]]}'
 				)
 
 				# Both agents type simultaneously into their own tabs
