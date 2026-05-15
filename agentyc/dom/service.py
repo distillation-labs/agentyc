@@ -204,6 +204,8 @@ class DomService:
 				except ValueError:
 					pass
 
+		ax_value_raw = ax_node.get('value', {})
+		ax_value = ax_value_raw.get('value', None) if isinstance(ax_value_raw, dict) else None
 		enhanced_ax_node = EnhancedAXNode(
 			ax_node_id=ax_node['nodeId'],
 			ignored=ax_node['ignored'],
@@ -212,6 +214,7 @@ class DomService:
 			description=ax_node.get('description', {}).get('value', None),
 			properties=properties,
 			child_ids=ax_node.get('childIds', []) if ax_node.get('childIds') else None,
+			value=str(ax_value) if ax_value is not None else None,
 		)
 		return enhanced_ax_node
 
