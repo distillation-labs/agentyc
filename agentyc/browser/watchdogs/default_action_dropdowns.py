@@ -11,29 +11,29 @@ from agentyc.browser.views import BrowserError
 
 
 class DefaultActionDropdownMixin:
-    """Dropdown inspection and selection helpers."""
+	"""Dropdown inspection and selection helpers."""
 
-    if TYPE_CHECKING:
-        logger: Any
-        browser_session: Any
+	if TYPE_CHECKING:
+		logger: Any
+		browser_session: Any
 
-    async def on_GetDropdownOptionsEvent(self, event: GetDropdownOptionsEvent) -> dict[str, str]:
-        try:
-            element_node = event.node
-            index_for_logging = element_node.backend_node_id or 'unknown'
-            cdp_session = await self.browser_session.cdp_client_for_node(element_node)
-            try:
-                object_result = await cdp_session.cdp_client.send.DOM.resolveNode(
-                    params={'backendNodeId': element_node.backend_node_id}, session_id=cdp_session.session_id
-                )
-                remote_object = object_result.get('object', {})
-                object_id = remote_object.get('objectId')
-                if not object_id:
-                    raise ValueError('Could not get object ID from resolved node')
-            except Exception as error:
-                raise ValueError(f'Failed to resolve node to object: {error}') from error
+	async def on_GetDropdownOptionsEvent(self, event: GetDropdownOptionsEvent) -> dict[str, str]:
+		try:
+			element_node = event.node
+			index_for_logging = element_node.backend_node_id or 'unknown'
+			cdp_session = await self.browser_session.cdp_client_for_node(element_node)
+			try:
+				object_result = await cdp_session.cdp_client.send.DOM.resolveNode(
+					params={'backendNodeId': element_node.backend_node_id}, session_id=cdp_session.session_id
+				)
+				remote_object = object_result.get('object', {})
+				object_id = remote_object.get('objectId')
+				if not object_id:
+					raise ValueError('Could not get object ID from resolved node')
+			except Exception as error:
+				raise ValueError(f'Failed to resolve node to object: {error}') from error
 
-            check_combobox_script = """
+			check_combobox_script = """
             function() {
                 const element = this;
                 const role = element.getAttribute('role');
@@ -51,19 +51,19 @@ class DefaultActionDropdownMixin:
                 return { isCombobox: false };
             }
             """
-            combobox_check = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                params={
-                    'functionDeclaration': check_combobox_script,
-                    'objectId': object_id,
-                    'returnByValue': True,
-                },
-                session_id=cdp_session.session_id,
-            )
-            combobox_info = combobox_check.get('result', {}).get('value', {})
-            if combobox_info.get('isCombobox'):
-                return await self._handle_aria_combobox_options(cdp_session, object_id, combobox_info, index_for_logging)
+			combobox_check = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+				params={
+					'functionDeclaration': check_combobox_script,
+					'objectId': object_id,
+					'returnByValue': True,
+				},
+				session_id=cdp_session.session_id,
+			)
+			combobox_info = combobox_check.get('result', {}).get('value', {})
+			if combobox_info.get('isCombobox'):
+				return await self._handle_aria_combobox_options(cdp_session, object_id, combobox_info, index_for_logging)
 
-            options_script = """
+			options_script = """
             function() {
                 const startElement = this;
                 function checkDropdownElement(element) {
@@ -164,84 +164,86 @@ class DefaultActionDropdownMixin:
                 };
             }
             """
-            result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                params={'functionDeclaration': options_script, 'objectId': object_id, 'returnByValue': True},
-                session_id=cdp_session.session_id,
-            )
-            dropdown_data = result.get('result', {}).get('value', {})
-            if dropdown_data.get('error'):
-                raise BrowserError(message=dropdown_data['error'], long_term_memory=dropdown_data['error'])
-            if not dropdown_data.get('options'):
-                msg = f'No options found in dropdown at index {index_for_logging}'
-                return {
-                    'error': msg,
-                    'short_term_memory': msg,
-                    'long_term_memory': msg,
-                    'backend_node_id': str(index_for_logging),
-                }
+			result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+				params={'functionDeclaration': options_script, 'objectId': object_id, 'returnByValue': True},
+				session_id=cdp_session.session_id,
+			)
+			dropdown_data = result.get('result', {}).get('value', {})
+			if dropdown_data.get('error'):
+				raise BrowserError(message=dropdown_data['error'], long_term_memory=dropdown_data['error'])
+			if not dropdown_data.get('options'):
+				msg = f'No options found in dropdown at index {index_for_logging}'
+				return {
+					'error': msg,
+					'short_term_memory': msg,
+					'long_term_memory': msg,
+					'backend_node_id': str(index_for_logging),
+				}
 
-            formatted_options = []
-            for opt in dropdown_data['options']:
-                encoded_text = json.dumps(opt['text'])
-                status = ' (selected)' if opt.get('selected') else ''
-                formatted_options.append(f'{opt["index"]}: text={encoded_text}, value={json.dumps(opt["value"])}{status}')
+			formatted_options = []
+			for opt in dropdown_data['options']:
+				encoded_text = json.dumps(opt['text'])
+				status = ' (selected)' if opt.get('selected') else ''
+				formatted_options.append(f'{opt["index"]}: text={encoded_text}, value={json.dumps(opt["value"])}{status}')
 
-            dropdown_type = dropdown_data.get('type', 'select')
-            element_info = (
-                f'Index: {index_for_logging}, Type: {dropdown_type}, '
-                f'ID: {dropdown_data.get("id", "none")}, Name: {dropdown_data.get("name", "none")}'
-            )
-            source_info = dropdown_data.get('source', 'unknown')
-            if source_info == 'target':
-                msg = f'Found {dropdown_type} dropdown ({element_info}):\n' + '\n'.join(formatted_options)
-            else:
-                msg = f'Found {dropdown_type} dropdown in {source_info} ({element_info}):\n' + '\n'.join(formatted_options)
-            msg += f'\n\nUse the exact text or value string (without quotes) in select_dropdown(index={index_for_logging}, text=...)'
+			dropdown_type = dropdown_data.get('type', 'select')
+			element_info = (
+				f'Index: {index_for_logging}, Type: {dropdown_type}, '
+				f'ID: {dropdown_data.get("id", "none")}, Name: {dropdown_data.get("name", "none")}'
+			)
+			source_info = dropdown_data.get('source', 'unknown')
+			if source_info == 'target':
+				msg = f'Found {dropdown_type} dropdown ({element_info}):\n' + '\n'.join(formatted_options)
+			else:
+				msg = f'Found {dropdown_type} dropdown in {source_info} ({element_info}):\n' + '\n'.join(formatted_options)
+			msg += (
+				f'\n\nUse the exact text or value string (without quotes) in select_dropdown(index={index_for_logging}, text=...)'
+			)
 
-            if source_info == 'target':
-                self.logger.info(f'📋 Found {len(dropdown_data["options"])} dropdown options for index {index_for_logging}')
-            else:
-                self.logger.info(
-                    f'📋 Found {len(dropdown_data["options"])} dropdown options for index {index_for_logging} in {source_info}'
-                )
+			if source_info == 'target':
+				self.logger.info(f'📋 Found {len(dropdown_data["options"])} dropdown options for index {index_for_logging}')
+			else:
+				self.logger.info(
+					f'📋 Found {len(dropdown_data["options"])} dropdown options for index {index_for_logging} in {source_info}'
+				)
 
-            return {
-                'type': dropdown_type,
-                'options': json.dumps(dropdown_data['options']),
-                'element_info': element_info,
-                'source': source_info,
-                'formatted_options': '\n'.join(formatted_options),
-                'message': msg,
-                'short_term_memory': msg,
-                'long_term_memory': f'Got dropdown options for index {index_for_logging}',
-                'backend_node_id': str(index_for_logging),
-            }
-        except BrowserError:
-            raise
-        except TimeoutError:
-            msg = f'Failed to get dropdown options for index {index_for_logging} due to timeout.'
-            self.logger.error(msg)
-            raise BrowserError(message=msg, long_term_memory=msg)
-        except Exception as error:
-            msg = 'Failed to get dropdown options'
-            error_msg = f'{msg}: {str(error)}'
-            self.logger.error(error_msg)
-            raise BrowserError(
-                message=error_msg,
-                long_term_memory=f'Failed to get dropdown options for index {index_for_logging}.',
-            )
+			return {
+				'type': dropdown_type,
+				'options': json.dumps(dropdown_data['options']),
+				'element_info': element_info,
+				'source': source_info,
+				'formatted_options': '\n'.join(formatted_options),
+				'message': msg,
+				'short_term_memory': msg,
+				'long_term_memory': f'Got dropdown options for index {index_for_logging}',
+				'backend_node_id': str(index_for_logging),
+			}
+		except BrowserError:
+			raise
+		except TimeoutError:
+			msg = f'Failed to get dropdown options for index {index_for_logging} due to timeout.'
+			self.logger.error(msg)
+			raise BrowserError(message=msg, long_term_memory=msg)
+		except Exception as error:
+			msg = 'Failed to get dropdown options'
+			error_msg = f'{msg}: {str(error)}'
+			self.logger.error(error_msg)
+			raise BrowserError(
+				message=error_msg,
+				long_term_memory=f'Failed to get dropdown options for index {index_for_logging}.',
+			)
 
-    async def _handle_aria_combobox_options(
-        self,
-        cdp_session,
-        object_id: str,
-        combobox_info: dict,
-        index_for_logging: int | str,
-    ) -> dict[str, str]:
-        aria_controls_id = combobox_info.get('ariaControls')
-        was_expanded = combobox_info.get('isExpanded', False)
-        if not was_expanded:
-            expand_script = """
+	async def _handle_aria_combobox_options(
+		self,
+		cdp_session,
+		object_id: str,
+		combobox_info: dict,
+		index_for_logging: int | str,
+	) -> dict[str, str]:
+		aria_controls_id = combobox_info.get('ariaControls')
+		was_expanded = combobox_info.get('isExpanded', False)
+		if not was_expanded:
+			expand_script = """
             function() {
                 const element = this;
                 const focusEvent = new FocusEvent('focus', { bubbles: true, cancelable: true });
@@ -256,13 +258,13 @@ class DefaultActionDropdownMixin:
                 return { success: true, ariaExpanded: element.getAttribute('aria-expanded') };
             }
             """
-            await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                params={'functionDeclaration': expand_script, 'objectId': object_id, 'returnByValue': True},
-                session_id=cdp_session.session_id,
-            )
-            await asyncio.sleep(0.5)
+			await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+				params={'functionDeclaration': expand_script, 'objectId': object_id, 'returnByValue': True},
+				session_id=cdp_session.session_id,
+			)
+			await asyncio.sleep(0.5)
 
-        extract_options_script = """
+		extract_options_script = """
         function(ariaControlsId) {
             const combobox = this;
             const listbox = document.getElementById(ariaControlsId);
@@ -312,19 +314,19 @@ class DefaultActionDropdownMixin:
             };
         }
         """
-        result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-            params={
-                'functionDeclaration': extract_options_script,
-                'objectId': object_id,
-                'arguments': [{'value': aria_controls_id}],
-                'returnByValue': True,
-            },
-            session_id=cdp_session.session_id,
-        )
-        dropdown_data = result.get('result', {}).get('value', {})
+		result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+			params={
+				'functionDeclaration': extract_options_script,
+				'objectId': object_id,
+				'arguments': [{'value': aria_controls_id}],
+				'returnByValue': True,
+			},
+			session_id=cdp_session.session_id,
+		)
+		dropdown_data = result.get('result', {}).get('value', {})
 
-        if not was_expanded:
-            collapse_script = """
+		if not was_expanded:
+			collapse_script = """
             function() {
                 this.blur();
                 const escEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
@@ -332,68 +334,68 @@ class DefaultActionDropdownMixin:
                 return true;
             }
             """
-            await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                params={'functionDeclaration': collapse_script, 'objectId': object_id, 'returnByValue': True},
-                session_id=cdp_session.session_id,
-            )
+			await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+				params={'functionDeclaration': collapse_script, 'objectId': object_id, 'returnByValue': True},
+				session_id=cdp_session.session_id,
+			)
 
-        if dropdown_data.get('error'):
-            raise BrowserError(message=dropdown_data['error'], long_term_memory=dropdown_data['error'])
-        if not dropdown_data.get('options'):
-            msg = f'No options found in ARIA combobox at index {index_for_logging} (listbox: {aria_controls_id})'
-            return {
-                'error': msg,
-                'short_term_memory': msg,
-                'long_term_memory': msg,
-                'backend_node_id': str(index_for_logging),
-            }
+		if dropdown_data.get('error'):
+			raise BrowserError(message=dropdown_data['error'], long_term_memory=dropdown_data['error'])
+		if not dropdown_data.get('options'):
+			msg = f'No options found in ARIA combobox at index {index_for_logging} (listbox: {aria_controls_id})'
+			return {
+				'error': msg,
+				'short_term_memory': msg,
+				'long_term_memory': msg,
+				'backend_node_id': str(index_for_logging),
+			}
 
-        formatted_options = []
-        for opt in dropdown_data['options']:
-            encoded_text = json.dumps(opt['text'])
-            status = ' (selected)' if opt.get('selected') else ''
-            formatted_options.append(f'{opt["index"]}: text={encoded_text}, value={json.dumps(opt["value"])}{status}')
+		formatted_options = []
+		for opt in dropdown_data['options']:
+			encoded_text = json.dumps(opt['text'])
+			status = ' (selected)' if opt.get('selected') else ''
+			formatted_options.append(f'{opt["index"]}: text={encoded_text}, value={json.dumps(opt["value"])}{status}')
 
-        dropdown_type = dropdown_data.get('type', 'aria-combobox')
-        element_info = (
-            f'Index: {index_for_logging}, Type: {dropdown_type}, '
-            f'ID: {dropdown_data.get("id", "none")}, Name: {dropdown_data.get("name", "none")}'
-        )
-        source_info = f'aria-controls → {aria_controls_id}'
-        msg = f'Found {dropdown_type} dropdown ({element_info}):\n' + '\n'.join(formatted_options)
-        msg += f'\n\nUse the exact text or value string (without quotes) in select_dropdown(index={index_for_logging}, text=...)'
-        self.logger.info(f'📋 Found {len(dropdown_data["options"])} options in ARIA combobox at index {index_for_logging}')
-        return {
-            'type': dropdown_type,
-            'options': json.dumps(dropdown_data['options']),
-            'element_info': element_info,
-            'source': source_info,
-            'formatted_options': '\n'.join(formatted_options),
-            'message': msg,
-            'short_term_memory': msg,
-            'long_term_memory': f'Got dropdown options for ARIA combobox at index {index_for_logging}',
-            'backend_node_id': str(index_for_logging),
-        }
+		dropdown_type = dropdown_data.get('type', 'aria-combobox')
+		element_info = (
+			f'Index: {index_for_logging}, Type: {dropdown_type}, '
+			f'ID: {dropdown_data.get("id", "none")}, Name: {dropdown_data.get("name", "none")}'
+		)
+		source_info = f'aria-controls → {aria_controls_id}'
+		msg = f'Found {dropdown_type} dropdown ({element_info}):\n' + '\n'.join(formatted_options)
+		msg += f'\n\nUse the exact text or value string (without quotes) in select_dropdown(index={index_for_logging}, text=...)'
+		self.logger.info(f'📋 Found {len(dropdown_data["options"])} options in ARIA combobox at index {index_for_logging}')
+		return {
+			'type': dropdown_type,
+			'options': json.dumps(dropdown_data['options']),
+			'element_info': element_info,
+			'source': source_info,
+			'formatted_options': '\n'.join(formatted_options),
+			'message': msg,
+			'short_term_memory': msg,
+			'long_term_memory': f'Got dropdown options for ARIA combobox at index {index_for_logging}',
+			'backend_node_id': str(index_for_logging),
+		}
 
-    async def on_SelectDropdownOptionEvent(self, event: SelectDropdownOptionEvent) -> dict[str, str]:
-        try:
-            element_node = event.node
-            index_for_logging = element_node.backend_node_id or 'unknown'
-            target_text = event.text
-            cdp_session = await self.browser_session.cdp_client_for_node(element_node)
-            try:
-                object_result = await cdp_session.cdp_client.send.DOM.resolveNode(
-                    params={'backendNodeId': element_node.backend_node_id}, session_id=cdp_session.session_id
-                )
-                remote_object = object_result.get('object', {})
-                object_id = remote_object.get('objectId')
-                if not object_id:
-                    raise ValueError('Could not get object ID from resolved node')
-            except Exception as error:
-                raise ValueError(f'Failed to resolve node to object: {error}') from error
+	async def on_SelectDropdownOptionEvent(self, event: SelectDropdownOptionEvent) -> dict[str, str]:
+		try:
+			element_node = event.node
+			index_for_logging = element_node.backend_node_id or 'unknown'
+			target_text = event.text
+			cdp_session = await self.browser_session.cdp_client_for_node(element_node)
+			try:
+				object_result = await cdp_session.cdp_client.send.DOM.resolveNode(
+					params={'backendNodeId': element_node.backend_node_id}, session_id=cdp_session.session_id
+				)
+				remote_object = object_result.get('object', {})
+				object_id = remote_object.get('objectId')
+				if not object_id:
+					raise ValueError('Could not get object ID from resolved node')
+			except Exception as error:
+				raise ValueError(f'Failed to resolve node to object: {error}') from error
 
-            try:
-                selection_script = """
+			try:
+				selection_script = """
                 function(targetText) {
                     const startElement = this;
                     function attemptSelection(element) {
@@ -536,53 +538,53 @@ class DefaultActionDropdownMixin:
                     };
                 }
                 """
-                result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                    params={
-                        'functionDeclaration': selection_script,
-                        'arguments': [{'value': target_text}],
-                        'objectId': object_id,
-                        'returnByValue': True,
-                    },
-                    session_id=cdp_session.session_id,
-                )
-                selection_result = result.get('result', {}).get('value', {})
+				result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+					params={
+						'functionDeclaration': selection_script,
+						'arguments': [{'value': target_text}],
+						'objectId': object_id,
+						'returnByValue': True,
+					},
+					session_id=cdp_session.session_id,
+				)
+				selection_result = result.get('result', {}).get('value', {})
 
-                if not selection_result.get('success'):
-                    available_options = selection_result.get('availableOptions', [])
-                    all_empty = available_options and all(
-                        (not opt.get('text', '').strip() and not opt.get('value', '').strip())
-                        if isinstance(opt, dict)
-                        else not str(opt).strip()
-                        for opt in available_options
-                    )
-                    if all_empty:
-                        self.logger.info(
-                            '⚠️ All dropdown options are empty — options may be lazily loaded. Focusing element and retrying...'
-                        )
-                        try:
-                            await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                                params={'functionDeclaration': 'function() { this.focus(); }', 'objectId': object_id},
-                                session_id=cdp_session.session_id,
-                            )
-                        except Exception:
-                            pass
-                        await asyncio.sleep(1.0)
-                        retry_result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                            params={
-                                'functionDeclaration': selection_script,
-                                'arguments': [{'value': target_text}],
-                                'objectId': object_id,
-                                'returnByValue': True,
-                            },
-                            session_id=cdp_session.session_id,
-                        )
-                        selection_result = retry_result.get('result', {}).get('value', {})
+				if not selection_result.get('success'):
+					available_options = selection_result.get('availableOptions', [])
+					all_empty = available_options and all(
+						(not opt.get('text', '').strip() and not opt.get('value', '').strip())
+						if isinstance(opt, dict)
+						else not str(opt).strip()
+						for opt in available_options
+					)
+					if all_empty:
+						self.logger.info(
+							'⚠️ All dropdown options are empty — options may be lazily loaded. Focusing element and retrying...'
+						)
+						try:
+							await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+								params={'functionDeclaration': 'function() { this.focus(); }', 'objectId': object_id},
+								session_id=cdp_session.session_id,
+							)
+						except Exception:
+							pass
+						await asyncio.sleep(1.0)
+						retry_result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+							params={
+								'functionDeclaration': selection_script,
+								'arguments': [{'value': target_text}],
+								'objectId': object_id,
+								'returnByValue': True,
+							},
+							session_id=cdp_session.session_id,
+						)
+						selection_result = retry_result.get('result', {}).get('value', {})
 
-                if selection_result.get('selectionReverted'):
-                    self.logger.info('⚠️ Selection was reverted by page framework, trying click fallback...')
-                    target_option = selection_result.get('targetOption', {})
-                    option_index = target_option.get('index', 0)
-                    click_fallback_script = """
+				if selection_result.get('selectionReverted'):
+					self.logger.info('⚠️ Selection was reverted by page framework, trying click fallback...')
+					target_option = selection_result.get('targetOption', {})
+					option_index = target_option.get('index', 0)
+					click_fallback_script = """
                     function(optionIndex) {
                         const select = this;
                         if (select.tagName.toLowerCase() !== 'select') return { success: false, error: 'Not a select element' };
@@ -611,74 +613,74 @@ class DefaultActionDropdownMixin:
                         };
                     }
                     """
-                    fallback_result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
-                        params={
-                            'functionDeclaration': click_fallback_script,
-                            'arguments': [{'value': option_index}],
-                            'objectId': object_id,
-                            'returnByValue': True,
-                        },
-                        session_id=cdp_session.session_id,
-                    )
-                    fallback_data = fallback_result.get('result', {}).get('value', {})
-                    if fallback_data.get('success'):
-                        msg = fallback_data.get('message', f'Selected option via click: {target_text}')
-                        self.logger.info(f'✅ {msg}')
-                        return {
-                            'success': 'true',
-                            'message': msg,
-                            'value': fallback_data.get('value', target_text),
-                            'backend_node_id': str(index_for_logging),
-                        }
-                    self.logger.warning(f'⚠️ Click fallback also failed: {fallback_data.get("error", "unknown")}')
+					fallback_result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+						params={
+							'functionDeclaration': click_fallback_script,
+							'arguments': [{'value': option_index}],
+							'objectId': object_id,
+							'returnByValue': True,
+						},
+						session_id=cdp_session.session_id,
+					)
+					fallback_data = fallback_result.get('result', {}).get('value', {})
+					if fallback_data.get('success'):
+						msg = fallback_data.get('message', f'Selected option via click: {target_text}')
+						self.logger.info(f'✅ {msg}')
+						return {
+							'success': 'true',
+							'message': msg,
+							'value': fallback_data.get('value', target_text),
+							'backend_node_id': str(index_for_logging),
+						}
+					self.logger.warning(f'⚠️ Click fallback also failed: {fallback_data.get("error", "unknown")}')
 
-                if selection_result.get('success'):
-                    msg = selection_result.get('message', f'Selected option: {target_text}')
-                    self.logger.debug(msg)
-                    return {
-                        'success': 'true',
-                        'message': msg,
-                        'value': selection_result.get('value', target_text),
-                        'backend_node_id': str(index_for_logging),
-                    }
+				if selection_result.get('success'):
+					msg = selection_result.get('message', f'Selected option: {target_text}')
+					self.logger.debug(msg)
+					return {
+						'success': 'true',
+						'message': msg,
+						'value': selection_result.get('value', target_text),
+						'backend_node_id': str(index_for_logging),
+					}
 
-                error_msg = selection_result.get('error', f'Failed to select option: {target_text}')
-                available_options = selection_result.get('availableOptions', [])
-                self.logger.error(f'❌ {error_msg}')
-                self.logger.debug(f'Available options from JavaScript: {available_options}')
-                if available_options:
-                    short_term_options = []
-                    for opt in available_options:
-                        if isinstance(opt, dict):
-                            text = opt.get('text', '').strip()
-                            value = opt.get('value', '').strip()
-                            if text:
-                                short_term_options.append(f'- {text}')
-                            elif value:
-                                short_term_options.append(f'- {value}')
-                        elif isinstance(opt, str):
-                            short_term_options.append(f'- {opt}')
-                    if short_term_options:
-                        return {
-                            'success': 'false',
-                            'error': error_msg,
-                            'short_term_memory': 'Available dropdown options  are:\n' + '\n'.join(short_term_options),
-                            'long_term_memory': (
-                                f"Couldn't select the dropdown option as '{target_text}' is not one of the available options."
-                            ),
-                            'backend_node_id': str(index_for_logging),
-                        }
+				error_msg = selection_result.get('error', f'Failed to select option: {target_text}')
+				available_options = selection_result.get('availableOptions', [])
+				self.logger.error(f'❌ {error_msg}')
+				self.logger.debug(f'Available options from JavaScript: {available_options}')
+				if available_options:
+					short_term_options = []
+					for opt in available_options:
+						if isinstance(opt, dict):
+							text = opt.get('text', '').strip()
+							value = opt.get('value', '').strip()
+							if text:
+								short_term_options.append(f'- {text}')
+							elif value:
+								short_term_options.append(f'- {value}')
+						elif isinstance(opt, str):
+							short_term_options.append(f'- {opt}')
+					if short_term_options:
+						return {
+							'success': 'false',
+							'error': error_msg,
+							'short_term_memory': 'Available dropdown options  are:\n' + '\n'.join(short_term_options),
+							'long_term_memory': (
+								f"Couldn't select the dropdown option as '{target_text}' is not one of the available options."
+							),
+							'backend_node_id': str(index_for_logging),
+						}
 
-                return {
-                    'success': 'false',
-                    'error': error_msg,
-                    'backend_node_id': str(index_for_logging),
-                }
-            except Exception as error:
-                error_msg = f'Failed to select dropdown option: {str(error)}'
-                self.logger.error(error_msg)
-                raise ValueError(error_msg) from error
-        except Exception as error:
-            error_msg = f'Failed to select dropdown option "{target_text}" for element {index_for_logging}: {str(error)}'
-            self.logger.error(error_msg)
-            raise ValueError(error_msg) from error
+				return {
+					'success': 'false',
+					'error': error_msg,
+					'backend_node_id': str(index_for_logging),
+				}
+			except Exception as error:
+				error_msg = f'Failed to select dropdown option: {str(error)}'
+				self.logger.error(error_msg)
+				raise ValueError(error_msg) from error
+		except Exception as error:
+			error_msg = f'Failed to select dropdown option "{target_text}" for element {index_for_logging}: {str(error)}'
+			self.logger.error(error_msg)
+			raise ValueError(error_msg) from error
