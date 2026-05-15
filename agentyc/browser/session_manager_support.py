@@ -20,11 +20,11 @@ def runtime_metadata_from_title(title: str) -> RuntimeOwnershipMetadata | None:
 	prefix = extract_title_prefix(title)
 	if not prefix:
 		return None
-	runtime_token = prefix.removeprefix('[agtyc:').split(']', 1)[0]
+	runtime_token = prefix.strip()[1:-1].strip()  # extract content between [ and ]
 	return RuntimeOwnershipMetadata.create(
 		session_id=runtime_token,
 		runtime_id=runtime_token,
-		runtime_label=f'Runtime {runtime_token}',
+		runtime_label=runtime_token,
 		runtime_role='detected',
 	)
 
@@ -42,8 +42,6 @@ def apply_target_info(target: Target, target_info: Mapping[str, Any], *, current
 			current_runtime_id=current_runtime_id,
 			source='detected_runtime',
 			title_prefix_applied=True,
-			overlay_enabled=bool(target.ownership and target.ownership.overlay_enabled),
-			overlay_visible=bool(target.ownership and target.ownership.overlay_visible),
 		)
 	elif target.ownership and target.ownership.source == 'detected_runtime':
 		target.ownership = None
@@ -59,15 +57,11 @@ def set_target_ownership(
 	if target is None:
 		return
 	title_prefix_applied = bool(target.display_title and extract_title_prefix(target.display_title))
-	overlay_enabled = bool(target.ownership and target.ownership.overlay_enabled)
-	overlay_visible = bool(target.ownership and target.ownership.overlay_visible)
 	if isinstance(runtime, TargetOwnershipMetadata):
 		target.ownership = runtime.model_copy(
 			update={
 				'target_id': target.target_id,
 				'title_prefix_applied': title_prefix_applied,
-				'overlay_enabled': overlay_enabled,
-				'overlay_visible': overlay_visible,
 			}
 		)
 		return
@@ -77,8 +71,6 @@ def set_target_ownership(
 		current_runtime_id=current_runtime_id,
 		source=cast(Any, source),
 		title_prefix_applied=title_prefix_applied,
-		overlay_enabled=overlay_enabled,
-		overlay_visible=overlay_visible,
 	)
 
 
@@ -89,8 +81,6 @@ def set_target_human_ownership(target: Target | None, *, display_label: str = 'H
 		target_id=target.target_id,
 		display_label=display_label,
 		title_prefix_applied=bool(target.display_title and extract_title_prefix(target.display_title)),
-		overlay_enabled=bool(target.ownership and target.ownership.overlay_enabled),
-		overlay_visible=bool(target.ownership and target.ownership.overlay_visible),
 	)
 
 
