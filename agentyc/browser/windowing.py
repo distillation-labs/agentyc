@@ -14,10 +14,13 @@ def build_create_target_params(
 	background: bool = False,
 	new_window: bool = False,
 	window_bounds: BrowserWindowBounds | None = None,
+	browser_context_id: str | None = None,
 ) -> dict[str, Any]:
 	params: dict[str, Any] = {'url': url, 'background': background}
 	if new_window:
 		params['newWindow'] = True
+	if browser_context_id:
+		params['browserContextId'] = browser_context_id
 	if window_bounds and window_bounds.left is not None:
 		params['left'] = window_bounds.left
 	if window_bounds and window_bounds.top is not None:
