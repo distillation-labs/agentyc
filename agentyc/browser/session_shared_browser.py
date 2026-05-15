@@ -10,7 +10,6 @@ from cdp_use.cdp.target.commands import CreateTargetParameters
 
 from agentyc.browser.collaboration import (
 	apply_title_prefix,
-	build_marker_visibility_script,
 	build_runtime_marker_script,
 	build_runtime_metadata_probe_script,
 )
@@ -53,7 +52,6 @@ async def _apply_runtime_markers_to_target(
 	session: BrowserSession,
 	target_id: TargetID,
 	*,
-	include_overlay: bool = True,
 	include_title_prefix: bool = True,
 ) -> None:
 	if not session.session_manager:
@@ -74,9 +72,7 @@ async def _apply_runtime_markers_to_target(
 		script = build_runtime_marker_script(
 			runtime=session.runtime_metadata,
 			target_id=target_id,
-			include_overlay=include_overlay,
 			include_title_prefix=include_title_prefix,
-			exclude_session_id=session.id,
 		)
 		await cdp_session.cdp_client.send.Runtime.evaluate(
 			params={'expression': script, 'returnByValue': True},
@@ -85,33 +81,9 @@ async def _apply_runtime_markers_to_target(
 		session.session_manager.set_target_ownership(target_id, session.runtime_metadata, source='current_runtime')
 		managed_target = session.session_manager.get_target(target_id)
 		if managed_target and managed_target.ownership:
-			managed_target.ownership.overlay_enabled = include_overlay
-			managed_target.ownership.overlay_visible = include_overlay
 			managed_target.ownership.title_prefix_applied = include_title_prefix
 	except Exception as exc:
 		session.logger.debug(f'Failed to apply runtime markers to target {target_id[-8:]}: {exc}')
-
-
-async def _set_collaboration_overlay_visibility(
-	session: BrowserSession,
-	visible: bool,
-	target_id: TargetID | None = None,
-) -> None:
-	if not session.session_manager:
-		return
-	target_ids = [target_id] if target_id else [target.target_id for target in session.session_manager.get_all_page_targets()]
-	for current_target_id in target_ids:
-		try:
-			cdp_session = await session.get_or_create_cdp_session(current_target_id, focus=False)
-			await cdp_session.cdp_client.send.Runtime.evaluate(
-				params={'expression': build_marker_visibility_script(visible), 'returnByValue': True},
-				session_id=cdp_session.session_id,
-			)
-			target = session.session_manager.get_target(current_target_id)
-			if target and target.ownership:
-				target.ownership.overlay_visible = visible
-		except Exception:
-			pass
 
 
 async def get_target_runtime_metadata(
@@ -122,7 +94,10 @@ async def get_target_runtime_metadata(
 	if not resolved_target_id:
 		return None
 	target = session.session_manager.get_target(resolved_target_id) if session.session_manager else None
-	if target and target.ownership:
+	if target and target.ownership and target.ownership.source != 'detected_runtime':
+		# For ownership set directly (own tabs), the cache is authoritative.
+		# For 'detected_runtime' ownership (title-based detection), skip the cache and probe JS —
+		# title detection only recovers the short label, not the full runtime_id.
 		return {
 			'ownership': target.ownership.model_dump(mode='json'),
 			'runtime': target.ownership.runtime.model_dump(mode='json') if target.ownership.runtime else None,
@@ -262,12 +237,14 @@ async def create_collaborative_page(
 	if resolved_new_window is None:
 		resolved_new_window = session.browser_profile.shared_browser_mode == 'window'
 	resolved_bounds = window_bounds or session.browser_profile.shared_browser_window_bounds
+	browser_context_id: str | None = getattr(session, '_browser_context_id', None)
 	target_id = await _cdp_create_new_page(
 		session,
 		url=url,
 		background=session.browser_profile.shared_browser_focus_policy == 'preserve',
 		new_window=resolved_new_window,
 		window_bounds=resolved_bounds,
+		browser_context_id=browser_context_id,
 	)
 	await _apply_runtime_markers_to_target(session, target_id)
 	await _cdp_get_window_context(session, target_id)
@@ -355,6 +332,7 @@ async def _cdp_create_new_page(
 	background: bool = False,
 	new_window: bool = False,
 	window_bounds: BrowserWindowBounds | dict[str, Any] | None = None,
+	browser_context_id: str | None = None,
 ) -> str:
 	"""Create a new page/tab using CDP Target.createTarget. Returns target ID."""
 	params = CreateTargetParameters(
@@ -363,6 +341,7 @@ async def _cdp_create_new_page(
 			background=background,
 			new_window=new_window,
 			window_bounds=normalize_window_bounds(window_bounds),
+			browser_context_id=browser_context_id,
 		)
 	)
 	if session._cdp_client_root:
