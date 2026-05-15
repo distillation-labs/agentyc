@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from cdp_use.cdp.browser import Bounds
 from cdp_use.cdp.target import TargetID
@@ -27,7 +27,11 @@ if TYPE_CHECKING:
 
 def _tab_display_title(session: BrowserSession, target: Target) -> str:
 	display_title = target.display_title or target.title
-	if target.ownership and target.ownership.runtime and target.ownership.runtime.runtime_id == session.runtime_metadata.runtime_id:
+	if (
+		target.ownership
+		and target.ownership.runtime
+		and target.ownership.runtime.runtime_id == session.runtime_metadata.runtime_id
+	):
 		return apply_title_prefix(display_title, session.runtime_metadata)
 	return display_title
 
@@ -57,7 +61,11 @@ async def _apply_runtime_markers_to_target(
 	target = session.session_manager.get_target(target_id)
 	if not target or target.target_type not in ('page', 'tab'):
 		return
-	if target.ownership and target.ownership.runtime and target.ownership.runtime.runtime_id != session.runtime_metadata.runtime_id:
+	if (
+		target.ownership
+		and target.ownership.runtime
+		and target.ownership.runtime.runtime_id != session.runtime_metadata.runtime_id
+	):
 		return
 	if target.ownership and target.ownership.owner_kind == 'human':
 		return
@@ -200,8 +208,10 @@ async def get_tabs(session: BrowserSession) -> list[TabInfo]:
 			else:
 				title = ''
 
-		if (ownership is None or ownership.source == 'detected_runtime') and not is_new_tab_page(url) and not url.startswith(
-			'chrome://'
+		if (
+			(ownership is None or ownership.source == 'detected_runtime')
+			and not is_new_tab_page(url)
+			and not url.startswith('chrome://')
 		):
 			detected_ownership = await _detect_target_ownership(session, target)
 			if detected_ownership is not None:
@@ -394,7 +404,10 @@ async def _cdp_set_window_bounds(
 	window_id = window_context.get('window_id') or window_context.get('windowId')
 	if window_id is None:
 		return None
-	params = {'windowId': window_id, 'bounds': Bounds(**normalized_bounds.model_dump(by_alias=True, exclude_none=True))}
+	params = cast(
+		Any,
+		{'windowId': window_id, 'bounds': Bounds(**normalized_bounds.model_dump(by_alias=True, exclude_none=True))},
+	)
 	await session._cdp_client_root.send.Browser.setWindowBounds(params=params)
 	await _cdp_get_window_context(session, target_id)
 	target = session.session_manager.get_target(target_id) if session.session_manager else None
