@@ -25,7 +25,6 @@ from agentyc.browser.collaboration import (
 	build_marker_visibility_script,
 	build_runtime_marker_script,
 	build_runtime_metadata_probe_script,
-	strip_title_prefix,
 )
 from agentyc.browser.events import (
 	AgentFocusChangedEvent,
@@ -222,7 +221,7 @@ class BrowserSession(BaseModel):
 
 	# Cache of original viewport size for coordinate conversion (set when browser state is captured)
 	_original_viewport_size: tuple[int, int] | None = PrivateAttr(default=None)
-	_runtime_metadata: RuntimeOwnershipMetadata = PrivateAttr(default=None)
+	_runtime_metadata: RuntimeOwnershipMetadata | None = PrivateAttr(default=None)
 	_target_init_scripts: dict[str, set[str]] = PrivateAttr(default_factory=dict)
 	_global_init_script_targets: dict[str, set[str]] = PrivateAttr(default_factory=dict)
 
@@ -983,6 +982,8 @@ class BrowserSession(BaseModel):
 		"""Handle tab creation - apply viewport settings to new tab."""
 		# Note: Tab switching prevention is handled by the Force Background Tab extension
 		# The extension automatically keeps focus on the current tab when new tabs are created
+		await self._apply_runtime_markers_to_target(event.target_id)
+		await self._cdp_get_window_context(event.target_id)
 
 		# Apply viewport settings if configured
 		if self.browser_profile.viewport and not self.browser_profile.no_viewport:
@@ -1030,6 +1031,7 @@ class BrowserSession(BaseModel):
 		if event.target_id:
 			# Ensure session exists and update agent focus (validates target_type internally)
 			await self.get_or_create_cdp_session(target_id=event.target_id, focus=True)
+			await self._apply_runtime_markers_to_target(event.target_id)
 
 			# Apply viewport settings to the newly focused tab
 			if self.browser_profile.viewport and not self.browser_profile.no_viewport:
@@ -1623,6 +1625,8 @@ class BrowserSession(BaseModel):
 			# Get browser targets from SessionManager (source of truth)
 			# SessionManager has already discovered all targets via start_monitoring()
 			page_targets_from_manager = self.session_manager.get_all_page_targets()
+			for target in page_targets_from_manager:
+				self.session_manager.set_target_ownership(target.target_id, self.runtime_metadata)
 
 			# Check for chrome://newtab pages and redirect them to about:blank (in parallel)
 			from agentyc.utils import is_new_tab_page
@@ -1651,6 +1655,7 @@ class BrowserSession(BaseModel):
 				new_target = await self._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
 				target_id = new_target['targetId']
 				self.logger.debug(f'📄 Created new blank page: {target_id}')
+				page_targets_from_manager = self.session_manager.get_all_page_targets()
 			else:
 				target_id = page_targets_from_manager[0].target_id
 				self.logger.debug(f'📄 Using existing page: {target_id}')
@@ -1659,6 +1664,8 @@ class BrowserSession(BaseModel):
 			# Note: get_or_create_cdp_session() will wait for attach event and set focus
 			try:
 				await self.get_or_create_cdp_session(target_id, focus=True)
+				await self._apply_runtime_markers_to_target(target_id)
+				await self._cdp_get_window_context(target_id)
 				# agent_focus_target_id is now set by get_or_create_cdp_session
 				self.logger.debug(f'📄 Agent focus set to {target_id[:8]}...')
 			except ValueError as e:
@@ -1683,6 +1690,8 @@ class BrowserSession(BaseModel):
 			# Dispatch TabCreatedEvent for all initial tabs (so watchdogs can initialize)
 			for idx, target in enumerate(page_targets_from_manager):
 				target_url = target.url
+				await self._apply_runtime_markers_to_target(target.target_id)
+				await self._cdp_get_window_context(target.target_id)
 				self.logger.debug(f'Dispatching TabCreatedEvent for initial tab {idx}: {target_url}')
 				self.event_bus.dispatch(TabCreatedEvent(url=target_url, target_id=target.target_id))
 
@@ -1911,6 +1920,8 @@ class BrowserSession(BaseModel):
 
 		# 6. Re-discover page targets and restore focus
 		page_targets = self.session_manager.get_all_page_targets()
+		for target in page_targets:
+			self.session_manager.set_target_ownership(target.target_id, self.runtime_metadata)
 
 		# Prefer the old focus target if it still exists
 		restored = False
@@ -1918,6 +1929,8 @@ class BrowserSession(BaseModel):
 			for target in page_targets:
 				if target.target_id == old_focus_target_id:
 					await self.get_or_create_cdp_session(old_focus_target_id, focus=True)
+					await self._apply_runtime_markers_to_target(old_focus_target_id)
+					await self._cdp_get_window_context(old_focus_target_id)
 					restored = True
 					self.logger.debug(f'🔄 Restored agent focus to previous target {old_focus_target_id[:8]}...')
 					break
@@ -1926,12 +1939,16 @@ class BrowserSession(BaseModel):
 			if page_targets:
 				fallback_id = page_targets[0].target_id
 				await self.get_or_create_cdp_session(fallback_id, focus=True)
+				await self._apply_runtime_markers_to_target(fallback_id)
+				await self._cdp_get_window_context(fallback_id)
 				self.logger.debug(f'🔄 Agent focus set to fallback target {fallback_id[:8]}...')
 			else:
 				# No pages exist — create one
 				new_target = await self._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
 				target_id = new_target['targetId']
 				await self.get_or_create_cdp_session(target_id, focus=True)
+				await self._apply_runtime_markers_to_target(target_id)
+				await self._cdp_get_window_context(target_id)
 				self.logger.debug(f'🔄 Created new blank page during reconnect: {target_id[:8]}...')
 
 		# 7. Re-enable proxy auth if configured
@@ -2031,6 +2048,7 @@ class BrowserSession(BaseModel):
 
 	@property
 	def runtime_metadata(self) -> RuntimeOwnershipMetadata:
+		assert self._runtime_metadata is not None
 		return self._runtime_metadata
 
 	def _tab_display_title(self, target: Target) -> str:
@@ -3347,8 +3365,8 @@ class BrowserSession(BaseModel):
 		window_id = window_context.get('window_id') or window_context.get('windowId')
 		if window_id is None:
 			return None
-		params: dict[str, Any] = {'windowId': window_id, 'bounds': Bounds(**normalized_bounds.model_dump(by_alias=True, exclude_none=True))}
-		await self._cdp_client_root.send.Browser.setWindowBounds(params=params)
+		params = {'windowId': window_id, 'bounds': Bounds(**normalized_bounds.model_dump(by_alias=True, exclude_none=True))}
+		await self._cdp_client_root.send.Browser.setWindowBounds(params=cast(Any, params))
 		await self._cdp_get_window_context(target_id)
 		target = self.session_manager.get_target(target_id) if self.session_manager else None
 		if target and target.window_bounds:
@@ -3870,6 +3888,7 @@ class BrowserSession(BaseModel):
 		from cdp_use.cdp.page import CaptureScreenshotParameters
 
 		cdp_session = await self.get_or_create_cdp_session()
+		await self._set_collaboration_overlay_visibility(False, target_id=cdp_session.target_id)
 
 		# Build parameters dict explicitly to satisfy TypedDict expectations
 		params: CaptureScreenshotParameters = {
@@ -3891,7 +3910,10 @@ class BrowserSession(BaseModel):
 
 		params = CaptureScreenshotParameters(**params)
 
-		result = await cdp_session.cdp_client.send.Page.captureScreenshot(params=params, session_id=cdp_session.session_id)
+		try:
+			result = await cdp_session.cdp_client.send.Page.captureScreenshot(params=params, session_id=cdp_session.session_id)
+		finally:
+			await self._set_collaboration_overlay_visibility(True, target_id=cdp_session.target_id)
 
 		if not result or 'data' not in result:
 			raise Exception('Screenshot failed - no data returned')
@@ -3902,6 +3924,34 @@ class BrowserSession(BaseModel):
 			Path(path).write_bytes(screenshot_data)
 
 		return screenshot_data
+
+	async def get_window_bounds(self, target_id: TargetID | None = None) -> dict[str, Any] | None:
+		resolved_target_id = target_id or self.agent_focus_target_id
+		if not resolved_target_id:
+			return None
+		return await self._cdp_get_window_context(resolved_target_id)
+
+	async def set_window_bounds(
+		self,
+		bounds: BrowserWindowBounds | dict[str, Any],
+		target_id: TargetID | None = None,
+	) -> dict[str, Any] | None:
+		resolved_target_id = target_id or self.agent_focus_target_id
+		if not resolved_target_id:
+			return None
+		return await self._cdp_set_window_bounds(resolved_target_id, bounds)
+
+	async def create_collaborative_page(
+		self,
+		url: str = 'about:blank',
+		*,
+		new_window: bool = False,
+		window_bounds: BrowserWindowBounds | dict[str, Any] | None = None,
+	) -> Page:
+		target_id = await self._cdp_create_new_page(url=url, new_window=new_window, window_bounds=window_bounds)
+		await self._apply_runtime_markers_to_target(target_id)
+		await self._cdp_get_window_context(target_id)
+		return Page(self, target_id)
 
 	async def screenshot_element(
 		self,
