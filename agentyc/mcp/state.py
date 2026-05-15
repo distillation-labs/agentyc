@@ -58,6 +58,117 @@ def parse_element_ref(ref: str) -> int:
 	return int(match.group(1))
 
 
+def _serialize_tab_id(target_id: Any) -> str | None:
+	if target_id is None:
+		return None
+	target = str(target_id)
+	return target[-4:] if target else None
+
+
+def _serialize_optional_model(value: Any, *, by_alias: bool = False) -> Any:
+	if value is None:
+		return None
+	if hasattr(value, 'model_dump'):
+		return cast(Any, value).model_dump(mode='json', by_alias=by_alias, exclude_none=True)
+	if isinstance(value, dict):
+		return value
+	return value
+
+
+def serialize_tab_info(tab: Any) -> dict[str, Any]:
+	if hasattr(tab, 'model_dump'):
+		payload = cast(Any, tab).model_dump(mode='json', by_alias=True, exclude_none=True)
+	else:
+		payload: dict[str, Any] = {
+			'url': getattr(tab, 'url', ''),
+			'title': getattr(tab, 'title', '') or '',
+		}
+		tab_id = _serialize_tab_id(getattr(tab, 'target_id', None))
+		if tab_id is not None:
+			payload['tab_id'] = tab_id
+		parent_tab_id = _serialize_tab_id(getattr(tab, 'parent_target_id', None))
+		if parent_tab_id is not None:
+			payload['parent_tab_id'] = parent_tab_id
+		display_title = getattr(tab, 'display_title', None)
+		if display_title is not None:
+			payload['display_title'] = display_title
+		ownership = _serialize_optional_model(getattr(tab, 'ownership', None))
+		if ownership is not None:
+			payload['ownership'] = ownership
+		window_bounds = _serialize_optional_model(getattr(tab, 'window_bounds', None), by_alias=True)
+		if window_bounds is not None:
+			payload['window_bounds'] = window_bounds
+
+	if payload.get('title') is None:
+		payload['title'] = ''
+	return payload
+
+
+def _build_current_tab_payload(tab_payload: dict[str, Any]) -> dict[str, Any] | None:
+	current_tab: dict[str, Any] = {}
+	for key in ('tab_id', 'parent_tab_id', 'display_title', 'ownership', 'window_bounds', 'url', 'title'):
+		value = tab_payload.get(key)
+		if value is not None:
+			current_tab[key] = value
+	return current_tab or None
+
+
+def _resolve_current_tab_payload(
+	*,
+	tabs: list[Any],
+	serialized_tabs: list[dict[str, Any]],
+	current_tab_id: str | None,
+	current_url: str,
+	current_title: str,
+) -> dict[str, Any] | None:
+	if current_tab_id is not None:
+		for tab, tab_payload in zip(tabs, serialized_tabs):
+			if str(getattr(tab, 'target_id', '')) == current_tab_id:
+				return _build_current_tab_payload(tab_payload)
+
+	matching_tabs = [
+		_build_current_tab_payload(tab_payload)
+		for tab, tab_payload in zip(tabs, serialized_tabs)
+		if getattr(tab, 'url', None) == current_url and getattr(tab, 'title', None) == current_title
+	]
+	matching_tabs = [payload for payload in matching_tabs if payload is not None]
+	if len(matching_tabs) == 1:
+		return matching_tabs[0]
+	if len(serialized_tabs) == 1:
+		return _build_current_tab_payload(serialized_tabs[0])
+	return None
+
+
+def _build_unchanged_state_payload(
+	*,
+	state: BrowserStateSummary,
+	mode: StateMode,
+	effective_mode: Literal['full', 'min', 'focus'],
+	state_hash: str,
+	focus_index: int | None,
+	current_tab: dict[str, Any] | None,
+	serialized_current_tab_id: str | None,
+	interactive_element_count: int,
+) -> dict[str, Any]:
+	result: dict[str, Any] = {
+		'url': state.url,
+		'title': state.title,
+		'mode': mode,
+		'effective_mode': effective_mode,
+		'state_hash': state_hash,
+		'changed': False,
+		'interactive_element_count': interactive_element_count,
+		'interactive_elements': [],
+	}
+	if serialized_current_tab_id is not None:
+		result['current_tab_id'] = serialized_current_tab_id
+	elif current_tab is not None and 'tab_id' in current_tab:
+		result['current_tab_id'] = current_tab['tab_id']
+	if focus_index is not None:
+		result['focus_ref'] = make_element_ref(focus_index)
+	return result
+
+
 def build_browser_state_payload(
 	state: BrowserStateSummary,
 	*,
@@ -78,10 +189,11 @@ def build_browser_state_payload(
 		mode=mode, interactive_element_count=len(selector_map), max_min_elements=max_min_elements
 	)
 	state_hash = compute_browser_state_hash(state)
+	tabs_payload = [serialize_tab_info(tab) for tab in state.tabs]
 	result: dict[str, Any] = {
 		'url': state.url,
 		'title': state.title,
-		'tabs': [{'url': tab.url, 'title': tab.title} for tab in state.tabs],
+		'tabs': tabs_payload,
 		'mode': mode,
 		'effective_mode': effective_mode,
 		'state_hash': state_hash,
@@ -90,8 +202,41 @@ def build_browser_state_payload(
 		'interactive_elements': [],
 	}
 
+	current_tab_id = getattr(state, 'current_tab_id', None)
+	serialized_current_tab_id = _serialize_tab_id(current_tab_id)
+	if serialized_current_tab_id is not None:
+		result['current_tab_id'] = serialized_current_tab_id
+	current_tab = _resolve_current_tab_payload(
+		tabs=state.tabs,
+		serialized_tabs=tabs_payload,
+		current_tab_id=current_tab_id,
+		current_url=state.url,
+		current_title=state.title,
+	)
+	if current_tab is not None:
+		result['current_tab'] = current_tab
+		if 'ownership' in current_tab:
+			result['ownership'] = current_tab['ownership']
+			runtime_payload = current_tab['ownership'].get('runtime') if isinstance(current_tab['ownership'], dict) else None
+			if runtime_payload is not None:
+				result['runtime'] = runtime_payload
+		if 'current_tab_id' not in result and 'tab_id' in current_tab:
+			result['current_tab_id'] = current_tab['tab_id']
+
 	if focus_index is not None:
 		result['focus_ref'] = make_element_ref(focus_index)
+
+	if since_hash == state_hash:
+		return _build_unchanged_state_payload(
+			state=state,
+			mode=mode,
+			effective_mode=effective_mode,
+			state_hash=state_hash,
+			focus_index=focus_index,
+			current_tab=current_tab,
+			serialized_current_tab_id=serialized_current_tab_id,
+			interactive_element_count=len(selector_map),
+		)
 
 	if state.page_info:
 		pi = state.page_info
@@ -107,9 +252,6 @@ def build_browser_state_payload(
 			'x': pi.scroll_x,
 			'y': pi.scroll_y,
 		}
-
-	if since_hash == state_hash:
-		return result
 
 	selected_elements: list[EnhancedDOMTreeNode]
 	if effective_mode == 'focus' and focus_index is not None:
