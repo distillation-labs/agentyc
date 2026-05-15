@@ -9,10 +9,12 @@ from typing import TYPE_CHECKING
 
 from cdp_use.cdp.target import AttachedToTargetEvent, DetachedFromTargetEvent, SessionID, TargetID
 
+from agentyc.browser.collaboration import extract_title_prefix, strip_title_prefix
+from agentyc.browser.session_models import CDPSession, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 from agentyc.utils import create_task_with_error_handling
 
 if TYPE_CHECKING:
-	from agentyc.browser.session import BrowserSession, CDPSession, Target
+	from agentyc.browser.session import BrowserSession
 
 
 class SessionManager:
@@ -52,6 +54,50 @@ class SessionManager:
 		self._recovery_in_progress: bool = False
 		self._recovery_complete_event: asyncio.Event | None = None
 		self._recovery_task: asyncio.Task | None = None
+
+	def _runtime_metadata_from_target_info(self, target_id: TargetID, title: str) -> RuntimeOwnershipMetadata | None:
+		prefix = extract_title_prefix(title)
+		if not prefix:
+			return None
+		runtime_token = prefix.removeprefix('[agtyc:').split(']', 1)[0]
+		return RuntimeOwnershipMetadata.create(
+			session_id=runtime_token,
+			runtime_id=runtime_token,
+			runtime_label=f'Runtime {runtime_token}',
+			runtime_role='detected',
+		)
+
+	def _apply_target_info(self, target: Target, target_info: dict) -> None:
+		raw_title = target_info.get('title', target.display_title or target.title or 'Unknown title')
+		target.display_title = raw_title
+		target.title = strip_title_prefix(raw_title) or target.title
+		target.url = target_info.get('url', target.url)
+		ownership_metadata = self._runtime_metadata_from_target_info(target.target_id, raw_title)
+		if ownership_metadata:
+			target.ownership = TargetOwnershipMetadata(target_id=target.target_id, runtime=ownership_metadata, title_prefix_applied=True)
+		elif target.ownership and target.ownership.runtime.runtime_role == 'detected':
+			target.ownership = None
+
+	def set_target_ownership(self, target_id: TargetID, runtime: RuntimeOwnershipMetadata) -> None:
+		target = self._targets.get(target_id)
+		if not target:
+			return
+		target.ownership = TargetOwnershipMetadata(
+			target_id=target_id,
+			runtime=runtime,
+			title_prefix_applied=bool(target.display_title and extract_title_prefix(target.display_title)),
+			overlay_enabled=bool(target.ownership and target.ownership.overlay_enabled),
+			overlay_visible=bool(target.ownership and target.ownership.overlay_visible),
+		)
+
+	def set_target_window_context(self, target_id: TargetID, *, window_id: int | None = None, window_bounds=None) -> None:
+		target = self._targets.get(target_id)
+		if not target:
+			return
+		if window_id is not None:
+			target.window_id = window_id
+		if window_bounds is not None:
+			target.window_bounds = window_bounds
 
 	async def start_monitoring(self) -> None:
 		"""Start monitoring Target attach/detach events.
@@ -401,8 +447,6 @@ class SessionManager:
 			if '-32001' not in error_str and 'Session with given id not found' not in error_str:
 				self.logger.debug(f'[SessionManager] Auto-attach failed for {target_type}: {e}')
 
-		from agentyc.browser.session import Target
-
 		async with self._lock:
 			# Track this session for the target
 			if target_id not in self._target_sessions:
@@ -418,19 +462,17 @@ class SessionManager:
 					target_id=target_id,
 					target_type=target_type,
 					url=target_info.get('url', 'about:blank'),
-					title=target_info.get('title', 'Unknown title'),
+					title='Unknown title',
 				)
+				self._apply_target_info(target, target_info)
 				self._targets[target_id] = target
 				self.logger.debug(f'[SessionManager] Created target {target_id[:8]}... (type={target_type})')
 			else:
 				# Update existing target info
 				existing_target = self._targets[target_id]
-				existing_target.url = target_info.get('url', existing_target.url)
-				existing_target.title = target_info.get('title', existing_target.title)
+				self._apply_target_info(existing_target, target_info)
 
 		# Create CDPSession (communication channel)
-		from agentyc.browser.session import CDPSession
-
 		assert self.browser_session._cdp_client_root is not None, 'Root CDP client required'
 
 		cdp_session = CDPSession(
@@ -490,9 +532,7 @@ class SessionManager:
 			# Update target if it exists (source of truth for url/title)
 			if target_id in self._targets:
 				target = self._targets[target_id]
-
-				target.title = target_info.get('title', target.title)
-				target.url = target_info.get('url', target.url)
+				self._apply_target_info(target, target_info)
 
 	async def _handle_target_detached(self, event: DetachedFromTargetEvent) -> None:
 		"""Handle Target.detachedFromTarget event.
