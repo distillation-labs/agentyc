@@ -10,7 +10,15 @@ from typing import TYPE_CHECKING, Any, cast
 
 from cdp_use.cdp.target import AttachedToTargetEvent, DetachedFromTargetEvent, SessionID, TargetID
 
-from agentyc.browser.collaboration import extract_title_prefix, strip_title_prefix
+from agentyc.browser.session_manager_support import (
+	apply_target_info as apply_target_info_helper,
+	enable_page_monitoring as enable_page_monitoring_helper,
+	initialize_existing_targets as initialize_existing_targets_helper,
+	runtime_metadata_from_title,
+	set_target_human_ownership as set_target_human_ownership_helper,
+	set_target_ownership as set_target_ownership_helper,
+	set_target_window_context as set_target_window_context_helper,
+)
 from agentyc.browser.session_models import CDPSession, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 from agentyc.utils import create_task_with_error_handling
 
@@ -57,48 +65,38 @@ class SessionManager:
 		self._recovery_task: asyncio.Task | None = None
 
 	def _runtime_metadata_from_target_info(self, target_id: TargetID, title: str) -> RuntimeOwnershipMetadata | None:
-		prefix = extract_title_prefix(title)
-		if not prefix:
-			return None
-		runtime_token = prefix.removeprefix('[agtyc:').split(']', 1)[0]
-		return RuntimeOwnershipMetadata.create(
-			session_id=runtime_token,
-			runtime_id=runtime_token,
-			runtime_label=f'Runtime {runtime_token}',
-			runtime_role='detected',
-		)
+		return runtime_metadata_from_title(title)
 
 	def _apply_target_info(self, target: Target, target_info: Mapping[str, Any]) -> None:
-		raw_title = str(target_info.get('title', target.display_title or target.title or 'Unknown title'))
-		target.display_title = raw_title
-		target.title = strip_title_prefix(raw_title) or target.title
-		target.url = str(target_info.get('url', target.url))
-		ownership_metadata = self._runtime_metadata_from_target_info(target.target_id, raw_title)
-		if ownership_metadata:
-			target.ownership = TargetOwnershipMetadata(target_id=target.target_id, runtime=ownership_metadata, title_prefix_applied=True)
-		elif target.ownership and target.ownership.runtime.runtime_role == 'detected':
-			target.ownership = None
-
-	def set_target_ownership(self, target_id: TargetID, runtime: RuntimeOwnershipMetadata) -> None:
-		target = self._targets.get(target_id)
-		if not target:
-			return
-		target.ownership = TargetOwnershipMetadata(
-			target_id=target_id,
-			runtime=runtime,
-			title_prefix_applied=bool(target.display_title and extract_title_prefix(target.display_title)),
-			overlay_enabled=bool(target.ownership and target.ownership.overlay_enabled),
-			overlay_visible=bool(target.ownership and target.ownership.overlay_visible),
+		apply_target_info_helper(
+			target,
+			target_info,
+			current_runtime_id=self.browser_session.runtime_metadata.runtime_id,
 		)
 
+	def set_target_ownership(
+		self,
+		target_id: TargetID,
+		runtime: RuntimeOwnershipMetadata | TargetOwnershipMetadata,
+		*,
+		source: str | None = None,
+	) -> None:
+		set_target_ownership_helper(
+			self._targets.get(target_id),
+			runtime,
+			current_runtime_id=self.browser_session.runtime_metadata.runtime_id,
+			source=source,
+		)
+
+	def set_target_human_ownership(self, target_id: TargetID, *, display_label: str = 'Human') -> None:
+		set_target_human_ownership_helper(self._targets.get(target_id), display_label=display_label)
+
 	def set_target_window_context(self, target_id: TargetID, *, window_id: int | None = None, window_bounds=None) -> None:
-		target = self._targets.get(target_id)
-		if not target:
-			return
-		if window_id is not None:
-			target.window_id = window_id
-		if window_bounds is not None:
-			target.window_bounds = window_bounds
+		set_target_window_context_helper(
+			self._targets.get(target_id),
+			window_id=window_id,
+			window_bounds=window_bounds,
+		)
 
 	async def start_monitoring(self) -> None:
 		"""Start monitoring Target attach/detach events.
@@ -729,7 +727,7 @@ class SessionManager:
 				self.logger.info(f'[SessionManager] ✅ Agent focus recovered: {new_target_id[:8]}...')
 
 				# Visually activate the tab in browser (only for existing tabs)
-				if is_existing_tab:
+				if is_existing_tab and self.browser_session.browser_profile.shared_browser_focus_policy == 'activate':
 					try:
 						assert self.browser_session._cdp_client_root is not None
 						await self.browser_session._cdp_client_root.send.Target.activateTarget(params={'targetId': new_target_id})
@@ -789,164 +787,7 @@ class SessionManager:
 			self.logger.debug('[SessionManager] Recovery state reset')
 
 	async def _initialize_existing_targets(self) -> None:
-		"""Discover and initialize all existing targets at startup.
-
-		Attaches to each target and initializes it SYNCHRONOUSLY.
-		Chrome will also fire attachedToTarget events, but _handle_target_attached() is
-		idempotent (checks if target already in pool), so duplicate handling is safe.
-
-		This eliminates race conditions - monitoring is guaranteed ready before navigation.
-		"""
-		cdp_client = self.browser_session._cdp_client_root
-		assert cdp_client is not None
-
-		# Get all existing targets
-		targets_result = await cdp_client.send.Target.getTargets()
-		existing_targets = targets_result.get('targetInfos', [])
-
-		self.logger.debug(f'[SessionManager] Discovered {len(existing_targets)} existing targets')
-
-		# Track target IDs for verification
-		target_ids_to_wait_for = []
-
-		# Just attach to ALL existing targets - Chrome fires attachedToTarget events
-		# The on_attached handler (via create_task) does ALL the work
-		for target in existing_targets:
-			target_id = target['targetId']
-			target_type = target.get('type', 'unknown')
-
-			try:
-				# Just attach - event handler does everything
-				await cdp_client.send.Target.attachToTarget(params={'targetId': target_id, 'flatten': True})
-				target_ids_to_wait_for.append(target_id)
-			except Exception as e:
-				self.logger.debug(
-					f'[SessionManager] Failed to attach to existing target {target_id[:8]}... (type={target_type}): {e}'
-				)
-
-		# Wait for event handlers to complete their work (they run via create_task)
-		# Use event-driven approach instead of polling for better performance
-		ready_event = asyncio.Event()
-
-		async def check_all_ready():
-			"""Check if all sessions are ready and signal completion."""
-			while True:
-				ready_count = 0
-				for tid in target_ids_to_wait_for:
-					session = self._get_session_for_target(tid)
-					if session:
-						target = self._targets.get(tid)
-						target_type = target.target_type if target else 'unknown'
-						# For pages, verify monitoring is enabled
-						if target_type in ('page', 'tab'):
-							if hasattr(session, '_lifecycle_events') and session._lifecycle_events is not None:
-								ready_count += 1
-						else:
-							# Non-page targets don't need monitoring
-							ready_count += 1
-
-				if ready_count == len(target_ids_to_wait_for):
-					ready_event.set()
-					return
-
-				await asyncio.sleep(0.05)
-
-		# Start checking in background
-		check_task = create_task_with_error_handling(
-			check_all_ready(), name='check_all_targets_ready', logger_instance=self.logger
-		)
-
-		try:
-			# Wait for completion with timeout
-			await asyncio.wait_for(ready_event.wait(), timeout=2.0)
-		except TimeoutError:
-			# Timeout - count what's ready
-			ready_count = 0
-			for tid in target_ids_to_wait_for:
-				session = self._get_session_for_target(tid)
-				if session:
-					target = self._targets.get(tid)
-					target_type = target.target_type if target else 'unknown'
-					# For pages, verify monitoring is enabled
-					if target_type in ('page', 'tab'):
-						if hasattr(session, '_lifecycle_events') and session._lifecycle_events is not None:
-							ready_count += 1
-					else:
-						# Non-page targets don't need monitoring
-						ready_count += 1
-			self.logger.warning(
-				f'[SessionManager] Initialization timeout after 2.0s: {ready_count}/{len(target_ids_to_wait_for)} sessions ready'
-			)
-		finally:
-			check_task.cancel()
-			try:
-				await check_task
-			except asyncio.CancelledError:
-				pass
+		await initialize_existing_targets_helper(self)
 
 	async def _enable_page_monitoring(self, cdp_session: 'CDPSession') -> None:
-		"""Enable lifecycle events and network monitoring for a page target.
-
-		This is called once per page when it's created, avoiding handler accumulation.
-		Registers a SINGLE lifecycle handler per session that stores events for navigations to consume.
-
-		Args:
-			cdp_session: The CDP session to enable monitoring on
-		"""
-		try:
-			# Enable Page domain first (required for lifecycle events)
-			await cdp_session.cdp_client.send.Page.enable(session_id=cdp_session.session_id)
-
-			# Enable lifecycle events (load, DOMContentLoaded, networkIdle, etc.)
-			await cdp_session.cdp_client.send.Page.setLifecycleEventsEnabled(
-				params={'enabled': True}, session_id=cdp_session.session_id
-			)
-
-			# Enable network monitoring for networkIdle detection
-			await cdp_session.cdp_client.send.Network.enable(session_id=cdp_session.session_id)
-
-			# Initialize lifecycle event storage for this session (thread-safe)
-			from collections import deque
-
-			cdp_session._lifecycle_events = deque(maxlen=50)  # Keep last 50 events
-			cdp_session._lifecycle_lock = asyncio.Lock()
-
-			# Register ONE handler per session that stores events
-			def on_lifecycle_event(event, session_id=None):
-				event_name = event.get('name', 'unknown')
-				event_loader_id = event.get('loaderId', 'none')
-
-				# Find which target this session belongs to
-				target_id_from_event = None
-				if session_id:
-					target_id_from_event = self.get_target_id_from_session_id(session_id)
-
-				# Check if this event is for our target
-				if target_id_from_event == cdp_session.target_id:
-					# Store event for navigations to consume
-					event_data = {
-						'name': event_name,
-						'loaderId': event_loader_id,
-						'timestamp': asyncio.get_event_loop().time(),
-					}
-					# Append is atomic in CPython
-					try:
-						cdp_session._lifecycle_events.append(event_data)
-					except Exception as e:
-						# Only log errors, not every event
-						self.logger.error(f'[SessionManager] Failed to store lifecycle event: {e}')
-
-			# Register the handler ONCE (this is the only place we register)
-			cdp_session.cdp_client.register.Page.lifecycleEvent(on_lifecycle_event)
-
-		except Exception as e:
-			# Don't fail - target might be short-lived or already detached
-			error_str = str(e)
-			if '-32001' in error_str or 'Session with given id not found' in error_str:
-				self.logger.debug(
-					f'[SessionManager] Target {cdp_session.target_id[:8]}... detached before monitoring could be enabled (normal for short-lived targets)'
-				)
-			else:
-				self.logger.warning(
-					f'[SessionManager] Failed to enable monitoring for target {cdp_session.target_id[:8]}...: {e}'
-				)
+		await enable_page_monitoring_helper(self, cdp_session)
