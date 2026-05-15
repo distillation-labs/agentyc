@@ -1,8 +1,8 @@
 """Test OpenAI model button click."""
 
-from agentyc.llm.openai.chat import ChatOpenAI
-
 from tests.ci.models.model_test_helper import run_model_button_click_test
+
+from agentyc.llm.openai.chat import ChatOpenAI
 
 
 async def test_openai_gpt_4_1_mini(httpserver):
