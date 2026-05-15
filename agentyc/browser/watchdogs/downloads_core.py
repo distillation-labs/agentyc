@@ -25,6 +25,7 @@ from agentyc.browser.events import (
 )
 from agentyc.utils import create_task_with_error_handling
 
+
 class DownloadsCoreMixin:
     """Core lifecycle methods and CDP download listener setup."""
 
