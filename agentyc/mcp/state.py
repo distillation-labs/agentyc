@@ -28,6 +28,23 @@ _GENERIC_ACTION_TEXTS = {
 }
 _ELEMENT_REF_PATTERN = re.compile(r'^(?:e)?([1-9]\d*)$')
 
+# AX properties that represent element state — surfaced to agents for accuracy
+_AX_STATE_PROPS = ('checked', 'expanded', 'selected', 'pressed', 'required', 'readonly', 'invalid', 'multiselectable')
+
+
+def _get_ax_prop(element: EnhancedDOMTreeNode, name: str) -> Any:
+	"""Return the value of an AX property by name, or None if absent."""
+	ax = element.ax_node
+	if not ax:
+		return None
+	properties = getattr(ax, 'properties', None)
+	if not properties:
+		return None
+	for prop in properties:
+		if getattr(prop, 'name', None) == name:
+			return prop.value
+	return None
+
 
 def make_element_ref(backend_node_id: int) -> str:
 	return f'e{backend_node_id}'
@@ -109,8 +126,11 @@ def build_browser_state_payload(
 	# Compact modes keep the stable ref and omit the redundant numeric index.
 	# Full/focus modes retain it for compatibility and easier debugging.
 	include_index = effective_mode != 'min'
+	viewport_w = state.page_info.viewport_width if state.page_info else None
+	viewport_h = state.page_info.viewport_height if state.page_info else None
 	result['interactive_elements'] = [
-		summarize_interactive_element(element, include_index=include_index) for element in selected_elements
+		summarize_interactive_element(element, include_index=include_index, viewport_width=viewport_w, viewport_height=viewport_h)
+		for element in selected_elements
 	]
 	return result
 
@@ -215,7 +235,13 @@ def compaction_signature(element: EnhancedDOMTreeNode) -> str:
 	return '|'.join([tag, role, input_type, signature_text])
 
 
-def summarize_interactive_element(element: EnhancedDOMTreeNode, *, include_index: bool = True) -> dict[str, Any]:
+def summarize_interactive_element(
+	element: EnhancedDOMTreeNode,
+	*,
+	include_index: bool = True,
+	viewport_width: int | None = None,
+	viewport_height: int | None = None,
+) -> dict[str, Any]:
 	text = truncate_text(element.get_meaningful_text_for_llm())
 	info: dict[str, Any] = {
 		'ref': make_element_ref(element.backend_node_id),
@@ -236,14 +262,51 @@ def summarize_interactive_element(element: EnhancedDOMTreeNode, *, include_index
 		info['href'] = element.attributes['href']
 	if element.attributes.get('type'):
 		info['type'] = element.attributes['type']
-	# Include current value for input-like elements so agents can see pre-filled form state
+	# Current value for input-like elements — agents need pre-filled state.
+	# AX node.value is authoritative: it reflects the live DOM property (typed text),
+	# whereas element.attributes['value'] is the static HTML attribute (initial value only).
 	tag = element.tag_name.lower()
 	if tag in {'input', 'textarea', 'select'} or 'contenteditable' in element.attributes:
-		value = element.attributes.get('value') or element.node_value
-		if value and value.strip():
-			info['value'] = truncate_text(value, max_length=200)
+		ax_value = getattr(element.ax_node, 'value', None) if element.ax_node else None
+		value = ax_value or element.attributes.get('value') or element.node_value
+		if value and str(value).strip():
+			info['value'] = truncate_text(str(value), max_length=200)
+	# AX state properties — what agents need to interact correctly
+	for prop_name in _AX_STATE_PROPS:
+		val = _get_ax_prop(element, prop_name)
+		if val is not None and val is not False:
+			info[prop_name] = val
+	# AX description provides additional context (e.g. validation messages, hint text from aria-describedby/aria-errormessage)
+	if element.ax_node and getattr(element.ax_node, 'description', None):
+		desc = truncate_text(element.ax_node.description or '', max_length=120)
+		existing_context = info.get('context', '')
+		if desc and desc != existing_context and desc != info.get('text', ''):
+			info['description'] = desc
 	if 'disabled' in element.attributes:
 		info['disabled'] = True
+	# Form constraints — helps agents format input correctly and avoid validation errors
+	for attr in ('pattern', 'minlength', 'maxlength', 'min', 'max', 'step', 'accept', 'multiple'):
+		v = element.attributes.get(attr)
+		if v is not None:
+			info[attr] = v
+	# accesskey — keyboard shortcut hint
+	if element.attributes.get('accesskey'):
+		info['keyboard_shortcut'] = f'Alt+{element.attributes["accesskey"].upper()}'
+	# Viewport visibility — surface when element is off-screen so agents know to scroll first
+	_snap = getattr(element, 'snapshot_node', None)
+	if viewport_width and viewport_height and _snap and _snap.clientRects:
+		r = _snap.clientRects
+		in_vp = r.x < viewport_width and r.y < viewport_height and (r.x + r.width) > 0 and (r.y + r.height) > 0
+		if not in_vp:
+			# Compute scroll direction needed
+			if r.y + r.height <= 0:
+				info['off_screen'] = 'above'
+			elif r.y >= viewport_height:
+				info['off_screen'] = 'below'
+			elif r.x + r.width <= 0:
+				info['off_screen'] = 'left'
+			else:
+				info['off_screen'] = 'right'
 	return info
 
 
