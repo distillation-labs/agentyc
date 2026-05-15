@@ -6,7 +6,10 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+	from agentyc.mcp.state import StateMode
 
 
 def _ensure_extract_runtime(self) -> None:
@@ -414,7 +417,7 @@ async def _upload_file(self, path: str, index: int | None = None, ref: str | Non
 async def _get_browser_state(
 	self,
 	include_screenshot: bool = False,
-	mode: str = 'auto',
+	mode: StateMode = 'auto',
 	focus_ref: str | None = None,
 	since_hash: str | None = None,
 ) -> tuple[str, str | None]:
@@ -455,7 +458,9 @@ async def _get_browser_state(
 	current_tab_has_ownership = isinstance(current_tab, dict) and isinstance(current_tab.get('ownership'), dict)
 	has_interactive_elements = bool(result.get('interactive_elements')) if isinstance(result, dict) else False
 	is_live_http_page = str(getattr(state, 'url', '') or '').startswith(('http://', 'https://'))
-	if (not current_tab_has_ownership and len(getattr(state, 'tabs', []) or []) > 1) or (is_live_http_page and not has_interactive_elements):
+	if (not current_tab_has_ownership and len(getattr(state, 'tabs', []) or []) > 1) or (
+		is_live_http_page and not has_interactive_elements
+	):
 		await asyncio.sleep(0.1)
 		state, result = await _fetch_state_payload(focus_ref)
 
