@@ -74,8 +74,7 @@ class EnhancedDOMTreeNode:
 		current_element = self
 
 		while current_element and (
-			current_element.node_type == NodeType.ELEMENT_NODE
-			or current_element.node_type == NodeType.DOCUMENT_FRAGMENT_NODE
+			current_element.node_type == NodeType.ELEMENT_NODE or current_element.node_type == NodeType.DOCUMENT_FRAGMENT_NODE
 		):
 			if current_element.node_type == NodeType.DOCUMENT_FRAGMENT_NODE:
 				current_element = current_element.parent_node
