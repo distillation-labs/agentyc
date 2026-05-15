@@ -3216,12 +3216,20 @@ class BrowserSession(BaseModel):
 
 		return result
 
-	async def _cdp_create_new_page(self, url: str = 'about:blank', background: bool = False, new_window: bool = False) -> str:
+	async def _cdp_create_new_page(
+		self,
+		url: str = 'about:blank',
+		background: bool = False,
+		new_window: bool = False,
+		window_bounds: BrowserWindowBounds | dict[str, Any] | None = None,
+	) -> str:
 		"""Create a new page/tab using CDP Target.createTarget. Returns target ID."""
-		# Only include newWindow when True, letting Chrome auto-create window as needed
-		params = CreateTargetParameters(url=url, background=background)
-		if new_window:
-			params['newWindow'] = True
+		params = CreateTargetParameters(**build_create_target_params(
+			url=url,
+			background=background,
+			new_window=new_window,
+			window_bounds=normalize_window_bounds(window_bounds),
+		))
 		# Use the root CDP client to create tabs at the browser level
 		if self._cdp_client_root:
 			result = await self._cdp_client_root.send.Target.createTarget(params=params)
@@ -3278,22 +3286,74 @@ class BrowserSession(BaseModel):
 		"""Clear geolocation override using CDP."""
 		await self.cdp_client.send.Emulation.clearGeolocationOverride()
 
-	async def _cdp_add_init_script(self, script: str) -> str:
+	async def _cdp_add_init_script(self, script: str, target_id: TargetID | None = None) -> str:
 		"""Add script to evaluate on new document using CDP Page.addScriptToEvaluateOnNewDocument."""
 		assert self._cdp_client_root is not None
-		cdp_session = await self.get_or_create_cdp_session()
+		cdp_session = await self.get_or_create_cdp_session(target_id=target_id, focus=False)
 
 		result = await cdp_session.cdp_client.send.Page.addScriptToEvaluateOnNewDocument(
 			params={'source': script, 'runImmediately': True}, session_id=cdp_session.session_id
 		)
-		return result['identifier']
+		identifier = result['identifier']
+		if target_id is None:
+			self._global_init_script_targets.setdefault(identifier, set())
+		else:
+			self._target_init_scripts.setdefault(str(target_id), set()).add(identifier)
+		return identifier
 
-	async def _cdp_remove_init_script(self, identifier: str) -> None:
+	async def _cdp_remove_init_script(self, identifier: str, target_id: TargetID | None = None) -> None:
 		"""Remove script added with addScriptToEvaluateOnNewDocument."""
-		cdp_session = await self.get_or_create_cdp_session(target_id=None)
+		cdp_session = await self.get_or_create_cdp_session(target_id=target_id, focus=False)
 		await cdp_session.cdp_client.send.Page.removeScriptToEvaluateOnNewDocument(
 			params={'identifier': identifier}, session_id=cdp_session.session_id
 		)
+		if target_id is None:
+			self._global_init_script_targets.pop(identifier, None)
+		else:
+			target_scripts = self._target_init_scripts.get(str(target_id))
+			if target_scripts:
+				target_scripts.discard(identifier)
+				if not target_scripts:
+					self._target_init_scripts.pop(str(target_id), None)
+
+	async def _cdp_get_window_context(self, target_id: TargetID) -> dict[str, Any] | None:
+		assert self._cdp_client_root is not None
+		try:
+			result = await self._cdp_client_root.send.Browser.getWindowForTarget(params={'targetId': target_id})
+			window_context = window_context_from_cdp(result)
+			if window_context and self.session_manager:
+				self.session_manager.set_target_window_context(
+					target_id,
+					window_id=window_context.window_id,
+					window_bounds=window_context.bounds,
+				)
+				return window_context.model_dump(mode='json')
+		except Exception as exc:
+			self.logger.debug(f'Failed to fetch window context for {target_id[-8:]}: {exc}')
+		return None
+
+	async def _cdp_set_window_bounds(
+		self,
+		target_id: TargetID,
+		bounds: BrowserWindowBounds | dict[str, Any],
+	) -> dict[str, Any] | None:
+		assert self._cdp_client_root is not None
+		normalized_bounds = normalize_window_bounds(bounds)
+		if normalized_bounds is None:
+			return None
+		window_context = await self._cdp_get_window_context(target_id)
+		if not window_context:
+			return None
+		window_id = window_context.get('window_id') or window_context.get('windowId')
+		if window_id is None:
+			return None
+		params: dict[str, Any] = {'windowId': window_id, 'bounds': Bounds(**normalized_bounds.model_dump(by_alias=True, exclude_none=True))}
+		await self._cdp_client_root.send.Browser.setWindowBounds(params=params)
+		await self._cdp_get_window_context(target_id)
+		target = self.session_manager.get_target(target_id) if self.session_manager else None
+		if target and target.window_bounds:
+			return target.window_bounds.model_dump(mode='json', by_alias=True)
+		return None
 
 	async def _cdp_set_viewport(
 		self, width: int, height: int, device_scale_factor: float = 1.0, mobile: bool = False, target_id: str | None = None
