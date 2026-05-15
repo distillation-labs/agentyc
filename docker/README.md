@@ -1,34 +1,38 @@
-# Docker Setup for Browser-Use
+# Docker Setup For agentyc
 
-This directory contains the optimized Docker build system for agentyc, achieving < 30 second builds.
+This directory contains Docker build assets for the agentyc MCP browser runtime.
 
 ## Quick Start
 
+Build the standard image:
+
 ```bash
-# Build base images (only needed once or when dependencies change)
-./scripts/build-base-images.sh
-
-# Build agentyc
-docker build -f Dockerfile.fast -t agentyc .
-
-# Or use the standard Dockerfile (slower but self-contained)
 docker build -t agentyc .
+```
+
+Build the fast image variant:
+
+```bash
+docker build -f Dockerfile.fast -t agentyc .
+```
+
+If you use the layered base-image workflow, build those base images first:
+
+```bash
+./scripts/build-base-images.sh
 ```
 
 ## Files
 
-- `Dockerfile` - Standard self-contained build (~2 min)
-- `Dockerfile.fast` - Fast build using pre-built base images (~30 sec)
-- `docker/` - Base image definitions and build script
-  - `base-images/system/` - Python + minimal system deps
-  - `base-images/chromium/` - Adds Chromium browser
-  - `base-images/python-deps/` - Adds Python dependencies
-  - `scripts/build-base-images.sh` - Script to build all base images
+- `Dockerfile`: self-contained build.
+- `Dockerfile.fast`: build that expects prebuilt base images.
+- `docker/base-images/system/`: Python and system dependencies.
+- `docker/base-images/chromium/`: Chromium-enabled base image.
+- `docker/base-images/python-deps/`: Python dependency layer.
+- `docker/scripts/build-base-images.sh`: helper for building the base layers.
 
-## Performance
+## Notes
 
-| Build Type | Time |
-|------------|------|
-| Standard Dockerfile | ~2 minutes |
-| Fast build (with base images) | ~30 seconds |
-| Rebuild after code change | ~16 seconds |
+- Docker support is for packaging and running the MCP browser runtime.
+- Shared-browser workflows still depend on exposing a CDP endpoint if you want external MCP server processes to attach.
+- Public runtime behavior is defined by the root package modules, not by older Browser-Use-era wording in historical material.

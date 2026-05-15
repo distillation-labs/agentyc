@@ -2,89 +2,140 @@
 
 ## Public MCP Surface
 
-The public `0.1.0` release is centered on the stdio MCP server in `agentyc.mcp.server`.
+The public MCP server in `agentyc.mcp.server` exposes tools only. It does not publish MCP resources or prompts.
 
-Exposed MCP tools:
+### Navigation And Session Control
 
 | Tool | Description |
 |------|-------------|
 | `browser_navigate` | Navigate to a URL, optionally in a new tab |
-| `browser_click` | Click by stable ref, legacy index, or viewport coordinates |
-| `browser_type` | Type text into an input-like element |
-| `browser_upload_file` | Upload a local file to a file input or upload control |
-| `browser_get_state` | Return structured browser state with optional screenshot |
-| `browser_extract_content` | Deterministically extract compatible page content |
-| `browser_get_html` | Return page HTML or HTML for a CSS-selected element |
-| `browser_screenshot` | Capture a screenshot and return viewport metadata |
-| `browser_scroll` | Scroll the page up or down |
-| `browser_go_back` | Navigate back in history |
-| `browser_list_tabs` | List open tabs |
-| `browser_switch_tab` | Switch to a tab by tab ID |
-| `browser_close_tab` | Close a tab by tab ID |
-| `browser_list_sessions` | List tracked browser sessions |
-| `browser_close_session` | Close one tracked browser session |
-| `browser_close_all` | Close all tracked browser sessions |
+| `browser_go_back` | Go back in history |
+| `browser_go_forward` | Go forward in history |
+| `browser_refresh` | Reload the current page |
+| `browser_wait` | Wait for a bounded number of seconds |
+| `browser_wait_for_network_idle` | Wait until network activity settles |
+| `browser_list_sessions` | List sessions tracked by the current MCP server |
+| `browser_close_session` | Close one tracked session |
+| `browser_close_all` | Close all tracked sessions |
 
-Resources and prompts are not exposed in the public MCP server.
+### Browser State And Inspection
+
+| Tool | Description |
+|------|-------------|
+| `browser_get_state` | Return structured page state with stable refs and optional screenshot |
+| `browser_get_html` | Return full page HTML or HTML for a CSS-selected element |
+| `browser_screenshot` | Capture a viewport or full-page screenshot |
+| `browser_find_elements` | Query the current page with a CSS selector |
+| `browser_search_page` | Search for text or a regex pattern on the current page |
+| `browser_wait_for_element` | Poll until text or a ref appears or disappears |
+| `browser_get_focused_element` | Return the element that currently has keyboard focus |
+| `browser_evaluate` | Execute JavaScript in the page context |
+
+### Interaction
+
+| Tool | Description |
+|------|-------------|
+| `browser_click` | Click by stable ref, legacy index, or viewport coordinates |
+| `browser_right_click` | Open a context menu by ref, index, or coordinates |
+| `browser_double_click` | Double-click an element or coordinates |
+| `browser_hover` | Trigger hover states and hover-driven UI |
+| `browser_drag_to` | Drag from one element or coordinate to another |
+| `browser_type` | Clear and type into an input-like target |
+| `browser_press_key` | Send a key or shortcut |
+| `browser_scroll` | Scroll the page or a scrollable element |
+| `browser_scroll_to_text` | Scroll until text is visible |
+| `browser_select_option` | Select an option by visible text |
+| `browser_get_dropdown_options` | Inspect available options for a dropdown |
+| `browser_upload_file` | Upload a local file to an upload control |
+
+### Tabs, Cookies, And Persisted Browser State
+
+| Tool | Description |
+|------|-------------|
+| `browser_list_tabs` | List open tabs |
+| `browser_switch_tab` | Switch to a tab by `tab_id` |
+| `browser_close_tab` | Close a tab by `tab_id` |
+| `browser_get_cookies` | Read cookies for the current page URL |
+| `browser_set_cookies` | Set one or more cookies |
+| `browser_clear_cookies` | Delete one cookie or clear browser cookies |
+| `browser_save_state` | Persist cookies and storage to disk |
+| `browser_load_state` | Restore cookies and storage from disk |
+
+### Deterministic Extraction And Observability
+
+| Tool | Description |
+|------|-------------|
+| `browser_extract_content` | Deterministically extract compatible content from the current page |
+| `browser_get_console_logs` | Return recent browser console messages captured through CDP |
+| `browser_get_network_log` | Return recent network requests captured through CDP |
 
 ## Browser State
 
-`browser_get_state` is the primary inspection primitive for MCP clients.
+`browser_get_state` is the main inspection primitive used by agents.
 
-Supported state modes:
+Supported modes:
 
-| Mode | Description |
-|------|-------------|
-| `auto` | Default mode; uses full state on smaller pages and a compact ranked view on larger pages |
-| `full` | Returns the full interactive-element payload |
-| `min` | Returns a compact ranked subset of interactive elements |
-| `focus` | Returns state for a single referenced element |
+| Mode | Behavior |
+|------|----------|
+| `auto` | Full state on smaller pages, compact ranked state on larger pages |
+| `full` | Full interactive-element payload |
+| `min` | Compact ranked subset of interactive elements |
+| `focus` | Payload for a single referenced element |
 
-Notable behavior:
+Important behavior:
 
-- Stable element refs such as `e123` are returned for targeting.
-- `since_hash` supports cheap unchanged-state checks.
-- Optional screenshots are returned as MCP image content, with viewport dimensions included in the text payload.
+- Stable refs look like `e123` and map to backend node ids.
+- `since_hash` returns `changed=false` when the page signature is unchanged.
+- Compact modes can omit the legacy numeric `index` field.
+- Screenshots are delivered as MCP image content, not embedded base64 inside the JSON state payload.
 
 ## Deterministic Extraction
 
 `browser_extract_content` is deterministic-only in the public MCP server.
 
-Supported deterministic routes include:
+Supported routes in `agentyc.tools.extraction.router`:
 
 - Links
-- Link collections such as nav menus, pagination, and search results
+- Link collections such as navigation menus, pagination, and result lists
+- Images
 - Tables
-- Lists and checklists
+- Lists
 - Form fields
 - Key-value panels
-- Images
 
-Structured extraction is available through `output_schema` when the query matches one of those deterministic routes.
+Behavioral guarantees:
 
-If no deterministic route matches, the MCP tool returns an explicit error instead of falling back to an LLM. This is the shipped behavior for `0.1.0`.
+- No public MCP LLM fallback is used.
+- `output_schema` works only for compatible deterministic routes.
+- Unsupported free-form extraction requests return explicit errors.
+- Responses include route metadata through `<extraction_metadata>`.
 
-## Interaction Semantics
+This makes deterministic extraction the default no-API-key path for the public server.
 
-- `browser_click` and `browser_type` prefer stable refs from `browser_get_state`.
-- `browser_click` also supports viewport coordinates.
-- Ref-based actions attempt limited live recovery after small DOM drift.
-- Action failures use machine-readable prefixes such as `Error [stale_ref]` and `Error [target_disabled]`.
-- `browser_upload_file` accepts either an absolute local path or a file name from the agentyc file system.
+## CDP-Native Observability
 
-## Session Model
+The MCP server records browser diagnostics directly from CDP event streams.
 
-- Browser sessions are created lazily on first browser tool use.
-- Sessions are tracked by the server for management and timeout cleanup.
-- The default idle timeout is 10 minutes and can be overridden with `--session-timeout-minutes`.
+- `browser_get_console_logs` uses the Runtime domain rather than page-side JavaScript injection.
+- `browser_get_network_log` uses the Network domain and keeps a bounded in-memory buffer.
+- Network and console capture follow the active browser session and its tabs.
+
+## Shared Browser Behavior
+
+The CLI supports a shared-browser mode through `agentyc browser` plus `agentyc mcp --cdp-url ...`.
+
+- Attaching through `--cdp-url` creates a fresh tab in the shared browser.
+- The attached server keeps that browser alive with `keep_alive=True` for the session.
+- Chrome tab ownership cues are not a reliable public contract.
+- Separate windows and explicit focus changes are still the most dependable operator model.
 
 ## Python Surface
 
-The package also exposes Python imports including:
+The package also exports Python entry points such as:
 
+- `AgentycServer`
 - `BrowserSession`
 - `BrowserProfile`
 - `Tools`
-- `AgentycServer`
 
-These are importable from `agentyc`, but the primary public release surface is the MCP server and the documented tool set above.
+Those imports are part of the package surface, but the primary public runtime remains the MCP server described above.

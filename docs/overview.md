@@ -1,46 +1,63 @@
-# Browser-Use: Overview
+# Overview
 
-## What It Is
+## What agentyc Ships
 
-**agentyc** (v0.12.6) is an async Python library that exposes Chrome browser control as a typed, deterministic API for AI agents. It bridges the gap between LLM decision-making and browser automation by:
+`agentyc` is a pure MCP-first browser automation runtime for coding agents.
 
-- Wrapping CDP (Chrome DevTools Protocol) operations into structured, schema-validated actions
-- Serializing DOM state (element tree, screenshots, tab info) into token-efficient representations
-- Exposing those actions over MCP (Model Context Protocol) so any MCP-capable client (Claude Desktop, other agents) can drive a browser
+The public surface in this repository is defined by these modules:
 
-The library is **MCP-first**: no autonomous agent loops, no built-in task planner. It gives the AI deterministic primitives and gets out of the way.
+- `agentyc/mcp/server.py`
+- `agentyc/mcp/cli.py`
+- `agentyc/mcp/state.py`
+- `agentyc/tools/extraction/router.py`
+- `agentyc/tools/service.py`
+- `agentyc/config.py`
+- `agentyc/browser/session.py`
+- `agentyc/browser/session_manager.py`
 
-## Design Philosophy
+Those modules describe the current public contract more accurately than legacy directories that still exist in the repo for in-progress scope reduction work.
 
-- **Deterministic over magical**: actions have explicit schemas, return typed results, and fail loudly. No best-effort retries or hidden fallbacks.
-- **Token efficiency**: DOM state can be emitted in four modes (`full`, `min`, `auto`, `focus`) to control how many tokens a state snapshot costs.
-- **Deterministic extraction**: common data patterns (tables, forms, lists, links, key-value pairs) are extracted without an LLM round-trip.
-- **Hard failure boundaries**: security watchdog, domain allowlists, and action timeouts enforce the execution envelope. Agents can't accidentally browse malicious domains.
-- **Modular watchdog architecture**: each concern (downloads, popups, security, CAPTCHA, storage, recording) is an isolated async service that subscribes to the event bus.
+## Public Product Story
+
+agentyc is designed to do a small set of things well:
+
+- Expose browser automation over stdio MCP.
+- Launch or attach to a Chrome or Chromium browser over CDP.
+- Return deterministic browser state with stable element refs.
+- Provide deterministic extraction for common page structures.
+- Surface browser-native console and network diagnostics.
+
+The public server is not an autonomous agent framework. It does not ship a planner, prompt loop, cloud-first sync workflow, or LLM-backed extraction fallback in its default MCP path.
+
+## Default Behavior
+
+- The `agentyc` command starts the MCP server.
+- Browser sessions are created lazily on first browser tool use.
+- The default server launches a local browser unless `--cdp-url` is provided.
+- Deterministic extraction is the default and only public MCP extraction mode.
+- No API key is required for the default MCP browser runtime.
 
 ## Primary Use Cases
 
-- AI-driven web research and content extraction
-- Form filling and UI automation in agentic pipelines
-- Browser state capture for LLM context injection
-- MCP-based tool integration with Claude Desktop or other MCP clients
-- Automated screenshot and PDF generation
+- MCP browser tooling for Claude Desktop or other MCP-capable coding agents.
+- Deterministic web navigation and interaction from an external agent loop.
+- Browser state capture with stable refs and compact payloads.
+- Structured extraction of tables, lists, links, forms, images, and key-value panels.
+- CDP-native debugging via console and network logs.
 
-## Key Numbers
+## Shared Browser Positioning
 
-| Metric | Value |
-|--------|-------|
-| Python version | ≥ 3.11 |
-| LLM providers | 15+ |
-| Watchdog services | 14 |
-| MCP tools exposed | 15 |
-| Deterministic extractors | 6 |
-| Action timeout (default) | 180s |
+agentyc supports attaching multiple MCP server processes to the same Chrome instance through `--cdp-url`, but the implementation should be described narrowly.
+
+- Each attached server creates its own fresh tab.
+- Focus remains an explicit browser action.
+- Stock Chrome and CDP do not offer reliable per-tab color ownership.
+- Shared-browser collaboration is best-effort operational behavior, not a strict isolation guarantee.
 
 ## Docs Index
 
-- [Architecture](./architecture.md) — components, event bus, data flow
-- [Features](./features.md) — full capability inventory
-- [Tech Stack](./tech-stack.md) — dependencies and external services
-- [Configuration](./configuration.md) — env vars, BrowserProfile, config file
-- [API Reference](./api.md) — public Python API
+- [Features](./features.md)
+- [Architecture](./architecture.md)
+- [API Reference](./api.md)
+- [Configuration](./configuration.md)
+- [Tech Stack](./tech-stack.md)

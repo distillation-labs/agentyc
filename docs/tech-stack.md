@@ -4,161 +4,112 @@
 
 | Requirement | Value |
 |-------------|-------|
-| Python | ≥ 3.11 |
-| Package manager | `uv` (not pip) |
-| Browser | Chrome / Chromium (installed by Playwright) |
-| Protocol | CDP (Chrome DevTools Protocol) |
+| Python | `>=3.11,<4.0` |
+| Package manager | `uv` |
+| Browser | Local Chrome or Chromium, or an existing browser exposed over CDP |
+| Protocol | Chrome DevTools Protocol |
 
----
+The public runtime does not depend on Playwright for browser automation.
 
 ## Core Dependencies
 
-### Browser / CDP
+### Browser And Protocol
 
 | Package | Role |
 |---------|------|
-| `cdp-use` | Typed async CDP client; wraps WebSocket CDP calls into Python method calls |
-| `playwright` | Manages Chromium installation; **not** used for automation (cdp-use handles that) |
+| `cdp-use` | Typed async CDP client |
+| `aiohttp` | Async HTTP and transport helpers |
+| `psutil` | Process inspection used by runtime helpers |
 
-### Event System
-
-| Package | Role |
-|---------|------|
-| `bubus` | Lightweight async event bus; core coordination mechanism for watchdogs |
-
-### Data Validation
+### MCP And Validation
 
 | Package | Role |
 |---------|------|
-| `pydantic` v2 | All action models, config, browser state, DOM models; strict validation with `ConfigDict(extra='forbid')` |
+| `mcp` | MCP server SDK |
+| `pydantic` | Validation for actions, config, and browser-facing payloads |
+| `pydantic-settings` | Environment-backed settings loading |
+| `typing-extensions` | Typing helpers where needed |
 
-### HTTP
-
-| Package | Role |
-|---------|------|
-| `aiohttp` | Async HTTP for CDP WebSocket and general requests |
-| `httpx` | Sync/async HTTP client for LLM provider calls |
-
-### MCP
+### Browser Coordination
 
 | Package | Role |
 |---------|------|
-| `mcp` | Model Context Protocol SDK; server and client implementation |
+| `bubus` | Async event bus for browser coordination |
+| `anyio` | Async compatibility helpers |
 
-### Content Processing
-
-| Package | Role |
-|---------|------|
-| `pillow` | Screenshot image manipulation and encoding |
-| `pypdf` | Reading PDF file content |
-| `reportlab` | Generating PDF output from page content |
-| `markdownify` | HTML → Markdown conversion for LLM context |
-
-### Utilities
+### Content And Files
 
 | Package | Role |
 |---------|------|
-| `uuid-extensions` | UUID v7 generation for all entity IDs |
+| `pillow` | Screenshot handling |
+| `markdownify` | HTML-to-Markdown conversion for extraction helpers |
+| `pypdf` | PDF parsing |
+| `reportlab` | PDF generation helpers |
+| `python-docx` | Document parsing helpers |
 
----
+### Runtime Utilities
 
-## LLM Provider Packages
+| Package | Role |
+|---------|------|
+| `python-dotenv` | `.env` loading |
+| `posthog` | Product telemetry |
+| `uuid7` | UUID helpers |
 
-Each is an optional extra dependency loaded lazily:
+## Optional LLM Provider Packages
 
-| Package | Provider |
-|---------|---------|
-| `openai` | OpenAI and Azure OpenAI |
-| `anthropic` | Anthropic Claude |
+The package still contains optional LLM integrations even though the public MCP extraction path is deterministic-only.
+
+| Package | Provider Or Role |
+|---------|------------------|
+| `openai` | OpenAI and related integrations |
+| `anthropic` | Anthropic |
 | `google-genai` | Google Gemini |
 | `groq` | Groq |
-| `mistralai` | Mistral |
-| `ollama` | Ollama (local) |
-| `litellm` | LiteLLM multi-provider proxy |
-| `cerebras-cloud-sdk` | Cerebras |
-| `github-copilot-sdk` | GitHub Copilot (optional) |
-| `boto3` | AWS Bedrock (optional) |
-| `oci` | Oracle Cloud Infrastructure (optional) |
-
----
+| `ollama` | Ollama |
+| `boto3` | AWS Bedrock extra |
+| `oci` | OCI extra |
+| `github-copilot-sdk` | Copilot extra |
 
 ## Platform-Specific Dependencies
 
 | Package | Platform | Purpose |
 |---------|----------|---------|
-| `pyobjc` | macOS | `AppKit.NSScreen` for display size detection |
-| `screeninfo` | Linux / Windows | Display size detection |
+| `pyobjc` | macOS | Display and windowing helpers |
+| `screeninfo` | Linux and Windows | Display detection |
 
----
+## Optional Feature Dependencies
 
-## Optional / Feature Dependencies
+| Package | Feature |
+|---------|---------|
+| `imageio[ffmpeg]` | Video recording extra |
+| `numpy` | Recording and image-processing helpers |
+| `lmnr` | Eval and observability extra |
 
-| Package | Feature | Extra |
-|---------|---------|-------|
-| `lmnr` | Observability tracing | `[observability]` |
-| `imageio[ffmpeg]` | Session video recording | `[recording]` |
-| `numpy` | Image processing for recording | `[recording]` |
-| `pytest-httpserver` | Test HTTP server for unit tests | dev |
-| `pytest-asyncio` | Async test support | dev |
-| `pyright` | Static type checking | dev |
-| `ruff` | Linting and formatting | dev |
-| `pre-commit` | Pre-commit hook runner | dev |
-
----
-
-## Language and Style
-
-| Attribute | Choice |
-|-----------|--------|
-| Python version target | 3.11+ |
-| Type hints | Modern union syntax (`str \| None`, `list[str]`, `dict[str, Any]`) |
-| Indentation | Tabs (not spaces) |
-| Async | `async`/`await` throughout — no sync blocking APIs |
-| Data models | Pydantic v2 with `ConfigDict(extra='forbid', validate_by_name=True)` |
-| IDs | UUID v7 via `uuid_extensions.uuid7str` |
-| Validation | `Annotated[..., AfterValidator(...)]` patterns in Pydantic models |
-
----
-
-## Testing Stack
+## Testing And Quality
 
 | Tool | Role |
 |------|------|
 | `pytest` | Test runner |
-| `pytest-asyncio` | Async test support (no manual event loop setup needed) |
-| `pytest-httpserver` | Local HTTP server for test HTML pages |
-| Conftest fixtures | Scripted LLM response injection (the only thing mocked) |
+| `pytest-asyncio` | Async test support |
+| `pytest-httpserver` | Local HTTP fixtures |
+| `ruff` | Linting and formatting |
+| `pyright` | Static type checking |
+| `codespell` | Spelling checks |
+| `pre-commit` | Hook runner |
 
-Test philosophy: real browser objects, real CDP, real DOM — only the LLM is replaced with fixture-driven responses. All CI tests live in `tests/ci/` and run on every commit.
+## Language And Style
 
----
+| Attribute | Choice |
+|-----------|--------|
+| Async model | `async` and `await` throughout the runtime |
+| Validation style | Pydantic v2 models |
+| Python formatting | Tabs, with Ruff configured as the formatter |
+| Transport model | stdio MCP plus CDP WebSocket to Chrome or Chromium |
 
 ## Infrastructure
 
 | Tool | Role |
 |------|------|
-| `uv` | Virtual environment, dependency resolution, running scripts |
-| GitHub Actions | CI/CD (`.github/workflows/`) |
+| `uv` | Dependency resolution, virtualenvs, builds |
+| GitHub Actions | CI |
 | PyPI | Package distribution |
-
----
-
-## CDP Protocol Details
-
-CDP is accessed via `cdp-use` which provides typed Python interfaces generated from the CDP protocol schema:
-
-```python
-# Typed CDP call
-await cdp_client.send.DOMSnapshot.captureSnapshot(params=...)
-
-# Event registration (not cdp_client.on — that doesn't exist in cdp-use)
-cdp_client.register.Browser.downloadWillBegin(callback)
-
-# With typed params
-from cdp_use.cdp.target import ActivateTargetParameters
-await cdp_client.send.Target.attachToTarget(
-    params=ActivateTargetParameters(targetId=target_id, flatten=True)
-)
-```
-
-All CDP session management, target tracking, and sub-session handling for cross-origin iframes lives in `agentyc/browser/session.py` — `cdp-use` only provides the typed protocol layer.

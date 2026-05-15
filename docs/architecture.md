@@ -1,252 +1,173 @@
 # Architecture
 
-## High-Level Diagram
+## High-Level View
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     MCP Client / Agent                  │
-│             (Claude Desktop, custom agent)              │
-└─────────────────────┬───────────────────────────────────┘
-                      │  MCP stdio / Python API
-┌─────────────────────▼───────────────────────────────────┐
-│                  AgentycServer (MCP)                 │
-│               agentyc/mcp/server.py                 │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────┐
-│                  Tools / Controller                     │
-│               agentyc/tools/service.py              │
-│  - Action schema registry                               │
-│  - Timeout guards (default 180s)                        │
-│  - Extraction router (deterministic paths)              │
-└──────────┬──────────────────────┬───────────────────────┘
-           │ Events               │ LLM invocation
-           │                      │ (structured extraction)
-┌──────────▼──────────┐  ┌───────▼──────────────────────┐
-│   BrowserSession    │  │       LLM Providers           │
-│  browser/session.py │  │  agentyc/llm/             │
-│  - CDP connections  │  │  15+ providers                │
-│  - Event bus        │  └──────────────────────────────┘
-│  - Tab management   │
-│  - Watchdogs        │
-└──────────┬──────────┘
-           │  CDP WebSocket
-┌──────────▼──────────┐
-│   Chrome/Chromium   │
-│   (cdp-use wrapper) │
-└─────────────────────┘
+```text
+MCP client
+  |
+  | stdio
+  v
+agentyc.mcp.server.AgentycServer
+  |
+  +--> agentyc.tools.service.Tools
+  |      |
+  |      +--> agentyc.tools.extraction.router
+  |
+  +--> agentyc.mcp.state
+  |
+  +--> agentyc.browser.session.BrowserSession
+         |
+         +--> agentyc.browser.session_manager.SessionManager
+         |
+         +--> Chrome / Chromium over CDP
 ```
 
-## Component Breakdown
+## Public Source Of Truth Modules
 
-### BrowserSession (`agentyc/browser/session.py`)
+These modules define the public contract that docs should follow:
 
-The core session manager. One instance = one browser process (or remote cloud browser connection).
+- `agentyc/mcp/server.py`
+- `agentyc/mcp/cli.py`
+- `agentyc/mcp/state.py`
+- `agentyc/tools/extraction/router.py`
+- `agentyc/tools/service.py`
+- `agentyc/config.py`
+- `agentyc/browser/session.py`
+- `agentyc/browser/session_manager.py`
+
+## MCP Server Layer
+
+`agentyc.mcp.server.AgentycServer` is the public stdio server.
 
 Responsibilities:
-- Launch or connect to a Chrome process
-- Hold the `cdp-use` client and manage target (tab) lifecycle
-- Own the `bubus` event bus and register all watchdogs on it
-- Provide `get_state()` → `BrowserStateSummary` for agent context
-- Handle cross-origin iframes by proxying CDP to inner sessions
 
-**Lifecycle**: `async with BrowserSession(profile=...) as session` — session cleans up on exit.
+- Register the MCP tool list.
+- Lazily create a browser session on first browser tool use.
+- Translate MCP arguments into tool-runtime calls.
+- Return text and image content in MCP response format.
+- Track recent console and network events captured from CDP.
+- Close idle sessions after the configured timeout.
 
-### Tools / Controller (`agentyc/tools/service.py`)
+The server advertises no MCP resources and no MCP prompts.
 
-The action layer between the agent and the browser. Takes an `ActionModel` (validated Pydantic), emits the right event on the session bus, waits for the result, returns an `ActionResult`.
+## Tool Runtime Layer
 
-Key behaviors:
-- Validates all action inputs via Pydantic schema before touching the browser
-- Wraps every operation in a per-action timeout (configurable, default 180s)
-- Routes extraction requests: deterministic extractor first, LLM fallback only when needed
-- Token cost accounting per action via `agentyc/tokens/`
+`agentyc.tools.service.Tools` is the execution layer for validated browser actions.
 
-### DomService (`agentyc/dom/service.py`)
+Responsibilities:
 
-Converts a live browser page into a structured, indexable DOM representation.
+- Validate action input through Pydantic models.
+- Enforce a bounded per-action timeout.
+- Dispatch typed browser events onto the session event bus.
+- Run deterministic extraction through `agentyc.tools.extraction.router`.
+- Return `ActionResult` payloads that the MCP server formats for clients.
 
-Pipeline:
-1. Fetch raw DOM via CDP `DOMSnapshot.captureSnapshot`
-2. Build `EnhancedDOMTreeNode` tree with bounding boxes, AX data, visibility flags
-3. Assign sequential element indices to interactive nodes
-4. Filter by viewport threshold (configurable) and paint order
-5. Serialize to `SerializedDOMState` (JSON-safe, includes element index map)
+For the public MCP server, extraction is invoked with `page_extraction_llm=None`, which keeps `browser_extract_content` on deterministic routes only.
 
-The element index is stable within a single page load — agents reference elements by integer index (e.g. `click element 42`).
+## Browser Session Layer
 
-### BrowserProfile (`agentyc/browser/profile.py`)
+`agentyc.browser.session.BrowserSession` owns the live browser connection.
 
-Encapsulates everything needed to launch a Chrome instance:
-- Chrome binary path and user data directory
-- Window geometry (detected via `AppKit.NSScreen` on macOS, `screeninfo` on Linux/Windows)
-- Headless mode, sandbox flags, site-isolation settings
-- Proxy (server, bypass, credentials)
-- Extensions: uBlock Origin, cookie handlers — with per-domain whitelisting
-- Persistent profile support across sessions
+Responsibilities:
 
-All values are Pydantic-validated with `ConfigDict(extra='forbid')`.
+- Launch a local browser or attach to an existing browser by CDP URL.
+- Maintain an event bus for browser operations.
+- Track the focused tab.
+- Provide browser state summaries, screenshots, cookies, and DOM lookup helpers.
+- Register and coordinate watchdog-style services around the CDP session.
 
----
+`BrowserSession` is the long-lived runtime object underneath the MCP server.
 
-## Event-Driven Architecture
+## Target And Session Tracking
 
-### Event Bus (`bubus`)
+`agentyc.browser.session_manager.SessionManager` is the single source of truth for browser targets and CDP sessions.
 
-`BrowserSession` owns a `bubus.EventBus`. All internal coordination happens by publishing typed events and awaiting their results. No shared mutable state passed between watchdogs.
+Responsibilities:
 
-```python
-# Publish and wait
-result = await session.bus.emit(ClickElementEvent(index=5))
+- Observe `Target.attachedToTarget` and `Target.detachedFromTarget` events.
+- Maintain mappings between target ids and CDP session ids.
+- Initialize monitoring for page targets.
+- Recover focus when the active target detaches.
 
-# Register a handler (done by watchdogs at startup)
-session.bus.on(ClickElementEvent, self._handle_click)
-```
+This is why tab and target behavior should be documented in CDP terms rather than with older selector- or playwright-style abstractions.
 
-### Events (`agentyc/browser/events.py`)
+## Browser State Serialization
 
-**Action events** (emitted by Tools, handled by watchdogs):
-| Event | Trigger |
-|-------|---------|
-| `NavigateToUrlEvent` | `navigate` action |
-| `ClickElementEvent` | `click` action |
-| `TypeTextEvent` | `type` action |
-| `ScrollEvent` | `scroll` action |
-| `SendKeysEvent` | `send_keys` action |
-| `UploadFileEvent` | `upload_file` action |
-| `SwitchTabEvent` | `switch_tab` action |
-| `CloseTabEvent` | `close_tab` action |
-| `GoBackEvent` | `go_back` action |
-| `WaitEvent` | `wait` action |
+`agentyc.mcp.state` shapes `BrowserStateSummary` objects into the MCP-facing payload.
 
-**State events**:
-| Event | Purpose |
-|-------|---------|
-| `BrowserStateRequestEvent` | Trigger full state snapshot |
-| `ScreenshotEvent` | Capture screenshot only |
+Important behavior:
 
-**Lifecycle events**:
-| Event | When |
-|-------|------|
-| `BrowserStartEvent` | Before browser launch |
-| `BrowserConnectedEvent` | After CDP connection established |
-| `BrowserStoppedEvent` | On shutdown |
-| `NavigationStartedEvent` | On page navigation begin |
-| `NavigationCompleteEvent` | On page load complete |
-| `TabCreatedEvent` | New tab opened |
-| `TabClosedEvent` | Tab closed |
-| `FileDownloadedEvent` | Download completed |
+- Stable refs are generated as `e<backend_node_id>`.
+- `state_hash` summarizes the page and interactive elements.
+- `auto` mode falls back to ranked compaction when pages are dense.
+- `focus` mode narrows the payload to one referenced element.
 
----
+This module is the reason the public docs should talk about refs and compaction, not old integer-only element targeting.
 
-## Watchdog Services (`agentyc/browser/watchdogs/`)
+## Deterministic Extraction Pipeline
 
-Each watchdog is an async service that registers event handlers and monitors a specific concern. They are initialized and torn down with `BrowserSession`.
+`agentyc.tools.extraction.router` chooses a deterministic route from the extraction query.
 
-| Watchdog | Responsibility |
-|----------|---------------|
-| `DOMWatchdog` | DOM snapshot capture, screenshot, element highlighting |
-| `DownloadsWatchdog` | PDF auto-download, file save paths, download state |
-| `PopupsWatchdog` | JavaScript `alert()`, `confirm()`, `prompt()` auto-dismissal |
-| `SecurityWatchdog` | Domain allowlist/denylist enforcement, IP blocking |
-| `AboutBlankWatchdog` | Redirect `about:blank` navigations |
-| `CrashWatchdog` | Detects renderer crashes, optionally recovers |
-| `CaptchaWatchdog` | CAPTCHA detection; optional solver integration |
-| `PermissionsWatchdog` | Auto-grant geolocation, camera, microphone permissions |
-| `StorageStateWatchdog` | Save/restore cookies and localStorage across sessions |
-| `RecordingWatchdog` | Session video recording via `imageio[ffmpeg]` |
-| `HARRecordingWatchdog` | Network HAR file recording for traffic analysis |
-| `LocalBrowserWatchdog` | Local browser process management |
-| `DefaultActionWatchdog` | Fallback handlers for unrecognized actions |
-| `ScreenshotWatchdog` | Centralized screenshot capture and caching |
+Supported route families:
 
----
+- Links
+- Link collections
+- Images
+- Tables
+- Lists
+- Form fields
+- Key-value blocks
 
-## DOM Processing Pipeline
+If no deterministic route matches, the public MCP server returns an explicit error. It does not silently fall back to an LLM.
 
-```
-CDP DOMSnapshot.captureSnapshot()
-         │
-         ▼
-EnhancedDOMTreeNode tree
-  (bounding box, AX role, visibility, iframe depth)
-         │
-    Filters applied:
-    - viewport threshold (hidden elements dropped)
-    - paint order (occluded elements dropped)
-    - depth/count limits on iframes
-         │
-         ▼
-Element index assignment
-  (sequential integers on interactive nodes)
-         │
-         ▼
-SerializedDOMState
-  (JSON: element_map, html_string, AX tree)
-```
+## Configuration Flow
 
-### Extractors (`agentyc/tools/extraction/router.py`)
+`agentyc.config` merges configuration from:
 
-Six deterministic extractors run without LLM:
+1. Environment variables
+2. Config file
+3. Code defaults
 
-| Extractor | What it returns |
-|-----------|----------------|
-| `deterministic-links` | All `<a>` hrefs with text |
-| `deterministic-link-collections` | Grouped nav/pagination/search result links |
-| `deterministic-tables` | `<table>` → rows of dicts |
-| `deterministic-lists` | `<ul>`/`<ol>`/checklists → items |
-| `deterministic-form-fields` | All form inputs with labels, values, options |
-| `deterministic-key-values` | Definition lists, property panels → key-value pairs |
+The MCP server then combines that config with its own runtime defaults when creating `BrowserProfile` instances.
 
-If no deterministic extractor matches, the content is passed to the configured LLM with a structured output schema.
+Publicly relevant defaults from the server include:
 
----
+- `downloads_path=~/Downloads/agentyc-mcp`
+- `keep_alive=False` for local browser sessions launched by the MCP server
+- `user_data_dir=~/.config/agentyc/profiles/default`
+- `headless=False` unless overridden
+- `disable_security=False`
 
-## Data Flow: Action Execution
+## Shared Browser Flow
 
-```
-Agent calls Tools.act(ActionModel)
-  │
-  ├─ Pydantic validation
-  ├─ Timeout context started
-  │
-  ├─ ClickElementEvent emitted to bus
-  │     │
-  │     ├─ DOMWatchdog: resolves element index → CDP coordinates
-  │     ├─ CDP Input.dispatchMouseEvent (click)
-  │     ├─ Wait for navigation/network idle
-  │     └─ DOMWatchdog: captures new DOM snapshot
-  │
-  └─ ActionResult(success=True, extracted_content=...) returned
-```
+When `--cdp-url` is provided:
 
-## Data Flow: State Request
+- The server attaches to an already-running browser.
+- `BrowserProfile.keep_alive` is set so the shared browser is not torn down when the MCP session ends.
+- A fresh tab is created for that MCP server instance.
 
-```
-Agent calls session.get_state()
-  │
-  ├─ BrowserStateRequestEvent emitted
-  │
-  ├─ DOMWatchdog: DOMSnapshot → SerializedDOMState
-  ├─ ScreenshotWatchdog: screenshot → base64 PNG
-  ├─ Tab info: target list via CDP Target.getTargets
-  │
-  └─ BrowserStateSummary returned
-       (url, title, dom, screenshot, tabs, viewport, scroll_pos)
-```
+This is the public contract that exists today. Any richer collaboration UX should be described as directional unless it is implemented in the source-of-truth modules above.
 
-## MCP Integration
+## Request Flows
 
-```
-MCP Client (Claude Desktop)
-  │  stdio
-  ▼
-AgentycServer.handle_tool_call(name, args)
-  │
-  ├─ Parses args → ActionModel
-  ├─ Looks up or creates BrowserSession for session_id
-  ├─ Calls Tools.act(action)
-  └─ Returns result as MCP ToolResult JSON
-```
+### `browser_get_state`
 
-Multiple sessions are supported simultaneously — each `session_id` gets its own `BrowserSession` and browser process.
+1. MCP client calls `browser_get_state`.
+2. `AgentycServer` asks `BrowserSession` for a `BrowserStateSummary`.
+3. `agentyc.mcp.state` compacts and serializes that summary.
+4. The server returns JSON text plus optional MCP image content.
+
+### `browser_extract_content`
+
+1. MCP client sends `query`, optional `extract_links`, and optional `output_schema`.
+2. `Tools.extract` obtains clean markdown from the current page.
+3. `agentyc.tools.extraction.router` picks a deterministic route.
+4. The server returns deterministic content plus extraction metadata, or a deterministic-route error.
+
+### Navigation And Interaction
+
+1. MCP client calls a browser tool.
+2. `AgentycServer` resolves refs or indices as needed.
+3. `Tools` dispatches typed browser events.
+4. `BrowserSession` and its event handlers execute the CDP operations.
+5. The server returns a concise text result to the MCP client.
