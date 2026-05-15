@@ -1,51 +1,22 @@
-# Codebase Structure
+# agentyc Package Notes
 
-> The code structure inspired by https://github.com/Netflix/dispatch.
+This package implements the repository's MCP-first browser automation runtime.
 
-Very good structure on how to make a scalable codebase is also in [this repo](https://github.com/zhanymkanov/fastapi-best-practices).
+## Contributor Direction
 
-Just a brief document about how we should structure our backend codebase.
+- Prefer the repo-level contributor guidance in `AGENTS.md`.
+- Prefer the release and gating guidance in `docs/release-gate.md` for publish-time expectations.
+- Treat `agentyc/mcp`, `agentyc/browser`, `agentyc/dom`, `agentyc/tools`, `agentyc/filesystem`, and `agentyc/llm` as the primary maintained surfaces.
+- Reuse existing browser/session primitives instead of introducing parallel automation abstractions.
+- Keep MCP tool contracts deterministic and inspectable through explicit state, HTML, screenshots, and clear errors.
 
-## Code Structure
+## Package Layout
 
-```markdown
-src/
-/<service name>/
-models.py
-services.py
-prompts.py
-views.py
-utils.py
-routers.py
+- `agentyc/mcp`: server and protocol-facing runtime entrypoints.
+- `agentyc/browser`: browser sessions, CDP integration, tabs, and watchdogs.
+- `agentyc/dom`: DOM capture, serialization, and extraction helpers.
+- `agentyc/tools`: deterministic tool orchestration on top of browser primitives.
+- `agentyc/filesystem`: local file access and document helpers.
+- `agentyc/llm`: provider integrations and structured extraction support.
 
-    	/_<subservice name>/
-```
-
-### Service.py
-
-Always a single file, except if it becomes too long - more than ~500 lines, split it into \_subservices
-
-### Views.py
-
-Always split the views into two parts
-
-```python
-# All
-...
-
-# Requests
-...
-
-# Responses
-...
-```
-
-If too long → split into multiple files
-
-### Prompts.py
-
-Single file; if too long → split into multiple files (one prompt per file or so)
-
-### Routers.py
-
-Never split into more than one file
+For end-to-end setup and public-facing product docs, use the repository root documentation rather than this package-local note.
