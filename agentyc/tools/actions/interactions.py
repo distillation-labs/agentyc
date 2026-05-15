@@ -88,6 +88,7 @@ def register_click_action(tools: Any) -> None:
 		del tools.registry.registry.actions['click']
 
 	if tools._coordinate_clicking_enabled:
+
 		@tools.registry.action(
 			'Click element by index or coordinates. Use coordinates only if the index is not available. Either provide coordinates or index.',
 			param_model=ClickElementAction,
@@ -99,6 +100,7 @@ def register_click_action(tools: Any) -> None:
 				return await tools._click_by_index(params, browser_session)
 			return await tools._click_by_coordinate(params, browser_session)
 	else:
+
 		@tools.registry.action('Click element by index.', param_model=ClickElementActionIndexOnly)
 		async def click(params: ClickElementActionIndexOnly, browser_session: BrowserSession):
 			return await tools._click_by_index(params, browser_session)
@@ -153,9 +155,7 @@ def register_interaction_actions(tools: Any) -> None:
 		except BrowserError as error:
 			return handle_browser_error(error)
 		except Exception:
-			return ActionResult(
-				error=f'Failed to click at coordinates ({params.coordinate_x}, {params.coordinate_y}).'
-			)
+			return ActionResult(error=f'Failed to click at coordinates ({params.coordinate_x}, {params.coordinate_y}).')
 
 	async def click_by_index(
 		params: ClickElementAction | ClickElementActionIndexOnly,
