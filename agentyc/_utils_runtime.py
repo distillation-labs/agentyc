@@ -12,7 +12,7 @@ def check_env_variables(keys: list[str], any_or_all=all) -> bool:
 	return any_or_all(os.getenv(key, '').strip() for key in keys)
 
 
-def merge_dicts(a: dict, b: dict, path: tuple[str, ...] = ()): 
+def merge_dicts(a: dict, b: dict, path: tuple[str, ...] = ()):
 	for key in b:
 		if key in a:
 			if isinstance(a[key], dict) and isinstance(b[key], dict):
