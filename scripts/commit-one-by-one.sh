@@ -1,8 +1,8 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-# Commits each changed file individually, prompting for a message per file.
-# Usage: bin/commit-one-by-one.sh [--staged | --all]
+# Commits each changed file individually with auto-generated commit messages.
+# Usage: scripts/commit-one-by-one.sh [--staged | --all]
 #   --staged  only files already in the index (default)
 #   --all     also include untracked and unstaged files
 
@@ -48,29 +48,40 @@ echo "Found ${#UNIQUE_FILES[@]} file(s) to commit:"
 printf '  %s\n' "${UNIQUE_FILES[@]}"
 echo
 
+# Infer conventional commit type from file path
+_commit_type() {
+	case "$1" in
+		docs/*|*.md|*.rst) echo "docs" ;;
+		tests/*|test_*.py|*_test.py) echo "test" ;;
+		scripts/*|bin/*|*.sh) echo "chore" ;;
+		*.toml|*.yaml|*.yml|*.json|*.cfg|*.ini|.github/*|.gitignore) echo "chore" ;;
+		*) echo "feat" ;;
+	esac
+}
+
+# Infer verb from git tracking state
+_commit_verb() {
+	if ! git ls-files --error-unmatch "$1" &>/dev/null 2>&1; then
+		echo "add"
+	elif git ls-files --deleted -- "$1" | grep -q .; then
+		echo "remove"
+	else
+		echo "update"
+	fi
+}
+
 for FILE in "${UNIQUE_FILES[@]}"; do
 	echo "─────────────────────────────────────────"
 	echo "File: $FILE"
 
-	# Show a quick diff summary
-	if git ls-files --error-unmatch "$FILE" &>/dev/null 2>&1; then
-		git diff HEAD -- "$FILE" | head -30 || true
-	else
-		echo "(new untracked file)"
-	fi
-	echo
-
-	read "MSG?Commit message (leave blank to skip): "
-
-	if [[ -z "$MSG" ]]; then
-		echo "Skipping $FILE"
-		echo
-		continue
-	fi
+	TYPE=$(_commit_type "$FILE")
+	VERB=$(_commit_verb "$FILE")
+	BASE="${FILE##*/}"
+	MSG="${TYPE}: ${VERB} ${BASE}"
 
 	git add -- "$FILE"
 	git commit -m "$MSG"
-	echo "Committed: $FILE"
+	echo "Committed: $FILE — $MSG"
 	echo
 done
 
