@@ -4,7 +4,8 @@ from unittest.mock import AsyncMock, patch
 from agentyc.browser.collaboration import apply_title_prefix, extract_title_prefix, strip_title_prefix
 from agentyc.browser.session import BrowserSession
 from agentyc.browser.session_manager import SessionManager
-from agentyc.browser.session_models import BrowserWindowBounds, Target
+from agentyc.browser.profile import BrowserProfile
+from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 
 
 async def test_session_manager_strips_prefixed_titles_but_preserves_display_title():
@@ -59,9 +60,52 @@ async def test_get_tabs_exposes_display_title_and_ownership_metadata():
 	assert tabs[0].title == 'Project board'
 	assert tabs[0].display_title == apply_title_prefix('Project board', session.runtime_metadata)
 	assert tabs[0].ownership is not None
-	assert tabs[0].ownership.runtime_id == session.runtime_metadata.runtime_id
+	assert tabs[0].ownership.owner_kind == 'agent'
+	assert tabs[0].ownership.runtime is not None
+	assert tabs[0].ownership.runtime.runtime_id == session.runtime_metadata.runtime_id
 	assert tabs[0].window_bounds is not None
 	assert tabs[0].window_bounds.width == 1200
+
+
+async def test_shared_attach_marks_unclaimed_tabs_as_human_owned():
+	session = BrowserSession(
+		browser_profile=BrowserProfile(
+			headless=True,
+			user_data_dir=None,
+			cdp_url='ws://example.test/devtools/browser/123',
+			shared_browser_mode='tab',
+		)
+	)
+	manager = SessionManager(session)
+	human_target = Target(target_id='target-human', target_type='page', title='Inbox', display_title='Inbox')
+	other_target = Target(
+		target_id='target-other',
+		target_type='page',
+		title='Builds',
+		display_title='[agtyc:abcd] Builds',
+		ownership=TargetOwnershipMetadata.for_runtime(
+			target_id='target-other',
+			runtime=RuntimeOwnershipMetadata.create(
+				session_id='runtime-abcd',
+				runtime_id='runtime-abcd',
+				runtime_label='Runtime abcd',
+				runtime_role='detected',
+			),
+			current_runtime_id=session.runtime_metadata.runtime_id,
+			source='detected_runtime',
+			title_prefix_applied=True,
+		),
+	)
+	manager._targets = {'target-human': human_target, 'target-other': other_target}
+	session.session_manager = manager
+
+	session._assign_shared_browser_ownership([human_target, other_target])
+
+	assert manager.get_target('target-human').ownership is not None
+	assert manager.get_target('target-human').ownership.owner_kind == 'human'
+	assert manager.get_target('target-human').ownership.runtime is None
+	assert manager.get_target('target-other').ownership.runtime is not None
+	assert manager.get_target('target-other').ownership.runtime.runtime_id == 'runtime-abcd'
 
 
 async def test_set_window_bounds_uses_browser_domain_and_updates_target_cache():
