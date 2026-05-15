@@ -27,6 +27,7 @@ from ._profile_types import (
 	RecordHarMode,
 	ViewportSize,
 )
+from .session_models import BrowserWindowBounds
 from ._profile_validation import optimize_large_domain_list
 
 
@@ -195,6 +196,21 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	)
 
 	cdp_url: str | None = Field(default=None, description='CDP URL for connecting to existing browser instance')
+	runtime_label: str | None = Field(default=None, description='Human-readable collaboration label for this runtime.')
+	runtime_role: str = Field(default='primary', description='Collaboration role for this runtime.')
+	parent_runtime_id: str | None = Field(default=None, description='Optional parent runtime identifier for nested collaboration flows.')
+	shared_browser_mode: Literal['tab', 'window'] | None = Field(
+		default=None,
+		description='When attaching to a shared browser, create a background tab or a separate window for this runtime.',
+	)
+	shared_browser_window_bounds: BrowserWindowBounds | None = Field(
+		default=None,
+		description='Optional bounds to apply when the shared browser creates a separate runtime window.',
+	)
+	shared_browser_focus_policy: Literal['preserve', 'activate'] = Field(
+		default='preserve',
+		description='Whether internal attach/new-page flows preserve the human-focused surface or activate the runtime target.',
+	)
 	is_local: bool = Field(default=False, description='Whether this is a local browser instance')
 	disable_security: bool = Field(default=False, description='Disable browser security features.')
 	deterministic_rendering: bool = Field(default=False, description='Enable deterministic rendering flags.')
