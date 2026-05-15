@@ -224,15 +224,31 @@ def get_tool_schemas() -> list[types.Tool]:
 				'type': 'object',
 				'properties': {
 					'direction': {'type': 'string', 'enum': ['up', 'down'], 'default': 'down'},
-					'pages': {'type': 'number', 'description': '0.5=half, 1=full page (default), 10=to bottom/top', 'default': 1.0},
+					'pages': {
+						'type': 'number',
+						'description': '0.5=half, 1=full page (default), 10=to bottom/top',
+						'default': 1.0,
+					},
 					'ref': {'type': 'string', 'description': 'Scroll within element ref (e.g. "e123"). Omit for page scroll.'},
 					'index': {'type': 'integer', 'description': 'Scroll within element by backend node id. Provide this OR ref.'},
 				},
 			},
 		),
-		types.Tool(name='browser_go_back', description='Go back to the previous page in browser history', inputSchema={'type': 'object', 'properties': {}}),
-		types.Tool(name='browser_go_forward', description='Go forward to the next page in browser history', inputSchema={'type': 'object', 'properties': {}}),
-		types.Tool(name='browser_refresh', description='Refresh/reload the current page', inputSchema={'type': 'object', 'properties': {}}),
+		types.Tool(
+			name='browser_go_back',
+			description='Go back to the previous page in browser history',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
+		types.Tool(
+			name='browser_go_forward',
+			description='Go forward to the next page in browser history',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
+		types.Tool(
+			name='browser_refresh',
+			description='Refresh/reload the current page',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
 		types.Tool(
 			name='browser_press_key',
 			description='Send a keyboard key or shortcut. Examples: "Enter", "Tab", "Escape", "ArrowDown", "Control+a", "Meta+r".',
@@ -290,7 +306,11 @@ def get_tool_schemas() -> list[types.Tool]:
 				'type': 'object',
 				'properties': {
 					'selector': {'type': 'string', 'description': 'CSS selector (e.g. "table tr", "input[type=email]")'},
-					'attributes': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Attributes to extract per element.'},
+					'attributes': {
+						'type': 'array',
+						'items': {'type': 'string'},
+						'description': 'Attributes to extract per element.',
+					},
 					'max_results': {'type': 'integer', 'default': 50},
 				},
 				'required': ['selector'],
@@ -304,8 +324,16 @@ def get_tool_schemas() -> list[types.Tool]:
 				'properties': {
 					'text': {'type': 'string', 'description': 'Text the element must contain (case-insensitive).'},
 					'ref': {'type': 'string', 'description': 'Element ref that must appear (e.g. "e123").'},
-					'appear': {'type': 'boolean', 'description': 'True=wait for element to appear, False=wait to disappear', 'default': True},
-					'timeout_seconds': {'type': 'number', 'description': 'Max seconds to wait (default 10, max 30)', 'default': 10},
+					'appear': {
+						'type': 'boolean',
+						'description': 'True=wait for element to appear, False=wait to disappear',
+						'default': True,
+					},
+					'timeout_seconds': {
+						'type': 'number',
+						'description': 'Max seconds to wait (default 10, max 30)',
+						'default': 10,
+					},
 				},
 			},
 		),
@@ -365,7 +393,11 @@ def get_tool_schemas() -> list[types.Tool]:
 					'source_y': {'type': 'integer'},
 					'target_x': {'type': 'integer'},
 					'target_y': {'type': 'integer'},
-					'steps': {'type': 'integer', 'description': 'Mouse movement interpolation steps (default: 10)', 'default': 10},
+					'steps': {
+						'type': 'integer',
+						'description': 'Mouse movement interpolation steps (default: 10)',
+						'default': 10,
+					},
 				},
 			},
 		),
@@ -386,7 +418,10 @@ def get_tool_schemas() -> list[types.Tool]:
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'path': {'type': 'string', 'description': 'File path to save state to (e.g. /tmp/auth-state.json). Defaults to ~/.agentyc-mcp/browser-state.json'},
+					'path': {
+						'type': 'string',
+						'description': 'File path to save state to (e.g. /tmp/auth-state.json). Defaults to ~/.agentyc-mcp/browser-state.json',
+					},
 				},
 			},
 		),
@@ -407,8 +442,16 @@ def get_tool_schemas() -> list[types.Tool]:
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'timeout_seconds': {'type': 'number', 'description': 'Maximum time to wait (default: 10, max: 30)', 'default': 10},
-					'idle_duration_ms': {'type': 'integer', 'description': 'How long network must be idle (ms, default: 500)', 'default': 500},
+					'timeout_seconds': {
+						'type': 'number',
+						'description': 'Maximum time to wait (default: 10, max: 30)',
+						'default': 10,
+					},
+					'idle_duration_ms': {
+						'type': 'integer',
+						'description': 'How long network must be idle (ms, default: 500)',
+						'default': 500,
+					},
 				},
 			},
 		),
@@ -462,7 +505,10 @@ def get_tool_schemas() -> list[types.Tool]:
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'name': {'type': 'string', 'description': 'Name of a specific cookie to delete (omit to clear all for current domain)'},
+					'name': {
+						'type': 'string',
+						'description': 'Name of a specific cookie to delete (omit to clear all for current domain)',
+					},
 				},
 			},
 		),
@@ -472,8 +518,16 @@ def get_tool_schemas() -> list[types.Tool]:
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'level': {'type': 'string', 'description': 'Filter by level: all, log, warn, error, info (default: all)', 'default': 'all'},
-					'max_entries': {'type': 'integer', 'description': 'Maximum number of entries to return (default: 50)', 'default': 50},
+					'level': {
+						'type': 'string',
+						'description': 'Filter by level: all, log, warn, error, info (default: all)',
+						'default': 'all',
+					},
+					'max_entries': {
+						'type': 'integer',
+						'description': 'Maximum number of entries to return (default: 50)',
+						'default': 50,
+					},
 				},
 			},
 		),
@@ -483,9 +537,21 @@ def get_tool_schemas() -> list[types.Tool]:
 			inputSchema={
 				'type': 'object',
 				'properties': {
-					'type_filter': {'type': 'string', 'description': 'Filter by request type: all, XHR, Fetch, Document, Script, Stylesheet, Image (default: all)', 'default': 'all'},
-					'status_filter': {'type': 'string', 'description': 'Filter by status: all, errors (4xx/5xx/failed), success (2xx/3xx) (default: all)', 'default': 'all'},
-					'max_entries': {'type': 'integer', 'description': 'Maximum number of entries to return (default: 50)', 'default': 50},
+					'type_filter': {
+						'type': 'string',
+						'description': 'Filter by request type: all, XHR, Fetch, Document, Script, Stylesheet, Image (default: all)',
+						'default': 'all',
+					},
+					'status_filter': {
+						'type': 'string',
+						'description': 'Filter by status: all, errors (4xx/5xx/failed), success (2xx/3xx) (default: all)',
+						'default': 'all',
+					},
+					'max_entries': {
+						'type': 'integer',
+						'description': 'Maximum number of entries to return (default: 50)',
+						'default': 50,
+					},
 				},
 			},
 		),
