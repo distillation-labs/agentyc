@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from agentyc.browser.session_models import BrowserWindowBounds, BrowserWindowContext
@@ -36,7 +37,7 @@ def normalize_window_bounds(bounds: dict[str, Any] | BrowserWindowBounds | None)
 	return BrowserWindowBounds.model_validate(bounds)
 
 
-def window_context_from_cdp(payload: dict[str, Any]) -> BrowserWindowContext | None:
+def window_context_from_cdp(payload: Mapping[str, Any]) -> BrowserWindowContext | None:
 	window_id = payload.get('windowId')
 	if window_id is None:
 		return None
