@@ -142,7 +142,12 @@ def serialize_tree(node: SimplifiedNode | None, include_attributes: list[str], d
 
 	elif node.original_node.node_type == NodeType.TEXT_NODE:
 		is_visible = node.original_node.snapshot_node and node.original_node.is_visible
-		if is_visible and node.original_node.node_value and node.original_node.node_value.strip() and len(node.original_node.node_value.strip()) > 1:
+		if (
+			is_visible
+			and node.original_node.node_value
+			and node.original_node.node_value.strip()
+			and len(node.original_node.node_value.strip()) > 1
+		):
 			clean_text = node.original_node.node_value.strip()
 			formatted_text.append(f'{depth_str}{clean_text}')
 
@@ -152,7 +157,11 @@ def serialize_tree(node: SimplifiedNode | None, include_attributes: list[str], d
 			if child_text:
 				formatted_text.append(child_text)
 
-		if node.original_node.node_type == NodeType.ELEMENT_NODE and node.original_node.tag_name and node.original_node.tag_name.upper() in ('IFRAME', 'FRAME'):
+		if (
+			node.original_node.node_type == NodeType.ELEMENT_NODE
+			and node.original_node.tag_name
+			and node.original_node.tag_name.upper() in ('IFRAME', 'FRAME')
+		):
 			if node.original_node.hidden_elements_info:
 				hidden = node.original_node.hidden_elements_info
 				hint_lines = [f'{depth_str}... ({len(hidden)} more elements below - scroll to reveal):']
@@ -170,7 +179,11 @@ def build_attributes_string(node: EnhancedDOMTreeNode, include_attributes: list[
 
 	if node.attributes:
 		attributes_to_include.update(
-			{key: str(value).strip() for key, value in node.attributes.items() if key in include_attributes and str(value).strip() != ''}
+			{
+				key: str(value).strip()
+				for key, value in node.attributes.items()
+				if key in include_attributes and str(value).strip() != ''
+			}
 		)
 
 	if node.tag_name and node.tag_name.lower() == 'input' and node.attributes:
@@ -223,7 +236,10 @@ def build_attributes_string(node: EnhancedDOMTreeNode, include_attributes: list[
 						attributes_to_include['format'] = 'mm/dd/yyyy'
 
 	is_password_field = (
-		node.tag_name and node.tag_name.lower() == 'input' and node.attributes and node.attributes.get('type', '').lower() == 'password'
+		node.tag_name
+		and node.tag_name.lower() == 'input'
+		and node.attributes
+		and node.attributes.get('type', '').lower() == 'password'
 	)
 
 	if node.ax_node and node.ax_node.properties:
