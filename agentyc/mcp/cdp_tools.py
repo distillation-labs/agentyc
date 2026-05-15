@@ -78,7 +78,9 @@ async def _get_viewport_coords(self, backend_node_id: int) -> tuple[float, float
 		return None
 
 
-async def _resolve_element_coords(self, ref: str | None, index: int | None, fallback_x: int | None, fallback_y: int | None) -> tuple[float, float]:
+async def _resolve_element_coords(
+	self, ref: str | None, index: int | None, fallback_x: int | None, fallback_y: int | None
+) -> tuple[float, float]:
 	"""Resolve element ref/index to viewport coordinates using live CDP quads."""
 	if fallback_x is not None and fallback_y is not None:
 		return float(fallback_x), float(fallback_y)
@@ -100,7 +102,9 @@ async def _resolve_element_coords(self, ref: str | None, index: int | None, fall
 	raise ValueError(f'Could not determine coordinates for element {ref or resolved_index}')
 
 
-async def _hover(self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None) -> str:
+async def _hover(
+	self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None
+) -> str:
 	"""Hover over element to trigger CSS :hover and JS mouseover/mouseenter."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
@@ -121,7 +125,9 @@ async def _hover(self, ref: str | None = None, index: int | None = None, coordin
 		return self._format_action_error(str(e), default_code='action_failed')
 
 
-async def _double_click(self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None) -> str:
+async def _double_click(
+	self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None
+) -> str:
 	"""Double-click an element."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
@@ -147,7 +153,16 @@ async def _double_click(self, ref: str | None = None, index: int | None = None, 
 		return self._format_action_error(str(e), default_code='action_failed')
 
 
-async def _drag_to(self, source_ref: str | None = None, target_ref: str | None = None, source_x: int | None = None, source_y: int | None = None, target_x: int | None = None, target_y: int | None = None, steps: int = 10) -> str:
+async def _drag_to(
+	self,
+	source_ref: str | None = None,
+	target_ref: str | None = None,
+	source_x: int | None = None,
+	source_y: int | None = None,
+	target_x: int | None = None,
+	target_y: int | None = None,
+	steps: int = 10,
+) -> str:
 	"""Drag from one element or coordinate to another."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
@@ -159,7 +174,9 @@ async def _drag_to(self, source_ref: str | None = None, target_ref: str | None =
 		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
 		sid = cdp_session.session_id
 
-		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(params={'type': 'mouseMoved', 'x': sx, 'y': sy}, session_id=sid)
+		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+			params={'type': 'mouseMoved', 'x': sx, 'y': sy}, session_id=sid
+		)
 		await asyncio.sleep(0.05)
 		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 			params={'type': 'mousePressed', 'x': sx, 'y': sy, 'button': 'left', 'clickCount': 1}, session_id=sid
@@ -264,7 +281,9 @@ async def _wait_for_network_idle(self, timeout_seconds: float = 10.0, idle_durat
 		return f'Network idle wait completed (fallback mode): {e}'
 
 
-async def _right_click(self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None) -> str:
+async def _right_click(
+	self, ref: str | None = None, index: int | None = None, coordinate_x: int | None = None, coordinate_y: int | None = None
+) -> str:
 	"""Right-click an element to open its context menu."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
