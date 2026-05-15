@@ -1,11 +1,11 @@
 [project]
 name = "agentyc"
-description = "MCP-first browser automation for coding agents"
+description = "Deterministic MCP-first browser automation runtime for coding agents"
 authors = [{ name = "Gregor Zunic" }]
 version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
-keywords = ["mcp", "model-context-protocol", "browser-automation", "cdp", "agents"]
+keywords = ["mcp", "model-context-protocol", "browser-automation", "cdp", "chromium", "coding-agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -76,13 +76,11 @@ all = ["agentyc[aws,oci]"]
 
 [project.urls]
 Homepage = "https://github.com/distillation-labs/agentyc"
-Documentation = "https://github.com/distillation-labs/agentyc#readme"
+Documentation = "https://github.com/distillation-labs/agentyc/tree/main/docs"
 Repository = "https://github.com/distillation-labs/agentyc"
+Source = "https://github.com/distillation-labs/agentyc"
 Issues = "https://github.com/distillation-labs/agentyc/issues"
 Changelog = "https://github.com/distillation-labs/agentyc/releases"
-Telemetry = "https://github.com/distillation-labs/agentyc#deterministic-extraction"
-"Terms of Service" = "https://agentyc.com/legal/terms-of-service"
-"Privacy Policy" = "https://agentyc.com/privacy/"
 
 [project.scripts]
 agentyc = "agentyc.mcp.cli:main"

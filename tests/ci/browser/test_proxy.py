@@ -2,6 +2,7 @@ import asyncio
 from typing import Any
 
 import pytest
+
 from agentyc.browser import BrowserProfile, BrowserSession
 from agentyc.browser.profile import ProxySettings
 from agentyc.config import CONFIG

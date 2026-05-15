@@ -90,31 +90,3 @@ class TestLazyConfig:
 				os.environ['XDG_CACHE_HOME'] = original_value
 			else:
 				os.environ.pop('XDG_CACHE_HOME', None)
-
-	def test_cloud_sync_inherits_telemetry(self):
-		"""Test AGENTYC_CLOUD_SYNC inherits from ANONYMIZED_TELEMETRY when not set."""
-		telemetry_original = os.environ.get('ANONYMIZED_TELEMETRY', '')
-		sync_original = os.environ.get('AGENTYC_CLOUD_SYNC', '')
-		try:
-			# When AGENTYC_CLOUD_SYNC is not set, it should inherit from ANONYMIZED_TELEMETRY
-			os.environ['ANONYMIZED_TELEMETRY'] = 'true'
-			os.environ.pop('AGENTYC_CLOUD_SYNC', None)
-			assert CONFIG.AGENTYC_CLOUD_SYNC is True
-
-			os.environ['ANONYMIZED_TELEMETRY'] = 'false'
-			os.environ.pop('AGENTYC_CLOUD_SYNC', None)
-			assert CONFIG.AGENTYC_CLOUD_SYNC is False
-
-			# When explicitly set, it should use its own value
-			os.environ['ANONYMIZED_TELEMETRY'] = 'false'
-			os.environ['AGENTYC_CLOUD_SYNC'] = 'true'
-			assert CONFIG.AGENTYC_CLOUD_SYNC is True
-		finally:
-			if telemetry_original:
-				os.environ['ANONYMIZED_TELEMETRY'] = telemetry_original
-			else:
-				os.environ.pop('ANONYMIZED_TELEMETRY', None)
-			if sync_original:
-				os.environ['AGENTYC_CLOUD_SYNC'] = sync_original
-			else:
-				os.environ.pop('AGENTYC_CLOUD_SYNC', None)

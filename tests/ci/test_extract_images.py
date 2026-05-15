@@ -11,9 +11,10 @@ regardless of extract_images. The parameter only matters for images inside <td>,
 import asyncio
 
 import pytest
+from pytest_httpserver import HTTPServer
+
 from agentyc.browser import BrowserProfile, BrowserSession
 from agentyc.dom.markdown_extractor import extract_clean_markdown
-from pytest_httpserver import HTTPServer
 
 # --- Fixtures ---
 

@@ -14,6 +14,7 @@ import time
 from unittest.mock import patch
 
 import pytest
+
 from agentyc.browser._cdp_timeout import (
 	DEFAULT_CDP_REQUEST_TIMEOUT_S,
 	TimeoutWrappedCDPClient,

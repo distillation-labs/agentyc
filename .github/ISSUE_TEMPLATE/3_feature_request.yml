@@ -1,93 +1,93 @@
-name: 💡 New Feature or Enhancement Request
-description: Suggest an idea or improvement for the agentyc library or Agent capabilities
-title: "Feature Request: ..."
+name: Feature Request
+description: Suggest an improvement for the agentyc MCP browser runtime
+title: "Feature request: ..."
 type: 'Enhancement'
 labels: ['enhancement']
 body:
   - type: textarea
     id: current_problem
     attributes:
-      label: "What is the problem that your feature request solves?"
+      label: What problem are you trying to solve?
       description: |
-        Describe the problem or need that your feature request solves, include screenshots and example URLs if relevant.
+        Describe the browser automation problem, the site or workflow involved, and the current limitation.
+        Include screenshots, HTML snippets, or example URLs when they help reproduce the request.
       placeholder: |
-        e.g. I need to be able to simulate dragging in a circle to test the paint feature on a drawing site: https://example.com/draw
+        Example: I need a reliable way to detect which tab opened a download flow after clicking a result row in a SPA.
     validations:
       required: true
 
   - type: textarea
     id: proposed_solution
     attributes:
-      label: "What is your proposed solution?"
+      label: What behavior do you want instead?
       description: |
-        Describe the ideal specific solution you'd want, *and whether it fits into any broader scope of changes*.
+        Describe the concrete tool behavior, API shape, or runtime capability you want agentyc to expose.
       placeholder: |
-        e.g. I want to add a default action that can hover/drag the mouse on a path when given a series
-        of x,y coordinates. More broadly it may be useful add a computer-use/x,y-coordinate-style automation
-        method fallback that can do complex mouse movements.
+        Example: Add a tool result field that reports the newly opened tab_id after click-driven navigation.
     validations:
       required: true
 
   - type: textarea
-    id: workarounds_tried
+    id: workarounds
     attributes:
-      label: "What hacks or alternative solutions have you tried to solve the problem?"
+      label: What workarounds have you tried?
       description: |
-        A description of any troubleshooting, alternative approaches, workarounds, or other ideas you've considered to fix the problem.
+        List any current workaround, custom script, prompt strategy, or manual step you are using.
       placeholder: |
-        e.g. I tried upgrading to the latest version and telling it to hover in the prompt. I also tried 
-        telling the agent to ask for human help (using a custom tools action) when it gets to this 
-        step, then I manually click a browser extension in the navbar that automates the mouse movevement.
+        Example: I currently poll browser_list_tabs after every click and diff the results.
+    validations:
+      required: false
+
+  - type: textarea
+    id: runtime_context
+    attributes:
+      label: Runtime context
+      description: |
+        Share any context that affects the request.
+        Useful examples: MCP client, local vs shared browser, headless vs headful, target site type, or auth flow details.
+      placeholder: |
+        MCP client: Claude Desktop
+        Browser mode: local Chrome
+        Runtime: headful
+        Site type: React SPA behind SSO
+    validations:
+      required: false
+
+  - type: input
+    id: affected_tools
+    attributes:
+      label: Which tool or API surface is involved?
+      description: |
+        List the MCP tool names or Python APIs affected, if known.
+      placeholder: "Example: browser_click, browser_list_tabs"
     validations:
       required: false
 
   - type: input
     id: version
     attributes:
-      label: What version of agentyc are you currently using?
+      label: What version of agentyc are you using?
       description: |
-        Run `uv pip show agentyc` or `git log -n 1` and share the exact number or git hash. DO NOT JUST ENTER `latest release` OR `main`.
-        We need to know what version of the agentyc library you're running in order to contextualize your feature request.  
-        Sometimes features are already available and just need to be enabled with config on certain versions.
-      placeholder: "e.g. 0.1.48 or 62760baaefd"
+        Run `uv pip show agentyc` or `git log -n 1` and share the exact version or git hash.
+      placeholder: "Example: 0.1.0 or 62760baaefd"
     validations:
       required: true
 
   - type: markdown
     attributes:
       value: |
-        ---
-        > [!IMPORTANT]
-        > 🙏 Please **go check *right now before filling this out* that that you have tried the [⬆️ LATEST VERSION](https://github.com/agentyc/agentyc/releases)**.
-        > 🚀 We ship *hundreds* of improvements a day and we might've already added a solution to your need yesterday!  
-        > <a href="https://github.com/agentyc/agentyc/releases"><img src="https://github.com/user-attachments/assets/4cd34ee6-bafb-4f24-87e2-27a31dc5b9a4" width="500px"/></a>
-        > If you are running an old version, the **first thing we will ask you to do is *try the latest `beta`***:
-        > - 🆕 [`beta`](https://docs.agentyc.com/development/local-setup):   `uv pip install --upgrade git+https://github.com/agentyc/agentyc.git@main`
-        > - 📦 [`stable`](https://pypi.org/project/agentyc/#history): `pip install --upgrade agentyc`
+        Before opening a feature request, verify the issue still reproduces on the latest repository state or latest published package.
 
   - type: checkboxes
-    id: priority
+    id: impact
     attributes:
-      label: "How badly do you want this new feature?"
+      label: Impact
       options:
-        - label: "It's an urgent deal-breaker, I can't live without it"
+        - label: This is blocking my current browser automation workflow
           required: false
-        - label: "It's important to add it in the near-mid term future"
+        - label: This would materially improve reliability or determinism
           required: false
-        - label: "It would be nice to add it sometime in the next 2 years"
+        - label: This is primarily a usability improvement
           required: false
-        - label: "💪 I'm willing to [start a PR](https://docs.agentyc.com/development/contribution-guide) to work on this myself"
+        - label: I am willing to help implement or test this change
           required: false
-        - label: "💼 My company would spend >$5k on [Browser-Use Cloud](https://agentyc.com) if it solved this reliably for us"
-          required: false
-
-  - type: markdown
-    attributes:
-      value: |
-        ---
-        > [!TIP]
-        > Start conversations about your feature request in other places too, the more  
-        > 📣 hype we see around a request the more likely we are to add it!
-        >
-        > - 👾 Discord: [https://link.agentyc.com/discord](https://link.agentyc.com/discord)
-        > - 𝕏  Twitter: [https://x.com/agentyc](https://x.com/agentyc)
