@@ -136,9 +136,7 @@ async def _navigate_and_wait(
 		target = session.session_manager.get_target(target_id)
 		current_url = target.url
 		same_domain = (
-			url.split('/')[2] == current_url.split('/')[2]
-			if url.startswith('http') and current_url.startswith('http')
-			else False
+			url.split('/')[2] == current_url.split('/')[2] if url.startswith('http') and current_url.startswith('http') else False
 		)
 		timeout = 3.0 if same_domain else 8.0
 
