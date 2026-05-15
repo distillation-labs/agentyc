@@ -75,11 +75,13 @@ def collect_collaboration_regression_reasons(output: dict[str, Any]) -> list[str
 
 	tab_runtime_pair = collaboration.get('tab_runtime_pair')
 	if isinstance(tab_runtime_pair, dict) and tab_runtime_pair.get('passed') is False:
-		failed_checks = [
-			check.get('key')
-			for check in tab_runtime_pair.get('checks', [])
-			if isinstance(check, dict) and check.get('passed') is False and isinstance(check.get('key'), str)
-		]
+		failed_checks: list[str] = []
+		for check in tab_runtime_pair.get('checks', []):
+			if not isinstance(check, dict) or check.get('passed') is not False:
+				continue
+			key = check.get('key')
+			if isinstance(key, str):
+				failed_checks.append(key)
 		if failed_checks:
 			reasons.append('collaboration required checks failed: ' + ', '.join(failed_checks))
 		else:
