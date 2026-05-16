@@ -8,6 +8,7 @@ from pytest_httpserver import HTTPServer
 
 from agentyc.actions import ActionResult
 from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.browser.events import BrowserLaunchEvent, BrowserStartEvent
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata
 from agentyc.browser.views import TabInfo
 from agentyc.dom.serializer.serializer import DOMTreeSerializer
@@ -644,7 +645,9 @@ def http_server():
 
 @pytest.fixture(scope='session')
 def base_url(http_server):
-	return f'http://{http_server.host}:{http_server.port}'
+	# Chrome shared-tab navigation is measurably more stable against the IPv4
+	# loopback address than the hostname alias on macOS CI.
+	return f'http://127.0.0.1:{http_server.port}'
 
 
 @pytest.fixture(scope='module')
@@ -667,6 +670,42 @@ def tools():
 
 
 class TestMCPHotPathFixes:
+	def test_browser_startup_timeouts_allow_slower_stdio_cold_start(self):
+		assert BrowserLaunchEvent().event_timeout == 60.0
+		assert BrowserStartEvent().event_timeout == 90.0
+
+	async def test_init_browser_session_clears_partial_runtime_after_start_failure(self):
+		server = AgentycServer()
+		broken_session = SimpleNamespace(
+			id='session-broken', start=AsyncMock(side_effect=TimeoutError('startup timed out')), kill=AsyncMock()
+		)
+
+		with patch('agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)):
+			with patch('agentyc.browser.BrowserSession', return_value=broken_session):
+				with patch('agentyc.config.get_default_profile', return_value={}):
+					with pytest.raises(TimeoutError, match='startup timed out'):
+						await server._init_browser_session()
+
+		broken_session.kill.assert_awaited_once()
+		assert server.browser_session is None
+		assert server.tools is None
+		assert server.file_system is None
+
+	async def test_execute_tool_reinitializes_unhealthy_cached_browser_runtime(self):
+		server = AgentycServer()
+		server.browser_session = SimpleNamespace(is_cdp_connected=False)
+		server.tools = None
+		server._reset_broken_browser_runtime = AsyncMock()
+		server._init_browser_session = AsyncMock()
+		server._navigate = AsyncMock(return_value='Navigated to: https://example.com')
+
+		result = await server._execute_tool('browser_navigate', {'url': 'https://example.com'})
+
+		assert result == 'Navigated to: https://example.com'
+		server._reset_broken_browser_runtime.assert_awaited_once()
+		server._init_browser_session.assert_awaited_once()
+		server._navigate.assert_awaited_once_with('https://example.com', False)
+
 	async def test_get_state_forwards_include_screenshot_flag(self):
 		server = AgentycServer()
 		server.browser_session = AsyncMock()
@@ -674,7 +713,10 @@ class TestMCPHotPathFixes:
 
 		state_json, screenshot_b64 = await server._get_browser_state(include_screenshot=False)
 
-		server.browser_session.get_browser_state_summary.assert_awaited_once_with(include_screenshot=False)
+		server.browser_session.get_browser_state_summary.assert_awaited_once_with(
+			include_screenshot=False,
+			include_recent_events=True,
+		)
 		payload = json.loads(state_json)
 		assert payload['mode'] == 'auto'
 		assert payload['effective_mode'] == 'full'
@@ -722,6 +764,42 @@ class TestMCPHotPathFixes:
 		server.browser_session.get_browser_state_summary.assert_awaited_once_with(include_screenshot=False)
 		assert json.loads(meta_json)['size_bytes'] == len(b'png-data')
 		assert image_b64
+
+	def test_browser_state_payload_includes_trimmed_debug_surface(self):
+		state = _stub_state()
+		state.browser_errors = ['Primary renderer error', 'Follow-up warning']
+		state.pending_network_requests = [
+			SimpleNamespace(
+				url='https://example.com/api/releases?cursor=abc123',
+				method='GET',
+				loading_duration_ms=187.65,
+				resource_type='Fetch',
+			)
+		]
+		state.recent_events = json.dumps(
+			[
+				{
+					'event_type': 'NavigateEvent',
+					'timestamp': '2026-05-15T18:00:00Z',
+					'url': 'https://example.com/releases',
+				},
+				{
+					'event_type': 'ClickEvent',
+					'timestamp': '2026-05-15T18:00:01Z',
+					'error_message': 'Button intercepted',
+				},
+			]
+		)
+		state.closed_popup_messages = ['Leave site?', 'Unsaved changes']
+
+		payload = build_browser_state_payload(state, mode='min')
+
+		assert payload['debug']['browser_errors'] == ['Primary renderer error', 'Follow-up warning']
+		assert payload['debug']['pending_network_requests'][0]['resource_type'] == 'Fetch'
+		assert payload['debug']['pending_network_requests'][0]['loading_duration_ms'] == 187.7
+		assert payload['debug']['recent_events'][0]['event_type'] == 'NavigateEvent'
+		assert payload['debug']['recent_events'][1]['error_message'] == 'Button intercepted'
+		assert payload['debug']['closed_popup_messages'] == ['Leave site?', 'Unsaved changes']
 
 	async def test_navigate_wait_uses_dom_ready_fallback_when_lifecycle_events_are_missing(self):
 		session = BrowserSession(browser_profile=BrowserProfile(headless=True))
@@ -980,6 +1058,200 @@ class TestMCPHotPathFixes:
 
 		assert result.startswith('Error [postcondition_failed]:')
 		assert 'v1.2.3-final' in result
+
+	async def test_close_tab_waits_for_target_list_to_reflect_detach(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_target_id_from_tab_id = AsyncMock(return_value='target-2')
+		server.browser_session.event_bus = SimpleNamespace(dispatch=lambda _event: _CompletedEvent())
+		server.browser_session.get_tabs = AsyncMock(
+			side_effect=[
+				[
+					TabInfo(tab_id='target-1', url='https://example.com/1', title='One'),
+					TabInfo(tab_id='target-2', url='https://example.com/2', title='Two'),
+				],
+				[TabInfo(tab_id='target-1', url='https://example.com/1', title='One')],
+			]
+		)
+		server.browser_session.get_current_page_url = AsyncMock(return_value='https://example.com/1')
+
+		result = await server._close_tab('2')
+
+		assert result == 'Closed tab # 2, now on https://example.com/1'
+		assert server.browser_session.get_tabs.await_count == 2
+
+	async def test_close_tab_returns_postcondition_error_when_target_never_disappears(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_target_id_from_tab_id = AsyncMock(return_value='target-2')
+		server.browser_session.event_bus = SimpleNamespace(dispatch=lambda _event: _CompletedEvent())
+		server.browser_session.get_tabs = AsyncMock(
+			return_value=[
+				TabInfo(tab_id='target-1', url='https://example.com/1', title='One'),
+				TabInfo(tab_id='target-2', url='https://example.com/2', title='Two'),
+			]
+		)
+
+		result = await server._close_tab('2')
+
+		assert result.startswith('Error [postcondition_failed]:')
+		assert 'Close tab 2 completed but the tab is still present.' in result
+
+	async def test_switch_tab_returns_action_error_when_runtime_does_not_own_target(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_target_id_from_tab_id = AsyncMock(return_value='target-peer')
+
+		class _DeniedEvent(_CompletedEvent):
+			async def event_result(self, *args, **kwargs):
+				raise RuntimeError('Cannot switch to tab peer: it is owned by Peer runtime')
+
+		server.browser_session.event_bus = SimpleNamespace(dispatch=lambda _event: _DeniedEvent())
+
+		result = await server._switch_tab('peer')
+
+		assert result.startswith('Error [action_failed]:')
+		assert 'owned by Peer runtime' in result
+
+	async def test_close_tab_returns_action_error_when_runtime_does_not_own_target(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_target_id_from_tab_id = AsyncMock(return_value='target-peer')
+
+		class _DeniedEvent(_CompletedEvent):
+			async def event_result(self, *args, **kwargs):
+				raise RuntimeError('Cannot close tab peer: it is owned by Peer runtime')
+
+		server.browser_session.event_bus = SimpleNamespace(dispatch=lambda _event: _DeniedEvent())
+
+		result = await server._close_tab('peer')
+
+		assert result.startswith('Error [action_failed]:')
+		assert 'owned by Peer runtime' in result
+
+	async def test_close_tab_returns_action_error_when_tab_is_human_owned(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_target_id_from_tab_id = AsyncMock(return_value='target-human')
+
+		class _DeniedEvent(_CompletedEvent):
+			async def event_result(self, *args, **kwargs):
+				raise RuntimeError('Cannot close tab human: it is owned by Human')
+
+		server.browser_session.event_bus = SimpleNamespace(dispatch=lambda _event: _DeniedEvent())
+
+		result = await server._close_tab('human')
+
+		assert result.startswith('Error [action_failed]:')
+		assert 'owned by Human' in result
+
+	async def test_wait_for_network_idle_uses_pending_requests_until_loading_finishes(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_or_create_cdp_session = AsyncMock(return_value=SimpleNamespace())
+		server._network_pending = {'req-1': {'request_id': 'req-1'}}
+
+		async def _finish_request():
+			await asyncio.sleep(0.05)
+			server._network_pending.pop('req-1', None)
+
+		finish_task = asyncio.create_task(_finish_request())
+		started = asyncio.get_event_loop().time()
+		result = await server._wait_for_network_idle(timeout_seconds=1.0, idle_duration_ms=100)
+		elapsed = asyncio.get_event_loop().time() - started
+		await finish_task
+
+		assert result.startswith('Network idle after ')
+		assert elapsed < 0.4
+
+	async def test_network_log_entries_finalize_on_loading_finished_and_failures(self):
+		server = AgentycServer()
+		captured: dict[str, object] = {}
+
+		def _capture_request(handler):
+			captured['request'] = handler
+
+		def _capture_response(handler):
+			captured['response'] = handler
+
+		def _capture_finished(handler):
+			captured['finished'] = handler
+
+		def _capture_failed(handler):
+			captured['failed'] = handler
+
+		server.browser_session = AsyncMock()
+		server.browser_session.get_or_create_cdp_session = AsyncMock(
+			return_value=SimpleNamespace(
+				session_id='session-1',
+				target_id='target-1',
+				cdp_client=SimpleNamespace(
+					register=SimpleNamespace(
+						Runtime=SimpleNamespace(
+							consoleAPICalled=lambda *_args, **_kwargs: None,
+							exceptionThrown=lambda *_args, **_kwargs: None,
+						),
+						Network=SimpleNamespace(
+							requestWillBeSent=_capture_request,
+							responseReceived=_capture_response,
+							loadingFinished=_capture_finished,
+							loadingFailed=_capture_failed,
+						),
+					),
+					send=SimpleNamespace(Runtime=SimpleNamespace(enable=AsyncMock(return_value={}))),
+				),
+			)
+		)
+		server.browser_session.session_manager = None
+
+		await server._register_cdp_event_listeners()
+
+		request = captured['request']
+		response = captured['response']
+		finished = captured['finished']
+		failed = captured['failed']
+
+		request(
+			{
+				'requestId': 'req-1',
+				'request': {'url': 'https://example.com/api/data', 'method': 'GET'},
+				'type': 'Fetch',
+				'timestamp': 10.0,
+			},
+			'session-1',
+		)
+		response(
+			{
+				'requestId': 'req-1',
+				'response': {'status': 200, 'statusText': 'OK'},
+				'timestamp': 10.1,
+			},
+			'session-1',
+		)
+		assert 'req-1' in server._network_pending
+		finished({'requestId': 'req-1', 'timestamp': 10.25}, 'session-1')
+
+		request(
+			{
+				'requestId': 'req-2',
+				'request': {'url': 'https://example.com/api/submit', 'method': 'POST'},
+				'type': 'Fetch',
+				'timestamp': 20.0,
+			},
+			'session-1',
+		)
+		failed({'requestId': 'req-2', 'errorText': 'net::ERR_FAILED', 'timestamp': 20.2}, 'session-1')
+
+		log_entries = json.loads(await server._get_network_log(max_entries=10))
+
+		assert [entry['url'] for entry in log_entries] == [
+			'https://example.com/api/data',
+			'https://example.com/api/submit',
+		]
+		assert log_entries[0]['status'] == 200
+		assert log_entries[0]['status_text'] == 'OK'
+		assert log_entries[0]['duration_ms'] == 250.0
+		assert log_entries[1]['error'] == 'net::ERR_FAILED'
 
 
 class TestMCPStateProtocolAndExtraction:
@@ -1812,17 +2084,25 @@ class TestParallelTabExecution:
 
 			try:
 				# Navigate each agent to a different page concurrently
-				await asyncio.gather(
+				nav_a, nav_b = await asyncio.gather(
 					server_a._navigate(f'{base_url}/accessible'),
 					server_b._navigate(f'{base_url}/status'),
 				)
+				assert not nav_a.startswith('Error'), f'Server A navigation failed: {nav_a}'
+				assert not nav_b.startswith('Error'), f'Server B navigation failed: {nav_b}'
 
-				# Each agent's state must reflect only its own tab
-				state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
-				state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
-
-				state_a = json.loads(state_a_json)
-				state_b = json.loads(state_b_json)
+				# Poll until both agents have interactive elements — avoids fixed sleeps
+				# that are brittle under a loaded event loop (e.g. after a full test suite).
+				state_a: dict = {}
+				state_b: dict = {}
+				for _ in range(20):
+					state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
+					state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
+					state_a = json.loads(state_a_json)
+					state_b = json.loads(state_b_json)
+					if state_a.get('interactive_elements') and state_b.get('interactive_elements'):
+						break
+					await asyncio.sleep(0.1)
 
 				assert (
 					state_a['current_tab']['ownership']['runtime']['runtime_id']
@@ -1887,14 +2167,22 @@ class TestParallelTabExecution:
 
 			try:
 				# Point each agent at the accessible form
-				await server_a._navigate(f'{base_url}/accessible')
-				await server_b._navigate(f'{base_url}/accessible')
+				nav_a = await server_a._navigate(f'{base_url}/accessible')
+				nav_b = await server_b._navigate(f'{base_url}/accessible')
+				assert not nav_a.startswith('Error'), f'Server A navigation failed: {nav_a}'
+				assert not nav_b.startswith('Error'), f'Server B navigation failed: {nav_b}'
 
-				# Grab the email input ref in each agent's own view
-				state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
-				state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
-				state_a = json.loads(state_a_json)
-				state_b = json.loads(state_b_json)
+				# Poll until both agents have interactive elements
+				state_a: dict = {}
+				state_b: dict = {}
+				for _ in range(20):
+					state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
+					state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
+					state_a = json.loads(state_a_json)
+					state_b = json.loads(state_b_json)
+					if state_a.get('interactive_elements') and state_b.get('interactive_elements'):
+						break
+					await asyncio.sleep(0.1)
 
 				email_ref_a = next(
 					(

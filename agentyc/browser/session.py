@@ -620,6 +620,15 @@ class BrowserSession(BaseModel):
 	def _assign_shared_browser_ownership(self, page_targets: list[Target]) -> None:
 		session_shared_browser._assign_shared_browser_ownership(self, page_targets)
 
+	def is_target_owned_by_current_runtime(self, target_id: TargetID) -> bool:
+		return session_shared_browser.is_target_owned_by_current_runtime(self, target_id)
+
+	def get_owned_page_targets(self) -> list[Target]:
+		return session_shared_browser.get_owned_page_targets(self)
+
+	def require_owned_target(self, target_id: TargetID, *, action: str) -> Target:
+		return session_shared_browser.require_owned_target(self, target_id, action=action)
+
 	async def _apply_runtime_markers_to_target(
 		self,
 		target_id: TargetID,
@@ -758,6 +767,7 @@ class BrowserSession(BaseModel):
 		background: bool = False,
 		new_window: bool = False,
 		window_bounds: BrowserWindowBounds | dict[str, Any] | None = None,
+		browser_context_id: str | None = None,
 	) -> str:
 		return await session_shared_browser._cdp_create_new_page(
 			self,
@@ -765,6 +775,7 @@ class BrowserSession(BaseModel):
 			background=background,
 			new_window=new_window,
 			window_bounds=window_bounds,
+			browser_context_id=browser_context_id,
 		)
 
 	async def _cdp_close_page(self, target_id: TargetID) -> None:

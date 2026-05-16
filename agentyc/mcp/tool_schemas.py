@@ -120,6 +120,20 @@ def get_tool_schemas() -> list[types.Tool]:
 		),
 		types.Tool(name='browser_list_tabs', description='List all open tabs.', inputSchema={'type': 'object', 'properties': {}}),
 		types.Tool(
+			name='browser_new_tab',
+			description='Create a new browser tab and switch focus to it. Use for parallel automation: each subagent calls this to get its own tab without disturbing others.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'url': {
+						'type': 'string',
+						'description': 'URL to open. Omit or pass "about:blank" for an empty tab.',
+						'default': 'about:blank',
+					},
+				},
+			},
+		),
+		types.Tool(
 			name='browser_switch_tab',
 			description='Switch to a tab by its 4-char tab_id.',
 			inputSchema={
@@ -419,7 +433,7 @@ def get_tool_schemas() -> list[types.Tool]:
 		),
 		types.Tool(
 			name='browser_get_network_log',
-			description='Return captured network requests (XHR/Fetch, status codes, timing). Essential for debugging SPA data flows and API failures.',
+			description='Return captured network requests (XHR/Fetch, status codes, timing, optional headers). Essential for debugging SPA data flows and API failures.',
 			inputSchema={
 				'type': 'object',
 				'properties': {
@@ -434,6 +448,11 @@ def get_tool_schemas() -> list[types.Tool]:
 						'default': 'all',
 					},
 					'max_entries': {'type': 'integer', 'default': 50},
+					'include_headers': {
+						'type': 'boolean',
+						'description': 'Include request and response headers in each entry. Increases output size significantly.',
+						'default': False,
+					},
 				},
 			},
 		),

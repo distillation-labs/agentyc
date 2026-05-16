@@ -35,7 +35,7 @@ Run this once in your project directory to write a usage guide your coding agent
 agentyc init
 ```
 
-This writes `agentyc-skill.md` — covering the read→ref→act loop, `since_hash` polling, extraction routes, auth persistence, and common pitfalls. Point Claude Code, Cursor, or Copilot at it.
+This copies the packaged skills guide to `agentyc-skill.md` by default, or to a custom destination with `--output`. The guide covers the read→ref→act loop, `since_hash` polling, extraction routes, auth persistence, and common pitfalls. Point Claude Code, Cursor, or Copilot at the generated file.
 
 ```bash
 agentyc init --print          # print to stdout instead of writing a file
@@ -203,4 +203,5 @@ uv build
 - `docs/architecture.md`
 - `docs/api.md`
 - `docs/configuration.md`
+- `docs/release-gate.md`
 - `docs/tech-stack.md`

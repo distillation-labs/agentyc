@@ -26,12 +26,14 @@ agentyc is designed to do a small set of things well:
 - Return deterministic browser state with stable element refs.
 - Provide deterministic extraction for common page structures.
 - Surface browser-native console and network diagnostics.
+- Support parallel automation through per-subagent tab isolation via `browser_new_tab`.
 
 The public server is not an autonomous agent framework. It does not ship a planner, prompt loop, cloud-first sync workflow, or LLM-backed extraction fallback in its default MCP path.
 
 ## Default Behavior
 
 - The `agentyc` command starts the MCP server.
+- `agentyc.mcp.cli.main` is the CLI entrypoint and dispatches MCP mode into `agentyc.mcp.server.main`.
 - Browser sessions are created lazily on first browser tool use.
 - The default server launches a local browser unless `--cdp-url` is provided.
 - Deterministic extraction is the default and only public MCP extraction mode.
@@ -44,6 +46,7 @@ The public server is not an autonomous agent framework. It does not ship a plann
 - Browser state capture with stable refs and compact payloads.
 - Structured extraction of tables, lists, links, forms, images, and key-value panels.
 - CDP-native debugging via console and network logs.
+- Parallel automation where multiple subagents each own a dedicated tab in a shared browser.
 
 ## Shared Browser Positioning
 
@@ -54,6 +57,7 @@ agentyc supports attaching multiple MCP server processes to the same Chrome inst
 - Visible activation is controlled by a focus policy: `preserve` avoids stealing the human-focused surface, while `activate` foregrounds the runtime target.
 - Stock Chrome and CDP do not offer reliable per-tab color ownership.
 - Shared-browser collaboration is best-effort operational behavior, not a strict isolation guarantee.
+- For parallel automation, each subagent calls `browser_new_tab` after attaching to claim a dedicated tab. State snapshots, element refs, and network logs are then scoped to that tab for the lifetime of the subagent.
 
 ## Docs Index
 
@@ -61,4 +65,5 @@ agentyc supports attaching multiple MCP server processes to the same Chrome inst
 - [Architecture](./architecture.md)
 - [API Reference](./api.md)
 - [Configuration](./configuration.md)
+- [Release Gate](./release-gate.md)
 - [Tech Stack](./tech-stack.md)

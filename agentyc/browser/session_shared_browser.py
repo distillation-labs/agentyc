@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 from cdp_use.cdp.browser import Bounds
@@ -46,6 +47,30 @@ def _assign_shared_browser_ownership(session: BrowserSession, page_targets: list
 		if ownership and ownership.runtime is not None:
 			continue
 		session.session_manager.set_target_human_ownership(target.target_id)
+
+
+def is_target_owned_by_current_runtime(session: BrowserSession, target_id: TargetID) -> bool:
+	if not session.session_manager:
+		return False
+	return session.session_manager.is_target_owned_by_current_runtime(target_id)
+
+
+def get_owned_page_targets(session: BrowserSession) -> list[Target]:
+	if not session.session_manager:
+		return []
+	return session.session_manager.get_owned_page_targets()
+
+
+def require_owned_target(session: BrowserSession, target_id: TargetID, *, action: str) -> Target:
+	if not session.session_manager:
+		raise RuntimeError('SessionManager not initialized')
+	target = session.session_manager.get_target(target_id)
+	if target is None:
+		raise ValueError(f'Target {target_id} not found for {action}')
+	if session.is_shared_browser_runtime and not session.session_manager.is_target_owned_by_current_runtime(target_id):
+		owner_label = target.ownership.display_label if target.ownership else 'another runtime or human'
+		raise RuntimeError(f'Cannot {action} tab {target_id[-4:]}: it is owned by {owner_label}')
+	return target
 
 
 async def _apply_runtime_markers_to_target(
@@ -285,9 +310,16 @@ async def get_current_page_title(session: BrowserSession) -> str:
 
 async def new_page(session: BrowserSession, url: str | None = None) -> Page:
 	"""Create a new page (tab)."""
-	params: CreateTargetParameters = {'url': url or 'about:blank'}
-	result = await session.cdp_client.send.Target.createTarget(params)
-	return Page(session, result['targetId'])
+	target_id = await _cdp_create_new_page(
+		session,
+		url=url or 'about:blank',
+		background=session.browser_profile.shared_browser_focus_policy == 'preserve',
+		browser_context_id=session._browser_context_id if session.is_shared_browser_runtime else None,
+	)
+	if session.is_shared_browser_runtime:
+		await _apply_runtime_markers_to_target(session, target_id)
+		await _cdp_get_window_context(session, target_id)
+	return Page(session, target_id)
 
 
 async def get_current_page(session: BrowserSession) -> Page | None:
@@ -318,6 +350,8 @@ async def close_page(session: BrowserSession, page: Page | str) -> None:
 		target_id = page._target_id
 	else:
 		target_id = str(page)
+	if session.is_shared_browser_runtime:
+		require_owned_target(session, target_id, action='close')
 	await session.cdp_client.send.Target.closeTarget({'targetId': target_id})
 
 
@@ -335,20 +369,33 @@ async def _cdp_create_new_page(
 	browser_context_id: str | None = None,
 ) -> str:
 	"""Create a new page/tab using CDP Target.createTarget. Returns target ID."""
+	resolved_browser_context_id = browser_context_id
+	if resolved_browser_context_id is None and session.is_shared_browser_runtime:
+		resolved_browser_context_id = session._browser_context_id
 	params = CreateTargetParameters(
 		**build_create_target_params(
 			url=url,
 			background=background,
 			new_window=new_window,
 			window_bounds=normalize_window_bounds(window_bounds),
-			browser_context_id=browser_context_id,
+			browser_context_id=resolved_browser_context_id,
 		)
 	)
 	if session._cdp_client_root:
 		result = await session._cdp_client_root.send.Target.createTarget(params=params)
 	else:
 		result = await session.cdp_client.send.Target.createTarget(params=params)
-	return result['targetId']
+	target_id = result['targetId']
+	# Wait for the target attach pipeline to finish before first real use.
+	for _ in range(5):
+		try:
+			await session.get_or_create_cdp_session(target_id, focus=False)
+			break
+		except ValueError:
+			await asyncio.sleep(0.1)
+	else:
+		await session.get_or_create_cdp_session(target_id, focus=False)
+	return target_id
 
 
 async def _cdp_get_window_context(session: BrowserSession, target_id: TargetID) -> dict[str, Any] | None:

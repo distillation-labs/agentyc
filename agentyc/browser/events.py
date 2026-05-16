@@ -296,7 +296,8 @@ class BrowserStartEvent(BaseEvent):
 	cdp_url: str | None = None
 	launch_options: dict[str, Any] = Field(default_factory=dict)
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_BrowserStartEvent', 30.0))  # seconds
+	# Cold local Chrome startup in stdio mode can take materially longer than a normal tool action.
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_BrowserStartEvent', 90.0))  # seconds
 
 
 class BrowserStopEvent(BaseEvent):
@@ -319,7 +320,7 @@ class BrowserLaunchEvent(BaseEvent[BrowserLaunchResult]):
 
 	# TODO: add executable_path, proxy settings, preferences, extra launch args, etc.
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_BrowserLaunchEvent', 30.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_BrowserLaunchEvent', 60.0))  # seconds
 
 
 class BrowserKillEvent(BaseEvent):

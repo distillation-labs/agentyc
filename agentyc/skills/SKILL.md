@@ -73,11 +73,12 @@ Only use screenshots when you need visual confirmation. Prefer `browser_extract_
 
 ```
 browser_get_console_logs(level="error")
-browser_get_network_log(status_filter="4xx,5xx")
-browser_get_network_log(type_filter="xhr,fetch")
+browser_get_network_log(status_filter="errors")
+browser_get_network_log(type_filter="XHR")
+browser_get_network_log(include_headers=true)   # includes request and response headers
 ```
 
-Use these when an action silently fails — errors and failed XHR requests surface the root cause.
+Use these when an action silently fails. `status_filter` supports values like `all`, `errors`, and `success`. `type_filter` accepts one request type per call, such as `XHR` or `Fetch`. Pass `include_headers=true` when you need to inspect auth headers, content types, or API tokens sent in requests.
 
 ### Persist and restore authentication
 
@@ -99,11 +100,15 @@ This saves cookies, localStorage, and sessionStorage. Skip the login flow on eve
 ### Work with multiple tabs
 
 ```
-browser_list_tabs()              # see open tabs and their tab_id
-browser_switch_tab(tab_id="t2") # focus a different tab
-browser_navigate(url="...", new_tab=true)  # open in new tab
+browser_new_tab()                         # create a blank tab and switch to it
+browser_new_tab(url="https://...")        # create tab and navigate immediately
+browser_list_tabs()                       # see open tabs and their tab_id
+browser_switch_tab(tab_id="t2")          # focus a different tab
+browser_navigate(url="...", new_tab=true) # open URL in a new tab (stays on current tab)
 browser_close_tab(tab_id="t2")
 ```
+
+Use `browser_new_tab` when you need to work in a fresh tab immediately — it creates the tab and switches focus in one call. Use `browser_navigate(new_tab=true)` when you want to open a URL in the background without switching away.
 
 ---
 
@@ -115,10 +120,10 @@ browser_close_tab(tab_id="t2")
 |------|-------------|
 | `auto` (default) | Smart mix of full/compact based on page complexity |
 | `full` | All interactive elements, no truncation |
-| `min` | URL, title, and scroll position only — fast for navigation checks |
-| `focus` | Only elements near `focus_ref` — efficient for forms |
+| `min` | Compact ranked subset of interactive elements |
+| `focus` | Single referenced element from `focus_ref` |
 
-Use `mode="min"` after navigation to confirm the URL changed before doing a full state read. Use `mode="focus"` when editing a specific form section.
+Use `mode="min"` when you want a lighter-weight state read with the most relevant interactive elements. Use `mode="focus"` when you want just one specific element.
 
 ---
 
@@ -162,6 +167,17 @@ agentyc mcp --cdp-url "$cdp_url" --runtime-label "Agent-2"
 
 Each agent gets its own tab, labeled `[Agent-1]` and `[Agent-2]` in the Chrome tab bar. Each tab has an isolated browser context (separate cookies, localStorage, sessionStorage) — agents can hold independent authenticated sessions on the same domain simultaneously.
 
+### Per-agent tab setup
+
+After attaching, each agent should call `browser_new_tab` to get its own isolated workspace:
+
+```
+browser_new_tab()           # creates a blank tab and switches focus to it
+browser_navigate(url="…")   # now navigate within this agent's own tab
+```
+
+This is more reliable than `browser_navigate(new_tab=true)` for agents, because it creates the tab and switches focus atomically. Each agent's subsequent `browser_get_state` calls and refs are scoped to its own tab.
+
 ### Coordination rules
 
 - Each agent sees only its own tab by default via `browser_get_state`.
@@ -176,39 +192,12 @@ Each agent gets its own tab, labeled `[Agent-1]` and `[Agent-2]` in the Chrome t
 Use `browser_evaluate` for operations not covered by a tool:
 
 ```
-browser_evaluate(code="return document.querySelectorAll('.item').length")
-browser_evaluate(code="window.scrollTo(0, document.body.scrollHeight)")
-browser_evaluate(code="return localStorage.getItem('token')")
+browser_evaluate(code="(function(){ return document.querySelectorAll('.item').length; })()")
+browser_evaluate(code="(function(){ window.scrollTo(0, document.body.scrollHeight); return 'scrolled'; })()")
+browser_evaluate(code="(function(){ return localStorage.getItem('token'); })()")
 ```
 
-Results are returned as JSON. Errors surface as tool errors.
-
----
-
-## File System Tools
-
-agentyc exposes a sandboxed file system at `~/.agentyc-mcp` by default:
-
-```
-file_list(path="/")
-file_read(path="/output/results.json")
-file_write(path="/output/results.json", content="…")
-```
-
-Use this to persist extracted data, pass outputs between tasks, or share artifacts with the user.
-
----
-
-## CDP Access
-
-For advanced browser control not covered by high-level tools:
-
-```
-cdp_send(method="Input.dispatchMouseEvent", params={…})
-cdp_subscribe(event="Page.loadEventFired")
-```
-
-Use CDP sparingly. Prefer the named tools for anything they support.
+Wrap code in an IIFE when returning a value. Results are returned as JSON-compatible text. Errors surface as tool errors.
 
 ---
 
@@ -232,8 +221,8 @@ Use CDP sparingly. Prefer the named tools for anything they support.
 # Read
 browser_get_state()                          # full snapshot, returns state_hash + refs
 browser_get_state(since_hash="…")           # delta — changed=true/false
-browser_get_state(mode="min")               # URL + title only
-browser_get_state(mode="focus", focus_ref="e42")  # elements near e42
+browser_get_state(mode="min")               # compact ranked subset of interactive elements
+browser_get_state(mode="focus", focus_ref="e42")  # only the referenced element
 browser_screenshot()
 browser_get_html()
 browser_extract_content(query="…")
@@ -241,6 +230,8 @@ browser_extract_content(query="…")
 # Navigate
 browser_navigate(url="…")
 browser_navigate(url="…", new_tab=true)
+browser_new_tab()                        # create blank tab + switch focus
+browser_new_tab(url="…")                 # create tab + navigate + switch focus
 browser_go_back() / browser_go_forward() / browser_refresh()
 
 # Interact
@@ -269,7 +260,8 @@ browser_load_state(path="…")
 
 # Debug
 browser_get_console_logs(level="error")
-browser_get_network_log(status_filter="4xx,5xx")
+browser_get_network_log(status_filter="errors")
+browser_get_network_log(type_filter="Fetch")
 
 # Tabs and sessions
 browser_list_tabs()

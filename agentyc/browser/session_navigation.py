@@ -18,7 +18,7 @@ from agentyc.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
-from agentyc.utils import is_new_tab_page
+from agentyc.utils import create_task_with_error_handling, is_new_tab_page
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
@@ -34,7 +34,12 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 	target_id = None
 	current_target_id = session.agent_focus_target_id
 	current_target = session.session_manager.get_target(current_target_id)
-	if event.new_tab and is_new_tab_page(current_target.url):
+	if (
+		event.new_tab
+		and current_target is not None
+		and is_new_tab_page(current_target.url)
+		and (not session.is_shared_browser_runtime or session.is_target_owned_by_current_runtime(current_target_id))
+	):
 		session.logger.debug(f'[on_NavigateToUrlEvent] Already on blank tab ({current_target.url}), reusing')
 		event.new_tab = False
 
@@ -42,7 +47,11 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 		session.logger.debug(f'[on_NavigateToUrlEvent] Processing new_tab={event.new_tab}')
 
 		if event.new_tab:
-			page_targets = session.session_manager.get_all_page_targets()
+			page_targets = (
+				session.get_owned_page_targets()
+				if session.is_shared_browser_runtime
+				else session.session_manager.get_all_page_targets()
+			)
 			session.logger.debug(f'[on_NavigateToUrlEvent] Found {len(page_targets)} existing tabs')
 
 			for idx, target in enumerate(page_targets):
@@ -93,7 +102,6 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 			target_id,
 			timeout=event.timeout_ms / 1000 if event.timeout_ms is not None else None,
 			wait_until=event.wait_until,
-			nav_timeout=event.event_timeout,
 		)
 		await _close_extension_options_pages(session)
 
@@ -105,7 +113,7 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 				status=None,
 			)
 		)
-		await session.event_bus.dispatch(AgentFocusChangedEvent(target_id=target_id, url=event.url))
+		await _refresh_navigation_target_state(session, target_id)
 
 	except Exception as e:
 		session.logger.error(f'Navigation failed: {type(e).__name__}: {e}')
@@ -117,8 +125,22 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 					error_message=f'{type(e).__name__}: {e}',
 				)
 			)
-			await session.event_bus.dispatch(AgentFocusChangedEvent(target_id=target_id, url=event.url))
+			await _refresh_navigation_target_state(session, target_id)
 		raise
+
+
+async def _refresh_navigation_target_state(session: BrowserSession, target_id: str) -> None:
+	"""Refresh lightweight per-tab state after navigation without re-running full focus handlers."""
+	if session._dom_watchdog:
+		session._dom_watchdog.clear_cache()
+	session._cached_browser_state_summary = None
+	session._cached_selector_map.clear()
+	create_task_with_error_handling(
+		session._apply_runtime_markers_to_target(target_id),
+		name='refresh_navigation_runtime_markers',
+		logger_instance=session.logger,
+		suppress_exceptions=True,
+	)
 
 
 async def _navigate_and_wait(
@@ -130,7 +152,7 @@ async def _navigate_and_wait(
 	nav_timeout: float | None = None,
 ) -> None:
 	"""Navigate to URL and wait for page readiness using CDP lifecycle events."""
-	cdp_session = await session.get_or_create_cdp_session(target_id, focus=False)
+	cdp_session = await session.get_or_create_cdp_session(target_id, focus=True)
 
 	if timeout is None:
 		target = session.session_manager.get_target(target_id)
@@ -272,16 +294,23 @@ async def on_SwitchTabEvent(session: BrowserSession, event: SwitchTabEvent) -> T
 	page_targets = session.session_manager.get_all_page_targets()
 	if event.target_id is None:
 		if page_targets:
-			event.target_id = page_targets[-1].target_id
+			candidate_targets = session.get_owned_page_targets() if session.is_shared_browser_runtime else page_targets
+			if candidate_targets:
+				event.target_id = candidate_targets[-1].target_id
+			else:
+				raise RuntimeError('Cannot switch tabs: no tabs owned by this runtime are available')
 		else:
 			assert session._cdp_client_root is not None, 'CDP client root not initialized - browser may not be connected yet'
-			new_target = await session._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
-			target_id = new_target['targetId']
+			target_id = await session._cdp_create_new_page(
+				'about:blank',
+				background=session.browser_profile.shared_browser_focus_policy == 'preserve',
+			)
 			session.event_bus.dispatch(TabCreatedEvent(url='about:blank', target_id=target_id))
 			session.event_bus.dispatch(AgentFocusChangedEvent(target_id=target_id, url='about:blank'))
 			return target_id
 
 	assert event.target_id is not None, 'target_id must be set at this point'
+	session.require_owned_target(event.target_id, action='switch to')
 	cdp_session = await session.get_or_create_cdp_session(target_id=event.target_id, focus=True)
 
 	if event.activate_target:
@@ -299,6 +328,7 @@ async def on_SwitchTabEvent(session: BrowserSession, event: SwitchTabEvent) -> T
 
 async def on_CloseTabEvent(session: BrowserSession, event: CloseTabEvent) -> None:
 	"""Handle tab closure - update focus if needed."""
+	session.require_owned_target(event.target_id, action='close')
 	try:
 		await session.event_bus.dispatch(TabClosedEvent(target_id=event.target_id))
 

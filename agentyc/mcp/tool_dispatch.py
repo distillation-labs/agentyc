@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import mcp.types as types
@@ -20,8 +21,23 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 		return await self._close_all_sessions()
 
 	if tool_name.startswith('browser_'):
-		if not self.browser_session:
-			await self._init_browser_session()
+		if not self._browser_runtime_is_ready():
+			# If a WebSocket reconnect is already in progress, wait for it to
+			# finish (up to 20 s) before deciding to spawn a new Chrome process.
+			# Without this guard, any tool call that arrives while the WS is
+			# re-connecting immediately kills the session and launches another
+			# Chrome, causing the stale-browser accumulation seen in practice.
+			if self.browser_session is not None and getattr(self.browser_session, 'is_reconnecting', False):
+				try:
+					await asyncio.wait_for(
+						self.browser_session._reconnect_event.wait(),
+						timeout=20.0,
+					)
+				except TimeoutError:
+					pass
+			if not self._browser_runtime_is_ready():
+				await self._reset_broken_browser_runtime()
+				await self._init_browser_session()
 
 		if tool_name == 'browser_navigate':
 			return await self._navigate(arguments['url'], arguments.get('new_tab', False))
@@ -137,6 +153,9 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 		if tool_name == 'browser_list_tabs':
 			return await self._list_tabs()
 
+		if tool_name == 'browser_new_tab':
+			return await self._new_tab(url=arguments.get('url', 'about:blank'))
+
 		if tool_name == 'browser_switch_tab':
 			return await self._switch_tab(arguments['tab_id'])
 
@@ -210,6 +229,7 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 				type_filter=arguments.get('type_filter', 'all'),
 				status_filter=arguments.get('status_filter', 'all'),
 				max_entries=arguments.get('max_entries', 50),
+				include_headers=arguments.get('include_headers', False),
 			)
 
 	return f'Unknown tool: {tool_name}'

@@ -7,7 +7,21 @@ MCP client
   |
   | stdio
   v
+agentyc.mcp.cli.main
+  |
+  v
+agentyc.mcp.server.main
+  |
+  v
 agentyc.mcp.server.AgentycServer
+  |
+  +--> agentyc.mcp.tool_schemas.get_tool_schemas
+  |
+  +--> agentyc.mcp.tool_dispatch._execute_tool
+  |      |
+  |      +--> agentyc.mcp.action_runtime
+  |      +--> agentyc.mcp.cdp_tools
+  |      +--> agentyc.mcp.session_lifecycle
   |
   +--> agentyc.tools.service.Tools
   |      |
@@ -38,6 +52,13 @@ These modules define the public contract that docs should follow:
 ## MCP Server Layer
 
 `agentyc.mcp.server.AgentycServer` is the public stdio server.
+
+Startup path:
+
+1. `agentyc.mcp.cli.main` parses the CLI.
+2. MCP mode calls `agentyc.mcp.server.main`.
+3. `main()` constructs `AgentycServer`, starts session cleanup, and runs the MCP stdio server.
+4. `AgentycServer` registers `list_tools`, `list_resources`, `list_prompts`, and `call_tool` handlers on the MCP SDK server object.
 
 Responsibilities:
 
@@ -167,7 +188,27 @@ When `--cdp-url` is provided:
 
 This is the public contract that exists today. Any richer collaboration UX should be described as directional unless it is implemented in the source-of-truth modules above.
 
+### Parallel Automation
+
+Multiple subagent processes can work in the same browser simultaneously using the following pattern:
+
+1. A primary agent starts a shared browser with `agentyc browser --port 9222 --detach` and obtains a CDP URL.
+2. Each subagent spawns its own `agentyc mcp --cdp-url <url>` process, attaching to the shared browser.
+3. Each subagent calls `browser_new_tab` immediately after attaching. This creates a dedicated tab and switches the runtime's focused target to that tab.
+4. Subagents then operate independently. State snapshots, stable element refs, and network logs are scoped to the tab each subagent owns.
+5. The primary agent coordinates task assignment across subagents and collects results.
+
+`browser_new_tab` is the preferred mechanism for subagents to claim their own tab. Combining tab creation and focus switching in a single call avoids the race conditions that would otherwise arise from separate `browser_navigate` and `browser_switch_tab` calls during parallel startup.
+
 ## Request Flows
+
+All MCP tool calls pass through the same high-level runtime flow:
+
+1. The MCP client sends a stdio tool call.
+2. `AgentycServer.handle_call_tool` delegates to `_execute_tool`.
+3. `agentyc.mcp.tool_dispatch` routes the tool name to the appropriate action, CDP, or session-lifecycle handler.
+4. Browser tools lazily initialize `BrowserSession` if needed.
+5. The handler returns text content, or text plus image content for tools such as `browser_get_state` and `browser_screenshot`.
 
 ### `browser_get_state`
 

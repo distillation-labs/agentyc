@@ -52,6 +52,11 @@ _ELEMENT_REF_PATTERN = re.compile(r'^(?:e)?([1-9]\d*)$')
 # AX properties that represent element state — surfaced to agents for accuracy
 _AX_STATE_PROPS = ('checked', 'expanded', 'selected', 'pressed', 'required', 'readonly', 'invalid', 'multiselectable')
 
+_MAX_DEBUG_ERRORS = 5
+_MAX_DEBUG_PENDING_REQUESTS = 5
+_MAX_DEBUG_RECENT_EVENTS = 5
+_MAX_DEBUG_POPUP_MESSAGES = 5
+
 
 def _get_ax_prop(element: EnhancedDOMTreeNode, name: str) -> Any:
 	"""Return the value of an AX property by name, or None if absent."""
@@ -190,7 +195,96 @@ def _build_unchanged_state_payload(
 	# Always include scroll position so agents know where they are even when elements haven't changed
 	if state.page_info and (state.page_info.scroll_x != 0 or state.page_info.scroll_y != 0):
 		result['scroll'] = {'x': state.page_info.scroll_x, 'y': state.page_info.scroll_y}
+	debug_payload = _build_debug_payload(state)
+	if debug_payload is not None:
+		result['debug'] = debug_payload
 	return result
+
+
+def _truncate_debug_list(items: list[str], *, max_items: int, max_length: int = 200) -> tuple[list[str], int]:
+	trimmed = [truncate_text(str(item), max_length=max_length) for item in items[:max_items]]
+	return trimmed, max(0, len(items) - len(trimmed))
+
+
+def _serialize_recent_events(recent_events: str | None) -> tuple[list[dict[str, Any]], int]:
+	if not recent_events:
+		return [], 0
+	try:
+		parsed = json.loads(recent_events)
+	except Exception:
+		return [], 0
+	if not isinstance(parsed, list):
+		return [], 0
+	serialized: list[dict[str, Any]] = []
+	for item in parsed[:_MAX_DEBUG_RECENT_EVENTS]:
+		if not isinstance(item, dict):
+			continue
+		entry: dict[str, Any] = {}
+		for key in ('event_type', 'timestamp', 'url', 'target_id'):
+			value = item.get(key)
+			if value:
+				entry[key] = truncate_text(str(value), max_length=160)
+		error_message = item.get('error_message')
+		if error_message:
+			entry['error_message'] = truncate_text(str(error_message), max_length=200)
+		if entry:
+			serialized.append(entry)
+	return serialized, max(0, len(parsed) - len(serialized))
+
+
+def _serialize_pending_requests(pending_requests: list[Any]) -> tuple[list[dict[str, Any]], int]:
+	serialized: list[dict[str, Any]] = []
+	for request in pending_requests[:_MAX_DEBUG_PENDING_REQUESTS]:
+		entry: dict[str, Any] = {
+			'url': truncate_text(str(getattr(request, 'url', '')), max_length=200),
+			'method': getattr(request, 'method', 'GET') or 'GET',
+			'loading_duration_ms': round(float(getattr(request, 'loading_duration_ms', 0.0) or 0.0), 1),
+		}
+		resource_type = getattr(request, 'resource_type', None)
+		if resource_type:
+			entry['resource_type'] = resource_type
+		serialized.append(entry)
+	return serialized, max(0, len(pending_requests) - len(serialized))
+
+
+def _build_debug_payload(state: BrowserStateSummary) -> dict[str, Any] | None:
+	debug: dict[str, Any] = {}
+	browser_errors = list(getattr(state, 'browser_errors', []) or [])
+	pending_network_requests = list(getattr(state, 'pending_network_requests', []) or [])
+	recent_events_raw = getattr(state, 'recent_events', None)
+	closed_popup_messages = list(getattr(state, 'closed_popup_messages', []) or [])
+
+	if browser_errors:
+		errors, truncated = _truncate_debug_list(browser_errors, max_items=_MAX_DEBUG_ERRORS)
+		debug['browser_errors'] = errors
+		if truncated:
+			debug['browser_errors_remaining'] = truncated
+
+	if pending_network_requests:
+		pending, truncated = _serialize_pending_requests(pending_network_requests)
+		if pending:
+			debug['pending_network_requests'] = pending
+			if truncated:
+				debug['pending_network_requests_remaining'] = truncated
+
+	if recent_events_raw:
+		recent_events, truncated = _serialize_recent_events(recent_events_raw)
+		if recent_events:
+			debug['recent_events'] = recent_events
+			if truncated:
+				debug['recent_events_remaining'] = truncated
+
+	if closed_popup_messages:
+		popup_messages, truncated = _truncate_debug_list(
+			closed_popup_messages,
+			max_items=_MAX_DEBUG_POPUP_MESSAGES,
+			max_length=160,
+		)
+		debug['closed_popup_messages'] = popup_messages
+		if truncated:
+			debug['closed_popup_messages_remaining'] = truncated
+
+	return debug or None
 
 
 def build_browser_state_payload(
@@ -249,6 +343,9 @@ def build_browser_state_payload(
 
 	if focus_index is not None:
 		result['focus_ref'] = make_element_ref(focus_index)
+	debug_payload = _build_debug_payload(state)
+	if debug_payload is not None:
+		result['debug'] = debug_payload
 
 	if since_hash == state_hash:
 		return _build_unchanged_state_payload(

@@ -19,10 +19,9 @@ class DefaultActionClickEngineMixin:
 	async def _execute_click_with_download_detection(
 		self,
 		click_coro,
-		download_start_timeout: float = 0.5,
 		download_complete_timeout: float = 30.0,
 	) -> dict | None:
-		"""Execute a click operation and automatically wait for any triggered download."""
+		"""Execute a click operation and wait only for downloads already triggered by the click."""
 		import time
 
 		download_started = asyncio.Event()
@@ -80,8 +79,7 @@ class DefaultActionClickEngineMixin:
 			if isinstance(click_metadata, dict) and 'validation_error' in click_metadata:
 				return click_metadata
 
-			try:
-				await asyncio.wait_for(download_started.wait(), timeout=download_start_timeout)
+			if download_started.is_set():
 				self.logger.info(f'📥 Download started: {download_info.get("suggested_filename", "unknown")}')
 
 				try:
@@ -153,8 +151,6 @@ class DefaultActionClickEngineMixin:
 							'total_bytes': total,
 							'message': msg,
 						}
-			except TimeoutError:
-				pass
 
 			return click_metadata if isinstance(click_metadata, dict) else None
 		finally:
@@ -402,7 +398,7 @@ class DefaultActionClickEngineMixin:
 				await cdp_session.cdp_client.send.DOM.scrollIntoViewIfNeeded(
 					params={'backendNodeId': backend_node_id}, session_id=session_id
 				)
-				await asyncio.sleep(0.05)
+				await asyncio.sleep(0.02)
 				self.logger.debug('Scrolled element into view before getting coordinates')
 			except Exception as error:
 				self.logger.debug(f'Failed to scroll element into view: {error}')

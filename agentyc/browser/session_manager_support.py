@@ -107,14 +107,8 @@ async def initialize_existing_targets(manager: SessionManager) -> None:
 	for target in existing_targets:
 		target_id = target['targetId']
 		target_type = target.get('type', 'unknown')
-
-		try:
-			await cdp_client.send.Target.attachToTarget(params={'targetId': target_id, 'flatten': True})
+		if target_type in {'page', 'tab', 'iframe', 'background_page', 'service_worker', 'worker'}:
 			target_ids_to_wait_for.append(target_id)
-		except Exception as error:
-			manager.logger.debug(
-				f'[SessionManager] Failed to attach to existing target {target_id[:8]}... (type={target_type}): {error}'
-			)
 
 	ready_event = asyncio.Event()
 

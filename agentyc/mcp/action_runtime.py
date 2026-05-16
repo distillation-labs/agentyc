@@ -230,11 +230,12 @@ async def _navigate(self, url: str, new_tab: bool = False) -> str:
 		return 'Error: No browser session active'
 
 	self._update_session_activity(self.browser_session.id)
-	before_tabs = len(await self.browser_session.get_tabs())
+	before_tabs = len(await self.browser_session.get_tabs()) if new_tab else None
 	action_result = await self._run_tool_action('navigate', {'url': url, 'new_tab': new_tab})
 	if action_result.error:
 		return self._format_action_error(action_result.error, default_code='navigation_failed')
 	if new_tab:
+		assert before_tabs is not None
 		after_tabs = len(await self.browser_session.get_tabs())
 		if after_tabs <= before_tabs:
 			return self._format_action_error(
@@ -246,6 +247,7 @@ async def _navigate(self, url: str, new_tab: bool = False) -> str:
 		try:
 			_cdp_s = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
 			await self._cdp_client_for_runtime.send.Runtime.enable(session_id=_cdp_s.session_id)
+			await self._cdp_client_for_runtime.send.Network.enable(session_id=_cdp_s.session_id)
 		except Exception:
 			pass
 	from agentyc.mcp.state import truncate_text
@@ -459,7 +461,10 @@ async def _get_browser_state(
 	from agentyc.mcp.state import build_browser_state_payload, make_element_ref
 
 	async def _fetch_state_payload(resolved_focus_ref: str | None) -> tuple[Any, dict[str, Any]]:
-		state = await self.browser_session.get_browser_state_summary(include_screenshot=include_screenshot)
+		state = await self.browser_session.get_browser_state_summary(
+			include_screenshot=include_screenshot,
+			include_recent_events=True,
+		)
 		try:
 			result = build_browser_state_payload(
 				state,
@@ -474,7 +479,10 @@ async def _get_browser_state(
 			if element is None:
 				raise
 			recovered_focus_ref = make_element_ref(resolved_index)
-			state = await self.browser_session.get_browser_state_summary(include_screenshot=include_screenshot)
+			state = await self.browser_session.get_browser_state_summary(
+				include_screenshot=include_screenshot,
+				include_recent_events=True,
+			)
 			result = build_browser_state_payload(
 				state,
 				mode=mode,
@@ -737,7 +745,7 @@ async def _wait_for_element(
 		return 'Error: Provide either text or ref to wait for'
 
 	timeout = min(max(float(timeout_seconds), 0.5), 30)
-	interval = 0.5
+	interval = 0.1
 	elapsed = 0.0
 
 	from agentyc.mcp.state import parse_element_ref

@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.1] - 2026-05-16
+
+### Added
+
+- **`browser_new_tab`** — Creates a new browser tab and switches focus to it in a single call. Accepts an optional `url` argument (default: `about:blank`). The recommended primitive for parallel automation: each subagent calls `browser_new_tab` immediately after attaching via `--cdp-url` to get its own isolated tab without disturbing other agents or the human operator.
+- **Request and response headers in `browser_get_network_log`** — Pass `include_headers: true` to include raw request headers and response headers in each network log entry. Headers are captured via CDP and stored in the in-memory buffer; omitted by default to keep token usage low.
+- **Auto-enable CDP Network domain in `browser_wait_for_network_idle` and `browser_get_network_log`** — Both tools now register CDP event listeners automatically if they have not been initialized yet, so agents no longer need to explicitly warm up the capture buffer before calling these tools.
+
+### Changed
+
+- **Drag step timing reduced** — Mouse movement steps in `browser_drag_to` now pause 10 ms instead of 20 ms between steps, and the post-press delay drops from 50 ms to 30 ms. A 10-step drag is roughly 130 ms faster.
+
+### Fixed
+
+- **Stale Chrome browser accumulation** — `_execute_tool` now detects an in-progress WebSocket reconnect and waits up to 20 s for it to finish before deciding to kill the session and spawn a new Chrome process. Previously, any tool call that arrived while the WS was reconnecting immediately abandoned the session and launched another Chrome, causing visible windows to accumulate on the desktop.
+- **Parallel tab test stability** — `test_two_agents_operate_on_independent_tabs` and `test_parallel_actions_do_not_interfere` now poll for interactive elements instead of sleeping a fixed 0.3 s, eliminating flakiness when the event loop is loaded with background tasks from a full test suite run.
+- **Shared-browser startup attach race** — shared runtimes now enable root `Target.setAutoAttach` before session monitoring starts and avoid manually re-attaching existing page targets during bootstrap. This removes duplicate startup sessions for the same page, stabilizing concurrent navigation across attached MCP runtimes.
+
+### Token savings
+
+- `browser_get_state` responses were already compact-serialized in 0.2.0. No additional serialization changes in this release.
+- `browser_get_network_log` continues to omit `req_headers` and `resp_headers` by default, keeping baseline log payloads small.
+
+---
+
 ## [0.2.0] - 2026-05-15
 
 ### Added

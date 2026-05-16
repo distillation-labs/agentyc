@@ -29,75 +29,104 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 	profile_config = get_default_profile(self.config)
 	cdp_url = self._cdp_url or kwargs.pop('cdp_url', None)
 
-	if cdp_url:
-		profile_data: dict[str, Any] = {
-			'cdp_url': cdp_url,
-			'keep_alive': True,
-			'runtime_label': self._runtime_label,
-			'runtime_role': self._runtime_role,
-			'parent_runtime_id': self._parent_runtime_id,
-			'shared_browser_mode': self._shared_browser_mode,
-			'shared_browser_window_bounds': self._shared_browser_window_bounds,
-			'shared_browser_focus_policy': self._shared_browser_focus_policy,
-			'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
-			'device_scale_factor': 1.0,
-			'disable_security': False,
-			**profile_config,
-		}
-		if allowed_domains is not None:
-			profile_data['allowed_domains'] = allowed_domains
-		for key, value in kwargs.items():
-			profile_data[key] = value
-		profile = BrowserProfile(**profile_data)
-		self.browser_session = BrowserSession(browser_profile=profile)
-		await self.browser_session.start()
-		try:
-			cdp_root = self.browser_session._cdp_client_root
-			if cdp_root is not None:
-				ctx_result = await cdp_root.send.Target.createBrowserContext()
-				self.browser_session._browser_context_id = ctx_result['browserContextId']
-		except Exception as _ctx_e:
-			logger.debug(f'Browser context creation failed (non-critical): {_ctx_e}')
-		new_page = await self.browser_session.create_collaborative_page('about:blank')
-		new_target_id = new_page._target_id
-		from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
-
-		await self.browser_session.event_bus.dispatch(TabCreatedEvent(target_id=new_target_id, url='about:blank'))
-		await self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url='about:blank'))
-	else:
-		profile_data = {
-			'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
-			'keep_alive': False,
-			'runtime_label': self._runtime_label,
-			'runtime_role': self._runtime_role,
-			'parent_runtime_id': self._parent_runtime_id,
-			'user_data_dir': '~/.config/agentyc/profiles/default',
-			'device_scale_factor': 1.0,
-			'disable_security': False,
-			'headless': False,
-			**profile_config,
-		}
-		if allowed_domains is not None:
-			profile_data['allowed_domains'] = allowed_domains
-		for key, value in kwargs.items():
-			profile_data[key] = value
-		profile = BrowserProfile(**profile_data)
-		self.browser_session = BrowserSession(browser_profile=profile)
-		await self.browser_session.start()
-
-	self._track_session(self.browser_session)
-	self.tools = Tools()
-	self.tools.set_coordinate_clicking(True)
-	self.file_system = None
-	file_system_path = profile_config.get('file_system_path', '~/.agentyc-mcp')
-	self._file_system_base_dir = Path(file_system_path).expanduser()
-
 	try:
-		await self._register_cdp_event_listeners()
-	except Exception as _e:
-		logger.debug(f'CDP event listener registration failed (non-critical): {_e}')
+		if cdp_url:
+			profile_data: dict[str, Any] = {
+				'cdp_url': cdp_url,
+				'keep_alive': True,
+				'runtime_label': self._runtime_label,
+				'runtime_role': self._runtime_role,
+				'parent_runtime_id': self._parent_runtime_id,
+				'shared_browser_mode': self._shared_browser_mode,
+				'shared_browser_window_bounds': self._shared_browser_window_bounds,
+				'shared_browser_focus_policy': self._shared_browser_focus_policy,
+				'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
+				'device_scale_factor': 1.0,
+				'disable_security': False,
+				**profile_config,
+			}
+			if allowed_domains is not None:
+				profile_data['allowed_domains'] = allowed_domains
+			for key, value in kwargs.items():
+				profile_data[key] = value
+			profile = BrowserProfile(**profile_data)
+			self.browser_session = BrowserSession(browser_profile=profile)
+			await self.browser_session.start()
+			try:
+				cdp_root = self.browser_session._cdp_client_root
+				if cdp_root is not None:
+					ctx_result = await cdp_root.send.Target.createBrowserContext()
+					self.browser_session._browser_context_id = ctx_result['browserContextId']
+			except Exception as _ctx_e:
+				logger.debug(f'Browser context creation failed (non-critical): {_ctx_e}')
+			new_page = await self.browser_session.create_collaborative_page('about:blank')
+			new_target_id = new_page._target_id
+			from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
+
+			await self.browser_session.event_bus.dispatch(TabCreatedEvent(target_id=new_target_id, url='about:blank'))
+			await self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url='about:blank'))
+		else:
+			from agentyc.config import CONFIG
+
+			profile_data = {
+				'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
+				'keep_alive': False,
+				'runtime_label': self._runtime_label,
+				'runtime_role': self._runtime_role,
+				'parent_runtime_id': self._parent_runtime_id,
+				'user_data_dir': str(CONFIG.AGENTYC_DEFAULT_USER_DATA_DIR),
+				'device_scale_factor': 1.0,
+				'disable_security': False,
+				'headless': False,
+				**profile_config,
+			}
+			if allowed_domains is not None:
+				profile_data['allowed_domains'] = allowed_domains
+			for key, value in kwargs.items():
+				profile_data[key] = value
+			profile = BrowserProfile(**profile_data)
+			self.browser_session = BrowserSession(browser_profile=profile)
+			await self.browser_session.start()
+
+		self._track_session(self.browser_session)
+		self.tools = Tools()
+		self.tools.set_coordinate_clicking(True)
+		self.file_system = None
+		file_system_path = profile_config.get('file_system_path', '~/.agentyc-mcp')
+		self._file_system_base_dir = Path(file_system_path).expanduser()
+
+		try:
+			await self._register_cdp_event_listeners()
+		except Exception as _e:
+			logger.debug(f'CDP event listener registration failed (non-critical): {_e}')
+	except Exception:
+		await self._reset_broken_browser_runtime()
+		raise
 
 	logger.debug('Browser session initialized')
+
+
+def _browser_runtime_is_ready(self) -> bool:
+	"""Return True when the current browser runtime is safe to reuse."""
+	if self.browser_session is None or self.tools is None:
+		return False
+	return self.browser_session.is_cdp_connected
+
+
+async def _reset_broken_browser_runtime(self) -> None:
+	"""Drop any partially initialized runtime so the next tool call can recreate it cleanly."""
+	broken_session = self.browser_session
+	self.browser_session = None
+	self.tools = None
+	self.file_system = None
+	self._file_system_base_dir = None
+
+	if broken_session is None:
+		return
+
+	self.active_sessions.pop(getattr(broken_session, 'id', None), None)
+	with suppress(Exception):
+		await broken_session.kill()
 
 
 def _track_session(self, session) -> None:
@@ -178,6 +207,7 @@ async def _close_session(self, session_id: str) -> str:
 		if self.browser_session and self.browser_session.id == session_id:
 			self.browser_session = None
 			self.tools = None
+			self._cdp_events_registered = False
 		return f'Successfully closed session {session_id}'
 	except Exception as e:
 		return f'Error closing session {session_id}: {str(e)}'

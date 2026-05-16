@@ -281,16 +281,74 @@ def build_fixture_pack() -> list[BenchmarkFixture]:
 					'results': [
 						{
 							'title': 'Auth quickstart',
-							'url': '__BASE_URL__/search-results/auth-quickstart',
+							'url': '__BASE_URL__/docs/authentication.html',
 						},
 						{
 							'title': 'Webhook retries',
-							'url': '__BASE_URL__/search-results/webhook-retries',
+							'url': '__BASE_URL__/docs/webhooks.html',
 						},
 					],
 				},
 			),
 			focus_text='Search documentation',
+		),
+		BenchmarkFixture(
+			slug='issue-queue',
+			title='Issue triage queue',
+			html=make_issue_queue_html(),
+			expected_compact_texts=['Search issues', 'Filter severity', 'Build #482 failing on main', 'Open triage runbook'],
+			deterministic_query=BenchmarkExtractionQuery(
+				query='extract table rows from the issue queue table',
+				output_schema={
+					'type': 'object',
+					'properties': {
+						'issue_count': {'type': 'integer'},
+						'issues': {
+							'type': 'array',
+							'items': {
+								'type': 'object',
+								'properties': {
+									'title': {'type': 'string'},
+									'severity': {'type': 'string'},
+									'status': {'type': 'string'},
+								},
+							},
+						},
+					},
+					'required': ['issues'],
+				},
+				expected_json={
+					'issue_count': 3,
+					'issues': [
+						{'title': 'Build #482 failing on main', 'severity': 'Critical', 'status': 'Open'},
+						{'title': 'OAuth callback latency spike', 'severity': 'High', 'status': 'Investigating'},
+					],
+				},
+			),
+			focus_text='Search issues',
+			extra_files={
+				'issues/build-482.html': make_issue_detail_html(
+					'Build #482 failing on main',
+					'Critical',
+					'Open',
+					'Release bot',
+					'Investigate CDN timeout in upload step before the release can proceed.',
+				),
+				'issues/oauth-latency.html': make_issue_detail_html(
+					'OAuth callback latency spike',
+					'High',
+					'Investigating',
+					'Identity team',
+					'Compare callback timings and confirm whether the auth cookie is being set.',
+				),
+				'issues/docs-links.html': make_issue_detail_html(
+					'Docs release links stale',
+					'Medium',
+					'Todo',
+					'Docs team',
+					'Verify release-note links and update the runbook references.',
+				),
+			},
 		),
 		BenchmarkFixture(
 			slug='triage-checklist',
@@ -482,6 +540,7 @@ def dogfood_fixture_slugs() -> list[str]:
 		'long-docs',
 		'workflow-form',
 		'pricing-table',
+		'issue-queue',
 		'triage-checklist',
 		'accessibility-panel',
 		'delayed-release',
@@ -754,13 +813,85 @@ def make_search_results_html() -> str:
 		</header>
 		<main>
 			<ol aria-label="Search results">
-				<li><a href="/search-results/auth-quickstart">Auth quickstart</a> - Learn how to issue session tokens.</li>
-				<li><a href="/search-results/webhook-retries">Webhook retries</a> - Tune retry windows for failed deliveries.</li>
-				<li><a href="/search-results/cache-tags">Cache tags</a> - Invalidate stale cached pages safely.</li>
+				<li><a href="/docs/authentication.html">Auth quickstart</a> - Learn how to issue session tokens.</li>
+				<li><a href="/docs/webhooks.html">Webhook retries</a> - Tune retry windows for failed deliveries.</li>
+				<li><a href="/docs/cache-tags.html">Cache tags</a> - Invalidate stale cached pages safely.</li>
 			</ol>
 			<nav aria-label="Pagination">
 				<a href="/search-results?page=2">Next page</a>
 			</nav>
+		</main>
+	</body>
+	</html>
+	"""
+
+
+def make_issue_queue_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Issue queue</title></head>
+	<body>
+		<header>
+			<h1>Engineering issue queue</h1>
+			<label>Search <input aria-label="Search issues" placeholder="Search issues" type="search" /></label>
+			<label>Severity
+				<select aria-label="Filter severity">
+					<option>All severities</option>
+					<option>Critical</option>
+					<option>High</option>
+					<option>Medium</option>
+				</select>
+			</label>
+			<a href="/docs/runbook.html">Open triage runbook</a>
+		</header>
+		<main>
+			<table aria-label="Issue queue">
+				<thead>
+					<tr><th>Issue</th><th>Severity</th><th>Status</th><th>Owner</th></tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td><a href="/issues/build-482.html">Build #482 failing on main</a></td>
+						<td>Critical</td>
+						<td>Open</td>
+						<td>Release bot</td>
+					</tr>
+					<tr>
+						<td><a href="/issues/oauth-latency.html">OAuth callback latency spike</a></td>
+						<td>High</td>
+						<td>Investigating</td>
+						<td>Identity team</td>
+					</tr>
+					<tr>
+						<td><a href="/issues/docs-links.html">Docs release links stale</a></td>
+						<td>Medium</td>
+						<td>Todo</td>
+						<td>Docs team</td>
+					</tr>
+				</tbody>
+			</table>
+		</main>
+	</body>
+	</html>
+	"""
+
+
+def make_issue_detail_html(title: str, severity: str, status: str, owner: str, summary: str) -> str:
+	return f"""
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>{title}</title></head>
+	<body>
+		<main>
+			<h1>{title}</h1>
+			<ul aria-label="Issue metadata">
+				<li>Severity: {severity}</li>
+				<li>Status: {status}</li>
+				<li>Owner: {owner}</li>
+			</ul>
+			<p>{summary}</p>
+			<a href="/triage-checklist.html">Open incident checklist</a>
 		</main>
 	</body>
 	</html>
@@ -1427,11 +1558,64 @@ def make_collaboration_runtime_html(runtime_name: str, button_label: str) -> str
 def serve_fixture_pack(fixtures: list[BenchmarkFixture]) -> ServedFixturePack:
 	root = tempfile.TemporaryDirectory(prefix='agentyc-benchmark-')
 	root_path = Path(root.name)
+	(root_path / 'docs').mkdir(parents=True, exist_ok=True)
+	(root_path / 'issues').mkdir(parents=True, exist_ok=True)
 	for fixture in fixtures:
 		(root_path / f'{fixture.slug}.html').write_text(fixture.html, encoding='utf-8')
 		for relative_path, content in fixture.extra_files.items():
+			(root_path / relative_path).parent.mkdir(parents=True, exist_ok=True)
 			(root_path / relative_path).write_text(content, encoding='utf-8')
 	(root_path / 'release-notes.html').write_text(make_release_notes_html(), encoding='utf-8')
+	(root_path / 'docs' / 'authentication.html').write_text(
+		make_issue_detail_html(
+			'Authentication quickstart',
+			'Guide',
+			'Published',
+			'Docs team',
+			'How to issue and persist session cookies for browser automation flows.',
+		),
+		encoding='utf-8',
+	)
+	(root_path / 'docs' / 'webhooks.html').write_text(
+		make_issue_detail_html(
+			'Webhook retries',
+			'Guide',
+			'Published',
+			'Platform team',
+			'Retry failed deliveries and inspect network logs when callbacks time out.',
+		),
+		encoding='utf-8',
+	)
+	(root_path / 'docs' / 'cache-tags.html').write_text(
+		make_issue_detail_html(
+			'Cache tags',
+			'Guide',
+			'Published',
+			'Platform team',
+			'Invalidate stale cached pages and confirm propagation across the edge.',
+		),
+		encoding='utf-8',
+	)
+	(root_path / 'docs' / 'runbook.html').write_text(
+		make_issue_detail_html(
+			'Incident triage runbook',
+			'Runbook',
+			'Published',
+			'SRE',
+			'Follow the queue, inspect logs, and capture evidence before escalating.',
+		),
+		encoding='utf-8',
+	)
+	(root_path / 'docs' / 'a11y.html').write_text(
+		make_issue_detail_html(
+			'Accessibility guide',
+			'Guide',
+			'Published',
+			'Design systems',
+			'Review blockers, export reports, and attach findings to the issue queue.',
+		),
+		encoding='utf-8',
+	)
 	(root_path / 'collaboration-runtime-a.html').write_text(
 		make_collaboration_runtime_html('Collaboration Runtime A', 'Runtime A action'),
 		encoding='utf-8',
@@ -1572,6 +1756,61 @@ def reduction_percent(full_chars: int, compact_chars: int) -> float:
 	if full_chars == 0:
 		return 0.0
 	return round(((full_chars - compact_chars) / full_chars) * 100, 1)
+
+
+def estimate_tokens_from_chars(char_count: int) -> int:
+	if char_count <= 0:
+		return 0
+	return max(1, round(char_count / 4))
+
+
+def calculate_context_utilization(payload_chars: int, *, context_budget_tokens: int = 128_000) -> dict[str, Any]:
+	estimated_tokens = estimate_tokens_from_chars(payload_chars)
+	return {
+		'estimated_tokens': estimated_tokens,
+		'context_budget_tokens': context_budget_tokens,
+		'context_utilization_pct': round((estimated_tokens / context_budget_tokens) * 100, 3) if context_budget_tokens else 0.0,
+	}
+
+
+def calculate_precision(match: dict[str, Any], actual_count: int) -> float | None:
+	matched = len(match.get('matched', []))
+	if actual_count <= 0:
+		return None
+	return round(matched / actual_count, 3)
+
+
+def calculate_f1(recall: float, precision: float | None) -> float | None:
+	if precision is None:
+		return None
+	if recall <= 0 and precision <= 0:
+		return 0.0
+	return round((2 * recall * precision) / (recall + precision), 3)
+
+
+def build_quality_metrics(match: dict[str, Any], *, actual_count: int, outcome_passed: bool | None = None) -> dict[str, Any]:
+	recall = float(match.get('recall', 0.0))
+	precision = calculate_precision(match, actual_count)
+	metrics: dict[str, Any] = {
+		'recall': recall,
+		'precision': precision,
+		'f1': calculate_f1(recall, precision),
+	}
+	if outcome_passed is not None:
+		metrics['accuracy'] = 1.0 if outcome_passed else 0.0
+	return metrics
+
+
+def build_efficiency_metrics(payload_chars: int, latency_ms: float, matched_count: int) -> dict[str, Any]:
+	estimated_tokens = estimate_tokens_from_chars(payload_chars)
+	seconds = latency_ms / 1000 if latency_ms > 0 else 0.0
+	return {
+		'payload_chars_per_match': round(payload_chars / matched_count, 1) if matched_count else None,
+		'estimated_tokens_per_match': round(estimated_tokens / matched_count, 1) if matched_count else None,
+		'matches_per_second': round(matched_count / seconds, 3) if seconds > 0 and matched_count else 0.0,
+		'chars_per_ms': round(payload_chars / latency_ms, 3) if latency_ms > 0 else 0.0,
+		'estimated_tokens_per_ms': round(estimated_tokens / latency_ms, 3) if latency_ms > 0 else 0.0,
+	}
 
 
 async def run_action_scenario(server, fixture: BenchmarkFixture, base_url: str) -> dict[str, Any]:
@@ -2236,7 +2475,14 @@ async def run_fixture(
 		extract_results['deterministic'] = {
 			'latency_ms': round(deterministic_ms, 1),
 			'payload_chars': len(deterministic_extract),
+			'token_metrics': calculate_context_utilization(len(deterministic_extract)),
 			'match': match,
+			'quality': build_quality_metrics(match, actual_count=len(match.get('matched', []))),
+			'efficiency': build_efficiency_metrics(
+				len(deterministic_extract),
+				round(deterministic_ms, 1),
+				len(match.get('matched', [])),
+			),
 			'structured': fixture.deterministic_query.output_schema is not None,
 		}
 
@@ -2247,11 +2493,13 @@ async def run_fixture(
 			'full': {
 				'latency_ms': round(full_state_ms, 1),
 				'payload_chars': len(full_state_json),
+				'token_metrics': calculate_context_utilization(len(full_state_json)),
 				'selected_elements': len(full_state['interactive_elements']),
 			},
 			'auto': {
 				'latency_ms': round(auto_state_ms, 1),
 				'payload_chars': len(auto_state_json),
+				'token_metrics': calculate_context_utilization(len(auto_state_json)),
 				'selected_elements': len(auto_state['interactive_elements']),
 				'effective_mode': auto_state.get('effective_mode'),
 				'payload_reduction_pct': reduction_percent(len(full_state_json), len(auto_state_json)),
@@ -2261,6 +2509,7 @@ async def run_fixture(
 			'min': {
 				'latency_ms': round(min_state_ms, 1),
 				'payload_chars': len(min_state_json),
+				'token_metrics': calculate_context_utilization(len(min_state_json)),
 				'selected_elements': len(min_state['interactive_elements']),
 				'payload_reduction_pct': reduction_percent(len(full_state_json), len(min_state_json)),
 				'recall': calculate_recall(min_state, fixture.expected_compact_texts),
@@ -2268,16 +2517,36 @@ async def run_fixture(
 			'unchanged_delta': {
 				'latency_ms': round(unchanged_state_ms, 1),
 				'payload_chars': len(unchanged_state_json),
+				'token_metrics': calculate_context_utilization(len(unchanged_state_json)),
 				'changed': unchanged_state['changed'],
 			},
 		},
 	}
+	auto_recall = result['state']['auto']['recall']
+	min_recall = result['state']['min']['recall']
+	result['state']['auto']['quality'] = build_quality_metrics(auto_recall, actual_count=len(auto_state['interactive_elements']))
+	result['state']['auto']['efficiency'] = build_efficiency_metrics(
+		len(auto_state_json),
+		round(auto_state_ms, 1),
+		len(auto_recall.get('matched', [])),
+	)
+	result['state']['min']['quality'] = build_quality_metrics(min_recall, actual_count=len(min_state['interactive_elements']))
+	result['state']['min']['efficiency'] = build_efficiency_metrics(
+		len(min_state_json),
+		round(min_state_ms, 1),
+		len(min_recall.get('matched', [])),
+	)
 	if focus_result is not None:
+		focus_result['token_metrics'] = calculate_context_utilization(focus_result['payload_chars'])
 		result['state']['focus'] = focus_result
 	if extract_results:
 		result['extract_content'] = extract_results
 	if fixture.action_scenario:
 		result['action_reliability'] = await run_action_scenario(server, fixture, base_url)
+		action = result['action_reliability']
+		action['quality'] = {'accuracy': 1.0 if action.get('passed') else 0.0}
+		payload_chars = len(json.dumps(action, sort_keys=True, separators=(',', ':')))
+		action['token_metrics'] = calculate_context_utilization(payload_chars)
 	return result
 
 
@@ -2303,6 +2572,31 @@ def summarize_results(results: dict[str, dict[str, Any]], collaboration: dict[st
 		slug for slug, fixture in results.items() if fixture.get('action_reliability', {}).get('passed') is False
 	]
 	compacted_pages = [slug for slug, fixture in results.items() if fixture['state']['auto'].get('effective_mode') == 'min']
+	auto_tokens = [fixture['state']['auto']['token_metrics']['estimated_tokens'] for fixture in results.values()]
+	min_tokens = [fixture['state']['min']['token_metrics']['estimated_tokens'] for fixture in results.values()]
+	auto_precisions = [
+		fixture['state']['auto']['quality']['precision']
+		for fixture in results.values()
+		if fixture['state']['auto']['quality']['precision'] is not None
+	]
+	min_precisions = [
+		fixture['state']['min']['quality']['precision']
+		for fixture in results.values()
+		if fixture['state']['min']['quality']['precision'] is not None
+	]
+	deterministic_precisions = [
+		fixture['extract_content']['deterministic']['quality']['precision']
+		for fixture in results.values()
+		if fixture.get('extract_content', {}).get('deterministic')
+		and fixture['extract_content']['deterministic']['quality']['precision'] is not None
+	]
+	action_accuracy = [
+		fixture['action_reliability']['quality']['accuracy'] for fixture in results.values() if fixture.get('action_reliability')
+	]
+	auto_chars_per_ms = [fixture['state']['auto']['efficiency']['chars_per_ms'] for fixture in results.values()]
+	min_chars_per_ms = [fixture['state']['min']['efficiency']['chars_per_ms'] for fixture in results.values()]
+	auto_matches_per_second = [fixture['state']['auto']['efficiency']['matches_per_second'] for fixture in results.values()]
+	min_matches_per_second = [fixture['state']['min']['efficiency']['matches_per_second'] for fixture in results.values()]
 	summary = {
 		'fixture_count': len(results),
 		'auto_compacted_pages': compacted_pages,
@@ -2310,14 +2604,30 @@ def summarize_results(results: dict[str, dict[str, Any]], collaboration: dict[st
 		'avg_min_payload_reduction_pct': round(mean(min_reductions), 1) if min_reductions else 0.0,
 		'avg_auto_recall': round(mean(auto_recalls), 3) if auto_recalls else 0.0,
 		'avg_min_recall': round(mean(min_recalls), 3) if min_recalls else 0.0,
+		'avg_auto_precision': round(mean(auto_precisions), 3) if auto_precisions else 0.0,
+		'avg_min_precision': round(mean(min_precisions), 3) if min_precisions else 0.0,
 		'deterministic_case_count': len(deterministic_matches),
 		'avg_deterministic_recall': round(mean(deterministic_matches), 3) if deterministic_matches else 0.0,
+		'avg_deterministic_precision': round(mean(deterministic_precisions), 3) if deterministic_precisions else 0.0,
 		'zero_llm_deterministic_cases': zero_llm_deterministic,
 		'structured_case_count': len(structured_matches),
 		'avg_structured_recall': round(mean(structured_matches), 3) if structured_matches else 0.0,
 		'action_case_count': len(action_scores),
 		'avg_action_success': round(mean(action_scores), 3) if action_scores else 0.0,
+		'avg_action_accuracy': round(mean(action_accuracy), 3) if action_accuracy else 0.0,
+		'avg_auto_estimated_tokens': round(mean(auto_tokens), 1) if auto_tokens else 0.0,
+		'avg_min_estimated_tokens': round(mean(min_tokens), 1) if min_tokens else 0.0,
+		'avg_token_reduction_pct': reduction_percent(
+			round(mean(auto_tokens)) if auto_tokens else 0,
+			round(mean(min_tokens)) if min_tokens else 0,
+		),
 		'failing_action_cases': failing_action_cases,
+	}
+	summary['efficiency'] = {
+		'avg_auto_chars_per_ms': round(mean(auto_chars_per_ms), 3) if auto_chars_per_ms else 0.0,
+		'avg_min_chars_per_ms': round(mean(min_chars_per_ms), 3) if min_chars_per_ms else 0.0,
+		'avg_auto_matches_per_second': round(mean(auto_matches_per_second), 3) if auto_matches_per_second else 0.0,
+		'avg_min_matches_per_second': round(mean(min_matches_per_second), 3) if min_matches_per_second else 0.0,
 	}
 	if isinstance(collaboration, dict):
 		_trp = collaboration.get('tab_runtime_pair')

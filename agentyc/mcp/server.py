@@ -121,6 +121,7 @@ from agentyc.mcp.cdp_tools import (
 	_hover,
 	_list_tabs,
 	_load_state,
+	_new_tab,
 	_register_cdp_event_listeners,
 	_resolve_element_coords,
 	_right_click,
@@ -132,11 +133,13 @@ from agentyc.mcp.cdp_tools import (
 	_wait_for_network_idle,
 )
 from agentyc.mcp.session_lifecycle import (
+	_browser_runtime_is_ready,
 	_cleanup_expired_sessions,
 	_close_all_sessions,
 	_close_session,
 	_init_browser_session,
 	_list_sessions,
+	_reset_broken_browser_runtime,
 	_shutdown,
 	_start_cleanup_task,
 	_track_session,
@@ -344,6 +347,8 @@ class AgentycServer:
 		if sys.stdin is None:
 			raise RuntimeError('MCP stdio transport requires stdin, but this process was launched without one.')
 
+		from agentyc.utils import get_agentyc_version
+
 		try:
 			async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
 				try:
@@ -352,7 +357,7 @@ class AgentycServer:
 						write_stream,
 						InitializationOptions(
 							server_name='agentyc',
-							server_version='0.1.0',
+							server_version=get_agentyc_version(),
 							capabilities=self.server.get_capabilities(
 								notification_options=NotificationOptions(),
 								experimental_capabilities={},
@@ -368,6 +373,8 @@ class AgentycServer:
 _SERVER_METHODS: dict[str, Any] = {
 	'_execute_tool': _execute_tool,
 	'_init_browser_session': _init_browser_session,
+	'_browser_runtime_is_ready': _browser_runtime_is_ready,
+	'_reset_broken_browser_runtime': _reset_broken_browser_runtime,
 	'_ensure_extract_runtime': _ensure_extract_runtime,
 	'_resolve_element_index': _resolve_element_index,
 	'_cache_state_payload': _cache_state_payload,
@@ -417,6 +424,7 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_get_network_log': _get_network_log,
 	'_get_focused_element': _get_focused_element,
 	'_list_tabs': _list_tabs,
+	'_new_tab': _new_tab,
 	'_switch_tab': _switch_tab,
 	'_close_tab': _close_tab,
 	'_track_session': _track_session,

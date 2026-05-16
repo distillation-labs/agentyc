@@ -36,7 +36,7 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Writes `agentyc/skills/SKILL.md` (shipped with the package) to a file your coding agent can read. The guide covers the `read → ref → act` loop, `since_hash` polling, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
+Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read → ref → act` loop, `since_hash` polling, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
 
 | Argument | Description |
 |----------|-------------|
@@ -70,6 +70,13 @@ await server.run()
 ```
 
 The server exposes MCP tools only. It does not publish resources or prompts.
+
+The runtime startup path is:
+
+1. `agentyc` runs `agentyc.mcp.cli.main`.
+2. The CLI enters MCP mode directly or through `agentyc mcp`.
+3. `agentyc.mcp.server.main` constructs `AgentycServer` and serves MCP over stdio.
+4. Tool calls are routed through `agentyc.mcp.tool_dispatch._execute_tool`.
 
 ## MCP Tools
 
@@ -115,10 +122,11 @@ The server exposes MCP tools only. It does not publish resources or prompts.
 | `browser_get_focused_element` | none |
 | `browser_evaluate` | `code` |
 
-### Tabs, Cookies, And Persisted State
+### Tabs And Tab Management
 
 | Tool | Arguments |
 |------|-----------|
+| `browser_new_tab` | optional `url` (string, default: `about:blank`) |
 | `browser_list_tabs` | none |
 | `browser_switch_tab` | `tab_id` |
 | `browser_close_tab` | `tab_id` |
@@ -133,7 +141,7 @@ The server exposes MCP tools only. It does not publish resources or prompts.
 | Tool | Arguments |
 |------|-----------|
 | `browser_get_console_logs` | optional `level`, optional `max_entries` |
-| `browser_get_network_log` | optional `type_filter`, optional `status_filter`, optional `max_entries` |
+| `browser_get_network_log` | optional `type_filter`, optional `status_filter`, optional `max_entries`, optional `include_headers` (boolean, default: false) |
 | `browser_list_sessions` | none |
 | `browser_close_session` | `session_id` |
 | `browser_close_all` | none |
@@ -186,6 +194,10 @@ The public MCP server is deterministic-only.
 - Responses include `<extraction_metadata>`.
 - Unsupported requests return an explicit deterministic-route error.
 
+### `browser_evaluate`
+
+Executes JavaScript in the current page context and returns the resulting value as text. For multi-statement logic, wrap the expression in an IIFE such as `(function(){ ... })()`.
+
 ## Deterministic Extraction Contract
 
 Supported deterministic route families:
@@ -234,3 +246,8 @@ Public package imports available from `agentyc` include:
 - `ActionResult`
 
 The package also contains LLM-provider integrations, but those are separate from the public deterministic MCP extraction contract described here.
+
+## Related Docs
+
+- [Architecture](./architecture.md)
+- [Release Gate](./release-gate.md)

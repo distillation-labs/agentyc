@@ -62,8 +62,9 @@ class SessionManager:
 		# All sessions (communication channels)
 		self._sessions: dict[SessionID, 'CDPSession'] = {}
 
-		# Mapping: target -> sessions attached to it
-		self._target_sessions: dict[TargetID, set[SessionID]] = {}
+		# Mapping: target -> sessions attached to it, kept in attach order so callers
+		# can deterministically prefer the newest live session for a target.
+		self._target_sessions: dict[TargetID, list[SessionID]] = {}
 
 		# Reverse mapping: session -> target it belongs to
 		self._session_to_target: dict[SessionID, TargetID] = {}
@@ -180,7 +181,7 @@ class SessionManager:
 		Returns:
 			CDPSession if exists, None if target has detached
 		"""
-		session_ids = self._target_sessions.get(target_id, set())
+		session_ids = self._target_sessions.get(target_id, [])
 		if not session_ids:
 			# Check if this is the focused target - indicates stale focus that needs cleanup
 			if self.browser_session.agent_focus_target_id == target_id:
@@ -202,7 +203,15 @@ class SessionManager:
 						suppress_exceptions=False,
 					)
 			return None
-		return self._sessions.get(next(iter(session_ids)))
+		target = self._targets.get(target_id)
+		if target and target.target_type in ('page', 'tab'):
+			latest_session_id = session_ids[-1]
+			cdp_session = self._sessions.get(latest_session_id)
+			if cdp_session is not None and hasattr(cdp_session, '_lifecycle_events'):
+				return cdp_session
+			return None
+
+		return self._sessions.get(session_ids[-1])
 
 	def get_all_page_targets(self) -> list:
 		"""Get all page/tab targets using owned data.
@@ -215,6 +224,28 @@ class SessionManager:
 			if target.target_type in ('page', 'tab'):
 				page_targets.append(target)
 		return page_targets
+
+	def is_target_owned_by_current_runtime(self, target_id: TargetID) -> bool:
+		"""Return True when a shared-browser target belongs to this runtime.
+
+		Non-shared sessions can access any tracked target.
+		"""
+		if not self.browser_session.is_shared_browser_runtime:
+			return True
+		target = self.get_target(target_id)
+		if target is None or target.ownership is None or target.ownership.runtime is None:
+			return False
+		return target.ownership.runtime.runtime_id == self.browser_session.runtime_metadata.runtime_id
+
+	def get_owned_page_targets(self) -> list:
+		"""Get page/tab targets owned by the current runtime.
+
+		In non-shared mode this is equivalent to get_all_page_targets().
+		"""
+		page_targets = self.get_all_page_targets()
+		if not self.browser_session.is_shared_browser_runtime:
+			return page_targets
+		return [target for target in page_targets if self.is_target_owned_by_current_runtime(target.target_id)]
 
 	async def validate_session(self, target_id: TargetID) -> bool:
 		"""Check if a target still has active sessions.
@@ -319,14 +350,14 @@ class SessionManager:
 		Returns:
 			List of all CDPSession objects for this target
 		"""
-		session_ids = self._target_sessions.get(target_id, set())
+		session_ids = self._target_sessions.get(target_id, [])
 		return [self._sessions[sid] for sid in session_ids if sid in self._sessions]
 
-	def get_target_sessions_mapping(self) -> dict[TargetID, set[SessionID]]:
+	def get_target_sessions_mapping(self) -> dict[TargetID, list[SessionID]]:
 		"""Get target->sessions mapping (read-only access).
 
 		Returns:
-			Dict mapping target_id to set of session_ids
+			Dict mapping target_id to session_ids in attach order
 		"""
 		return self._target_sessions
 
@@ -461,9 +492,10 @@ class SessionManager:
 		async with self._lock:
 			# Track this session for the target
 			if target_id not in self._target_sessions:
-				self._target_sessions[target_id] = set()
+				self._target_sessions[target_id] = []
 
-			self._target_sessions[target_id].add(session_id)
+			if session_id not in self._target_sessions[target_id]:
+				self._target_sessions[target_id].append(session_id)
 			self._session_to_target[session_id] = target_id
 
 			# Create or update Target inside the same lock so that get_target() is never
@@ -570,7 +602,8 @@ class SessionManager:
 		async with self._lock:
 			# Remove this session from target's session set
 			if target_id in self._target_sessions:
-				self._target_sessions[target_id].discard(session_id)
+				if session_id in self._target_sessions[target_id]:
+					self._target_sessions[target_id].remove(session_id)
 
 				remaining_sessions = len(self._target_sessions[target_id])
 
@@ -703,7 +736,7 @@ class SessionManager:
 
 			# Perform recovery (outside lock to allow concurrent operations)
 			# Try to find another valid page target
-			page_targets = self.get_all_page_targets()
+			page_targets = self.get_owned_page_targets()
 
 			new_target_id = None
 			is_existing_tab = False
@@ -716,7 +749,10 @@ class SessionManager:
 			else:
 				# No pages exist - create a new one
 				self.logger.warning('[SessionManager] No tabs remain! Creating new tab for agent...')
-				new_target_id = await self.browser_session._cdp_create_new_page('about:blank')
+				new_target_id = await self.browser_session._cdp_create_new_page(
+					'about:blank',
+					background=self.browser_session.browser_profile.shared_browser_focus_policy == 'preserve',
+				)
 				self.logger.info(f'[SessionManager] Created new tab {new_target_id[:8]}... for agent')
 
 				# Dispatch TabCreatedEvent so watchdogs can initialize
@@ -762,7 +798,10 @@ class SessionManager:
 				f'[SessionManager] ❌ Failed to get session for {new_target_id[:8]}... after 2s, creating emergency fallback tab'
 			)
 
-			fallback_target_id = await self.browser_session._cdp_create_new_page('about:blank')
+			fallback_target_id = await self.browser_session._cdp_create_new_page(
+				'about:blank',
+				background=self.browser_session.browser_profile.shared_browser_focus_policy == 'preserve',
+			)
 			self.logger.warning(f'[SessionManager] Created emergency fallback tab {fallback_target_id[:8]}...')
 
 			# Try one more time with fallback

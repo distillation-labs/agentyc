@@ -177,11 +177,11 @@ async def _drag_to(
 		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 			params={'type': 'mouseMoved', 'x': sx, 'y': sy}, session_id=sid
 		)
-		await asyncio.sleep(0.05)
+		await asyncio.sleep(0.02)
 		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 			params={'type': 'mousePressed', 'x': sx, 'y': sy, 'button': 'left', 'clickCount': 1}, session_id=sid
 		)
-		await asyncio.sleep(0.05)
+		await asyncio.sleep(0.01)
 
 		n = max(steps, 2)
 		for i in range(1, n + 1):
@@ -190,7 +190,7 @@ async def _drag_to(
 			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 				params={'type': 'mouseMoved', 'x': mx, 'y': my, 'button': 'left'}, session_id=sid
 			)
-			await asyncio.sleep(0.02)
+			await asyncio.sleep(0.01)
 
 		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 			params={'type': 'mouseReleased', 'x': tx, 'y': ty, 'button': 'left', 'clickCount': 1}, session_id=sid
@@ -262,48 +262,25 @@ async def _wait_for_network_idle(self, timeout_seconds: float = 10.0, idle_durat
 
 	start = _time.monotonic()
 	try:
-		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
-		if hasattr(cdp_session, '_lifecycle_events'):
-			# Snapshot current idle count — only a NEW networkIdle event (after we started) signals true idle.
-			initial_idle_count = sum(1 for e in cdp_session._lifecycle_events if e.get('name') == 'networkIdle')
-			deadline = start + timeout
-			while _time.monotonic() < deadline:
-				current_idle_count = sum(1 for e in cdp_session._lifecycle_events if e.get('name') == 'networkIdle')
-				if current_idle_count > initial_idle_count:
-					elapsed = _time.monotonic() - start
-					return f'Network idle after {elapsed:.1f}s'
-				await asyncio.sleep(0.2)
-
-		# Fallback: poll the Performance API for time since the last completed resource fetch.
-		# This catches AJAX/fetch activity that doesn't trigger a page lifecycle event.
-		_JS_SINCE_LAST_RESOURCE = (
-			'(function(){'
-			'var e=performance.getEntriesByType("resource");'
-			'if(!e.length)return -1;'
-			'var l=e[e.length-1];'
-			'return l.responseEnd>0?(performance.now()-l.responseEnd):0;'
-			'})()'
-		)
+		await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		if not self._cdp_events_registered:
+			try:
+				await self._register_cdp_event_listeners()
+			except Exception:
+				pass
 		idle_start: float | None = None
 		deadline = start + timeout
 		while _time.monotonic() < deadline:
-			try:
-				result = await cdp_session.cdp_client.send.Runtime.evaluate(
-					params={'expression': _JS_SINCE_LAST_RESOURCE, 'returnByValue': True},
-					session_id=cdp_session.session_id,
-				)
-				ms_since_last = float((result.get('result') or {}).get('value', 0) or 0)
-				if ms_since_last < 0 or ms_since_last >= idle_duration_ms:
-					if idle_start is None:
-						idle_start = _time.monotonic()
-					elif _time.monotonic() - idle_start >= idle_needed:
-						elapsed = _time.monotonic() - start
-						return f'Network idle after {elapsed:.1f}s'
-				else:
-					idle_start = None
-			except Exception:
-				pass
-			await asyncio.sleep(0.2)
+			if not self._network_pending:
+				now = _time.monotonic()
+				if idle_start is None:
+					idle_start = now
+				elif now - idle_start >= idle_needed:
+					elapsed = now - start
+					return f'Network idle after {elapsed:.1f}s'
+			else:
+				idle_start = None
+			await asyncio.sleep(min(idle_needed / 2 if idle_needed > 0 else 0.05, 0.05))
 
 		elapsed = _time.monotonic() - start
 		return f'Network idle wait timed out after {elapsed:.1f}s — proceeding'
@@ -409,6 +386,11 @@ async def _register_cdp_event_listeners(self) -> None:
 			await cdp_session.cdp_client.send.Runtime.enable(session_id=_sid)
 		except Exception:
 			pass
+		try:
+			# Network domain events require explicit enablement per CDP session.
+			await cdp_session.cdp_client.send.Network.enable(session_id=_sid)
+		except Exception:
+			pass
 
 	self._cdp_client_for_runtime = cdp_session.cdp_client
 
@@ -479,6 +461,7 @@ async def _register_cdp_event_listeners(self) -> None:
 			'error': None,
 			'start_time': event.get('timestamp', time.time()),
 			'duration_ms': None,
+			'req_headers': req.get('headers') or {},
 		}
 		self._network_pending[req_id] = entry
 
@@ -492,6 +475,15 @@ async def _register_cdp_event_listeners(self) -> None:
 		resp = event.get('response') or {}
 		entry['status'] = resp.get('status')
 		entry['status_text'] = resp.get('statusText')
+		entry['resp_headers'] = resp.get('headers') or {}
+
+	def on_loading_finished(event: Any, session_id: str | None = None) -> None:
+		if not _is_our_session(session_id) or not isinstance(event, dict):
+			return
+		req_id = event.get('requestId', '')
+		entry = self._network_pending.get(req_id)
+		if entry is None:
+			return
 		now = event.get('timestamp', time.time())
 		start = entry['start_time']
 		entry['duration_ms'] = round((now - start) * 1000, 1)
@@ -513,6 +505,7 @@ async def _register_cdp_event_listeners(self) -> None:
 
 	cdp_session.cdp_client.register.Network.requestWillBeSent(on_request_will_be_sent)
 	cdp_session.cdp_client.register.Network.responseReceived(on_response_received)
+	cdp_session.cdp_client.register.Network.loadingFinished(on_loading_finished)
 	cdp_session.cdp_client.register.Network.loadingFailed(on_loading_failed)
 
 	self._cdp_events_registered = True
@@ -530,11 +523,18 @@ async def _get_console_logs(self, level: str = 'all', max_entries: int = 50) -> 
 	return json.dumps(entries)
 
 
-async def _get_network_log(self, type_filter: str = 'all', status_filter: str = 'all', max_entries: int = 50) -> str:
+async def _get_network_log(
+	self, type_filter: str = 'all', status_filter: str = 'all', max_entries: int = 50, include_headers: bool = False
+) -> str:
 	"""Return recent network requests captured via CDP Network domain events."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
 	self._update_session_activity(self.browser_session.id)
+	if not self._cdp_events_registered:
+		try:
+			await self._register_cdp_event_listeners()
+		except Exception:
+			pass
 	entries = list(self._network_log_buffer)
 	if type_filter != 'all':
 		entries = [e for e in entries if e.get('type', '').lower() == type_filter.lower()]
@@ -545,7 +545,8 @@ async def _get_network_log(self, type_filter: str = 'all', status_filter: str = 
 	entries = entries[-max_entries:]
 	if not entries:
 		return json.dumps([])
-	display = [{k: v for k, v in e.items() if k != 'request_id' and v is not None} for e in entries]
+	_omit = {'request_id', 'start_time'} if include_headers else {'request_id', 'start_time', 'req_headers', 'resp_headers'}
+	display = [{k: v for k, v in e.items() if k not in _omit and v is not None} for e in entries]
 	return json.dumps(display)
 
 
@@ -603,17 +604,58 @@ async def _switch_tab(self, tab_id: str) -> str:
 
 	from agentyc.browser.events import SwitchTabEvent
 
-	target_id = await self.browser_session.get_target_id_from_tab_id(tab_id)
-	event = self.browser_session.event_bus.dispatch(SwitchTabEvent(target_id=target_id))
-	await event
-	await event.event_result(raise_if_any=True, raise_if_none=False)
+	try:
+		target_id = await self.browser_session.get_target_id_from_tab_id(tab_id)
+		event = self.browser_session.event_bus.dispatch(SwitchTabEvent(target_id=target_id))
+		await event
+		await event.event_result(raise_if_any=True, raise_if_none=False)
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
 	if self.browser_session.agent_focus_target_id != target_id:
 		return self._format_action_error(
 			f'Switch tab to {tab_id} completed but the requested tab did not become active.',
 			default_code='postcondition_failed',
 		)
+	if self._cdp_client_for_runtime:
+		try:
+			focused_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+			await self._cdp_client_for_runtime.send.Runtime.enable(session_id=focused_session.session_id)
+			await self._cdp_client_for_runtime.send.Network.enable(session_id=focused_session.session_id)
+		except Exception:
+			pass
 	current_url = await self.browser_session.get_current_page_url()
 	return f'Switched to tab {tab_id}: {current_url}'
+
+
+async def _new_tab(self, url: str = 'about:blank') -> str:
+	"""Create a new browser tab, switch focus to it, and optionally navigate to a URL."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+
+	self._update_session_activity(self.browser_session.id)
+
+	try:
+		from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
+
+		new_page = await self.browser_session.new_page(url if url not in ('about:blank', '') else None)
+		new_target_id = new_page._target_id
+
+		await self.browser_session.event_bus.dispatch(TabCreatedEvent(target_id=new_target_id, url=url))
+		focus_event = self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url=url))
+		await focus_event
+
+		if self._cdp_client_for_runtime:
+			try:
+				focused_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+				await self._cdp_client_for_runtime.send.Runtime.enable(session_id=focused_session.session_id)
+				await self._cdp_client_for_runtime.send.Network.enable(session_id=focused_session.session_id)
+			except Exception:
+				pass
+
+		current_url = await self.browser_session.get_current_page_url()
+		return f'Opened new tab: {current_url}'
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
 
 
 async def _close_tab(self, tab_id: str) -> str:
@@ -623,14 +665,22 @@ async def _close_tab(self, tab_id: str) -> str:
 
 	from agentyc.browser.events import CloseTabEvent
 
-	target_id = await self.browser_session.get_target_id_from_tab_id(tab_id)
-	event = self.browser_session.event_bus.dispatch(CloseTabEvent(target_id=target_id))
-	await event
-	await event.event_result(raise_if_any=True, raise_if_none=False)
-	if any(tab.target_id == target_id for tab in await self.browser_session.get_tabs()):
-		return self._format_action_error(
-			f'Close tab {tab_id} completed but the tab is still present.',
-			default_code='postcondition_failed',
-		)
+	try:
+		target_id = await self.browser_session.get_target_id_from_tab_id(tab_id)
+		event = self.browser_session.event_bus.dispatch(CloseTabEvent(target_id=target_id))
+		await event
+		await event.event_result(raise_if_any=True, raise_if_none=False)
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
+	deadline = time.monotonic() + 0.3
+	while True:
+		if not any(tab.target_id == target_id for tab in await self.browser_session.get_tabs()):
+			break
+		if time.monotonic() >= deadline:
+			return self._format_action_error(
+				f'Close tab {tab_id} completed but the tab is still present.',
+				default_code='postcondition_failed',
+			)
+		await asyncio.sleep(0.05)
 	current_url = await self.browser_session.get_current_page_url()
 	return f'Closed tab # {tab_id}, now on {current_url}'

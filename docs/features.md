@@ -29,7 +29,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_search_page` | Search for text or a regex pattern on the current page |
 | `browser_wait_for_element` | Poll until text or a ref appears or disappears |
 | `browser_get_focused_element` | Return the element that currently has keyboard focus |
-| `browser_evaluate` | Execute JavaScript in the page context |
+| `browser_evaluate` | Execute JavaScript in the current page context and return the result as text |
 
 ### Interaction
 
@@ -52,6 +52,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 
 | Tool | Description |
 |------|-------------|
+| `browser_new_tab` | Create a new browser tab and switch focus to it, optionally navigating to a URL |
 | `browser_list_tabs` | List open tabs |
 | `browser_switch_tab` | Switch to a tab by `tab_id` |
 | `browser_close_tab` | Close a tab by `tab_id` |
@@ -67,7 +68,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 |------|-------------|
 | `browser_extract_content` | Deterministically extract compatible content from the current page |
 | `browser_get_console_logs` | Return recent browser console messages captured through CDP |
-| `browser_get_network_log` | Return recent network requests captured through CDP |
+| `browser_get_network_log` | Return recent network requests captured through CDP; accepts `include_headers` to expose request and response headers |
 
 ## Browser State
 
@@ -133,6 +134,7 @@ The CLI supports a shared-browser mode through `agentyc browser` plus `agentyc m
 - Visible activation is controlled by `--shared-browser-focus-policy`.
 - Chrome tab ownership cues are not a reliable public contract.
 - Separate windows and explicit focus changes are still the most dependable operator model.
+- For parallel automation, `browser_new_tab` is the recommended way for subagents to open their own tab. Each subagent calls `browser_new_tab` immediately after attaching so that its state, element refs, and network log are isolated from other agents working in the same browser.
 
 ## Python Surface
 

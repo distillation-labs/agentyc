@@ -263,14 +263,15 @@ async def _create_root_cdp_client(session: BrowserSession) -> CDPClient:
 async def _initialize_session_manager(session: BrowserSession) -> None:
 	from agentyc.browser.session_manager import SessionManager
 
-	session.session_manager = SessionManager(session)
-	await session.session_manager.start_monitoring()
-	session.logger.debug('Event-driven session manager started')
 	assert session._cdp_client_root is not None
 	await session._cdp_client_root.send.Target.setAutoAttach(
 		params={'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True}
 	)
 	session.logger.debug('CDP client connected with auto-attach enabled')
+
+	session.session_manager = SessionManager(session)
+	await session.session_manager.start_monitoring()
+	session.logger.debug('Event-driven session manager started')
 
 
 async def _redirect_new_tab_pages(session: BrowserSession, page_targets: list[Any]) -> None:
@@ -301,24 +302,35 @@ async def _bootstrap_page_targets(session: BrowserSession) -> list[Any]:
 			session.session_manager.set_target_ownership(target.target_id, session.runtime_metadata, source='current_runtime')
 
 	await _redirect_new_tab_pages(session, page_targets)
+	owned_page_targets = session.get_owned_page_targets() if session.is_shared_browser_runtime else page_targets
+	initial_target_id: str | None = None
 
-	if not page_targets:
-		assert session._cdp_client_root is not None
-		new_target = await session._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
-		target_id = new_target['targetId']
-		session.logger.debug(f'📄 Created new blank page: {target_id}')
-		page_targets = session.session_manager.get_all_page_targets()
+	if not owned_page_targets:
+		if session.is_shared_browser_runtime and getattr(session, '_browser_context_id', None) is None:
+			session.logger.debug(
+				'📄 Shared runtime has no browser context yet; skipping provisional page creation during bootstrap'
+			)
+		else:
+			assert session._cdp_client_root is not None
+			initial_target_id = await session._cdp_create_new_page(
+				'about:blank',
+				background=session.browser_profile.shared_browser_focus_policy == 'preserve',
+			)
+			session.logger.debug(f'📄 Created new blank page: {initial_target_id}')
+			page_targets = session.session_manager.get_all_page_targets()
+			owned_page_targets = session.get_owned_page_targets() if session.is_shared_browser_runtime else page_targets
 	else:
-		target_id = page_targets[0].target_id
-		session.logger.debug(f'📄 Using existing page: {target_id}')
+		initial_target_id = owned_page_targets[0].target_id
+		session.logger.debug(f'📄 Using existing page: {initial_target_id}')
 
-	try:
-		await session.get_or_create_cdp_session(target_id, focus=True)
-		await session._apply_runtime_markers_to_target(target_id)
-		await session._cdp_get_window_context(target_id)
-		session.logger.debug(f'📄 Agent focus set to {target_id[:8]}...')
-	except ValueError as e:
-		raise RuntimeError(f'Failed to get session for initial target {target_id}: {e}') from e
+	if initial_target_id is not None:
+		try:
+			await session.get_or_create_cdp_session(initial_target_id, focus=True)
+			await session._apply_runtime_markers_to_target(initial_target_id)
+			await session._cdp_get_window_context(initial_target_id)
+			session.logger.debug(f'📄 Agent focus set to {initial_target_id[:8]}...')
+		except ValueError as e:
+			raise RuntimeError(f'Failed to get session for initial target {initial_target_id}: {e}') from e
 
 	for idx, target in enumerate(page_targets):
 		target_url = target.url
@@ -327,9 +339,9 @@ async def _bootstrap_page_targets(session: BrowserSession) -> list[Any]:
 		session.logger.debug(f'Dispatching TabCreatedEvent for initial tab {idx}: {target_url}')
 		session.event_bus.dispatch(TabCreatedEvent(url=target_url, target_id=target.target_id))
 
-	if page_targets:
-		initial_url = page_targets[0].url
-		session.event_bus.dispatch(AgentFocusChangedEvent(target_id=page_targets[0].target_id, url=initial_url))
+	if owned_page_targets:
+		initial_url = owned_page_targets[0].url
+		session.event_bus.dispatch(AgentFocusChangedEvent(target_id=owned_page_targets[0].target_id, url=initial_url))
 		session.logger.debug(f'Initial agent focus set to tab 0: {initial_url}')
 
 	return page_targets
@@ -552,9 +564,11 @@ async def reconnect(session: BrowserSession) -> None:
 		for target in page_targets:
 			session.session_manager.set_target_ownership(target.target_id, session.runtime_metadata, source='current_runtime')
 
+	owned_page_targets = session.get_owned_page_targets() if session.is_shared_browser_runtime else page_targets
+
 	restored = False
 	if old_focus_target_id:
-		for target in page_targets:
+		for target in owned_page_targets:
 			if target.target_id == old_focus_target_id:
 				await session.get_or_create_cdp_session(old_focus_target_id, focus=True)
 				await session._apply_runtime_markers_to_target(old_focus_target_id)
@@ -564,15 +578,17 @@ async def reconnect(session: BrowserSession) -> None:
 				break
 
 	if not restored:
-		if page_targets:
-			fallback_id = page_targets[0].target_id
+		if owned_page_targets:
+			fallback_id = owned_page_targets[0].target_id
 			await session.get_or_create_cdp_session(fallback_id, focus=True)
 			await session._apply_runtime_markers_to_target(fallback_id)
 			await session._cdp_get_window_context(fallback_id)
 			session.logger.debug(f'🔄 Agent focus set to fallback target {fallback_id[:8]}...')
 		else:
-			new_target = await session._cdp_client_root.send.Target.createTarget(params={'url': 'about:blank'})
-			target_id = new_target['targetId']
+			target_id = await session._cdp_create_new_page(
+				'about:blank',
+				background=session.browser_profile.shared_browser_focus_policy == 'preserve',
+			)
 			await session.get_or_create_cdp_session(target_id, focus=True)
 			await session._apply_runtime_markers_to_target(target_id)
 			await session._cdp_get_window_context(target_id)
