@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3] - 2026-05-16
+
+### Fixed
+
+- **Issue-queue structured extraction aliases** — table projection now recognizes `issues` collections, `issue_count`/row-count aliases, and `Issue`/title-style field aliases so the release-gate issue-triage fixture extracts correctly without benchmark-specific special cases.
+- **Shared-browser peer tab reconciliation** — `get_tabs()` now backfills missing page targets from root `Target.getTargets()` discovery and restores runtime ownership from title metadata, fixing collaboration checks when one runtime attaches after another has already opened tabs.
+- **Medium-page auto compaction** — `browser_get_state` now switches `auto` to compact serialization at 10 interactive elements while still preserving the full element set under the min-mode cap, raising release-gate payload reduction back above threshold without hurting recall.
+
 ## [0.2.2] - 2026-05-16
 
 ### Changed
