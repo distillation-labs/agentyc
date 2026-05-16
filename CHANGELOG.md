@@ -1,10 +1,10 @@
 # Changelog
 
-## [0.2.2-dev] - Unreleased
+## [0.2.2] - 2026-05-16
 
 ### Changed
 
-- Benchmark optimization work in progress after the 0.2.1 release cut.
+- Benchmark optimization work and release grooming after the 0.2.1 release cut.
 
 ## [0.2.1] - 2026-05-16
 
