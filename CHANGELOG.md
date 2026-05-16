@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.4] - 2026-05-16
+
+### Fixed
+
+- **Compact shared-browser state payloads** — `browser_get_state` in compact (`min`/auto-compacted) mode no longer repeats the current tab's `url` and `title` inside `current_tab` when that page identity is already present at the top level. This preserves collaboration metadata while restoring enough payload-reduction headroom for CI release gating.
+
 ## [0.2.3] - 2026-05-16
 
 ### Fixed
