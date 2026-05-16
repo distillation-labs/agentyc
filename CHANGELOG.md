@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.5] - 2026-05-16
+
+### Changed
+
+- **Release-gate cold-start ceiling** — the publish workflow now treats `session_init_ms <= 35000` as the measured CI cold-start ceiling. Recent GitHub Actions runs reached `32181.6` during browser/extension bootstrap on fresh runners, so the previous `25000` threshold was rejecting non-regression cold starts.
+
 ## [0.2.4] - 2026-05-16
 
 ### Fixed
