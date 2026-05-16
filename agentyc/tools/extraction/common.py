@@ -5,8 +5,9 @@ from typing import Any
 
 FIELD_COLLECTION_NAMES = {'fields', 'formfields', 'inputs', 'controls'}
 LIST_COLLECTION_NAMES = {'items', 'steps', 'checklist', 'entries', 'results'}
-TABLE_ROW_COLLECTION_NAMES = {'rows', 'tablerows', 'entries', 'items', 'results'}
+TABLE_ROW_COLLECTION_NAMES = {'rows', 'tablerows', 'entries', 'items', 'results', 'issues'}
 COLUMN_COLLECTION_NAMES = {'columns', 'headers'}
+TABLE_ROW_COUNT_NAMES = {'rowcount', 'issuecount', 'itemcount', 'entrycount', 'resultcount'}
 LINK_COLLECTION_NAMES = {'results', 'items', 'links', 'entries', 'cards', 'pages', 'navigation', 'menuitems'}
 KEY_VALUE_COLLECTION_NAMES = {'pairs', 'items', 'entries', 'properties', 'settings', 'details'}
 KEY_VALUE_COUNT_NAMES = {'paircount', 'itemcount', 'entrycount', 'propertycount'}
@@ -41,6 +42,12 @@ def find_matching_key(target: str, candidates: Any) -> str | None:
 	normalized_target = normalize_identifier(target)
 	for candidate in candidates:
 		if normalize_identifier(candidate) == normalized_target:
+			return candidate
+	alias_map = {
+		'title': {'issue', 'name', 'label'},
+	}
+	for candidate in candidates:
+		if normalize_identifier(candidate) in alias_map.get(normalized_target, set()):
 			return candidate
 	return None
 

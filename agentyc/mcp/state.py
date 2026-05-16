@@ -11,8 +11,10 @@ from agentyc.dom.views import EnhancedDOMTreeNode
 
 StateMode = Literal['auto', 'full', 'min', 'focus']
 
-_DEFAULT_MIN_ELEMENTS = 30
-_DEFAULT_AUTO_FULL_THRESHOLD = 18
+_DEFAULT_MIN_ELEMENTS = 24
+# Auto can safely use the compact element schema on medium pages because min mode
+# still preserves the full element set until the min-element cap is reached.
+_DEFAULT_AUTO_FULL_THRESHOLD = 10
 _MAX_DUPLICATES_PER_SIGNATURE = 3
 _DIGITS_PATTERN = re.compile(r'\d+')
 
@@ -417,7 +419,7 @@ def resolve_effective_mode(
 	*, mode: StateMode, interactive_element_count: int, max_min_elements: int
 ) -> Literal['full', 'min', 'focus']:
 	if mode == 'auto':
-		if interactive_element_count > max(max_min_elements, _DEFAULT_AUTO_FULL_THRESHOLD):
+		if interactive_element_count >= _DEFAULT_AUTO_FULL_THRESHOLD:
 			return 'min'
 		return 'full'
 	if mode == 'focus':

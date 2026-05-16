@@ -15,6 +15,7 @@ from agentyc.browser.collaboration import (
 	build_runtime_metadata_probe_script,
 )
 from agentyc.browser.page import Page
+from agentyc.browser.session_manager_support import runtime_metadata_from_title
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 from agentyc.browser.views import TabInfo
 from agentyc.browser.windowing import build_create_target_params, normalize_window_bounds, window_context_from_cdp
@@ -46,7 +47,36 @@ def _assign_shared_browser_ownership(session: BrowserSession, page_targets: list
 			continue
 		if ownership and ownership.runtime is not None:
 			continue
+		detected_runtime = runtime_metadata_from_title(target.display_title or '')
+		if detected_runtime is not None:
+			session.session_manager.set_target_ownership(target.target_id, detected_runtime, source='detected_runtime')
+			continue
 		session.session_manager.set_target_human_ownership(target.target_id)
+
+
+async def _reconcile_missing_page_targets(session: BrowserSession) -> None:
+	if not session.session_manager or session._cdp_client_root is None:
+		return
+	try:
+		result = await session._cdp_client_root.send.Target.getTargets()
+	except Exception:
+		return
+	for target_info in result.get('targetInfos', []):
+		target_id = target_info.get('targetId')
+		target_type = target_info.get('type')
+		if not target_id or target_type not in {'page', 'tab'}:
+			continue
+		if session.session_manager.get_target(target_id) is not None:
+			continue
+		target = Target(
+			target_id=target_id,
+			target_type=target_type,
+			url=target_info.get('url', 'about:blank'),
+			title='Unknown title',
+		)
+		session.session_manager._apply_target_info(target, target_info)
+		session.session_manager._targets[target_id] = target
+
 
 
 def is_target_owned_by_current_runtime(session: BrowserSession, target_id: TargetID) -> bool:
@@ -175,6 +205,8 @@ async def get_tabs(session: BrowserSession) -> list[TabInfo]:
 
 	if not session.session_manager:
 		return tabs
+
+	await _reconcile_missing_page_targets(session)
 
 	for i, target in enumerate(session.session_manager.get_all_page_targets()):
 		target_id = target.target_id

@@ -17,6 +17,7 @@ from agentyc.dom.views import DOMRect, EnhancedAXNode, EnhancedDOMTreeNode, Enha
 from agentyc.filesystem.file_system import FileSystem
 from agentyc.mcp.server import AgentycServer
 from agentyc.mcp.state import build_browser_state_payload, parse_element_ref
+from agentyc.tools.extraction.projection import build_table_structured_payload
 from agentyc.tools.service import Tools
 
 _ACCESSIBLE_HTML = """
@@ -1275,6 +1276,65 @@ class TestMCPStateProtocolAndExtraction:
 		assert 'Open cart' in texts
 		assert 'API Reference' in texts
 		assert texts.count('Read more') <= 3
+
+	def test_auto_mode_compacts_medium_pages_without_dropping_elements(self):
+		selector_map = {
+			1: _StubElement(1, 'Project name', tag='input', attrs={'placeholder': 'Project name', 'type': 'text'}),
+			2: _StubElement(2, 'Repository URL', tag='input', attrs={'placeholder': 'Repository URL', 'type': 'url'}),
+			3: _StubElement(3, 'Environment', tag='select', attrs={'aria-label': 'Environment'}),
+			4: _StubElement(4, 'Deploy preview', tag='button', role='button'),
+			5: _StubElement(5, 'Open validation help', tag='a', attrs={'href': '/help'}, role='link'),
+			6: _StubElement(6, 'Enable notifications', tag='input', attrs={'type': 'checkbox'}, role='checkbox'),
+			7: _StubElement(7, 'Webhook URL', tag='input', attrs={'placeholder': 'Webhook URL', 'type': 'url'}),
+			8: _StubElement(8, 'Retry failed jobs', tag='button', role='button'),
+			9: _StubElement(9, 'Cancel', tag='button', role='button'),
+			10: _StubElement(10, 'Open docs', tag='a', attrs={'href': '/docs'}, role='link'),
+		}
+
+		payload = build_browser_state_payload(_stub_state(selector_map=selector_map), mode='auto')
+
+		assert payload['effective_mode'] == 'min'
+		assert len(payload['interactive_elements']) == 10
+		assert 'interactive_elements_truncated' not in payload
+		assert all('index' not in element for element in payload['interactive_elements'])
+
+	def test_table_projection_supports_issue_queue_schema_aliases(self):
+		payload = build_table_structured_payload(
+			tables=[
+				{
+					'columns': ['Title', 'Severity', 'Status'],
+					'rows': [
+						{'Title': 'Build #482 failing on main', 'Severity': 'Critical', 'Status': 'Open'},
+						{'Title': 'OAuth callback latency spike', 'Severity': 'High', 'Status': 'Investigating'},
+					],
+				}
+			],
+			output_schema={
+				'type': 'object',
+				'properties': {
+					'issue_count': {'type': 'integer'},
+					'issues': {
+						'type': 'array',
+						'items': {
+							'type': 'object',
+							'properties': {
+								'title': {'type': 'string'},
+								'severity': {'type': 'string'},
+								'status': {'type': 'string'},
+							},
+						},
+					},
+				},
+			},
+		)
+
+		assert payload == {
+			'issue_count': 2,
+			'issues': [
+				{'title': 'Build #482 failing on main', 'severity': 'Critical', 'status': 'Open'},
+				{'title': 'OAuth callback latency spike', 'severity': 'High', 'status': 'Investigating'},
+			],
+		}
 
 	async def test_browser_get_state_min_focus_and_delta_modes(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/accessible')

@@ -151,6 +151,60 @@ async def test_shared_attach_marks_unclaimed_tabs_as_human_owned():
 	assert manager.get_target('target-other').ownership.runtime.runtime_id == 'runtime-abcd'
 
 
+async def test_get_tabs_reconciles_missing_peer_targets_from_root_discovery():
+	session = BrowserSession(
+		browser_profile=BrowserProfile(
+			headless=True,
+			user_data_dir=None,
+			cdp_url='ws://example.test/devtools/browser/123',
+			shared_browser_mode='tab',
+		)
+	)
+	manager = SessionManager(session)
+	owned_target = Target(
+		target_id='target-owned',
+		target_type='page',
+		url='https://example.test/current',
+		title='Current',
+		display_title=apply_title_prefix('Current', session.runtime_metadata),
+	)
+	manager._targets = {'target-owned': owned_target}
+	manager.set_target_ownership('target-owned', session.runtime_metadata, source='current_runtime')
+	session.session_manager = manager
+	session._cdp_client_root = SimpleNamespace(
+		send=SimpleNamespace(
+			Target=SimpleNamespace(
+				getTargets=AsyncMock(
+					return_value={
+						'targetInfos': [
+							{
+								'targetId': 'target-owned',
+								'type': 'page',
+								'url': 'https://example.test/current',
+								'title': apply_title_prefix('Current', session.runtime_metadata),
+							},
+							{
+								'targetId': 'target-peer',
+								'type': 'page',
+								'url': 'https://example.test/peer',
+								'title': '[Runtime abcd] Peer page',
+							},
+						],
+					}
+				)
+			)
+		)
+	)
+
+	tabs = await session.get_tabs()
+
+	assert len(tabs) == 2
+	peer = next(tab for tab in tabs if tab.target_id == 'target-peer')
+	assert peer.ownership is not None
+	assert peer.ownership.runtime is not None
+	assert peer.ownership.runtime.runtime_label == 'Runtime abcd'
+
+
 async def test_set_window_bounds_uses_browser_domain_and_updates_target_cache():
 	session = BrowserSession(headless=True, user_data_dir=None)
 	manager = SessionManager(session)

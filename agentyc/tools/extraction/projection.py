@@ -13,6 +13,7 @@ from agentyc.tools.extraction.common import (
 	LINK_ITEM_VALUE_NAMES,
 	LIST_COLLECTION_NAMES,
 	LIST_ITEM_VALUE_NAMES,
+	TABLE_ROW_COUNT_NAMES,
 	TABLE_ROW_COLLECTION_NAMES,
 	coerce_form_field_value,
 	coerce_scalar_value,
@@ -42,7 +43,7 @@ def build_table_structured_payload(*, tables: list[dict[str, Any]], output_schem
 			value = project_tables(tables=tables, prop_schema=prop_schema)
 		elif normalized == 'tablecount':
 			value = len(tables)
-		elif normalized == 'rowcount':
+		elif normalized in TABLE_ROW_COUNT_NAMES:
 			value = sum(len(table['rows']) for table in tables)
 		elif single_array_fallback and prop_schema.get('type') == 'array':
 			value = project_table_rows(rows=first_table['rows'], prop_schema=prop_schema)
@@ -307,7 +308,7 @@ def project_single_table(*, table: dict[str, Any], schema: dict[str, Any]) -> di
 			value = list(table['columns'])
 		elif normalized in TABLE_ROW_COLLECTION_NAMES:
 			value = project_table_rows(rows=table['rows'], prop_schema=prop_schema)
-		elif normalized == 'rowcount':
+		elif normalized in TABLE_ROW_COUNT_NAMES:
 			value = len(table['rows'])
 		if value is None:
 			continue
