@@ -1482,6 +1482,8 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['current_tab']['tab_id'] == '1234'
 		assert payload['current_tab']['display_title'].startswith('[Agent 1234]')
 		assert payload['current_tab']['window_bounds']['height'] == 800
+		assert 'url' not in payload['current_tab']
+		assert 'title' not in payload['current_tab']
 		assert payload['ownership']['runtime']['runtime_id'] == runtime.runtime_id
 		assert payload['runtime']['runtime_id'] == runtime.runtime_id
 

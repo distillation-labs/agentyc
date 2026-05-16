@@ -132,9 +132,14 @@ def serialize_tab_info(tab: Any) -> dict[str, Any]:
 	return payload
 
 
-def _build_current_tab_payload(tab_payload: dict[str, Any]) -> dict[str, Any] | None:
+def _build_current_tab_payload(
+	tab_payload: dict[str, Any], *, include_page_identity: bool = True
+) -> dict[str, Any] | None:
 	current_tab: dict[str, Any] = {}
-	for key in ('tab_id', 'parent_tab_id', 'display_title', 'ownership', 'window_bounds', 'url', 'title'):
+	keys = ('tab_id', 'parent_tab_id', 'display_title', 'ownership', 'window_bounds')
+	if include_page_identity:
+		keys = keys + ('url', 'title')
+	for key in keys:
 		value = tab_payload.get(key)
 		if value is not None:
 			current_tab[key] = value
@@ -148,14 +153,15 @@ def _resolve_current_tab_payload(
 	current_tab_id: str | None,
 	current_url: str,
 	current_title: str,
+	include_page_identity: bool = True,
 ) -> dict[str, Any] | None:
 	if current_tab_id is not None:
 		for tab, tab_payload in zip(tabs, serialized_tabs):
 			if str(getattr(tab, 'target_id', '')) == current_tab_id:
-				return _build_current_tab_payload(tab_payload)
+				return _build_current_tab_payload(tab_payload, include_page_identity=include_page_identity)
 
 	matching_tabs = [
-		_build_current_tab_payload(tab_payload)
+		_build_current_tab_payload(tab_payload, include_page_identity=include_page_identity)
 		for tab, tab_payload in zip(tabs, serialized_tabs)
 		if getattr(tab, 'url', None) == current_url and getattr(tab, 'title', None) == current_title
 	]
@@ -163,7 +169,7 @@ def _resolve_current_tab_payload(
 	if len(matching_tabs) == 1:
 		return matching_tabs[0]
 	if len(serialized_tabs) == 1:
-		return _build_current_tab_payload(serialized_tabs[0])
+		return _build_current_tab_payload(serialized_tabs[0], include_page_identity=include_page_identity)
 	return None
 
 
@@ -332,6 +338,7 @@ def build_browser_state_payload(
 		current_tab_id=current_tab_id,
 		current_url=state.url,
 		current_title=state.title,
+		include_page_identity=effective_mode != 'min',
 	)
 	if current_tab is not None:
 		result['current_tab'] = current_tab
