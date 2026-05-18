@@ -132,9 +132,7 @@ def serialize_tab_info(tab: Any) -> dict[str, Any]:
 	return payload
 
 
-def _build_current_tab_payload(
-	tab_payload: dict[str, Any], *, include_page_identity: bool = True
-) -> dict[str, Any] | None:
+def _build_current_tab_payload(tab_payload: dict[str, Any], *, include_page_identity: bool = True) -> dict[str, Any] | None:
 	current_tab: dict[str, Any] = {}
 	keys = ('tab_id', 'parent_tab_id', 'display_title', 'ownership', 'window_bounds')
 	if include_page_identity:
@@ -545,6 +543,19 @@ def summarize_interactive_element(
 	viewport_height: int | None = None,
 ) -> dict[str, Any]:
 	text = truncate_text(element.get_meaningful_text_for_llm())
+	if not text:
+		attributes = element.attributes or {}
+		tag = (element.tag_name or '').lower()
+		input_type = attributes.get('type', '').lower()
+		for candidate in (
+			attributes.get('aria-label'),
+			attributes.get('placeholder'),
+			attributes.get('title'),
+			attributes.get('value') if tag == 'input' and input_type in {'button', 'submit', 'reset'} else None,
+		):
+			if candidate and str(candidate).strip():
+				text = truncate_text(str(candidate))
+				break
 	info: dict[str, Any] = {
 		'ref': make_element_ref(element.backend_node_id),
 		'tag': element.tag_name,
