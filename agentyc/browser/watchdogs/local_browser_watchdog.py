@@ -20,6 +20,7 @@ from agentyc.browser.events import (
 	BrowserStopEvent,
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.mcp.shared_browser_registry import clear_registered_local_shared_browser
 from agentyc.observability import observe_debug
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 	# Private state for subprocess management
 	_subprocess: psutil.Process | None = PrivateAttr(default=None)
 	_owns_browser_resources: bool = PrivateAttr(default=True)
+	_launched_cdp_url: str | None = PrivateAttr(default=None)
 	_temp_dirs_to_cleanup: list[Path] = PrivateAttr(default_factory=list)
 	_original_user_data_dir: str | None = PrivateAttr(default=None)
 
@@ -55,6 +57,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 			# self.logger.debug('[LocalBrowserWatchdog] Calling _launch_browser...')
 			process, cdp_url = await self._launch_browser()
 			self._subprocess = process
+			self._launched_cdp_url = cdp_url
 			# self.logger.debug(f'[LocalBrowserWatchdog] _launch_browser returned: process={process}, cdp_url={cdp_url}')
 
 			return BrowserLaunchResult(cdp_url=cdp_url)
@@ -66,9 +69,15 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		"""Kill the local browser subprocess."""
 		self.logger.debug('[LocalBrowserWatchdog] Killing local browser process')
 
+		if not self._owns_browser_resources:
+			self.logger.debug('[LocalBrowserWatchdog] Shared browser session does not own browser resources; skipping kill')
+			self._subprocess = None
+			return
+
 		if self._subprocess:
 			await self._cleanup_process(self._subprocess)
 			self._subprocess = None
+			clear_registered_local_shared_browser(cdp_url=self._launched_cdp_url)
 
 		# Clean up temp directories if any were created
 		for temp_dir in self._temp_dirs_to_cleanup:
@@ -79,15 +88,17 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		if self._original_user_data_dir is not None:
 			self.browser_session.browser_profile.user_data_dir = self._original_user_data_dir
 			self._original_user_data_dir = None
+		self._launched_cdp_url = None
 
 		self.logger.debug('[LocalBrowserWatchdog] Browser cleanup completed')
 
 	async def on_BrowserStopEvent(self, event: BrowserStopEvent) -> None:
-		"""Listen for BrowserStopEvent and dispatch BrowserKillEvent without awaiting it."""
-		if self.browser_session.is_local and self._subprocess:
-			self.logger.debug('[LocalBrowserWatchdog] BrowserStopEvent received, dispatching BrowserKillEvent')
-			# Dispatch BrowserKillEvent without awaiting so it gets processed after all BrowserStopEvent handlers
-			self.event_bus.dispatch(BrowserKillEvent())
+		"""Listen for BrowserStopEvent.
+
+		Actual local process cleanup is awaited by session_runtime after BrowserStopEvent
+		handlers finish, which avoids racing repeated shared-browser teardown.
+		"""
+		return None
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='launch_browser_process')
 	async def _launch_browser(self, max_retries: int = 3) -> tuple[psutil.Process, str]:
