@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.7] - 2026-05-18
+
+### Changed
+
+- **Packaged skills guide refresh** — `agentyc init` now emits a more actionable MCP usage guide for coding agents, including escalation steps when refs are missing, explicit dropdown and file-upload recipes, keyboard/focus workflows, multi-tab guidance, and sharper debugging patterns.
+
 ## [0.2.6] - 2026-05-18
 
 ### Fixed
