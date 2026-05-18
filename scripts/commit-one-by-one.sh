@@ -80,7 +80,7 @@ for FILE in "${UNIQUE_FILES[@]}"; do
 	MSG="${TYPE}: ${VERB} ${BASE}"
 
 	git add -- "$FILE"
-	git commit -m "$MSG"
+	git commit -m "$MSG" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 	echo "Committed: $FILE — $MSG"
 	echo
 done
