@@ -82,6 +82,55 @@ function _getPath(el) {
 
 FIND_ELEMENTS_JS_BODY = """\
 try {
+	function _compactText(value) {
+		return String(value || '').replace(/\\s+/g, ' ').trim();
+	}
+	function _readReferencedText(ids) {
+		if (!ids) {
+			return '';
+		}
+		var seen = {};
+		var parts = [];
+		var tokens = String(ids).trim().split(/\\s+/);
+		for (var k = 0; k < tokens.length; k++) {
+			var refEl = document.getElementById(tokens[k]);
+			var refText = refEl ? _compactText(refEl.textContent || '') : '';
+			if (refText && !seen[refText]) {
+				seen[refText] = true;
+				parts.push(refText);
+			}
+		}
+		return _compactText(parts.join(' '));
+	}
+	function _fallbackText(el) {
+		var candidates = [];
+		var seen = {};
+		function addCandidate(value) {
+			var text = _compactText(value);
+			if (!text || seen[text]) {
+				return;
+			}
+			seen[text] = true;
+			candidates.push(text);
+		}
+		addCandidate(el.getAttribute('aria-label'));
+		addCandidate(_readReferencedText(el.getAttribute('aria-labelledby')));
+		if (el.labels && el.labels.length) {
+			for (var labelIndex = 0; labelIndex < el.labels.length; labelIndex++) {
+				addCandidate(el.labels[labelIndex].textContent || '');
+			}
+		}
+		if (typeof el.closest === 'function') {
+			var wrapperLabel = el.closest('label');
+			if (wrapperLabel) {
+				addCandidate(wrapperLabel.textContent || '');
+			}
+		}
+		addCandidate(el.getAttribute('placeholder'));
+		addCandidate(el.getAttribute('name'));
+		addCandidate(el.getAttribute('title'));
+		return candidates.length > 0 ? candidates[0] : '';
+	}
 	var elements;
 	try {
 		elements = document.querySelectorAll(SELECTOR);
@@ -95,7 +144,16 @@ try {
 		var el = elements[i];
 		var item = {index: i, tag: el.tagName.toLowerCase()};
 		if (INCLUDE_TEXT) {
-			var text = (el.textContent || '').trim();
+			var text = _compactText(el.textContent || '');
+			if (!text && item.tag === 'input') {
+				var inputType = (el.getAttribute('type') || '').toLowerCase();
+				if (inputType === 'button' || inputType === 'submit' || inputType === 'reset') {
+					text = _compactText(el.value || el.getAttribute('value') || '');
+				}
+			}
+			if (!text) {
+				text = _fallbackText(el);
+			}
 			item.text = text.length > 300 ? text.slice(0, 300) + '...' : text;
 		}
 		if (ATTRIBUTES && ATTRIBUTES.length > 0) {
@@ -221,7 +279,7 @@ def format_find_results(data: dict, selector: str) -> str:
 
 
 def validate_and_fix_javascript(code: str) -> str:
-	fixed_code = re.sub(r'\\"', '"', code)
+	fixed_code = code
 	fixed_code = re.sub(r'\\\\([dDsSwWbBnrtfv])', r'\\\1', fixed_code)
 	fixed_code = re.sub(r'\\\\([.*+?^${}()|[\]])', r'\\\1', fixed_code)
 
@@ -259,8 +317,6 @@ def validate_and_fix_javascript(code: str) -> str:
 	fixed_code = re.sub(matches_pattern, fix_matches_quotes, fixed_code)
 
 	changes_made = []
-	if r'\"' in code and r'\"' not in fixed_code:
-		changes_made.append('fixed escaped quotes')
 	if '`' in fixed_code and '`' not in code:
 		changes_made.append('converted mixed quotes to template literals')
 
