@@ -39,6 +39,7 @@ class BenchmarkFixture:
 	deterministic_query: BenchmarkExtractionQuery | None = None
 	focus_text: str | None = None
 	action_scenario: str | None = None
+	expect_unchanged_delta: bool = True
 
 
 @dataclass(slots=True)
@@ -408,6 +409,7 @@ def build_fixture_pack() -> list[BenchmarkFixture]:
 			expected_compact_texts=['Approve deployment'],
 			focus_text='Approve deployment',
 			action_scenario='drift-recovery',
+			expect_unchanged_delta=False,
 		),
 		BenchmarkFixture(
 			slug='repeated-actions',
