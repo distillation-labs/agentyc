@@ -106,7 +106,7 @@ class MCPStdioAdapter:
 		self.available_tools: list[str] = []
 		self._agentyc_config_dir: tempfile.TemporaryDirectory[str] | None = None
 
-	async def __aenter__(self) -> 'MCPStdioAdapter':
+	async def __aenter__(self) -> MCPStdioAdapter:
 		# Use a fresh AGENTYC_CONFIG_DIR so the MCP subprocess gets a unique browser
 		# profile that doesn't conflict with any existing Chrome instances.
 		self._agentyc_config_dir = tempfile.TemporaryDirectory(prefix='agentyc-bench-cfg-')
@@ -672,6 +672,7 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 	scroll_to_result = await adapter._scroll_to_text('Documentation topic 30', scenario='coverage-navigation-history')
 	press_result = await adapter._press_key('Tab', scenario='coverage-navigation-history')
 	focused = await adapter._get_focused_element(scenario='coverage-navigation-history')
+	focused_payload = _safe_json_loads(focused) if not focused.startswith('Error') else None
 	evaluate_result = await adapter._evaluate('(function(){ return document.title; })()', scenario='coverage-navigation-history')
 	await adapter._wait(seconds=0.2, scenario='coverage-navigation-history')
 	await adapter._navigate(f'{base_url}/delayed-release.html', scenario='coverage-navigation-history')
@@ -680,7 +681,13 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 	publish_ref = BENCH.find_element_ref(release_state, 'Publish release')
 	await adapter._type_text(ref=release_ref, text='v2.0.0', scenario='coverage-navigation-history')
 	wait_element = await adapter._wait_for_element(ref=publish_ref, timeout_seconds=3, scenario='coverage-navigation-history')
+	await adapter._wait(seconds=0.4, scenario='coverage-navigation-history')
 	publish_html = await adapter._get_html('#publish', scenario='coverage-navigation-history')
+	publish_enabled = await adapter._evaluate(
+		"""(function(){ var el = document.getElementById('publish'); return el ? !el.disabled : null; })()""",
+		scenario='coverage-navigation-history',
+	)
+	status_html = await adapter._get_html('#status', scenario='coverage-navigation-history')
 	meta_json, screenshot_b64 = await adapter._screenshot(full_page=False, scenario='coverage-navigation-history')
 	outcomes.append(
 		_scenario_result(
@@ -694,14 +701,19 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 				and 'Scrolled' in scroll_result
 				and 'Scrolled to text' in scroll_to_result
 				and 'Pressed key:' in press_result
-				and 'focused' in focused.lower()
+				and isinstance(focused_payload, dict)
+				and focused_payload.get('ariaLabel') == 'Search documentation'
 				and 'Long docs' in evaluate_result
 				and 'Element ' in wait_element
 				and 'appeared' in wait_element
+				and 'true' in publish_enabled.lower()
+				and 'Ready to publish.' in status_html
 				and 'disabled' not in publish_html
 				and screenshot_b64 is not None
 			),
 			focused=focused,
+			wait_element=wait_element,
+			publish_enabled=publish_enabled,
 			screenshot_meta=meta_json,
 		)
 	)
@@ -743,8 +755,13 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 
 	await adapter._navigate(f'{base_url}/tab-workspace.html', scenario='coverage-tabs-and-pointer')
 	tab_state, _ = await adapter.get_browser_state_json(mode='auto', scenario='coverage-tabs-and-pointer')
+	workspace_tab_id = tab_state.get('current_tab_id') or (tab_state.get('current_tab') or {}).get('tab_id')
 	release_notes_ref = BENCH.find_element_ref(tab_state, 'Open release notes')
-	open_tab = await adapter._click(ref=release_notes_ref, new_tab=True, scenario='coverage-tabs-and-pointer')
+	open_tab = (
+		await adapter._click(ref=release_notes_ref, new_tab=True, scenario='coverage-tabs-and-pointer')
+		if release_notes_ref is not None
+		else 'missing-ref: Open release notes'
+	)
 	tabs = _safe_json_loads(await adapter._list_tabs(scenario='coverage-tabs-and-pointer')) or []
 	release_notes_tab = next((tab for tab in tabs if tab.get('url', '').endswith('/release-notes.html')), None)
 	close_tab_result = (
@@ -752,10 +769,18 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 		if release_notes_tab
 		else 'missing-tab'
 	)
+	await adapter._wait(seconds=0.2, scenario='coverage-tabs-and-pointer')
 	await adapter._navigate(f'{base_url}/small-form.html', scenario='coverage-tabs-and-pointer')
 	small_form_state, _ = await adapter.get_browser_state_json(mode='auto', scenario='coverage-tabs-and-pointer')
 	doc_ref = BENCH.find_element_ref(small_form_state, 'Documentation')
-	open_tab_two = await adapter._click(ref=doc_ref, new_tab=True, scenario='coverage-tabs-and-pointer')
+	if doc_ref is None:
+		small_form_state, _ = await adapter.get_browser_state_json(mode='full', scenario='coverage-tabs-and-pointer')
+		doc_ref = BENCH.find_element_ref(small_form_state, 'Documentation')
+	open_tab_two = (
+		await adapter._click(ref=doc_ref, new_tab=True, scenario='coverage-tabs-and-pointer')
+		if doc_ref is not None
+		else 'missing-ref: Documentation'
+	)
 	tabs_two = _safe_json_loads(await adapter._list_tabs(scenario='coverage-tabs-and-pointer')) or []
 	documentation_tab = next((tab for tab in tabs_two if '/docs/getting-started' in tab.get('url', '')), None)
 	switch_result = (
@@ -791,6 +816,13 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 				and 'Double-clicked' in double_click_result
 			),
 			tab_count=len(tabs_two),
+			release_notes_ref_found=release_notes_ref is not None,
+			documentation_ref_found=doc_ref is not None,
+			publish_ref_found=publish_ref is not None,
+			open_tab=open_tab,
+			open_tab_two=open_tab_two,
+			switch_result=switch_result,
+			double_click_result=double_click_result,
 		)
 	)
 
@@ -818,7 +850,7 @@ async def _run_fixture_suite(
 		if result.get('extract_content', {}).get('deterministic'):
 			extract_ok = result['extract_content']['deterministic']['match']['recall'] >= 1.0
 		action_ok = result.get('action_reliability', {}).get('passed', True)
-		state_ok = result['state']['unchanged_delta']['changed'] is False
+		state_ok = (not fixture.expect_unchanged_delta) or result['state']['unchanged_delta']['changed'] is False
 		outcomes.append(
 			_scenario_result(
 				f'fixture:{fixture.slug}',
@@ -833,7 +865,6 @@ async def _run_fixture_suite(
 async def _dense_catalog_profile(adapter: MCPStdioAdapter, base_url: str, iteration: int) -> dict[str, Any]:
 	scenario = f'heavy:dense-catalog:{iteration}'
 	await adapter._navigate(f'{base_url}/dense-catalog.html', scenario=scenario)
-	auto_state, _ = await adapter.get_browser_state_json(mode='auto', scenario=scenario)
 	min_state, _ = await adapter.get_browser_state_json(mode='min', scenario=scenario)
 	search = await adapter._search_page('Featured Product 48', scenario=scenario)
 	find = _parse_find_elements_output(await adapter._find_elements('article.card a', max_results=8, scenario=scenario))
@@ -843,9 +874,12 @@ async def _dense_catalog_profile(adapter: MCPStdioAdapter, base_url: str, iterat
 	eval_result = await adapter._evaluate(
 		'(function(){ return document.querySelectorAll("article.card").length; })()', scenario=scenario
 	)
+	# The scroll actions above intentionally change the page state, so the unchanged delta
+	# check must start from a fresh post-action hash rather than the pre-scroll baseline.
+	post_action_state, _ = await adapter.get_browser_state_json(mode='auto', scenario=scenario)
 	delta_state, _ = await adapter.get_browser_state_json(
 		mode='auto',
-		since_hash=auto_state['state_hash'],
+		since_hash=post_action_state['state_hash'],
 		scenario=scenario,
 	)
 	return _scenario_result(
@@ -1377,6 +1411,33 @@ def _summarize_failures(records: list[ToolCallRecord], limit: int = 20) -> list[
 	]
 
 
+def _serialize_call_record(record: ToolCallRecord) -> dict[str, Any]:
+	return {
+		'tool_name': record.tool_name,
+		'scenario': record.scenario,
+		'latency_ms': record.latency_ms,
+		'success': record.success,
+		'error_text': record.error_text,
+		'result_preview': record.result_preview,
+	}
+
+
+def _summarize_slowest_calls(records: list[ToolCallRecord], limit: int = 20) -> list[dict[str, Any]]:
+	return [
+		_serialize_call_record(record) for record in sorted(records, key=lambda record: record.latency_ms, reverse=True)[:limit]
+	]
+
+
+def _summarize_slowest_calls_by_tool(records: list[ToolCallRecord], per_tool_limit: int = 5) -> dict[str, list[dict[str, Any]]]:
+	per_tool: dict[str, list[ToolCallRecord]] = defaultdict(list)
+	for record in records:
+		per_tool[record.tool_name].append(record)
+	return {
+		tool_name: _summarize_slowest_calls(tool_records, limit=per_tool_limit)
+		for tool_name, tool_records in sorted(per_tool.items())
+	}
+
+
 async def _run_target(target: TargetConfig, minimum_total_calls: int, scratch_root: Path) -> dict[str, Any]:
 	target_start = time.perf_counter()
 	version = (
@@ -1456,6 +1517,8 @@ async def _run_target(target: TargetConfig, minimum_total_calls: int, scratch_ro
 					'estimated_tokens': _context_utilization_from_text(combined_preview),
 					'efficiency': _efficiency_summary(records, outcomes_with_fixtures),
 				},
+				'slow_call_samples': _summarize_slowest_calls(records),
+				'per_tool_slow_call_samples': _summarize_slowest_calls_by_tool(records),
 				'failure_samples': _summarize_failures(records),
 				'cleanup': {
 					'close_all_result': cleanup_result,
