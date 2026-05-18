@@ -68,7 +68,13 @@ class SerializerIndexingMixin:
 	def _collect_interactive_elements(self: Any, node: SimplifiedNode, elements: list[SimplifiedNode]) -> None:
 		is_interactive = self._is_interactive_cached(node.original_node)
 		is_visible = node.original_node.snapshot_node and node.original_node.is_visible
-		if is_interactive and is_visible:
+		is_file_input = (
+			node.original_node.tag_name
+			and node.original_node.tag_name.lower() == 'input'
+			and node.original_node.attributes
+			and node.original_node.attributes.get('type') == 'file'
+		)
+		if is_interactive and (is_visible or is_file_input):
 			elements.append(node)
 
 		for child in node.children:
