@@ -187,7 +187,11 @@ async def kill(session: BrowserSession) -> None:
 	save_event = session.event_bus.dispatch(SaveStorageStateEvent())
 	await save_event
 	await session.event_bus.dispatch(BrowserStopEvent(force=True))
-	if local_watchdog and getattr(local_watchdog, '_subprocess', None) is not None and getattr(local_watchdog, '_owns_browser_resources', True):
+	if (
+		local_watchdog
+		and getattr(local_watchdog, '_subprocess', None) is not None
+		and getattr(local_watchdog, '_owns_browser_resources', True)
+	):
 		await local_watchdog.on_BrowserKillEvent(BrowserKillEvent())
 	await session.event_bus.stop(clear=True, timeout=5)
 	await reset(session)
@@ -203,7 +207,11 @@ async def stop(session: BrowserSession) -> None:
 	save_event = session.event_bus.dispatch(SaveStorageStateEvent())
 	await save_event
 	await session.event_bus.dispatch(BrowserStopEvent(force=False))
-	if local_watchdog and getattr(local_watchdog, '_subprocess', None) is not None and getattr(local_watchdog, '_owns_browser_resources', True):
+	if (
+		local_watchdog
+		and getattr(local_watchdog, '_subprocess', None) is not None
+		and getattr(local_watchdog, '_owns_browser_resources', True)
+	):
 		await local_watchdog.on_BrowserKillEvent(BrowserKillEvent())
 	await session.event_bus.stop(clear=True, timeout=5)
 	await reset(session)
