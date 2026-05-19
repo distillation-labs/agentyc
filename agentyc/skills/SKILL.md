@@ -1,4 +1,4 @@
-# agentyc MCP — Skills Guide
+# agentyc MCP - Skills Guide
 
 `agentyc init` writes this guide to `agentyc-skill.md` so your coding agent can use the MCP server effectively.
 
@@ -8,7 +8,7 @@ agentyc exposes a Chrome browser as deterministic MCP tools. The goal is not "br
 
 ## Core Mental Model
 
-Every interaction follows a **read → ref → act** loop:
+Every interaction follows a **read -> ref -> act** loop:
 
 1. Call `browser_get_state` to get interactive elements and stable refs like `e123`.
 2. Act by `ref` whenever possible.
@@ -43,15 +43,22 @@ Use this order instead of jumping straight to screenshots or brittle selectors:
 5. `browser_get_html(selector="...")` or `browser_evaluate(...)` only for a specific DOM question
 6. `browser_screenshot()` only when you truly need visual confirmation
 
-After `browser_hover`, `browser_press_key("Tab")`, or any other action that changes focus/visibility, re-read state. Do not keep using the old element list blindly.
+After `browser_hover`, `browser_press_key("Tab")`, or any other action that changes focus or visibility, re-read state. Do not keep using the old element list blindly.
 
-When working with a human in the loop, narrate intent before a likely pause:
+---
 
-- `Opening the release page and checking publish state.`
-- `Waiting for validation to finish.`
-- `Looking for the Documentation link.`
+## Handle Errors As Control Flow
 
-Keep these status lines short and concrete. They are progress narration, not chain-of-thought.
+If a tool call returns MCP `isError=true` or text like `Error [stale_ref]: ...`, **branch immediately** instead of retrying the same call blindly.
+
+Common recoveries:
+
+- `stale_ref` -> call `browser_get_state(...)` again and resolve a fresh `ref`
+- element missing in `min` mode -> escalate to `full`, then `browser_find_elements(...)`
+- blocked or modal-like failure -> dismiss the dialog or modal, then re-read state
+- post-tab-close confusion -> call `browser_list_tabs()` or `browser_get_state(mode="min")` to confirm the surviving active tab before the next action
+
+Use the hint in the error payload. It is there to tell you the next safe move.
 
 ---
 
@@ -62,18 +69,18 @@ Keep these status lines short and concrete. They are progress narration, not cha
 ```python
 state = browser_get_state(mode="min")
 browser_navigate(url="https://example.com")
-browser_get_state(mode="min")          # → captures refs, state_hash with a lighter payload
-browser_click(ref="e42")     # submit button
-browser_get_state(since_hash="<state_hash>")  # → only changed elements
+state = browser_get_state(mode="min")
+browser_click(ref="e42")
+browser_get_state(mode="min", since_hash=state["state_hash"])
 ```
 
 Use `since_hash` after the action when the next step depends on a state change.
 
 ### Type into a field
 
-```
-browser_get_state(mode="min")          # find the input's ref
-browser_click(ref="e17")     # focus it
+```python
+state = browser_get_state(mode="min")
+browser_click(ref="e17")
 browser_type(text="hello", ref="e17")
 ```
 
@@ -104,23 +111,38 @@ browser_upload_file(path="/absolute/path/report.pdf", ref="e5")
 browser_wait_for_element(text="report.pdf")
 ```
 
-`browser_upload_file` requires a file input `ref` or `index`. If the input is hard to spot, use `mode="full"` or `browser_find_elements("input[type=file]")`.
+`browser_upload_file` requires a file input `ref` or `index`. If the input is hard to spot, use `mode="full"` or `browser_find_elements(selector="input[type=file]")`.
 
 ### Wait for dynamic content
 
-Prefer `since_hash` polling over fixed sleeps:
+Prefer `since_hash` polling over fixed sleeps when you only need to know whether **anything** changed:
 
-```
+```python
 state = browser_get_state(mode="min")
-# … trigger an action …
-browser_get_state(since_hash=state["state_hash"])
+# ... trigger an action ...
+browser_get_state(mode="min", since_hash=state["state_hash"])
 ```
 
 Use:
 
 - `browser_wait_for_network_idle()` after navigation or XHR-heavy actions
-- `browser_wait_for_element(text="Success")` when you know the success text or control
+- `browser_wait_for_element(text="Success")` when you know the exact success text or control
 - `browser_wait(seconds=1)` only as a last resort
+
+`browser_wait_for_element(text="...")` matches **visible page text**, not just interactive controls. Use it for:
+
+- toast banners
+- upload status text and filenames
+- validation messages
+- non-interactive success or error copy
+
+Examples:
+
+```python
+browser_upload_file(path="/absolute/path/report.pdf", ref="e5")
+browser_wait_for_element(text="report.pdf")
+browser_wait_for_element(text="Uploading...", appear=False)
+```
 
 ### Extract structured data
 
@@ -128,7 +150,7 @@ Use `browser_extract_content` for deterministic extraction:
 
 ```python
 browser_extract_content(query="all product names and prices")
-browser_extract_content(query="navigation links", extract_links=true)
+browser_extract_content(query="navigation links", extract_links=True)
 browser_extract_content(
     query="user table",
     output_schema={
@@ -137,10 +159,10 @@ browser_extract_content(
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "email": {"type": "string"}
-            }
-        }
-    }
+                "email": {"type": "string"},
+            },
+        },
+    },
 )
 ```
 
@@ -157,13 +179,13 @@ Use this when:
 
 - `mode="min"` omitted an element you know exists
 - you need a CSS-selector-based audit
-- you want accessible/form labels surfaced for controls with little or no visible text
+- you want accessible or form labels surfaced for controls with little or no visible text
 
 ### Work with multiple tabs
 
 ```python
-browser_new_tab()                          # create tab and switch into it
-browser_new_tab(url="https://example.com") # create tab, navigate, and switch
+browser_new_tab()
+browser_new_tab(url="https://example.com")
 browser_list_tabs()
 browser_switch_tab(tab_id="t2")
 browser_close_tab(tab_id="t2")
@@ -174,10 +196,49 @@ Use `browser_new_tab` when you want to **work in that tab immediately**.
 Use:
 
 ```python
-browser_navigate(url="https://example.com", new_tab=true)
+browser_navigate(url="https://example.com", new_tab=True)
 ```
 
 when you want to open a page in the background without switching away.
+
+Typical detail-tab workflow:
+
+```python
+browser_click(ref="e21")
+tabs = browser_list_tabs()
+browser_switch_tab(tab_id="t2")
+browser_get_state(mode="min")
+```
+
+After closing the active detail tab, do not assume the old refs are still safe:
+
+```python
+browser_close_tab(tab_id="t2")
+browser_get_state(mode="min")
+```
+
+Treat the post-close state as a fresh surface and resolve refs again before acting.
+
+### Work on long docs and search-heavy pages
+
+Use the page search and text tools together instead of brute-force scrolling:
+
+```python
+state = browser_get_state(mode="min")
+browser_type(text="webhook retries", ref="e1")
+browser_wait_for_element(text="Webhook retries")
+browser_scroll_to_text(text="Webhook retries")
+browser_get_state(mode="min")
+```
+
+Good defaults:
+
+- use `browser_search_page(pattern="...")` when you need a quick text hit
+- use `browser_scroll_to_text(text="...")` when you want the viewport moved to a known section
+- use `browser_find_elements(...)` if the page is long and you know the DOM pattern better than the visible text
+- re-read state after deep scroll before acting
+
+High-value global controls like search inputs are supposed to stay discoverable in compact state, but still escalate to `full` or `browser_find_elements(...)` if `min` omitted the one control you need.
 
 ### Persist and restore authentication
 
@@ -195,7 +256,7 @@ This persists cookies, localStorage, and sessionStorage so the agent can skip re
 browser_get_console_logs(level="error")
 browser_get_network_log(status_filter="errors")
 browser_get_network_log(type_filter="XHR")
-browser_get_network_log(include_headers=true)
+browser_get_network_log(include_headers=True)
 browser_get_focused_element()
 ```
 
@@ -209,20 +270,15 @@ If an action "did nothing," check console errors first, then network errors, the
 
 | Mode | What you get |
 |------|-------------|
-| `auto` (default) | Smart mix of full/compact based on page complexity |
+| `auto` (default) | Smart mix of full or compact based on page complexity |
 | `full` | All interactive elements, no truncation |
 | `min` | Compact ranked subset of interactive elements |
 | `focus` | Single referenced element from `focus_ref` |
 
 `browser_get_state` returns a `state_hash`. Pass it back as `since_hash`:
 
-Default preference order for agents:
-
-1. `mode="min"` for routine reads
-2. `mode="focus"` when you already have a ref and only need one element
-3. `mode="full"` only when `min` omitted something you actually need
-
----
+- `changed: false` -> state is identical; no need to re-process the page
+- `changed: true` -> state changed; use the new refs and new `state_hash`
 
 Polling pattern:
 
@@ -263,10 +319,11 @@ browser_navigate(url="https://example.com")
 
 Coordination rules:
 
-- Each agent should work from its own tab
-- Use `browser_list_tabs` to inspect the shared browser surface
-- Do not call `browser_close_all` in a shared-browser session
-- Default shared-browser focus policy preserves the human's focus
+- each agent should work from its own tab
+- use `browser_list_tabs` to inspect the shared browser surface
+- use display titles, URLs, and runtime metadata to confirm you are in the right tab before acting
+- do not call `browser_close_all` in a shared-browser session
+- default shared-browser focus policy preserves the human's focus
 
 ---
 
@@ -293,11 +350,15 @@ Wrap the code in an IIFE when returning a value. Keep the script focused and nar
 
 **Do not treat `browser_get_dropdown_options` as JSON.** It is a human-readable options list.
 
-**Don't default to `browser_get_state(mode="full")`.** Start with `mode="min"` and escalate to `full` only when necessary.
+**Do not use screenshots for structured extraction.** Use `browser_extract_content`.
 
-**Don't go silent before a long operation.** Add a brief status line like `Waiting for upload to finish.` so humans do not mistake agent reasoning for browser slowness.
+**Do not guess with long sleeps.** Use `since_hash`, `browser_wait_for_element`, or `browser_wait_for_network_idle`.
 
-**Don't ignore console errors.** If an action silently fails, `browser_get_console_logs(level="error")` almost always shows why.
+**Do not use `browser_navigate(new_tab=True)` when you need to act in the new tab immediately.** Use `browser_new_tab`.
+
+**Do not keep acting after an MCP tool error.** Read the error code and hint, then recover with fresh state or tabs.
+
+**Do not ignore console and network errors.** They are the fastest way to explain silent failures.
 
 ---
 
@@ -305,18 +366,18 @@ Wrap the code in an IIFE when returning a value. Keep the script focused and nar
 
 ```python
 # Read
-browser_get_state()                          # auto mode
-browser_get_state(mode="min")               # preferred default for lightweight reads
-browser_get_state(since_hash="…")           # delta — changed=true/false
-browser_get_state(mode="focus", focus_ref="e42")  # only the referenced element
-browser_get_state(mode="full")              # full tree when min/focus is insufficient
-browser_screenshot()
+browser_get_state()
+browser_get_state(mode="min")
+browser_get_state(mode="full")
+browser_get_state(mode="focus", focus_ref="e42")
+browser_get_state(mode="min", since_hash="...")
+browser_get_focused_element()
 browser_get_html()
 browser_screenshot()
 
 # Navigate and tabs
 browser_navigate(url="...")
-browser_navigate(url="...", new_tab=true)
+browser_navigate(url="...", new_tab=True)
 browser_new_tab()
 browser_new_tab(url="...")
 browser_go_back()
@@ -332,20 +393,22 @@ browser_hover(ref="e42")
 browser_type(text="...", ref="e17")
 browser_press_key(key="Enter")
 browser_scroll(direction="down", pages=2)
+browser_scroll_to_text(text="Webhook retries")
 browser_select_option(text="...", ref="e8")
 browser_get_dropdown_options(ref="e8")
 browser_upload_file(path="/absolute/path/file.pdf", ref="e5")
 
 # Extract and inspect
 browser_extract_content(query="...")
-browser_extract_content(query="...", extract_links=true)
+browser_extract_content(query="...", extract_links=True)
 browser_extract_content(query="...", output_schema={...})
 browser_find_elements(selector=".row")
-browser_search_page(pattern="Error", regex=true)
+browser_search_page(pattern="Error", regex=True)
 
 # Wait and debug
 browser_wait_for_network_idle()
 browser_wait_for_element(text="Success")
+browser_wait_for_element(text="Saving...", appear=False)
 browser_wait(seconds=1)
 browser_get_console_logs(level="error")
 browser_get_network_log(status_filter="errors")
