@@ -15,7 +15,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 # Configure logging for MCP mode - redirect to stderr but preserve critical diagnostics
 logging.basicConfig(
@@ -91,6 +91,8 @@ from agentyc.mcp.action_runtime import (
 	_go_forward,
 	_inject_extraction_metadata,
 	_navigate,
+	_new_tab_postcondition_satisfied,
+	_page_contains_visible_text,
 	_press_key,
 	_refresh,
 	_refresh_selector_map,
@@ -266,12 +268,14 @@ class AgentycServer:
 		self._telemetry = ProductTelemetry()
 		self._start_time = time.time()
 		self._cdp_url = cdp_url  # shared-browser CDP URL for parallel tab mode
+		self._explicit_cdp_url = cdp_url is not None
 		self._runtime_label = runtime_label
 		self._runtime_role = runtime_role
 		self._parent_runtime_id = parent_runtime_id
 		self._shared_browser_mode = shared_browser_mode
 		self._shared_browser_window_bounds = shared_browser_window_bounds
 		self._shared_browser_focus_policy = shared_browser_focus_policy
+		self._reuse_local_browser = True
 
 		# Session management
 		self.active_sessions: dict[str, dict[str, Any]] = {}  # session_id -> session info
@@ -310,19 +314,46 @@ class AgentycServer:
 			return []
 
 		@self.server.call_tool()
-		async def handle_call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.TextContent | types.ImageContent]:
+		async def handle_call_tool(name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
 			"""Handle tool execution."""
 			start_time = time.time()
 			error_msg = None
 			try:
 				result = await self._execute_tool(name, arguments or {})
 				if isinstance(result, list):
-					return result
-				return [types.TextContent(type='text', text=result)]
+					content = self._attach_tool_result_metadata(
+						name=name,
+						arguments=arguments or {},
+						content=result,
+						started_at=start_time,
+						is_error=self._tool_output_is_error(result),
+					)
+					return types.CallToolResult(
+						content=cast(list[types.ContentBlock], content),
+						isError=self._tool_output_is_error(content),
+					)
+				content = self._attach_tool_result_metadata(
+					name=name,
+					arguments=arguments or {},
+					content=[types.TextContent(type='text', text=result)],
+					started_at=start_time,
+					is_error=self._tool_text_is_error(result),
+				)
+				return types.CallToolResult(
+					content=cast(list[types.ContentBlock], content),
+					isError=self._tool_output_is_error(content),
+				)
 			except Exception as e:
 				error_msg = str(e)
 				logger.error(f'Tool execution failed: {e}', exc_info=True)
-				return [types.TextContent(type='text', text=f'Error: {str(e)}')]
+				content = self._attach_tool_result_metadata(
+					name=name,
+					arguments=arguments or {},
+					content=[types.TextContent(type='text', text=f'Error: {str(e)}')],
+					started_at=start_time,
+					is_error=True,
+				)
+				return types.CallToolResult(content=cast(list[types.ContentBlock], content), isError=True)
 			finally:
 				# Capture telemetry for tool calls
 				duration = time.time() - start_time
@@ -369,6 +400,84 @@ class AgentycServer:
 		finally:
 			await self._shutdown()
 
+	def _tool_phase_message(self, tool_name: str, arguments: dict[str, Any]) -> str:
+		if tool_name == 'browser_navigate':
+			return f'Navigating to {arguments.get("url", "page")}'
+		if tool_name == 'browser_get_state':
+			mode = arguments.get('mode', 'auto')
+			if arguments.get('since_hash'):
+				return f'Checking page state delta ({mode})'
+			return f'Reading page state ({mode})'
+		if tool_name == 'browser_click':
+			if arguments.get('new_tab'):
+				return 'Opening link in new tab'
+			return 'Clicking page element'
+		if tool_name == 'browser_type':
+			return 'Typing into focused field'
+		if tool_name == 'browser_wait_for_element':
+			return 'Waiting for page element to change'
+		if tool_name == 'browser_wait_for_network_idle':
+			return 'Waiting for network to go idle'
+		if tool_name == 'browser_screenshot':
+			return 'Capturing screenshot'
+		if tool_name == 'browser_extract_content':
+			return 'Extracting structured page content'
+		if tool_name == 'browser_switch_tab':
+			return 'Switching browser tab'
+		if tool_name == 'browser_close_tab':
+			return 'Closing browser tab'
+		return f'Running {tool_name}'
+
+	def _tool_text_is_error(self, text: str) -> bool:
+		return text.startswith('Error:') or text.startswith('Error [')
+
+	def _tool_output_is_error(self, content: list[types.TextContent | types.ImageContent]) -> bool:
+		for item in content:
+			if isinstance(item, types.TextContent) and item.text:
+				return self._tool_text_is_error(item.text)
+		return False
+
+	def _attach_tool_result_metadata(
+		self,
+		*,
+		name: str,
+		arguments: dict[str, Any],
+		content: list[types.TextContent | types.ImageContent],
+		started_at: float,
+		is_error: bool,
+	) -> list[types.TextContent | types.ImageContent]:
+		duration_ms = round((time.time() - started_at) * 1000, 1)
+		phase_message = self._tool_phase_message(name, arguments)
+		metadata = {
+			'agentyc/tool_name': name,
+			'agentyc/tool_phase': phase_message,
+			'agentyc/browser_duration_ms': duration_ms,
+			'agentyc/is_error': is_error,
+		}
+		updated_content: list[types.TextContent | types.ImageContent] = []
+		attached = False
+		for item in content:
+			if not attached and isinstance(item, types.TextContent):
+				merged_meta = dict(getattr(item, 'meta', None) or {})
+				merged_meta.update(metadata)
+				updated_content.append(
+					types.TextContent(
+						type='text',
+						text=item.text,
+						annotations=item.annotations,
+						_meta=merged_meta,
+					)
+				)
+				attached = True
+			else:
+				updated_content.append(item)
+		if not attached:
+			updated_content.insert(
+				0,
+				types.TextContent(type='text', text='', _meta=metadata),
+			)
+		return updated_content
+
 
 _SERVER_METHODS: dict[str, Any] = {
 	'_execute_tool': _execute_tool,
@@ -379,6 +488,7 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_resolve_element_index': _resolve_element_index,
 	'_cache_state_payload': _cache_state_payload,
 	'_refresh_selector_map': _refresh_selector_map,
+	'_page_contains_visible_text': _page_contains_visible_text,
 	'_resolve_live_element': _resolve_live_element,
 	'_resolve_upload_available_file_paths': _resolve_upload_available_file_paths,
 	'_validate_actionable_element': _validate_actionable_element,
@@ -386,6 +496,7 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_format_action_error': _format_action_error,
 	'_run_tool_action': _run_tool_action,
 	'_inject_extraction_metadata': _inject_extraction_metadata,
+	'_new_tab_postcondition_satisfied': _new_tab_postcondition_satisfied,
 	'_navigate': _navigate,
 	'_click': _click,
 	'_type_text': _type_text,
