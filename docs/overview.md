@@ -61,6 +61,7 @@ agentyc supports attaching multiple MCP server processes to the same Chrome inst
 
 ## Docs Index
 
+- [README](../README.md) — primary entry point with comparison table, benchmarks, and 41-tool inventory
 - [Features](./features.md)
 - [Architecture](./architecture.md)
 - [API Reference](./api.md)
