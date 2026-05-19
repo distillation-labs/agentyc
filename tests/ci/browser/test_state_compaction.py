@@ -43,7 +43,6 @@ async def test_min_mode_keeps_search_input_after_deep_scroll(httpserver: HTTPSer
 	payload = build_browser_state_payload(state, mode='min')
 
 	assert any(
-		element.get('text') == 'Search documentation'
-		and element.get('tag') == 'input'
+		element.get('text') == 'Search documentation' and element.get('tag') == 'input'
 		for element in payload['interactive_elements']
 	)
