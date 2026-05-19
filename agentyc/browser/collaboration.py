@@ -42,13 +42,43 @@ def build_runtime_marker_script(
 	(function() {{
 		const payload = {payload_json};
 		const runtime = payload.runtime;
+		const STATE_KEY = '__agentycCollaboration';
+		const OBSERVER_KEY = '__agentycCollaborationObserver';
+		const TITLE_PATCH_KEY = '__agentycCollaborationTitlePatched';
+		const TITLE_VALUE_KEY = '__agentycCollaborationDesiredTitle';
 
 		function stripPrefix(title) {{
 			return String(title || '').replace(/^\[[^\]]{{1,64}}\]\s*/, '');
 		}}
 
+		function titleFallback() {{
+			const href = String(document.location.href || '');
+			if (
+				href === 'about:blank' ||
+				href.startsWith('chrome://') ||
+				href.startsWith('chrome-error://') ||
+				href.startsWith('devtools://') ||
+				href.startsWith('edge://')
+			) {{
+				return href;
+			}}
+			return '';
+		}}
+
+		function getRawTitle() {{
+			const rawTitle = stripPrefix(document.title || '').trim();
+			return rawTitle || titleFallback();
+		}}
+
+		function getDesiredTitle() {{
+			if (!payload.includeTitlePrefix) {{
+				return getRawTitle().trim();
+			}}
+			return `${{runtime.title_prefix}}${{getRawTitle()}}`.trim();
+		}}
+
 		function ensureState() {{
-			window.__agentycCollaboration = {{
+			window[STATE_KEY] = {{
 				runtime,
 				targetId: payload.targetId,
 				version: 1,
@@ -56,24 +86,53 @@ def build_runtime_marker_script(
 		}}
 
 		function applyTitlePrefix() {{
-			if (!payload.includeTitlePrefix) return;
 			try {{
-				const rawTitle = stripPrefix(document.title || document.location.href || '');
-				const desiredTitle = `${{runtime.title_prefix}}${{rawTitle}}`.trim();
+				const desiredTitle = getDesiredTitle();
+				window[TITLE_VALUE_KEY] = desiredTitle;
 				if (document.title !== desiredTitle) {{
 					document.title = desiredTitle;
 				}}
 			}} catch (_error) {{}}
 		}}
 
+		function patchDocumentTitleSetter() {{
+			if (window[TITLE_PATCH_KEY]) return;
+			let proto = document;
+			let descriptor = null;
+			while (proto && !descriptor) {{
+				descriptor = Object.getOwnPropertyDescriptor(proto, 'title');
+				proto = Object.getPrototypeOf(proto);
+			}}
+			if (!descriptor || typeof descriptor.get !== 'function' || typeof descriptor.set !== 'function') return;
+			Object.defineProperty(document, 'title', {{
+				configurable: true,
+				enumerable: descriptor.enumerable ?? true,
+				get() {{
+					return descriptor.get.call(document);
+				}},
+				set(value) {{
+					const rawValue = stripPrefix(value || '').trim() || titleFallback();
+					const nextValue = payload.includeTitlePrefix
+						? `${{runtime.title_prefix}}${{rawValue}}`.trim()
+						: rawValue.trim();
+					window[TITLE_VALUE_KEY] = nextValue;
+					descriptor.set.call(document, nextValue);
+				}},
+			}});
+			window[TITLE_PATCH_KEY] = true;
+		}}
+
 		ensureState();
+		patchDocumentTitleSetter();
 		applyTitlePrefix();
 
-		if (!window.__agentycCollaborationObserver) {{
-			window.__agentycCollaborationObserver = true;
+		if (!window[OBSERVER_KEY]) {{
+			window[OBSERVER_KEY] = true;
 			const observer = new MutationObserver(() => applyTitlePrefix());
 			observer.observe(document.documentElement, {{ childList: true, subtree: true }});
 			window.addEventListener('pageshow', applyTitlePrefix);
+			window.addEventListener('focus', applyTitlePrefix);
+			document.addEventListener('readystatechange', applyTitlePrefix);
 		}}
 	}})();
 	"""
