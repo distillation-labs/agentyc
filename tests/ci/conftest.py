@@ -61,6 +61,12 @@ def _track_chrome_pids(monkeypatch_session):
 	_kill_tracked_pids()
 
 
+@pytest.fixture(autouse=True)
+def _disable_local_browser_reuse_by_default(monkeypatch):
+	"""Keep CI tests isolated unless a test explicitly opts into shared local-browser reuse."""
+	monkeypatch.setenv('AGENTYC_REUSE_LOCAL_BROWSER', '0')
+
+
 @pytest.fixture(scope='session')
 def monkeypatch_session():
 	"""Session-scoped monkeypatch fixture (pytest only ships function-scoped by default)."""
