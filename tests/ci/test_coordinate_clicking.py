@@ -4,8 +4,14 @@ This feature allows certain models (Claude Sonnet 4, Claude Opus 4, Gemini 3 Pro
 to use coordinate-based clicking, while other models only get index-based clicking.
 """
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
 import pytest
 
+from agentyc.actions import ActionResult
+from agentyc.browser.events import SwitchTabEvent
+from agentyc.dom.views import NodeType
 from agentyc.tools.service import Tools
 from agentyc.tools.views import ClickElementAction, ClickElementActionIndexOnly
 
@@ -181,3 +187,125 @@ class TestCoordinateClickingWithPassedTools:
 		click_action = tools.registry.registry.actions.get('click')
 		assert click_action is not None
 		assert click_action.param_model == ClickElementAction
+
+
+class TestClickNewTabDetection:
+	@pytest.mark.asyncio
+	async def test_same_tab_click_skips_tab_enumeration(self):
+		tools = Tools()
+		node = _FakeNode(7, 'Approve deployment', tag='button', attrs={'aria-label': 'Approve deployment'})
+		browser_session = SimpleNamespace(
+			get_element_by_index=AsyncMock(return_value=node),
+			get_tabs=AsyncMock(side_effect=AssertionError('same-tab clicks should not enumerate tabs')),
+			highlight_interaction_element=AsyncMock(),
+			event_bus=SimpleNamespace(dispatch=Mock()),
+			session_manager=SimpleNamespace(get_all_page_targets=lambda: [SimpleNamespace(target_id='target-existing')]),
+			cdp_client=Mock(),
+			agent_focus_target_id='target-existing',
+		)
+		event = _CompletedEvent({'click_x': 10, 'click_y': 20})
+		browser_session.event_bus.dispatch.return_value = event
+
+		result = await tools.click(index=7, browser_session=browser_session)
+
+		assert isinstance(result, ActionResult)
+		assert result.error is None
+		assert result.extracted_content == 'Clicked button "Approve deployment" aria-label=Approve deployment'
+		browser_session.get_tabs.assert_not_awaited()
+		browser_session.event_bus.dispatch.assert_called_once()
+
+	@pytest.mark.asyncio
+	async def test_link_click_detects_new_tab_without_get_tabs(self):
+		tools = Tools()
+		node = _FakeNode(4, 'Open docs', tag='a', attrs={'href': 'https://example.com/docs', 'aria-label': 'Open docs'})
+		page_targets = [SimpleNamespace(target_id='target-existing')]
+
+		def get_all_page_targets():
+			return list(page_targets)
+
+		switch_event = _CompletedEvent('switched')
+		click_event = _CompletedAsyncEvent(_append_new_target_and_return(page_targets, 'target-new'))
+
+		def dispatch(event):
+			if isinstance(event, SwitchTabEvent):
+				return switch_event
+			return click_event
+
+		browser_session = SimpleNamespace(
+			get_element_by_index=AsyncMock(return_value=node),
+			get_tabs=AsyncMock(side_effect=AssertionError('link clicks should use target snapshots, not get_tabs')),
+			highlight_interaction_element=AsyncMock(),
+			event_bus=SimpleNamespace(dispatch=Mock(side_effect=dispatch)),
+			session_manager=SimpleNamespace(get_all_page_targets=get_all_page_targets),
+			cdp_client=Mock(),
+			agent_focus_target_id='target-existing',
+		)
+
+		result = await tools.click(index=4, browser_session=browser_session)
+
+		assert isinstance(result, ActionResult)
+		assert result.error is None
+		assert result.extracted_content.endswith('. Automatically switched to new tab (tab_id: -new).')
+		browser_session.get_tabs.assert_not_awaited()
+
+
+def _append_new_target_and_return(page_targets: list[SimpleNamespace], target_id: str):
+	async def _side_effect(*_args, **_kwargs):
+		page_targets.append(SimpleNamespace(target_id=target_id))
+		return {'click_x': 1, 'click_y': 1}
+
+	return _side_effect
+
+
+class _CompletedEvent:
+	def __init__(self, result=None):
+		self.result = result
+
+	def __await__(self):
+		async def _noop():
+			return None
+
+		return _noop().__await__()
+
+	async def event_result(self, *args, **kwargs):
+		return self.result
+
+
+class _CompletedAsyncEvent:
+	def __init__(self, result_factory):
+		self.result_factory = result_factory
+
+	def __await__(self):
+		async def _noop():
+			return None
+
+		return _noop().__await__()
+
+	async def event_result(self, *args, **kwargs):
+		return await self.result_factory(*args, **kwargs)
+
+
+class _FakeNode:
+	def __init__(self, backend_node_id: int, text: str, *, tag: str, attrs: dict[str, str] | None = None):
+		self.node_id = backend_node_id
+		self.backend_node_id = backend_node_id
+		self.session_id = 'test-session'
+		self.frame_id = None
+		self.target_id = 'target-existing'
+		self.node_type = NodeType.ELEMENT_NODE
+		self.node_name = tag.upper()
+		self.node_value = ''
+		self.tag_name = tag
+		self.attributes = attrs or {}
+		self.is_scrollable = False
+		self.is_visible = True
+		self.absolute_position = None
+		self.ax_node = None
+		self.snapshot_node = None
+		self.parent_node = None
+		self.children = []
+		self.children_nodes = []
+		self._text = text
+
+	def get_all_children_text(self, max_depth: int | None = None) -> str:
+		return self._text
