@@ -24,3 +24,10 @@ uv sync --dev
 - Keep MCP tool contracts deterministic and minimal.
 - Reuse existing browser/session primitives instead of adding parallel abstractions.
 - When changing browser behavior, preserve direct inspectability through state, HTML, screenshots, and explicit errors.
+
+## Docs maintenance
+
+- README.md is the primary public surface. Keep the comparison table (vs browser-use, Playwright MCP), tool inventory, and benchmark table in sync with the actual tool surface and release-gate thresholds.
+- Overview + Features + API Reference under docs/ should stay accurate but can defer detail to README.
+- When adding a new MCP tool: update README tool tables, docs/features.md, and docs/api.md in the same commit.
+- When release-gate thresholds change: update README benchmarks table.
