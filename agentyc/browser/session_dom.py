@@ -366,6 +366,7 @@ async def highlight_interaction_element(session: BrowserSession, node: EnhancedD
 			const rect = {json.dumps({'x': rect.x, 'y': rect.y, 'width': rect.width, 'height': rect.height})};
 			const color = {json.dumps(color)};
 			const duration = {duration_ms};
+			const shadowColor = color.replace('rgb(', 'rgba(').replace(')', ', 0.18)');
 
 			// Scale corner size based on element dimensions to ensure gaps between corners
 			const maxCornerSize = 20;
@@ -393,7 +394,23 @@ async def highlight_interaction_element(session: BrowserSession, node: EnhancedD
 				height: ${{rect.height}}px;
 				pointer-events: none;
 				z-index: 2147483647;
+				filter: drop-shadow(0 4px 10px ${{shadowColor}});
 			`;
+
+			const focusRing = document.createElement('div');
+			focusRing.style.cssText = `
+				position: absolute;
+				left: 0;
+				top: 0;
+				width: 100%;
+				height: 100%;
+				border-radius: 10px;
+				background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0));
+				box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
+				opacity: 0;
+				transition: opacity 0.15s ease-out;
+			`;
+			container.appendChild(focusRing);
 
 			// Create 4 corner brackets
 			const corners = [
@@ -445,6 +462,7 @@ async def highlight_interaction_element(session: BrowserSession, node: EnhancedD
 				// Animate to final position slightly outside the element
 				setTimeout(() => {{
 					bracket.style.transform = `translate(${{corner.finalX}}px, ${{corner.finalY}}px)`;
+					focusRing.style.opacity = '1';
 				}}, 10);
 			}});
 
@@ -452,6 +470,7 @@ async def highlight_interaction_element(session: BrowserSession, node: EnhancedD
 
 			// Auto-remove after duration
 			setTimeout(() => {{
+				focusRing.style.opacity = '0';
 				container.style.opacity = '0';
 				container.style.transition = 'opacity 0.3s ease-out';
 				setTimeout(() => container.remove(), 300);
@@ -486,6 +505,7 @@ async def highlight_coordinate_click(session: BrowserSession, x: int, y: int) ->
 			const y = {y};
 			const color = {json.dumps(color)};
 			const duration = {duration_ms};
+			const glowColor = color.replace('rgb(', 'rgba(').replace(')', ', 0.25)');
 
 			// Get current scroll position
 			const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
@@ -508,15 +528,16 @@ async def highlight_coordinate_click(session: BrowserSession, x: int, y: int) ->
 			const outerCircle = document.createElement('div');
 			outerCircle.style.cssText = `
 				position: absolute;
-				left: -15px;
-				top: -15px;
-				width: 30px;
-				height: 30px;
+				left: -18px;
+				top: -18px;
+				width: 36px;
+				height: 36px;
 				border: 3px solid ${{color}};
 				border-radius: 50%;
 				opacity: 0;
 				transform: scale(0.3);
 				transition: all 0.2s ease-out;
+				box-shadow: 0 0 0 6px ${{glowColor}};
 			`;
 			container.appendChild(outerCircle);
 
@@ -524,15 +545,16 @@ async def highlight_coordinate_click(session: BrowserSession, x: int, y: int) ->
 			const centerDot = document.createElement('div');
 			centerDot.style.cssText = `
 				position: absolute;
-				left: -4px;
-				top: -4px;
-				width: 8px;
-				height: 8px;
+				left: -5px;
+				top: -5px;
+				width: 10px;
+				height: 10px;
 				background: ${{color}};
 				border-radius: 50%;
 				opacity: 0;
 				transform: scale(0);
 				transition: all 0.15s ease-out;
+				box-shadow: 0 0 0 2px rgba(255,255,255,0.85);
 			`;
 			container.appendChild(centerDot);
 
