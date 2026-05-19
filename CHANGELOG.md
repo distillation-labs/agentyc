@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.11] - 2026-05-19
+
+### Added
+
+- **`browser_save_as_pdf`** — Save the current page as a PDF file via CDP `Page.printToPDF`. Supports custom filename, paper format (Letter/A4/A3/Legal/Tabloid), landscape, scale, and background graphics.
+- **`browser_get_downloads`** — List files downloaded during the current browser session (path, name, size).
+- **`browser_set_viewport`** — Dynamically set browser viewport width, height, and device scale factor.
+- **`browser_wait_for_stable_dom`** — Wait until DOM mutations settle for a configurable quiet period using a `MutationObserver` — more reliable than fixed waits after SPA transitions or AJAX calls.
+- **`browser_handle_dialog`** — Accept or dismiss JavaScript dialogs (alert, confirm, prompt, beforeunload) that would otherwise block agent interaction.
+- **`browser_get_attribute`** — Get a specific attribute value from an element by ref or index (e.g. `href`, `src`, `value`, `disabled`).
+- **`browser_clear_logs`** — Clear console and/or network log buffers to free memory during long sessions.
+- **`browser_start_trace`** / **`browser_stop_trace`** — Start and stop CDP performance traces for diagnosing page performance issues; collected trace events returned as JSON.
+
+### Changed
+
+- **Tool surface expanded from 41 to 50** — 9 new MCP tools covering PDF export, file download tracking, viewport control, DOM stability waits, dialog handling, attribute extraction, log buffer management, and CDP performance tracing.
+- **CDP Tracing listener auto-registered** — `_register_cdp_event_listeners` now wires `Tracing.dataCollected` so trace events accumulate in the in-memory buffer.
+
+### Tests
+
+- **New test fixtures** added in `tests/ci/browser/test_new_mcp_tools.py` covering all 9 new tools.
+- **Autonomous agent workflow tests** in `tests/ci/browser/test_autonomous_agent_workflows.py`.
+
 ## [0.2.10] - 2026-05-18
 
 ### Fixed
