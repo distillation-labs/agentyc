@@ -3,6 +3,30 @@ from agentyc.dom.views import EnhancedDOMTreeNode, NodeType
 
 class ClickableElementDetector:
 	@staticmethod
+	def is_search_entry_control(node: EnhancedDOMTreeNode) -> bool:
+		if node.node_type != NodeType.ELEMENT_NODE:
+			return False
+		tag_name = (node.tag_name or '').lower()
+		if tag_name not in {'input', 'textarea'}:
+			return False
+		attributes = node.attributes or {}
+		input_type = attributes.get('type', '').lower()
+		role = attributes.get('role', '').lower()
+		ax_role = node.ax_node.role.lower() if node.ax_node and node.ax_node.role else ''
+		search_like_text = ' '.join(
+			str(candidate).lower()
+			for candidate in (
+				attributes.get('aria-label'),
+				attributes.get('placeholder'),
+				attributes.get('name'),
+				attributes.get('id'),
+				attributes.get('class'),
+			)
+			if candidate
+		)
+		return input_type == 'search' or role == 'searchbox' or ax_role == 'searchbox' or 'search' in search_like_text
+
+	@staticmethod
 	def is_interactive(node: EnhancedDOMTreeNode) -> bool:
 		"""Check if this node is clickable/interactive using enhanced scoring."""
 
