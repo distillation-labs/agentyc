@@ -10,9 +10,6 @@ from agentyc.browser.events import (
 	AboutBlankDVDScreensaverShownEvent,
 	BrowserStopEvent,
 	BrowserStoppedEvent,
-	CloseTabEvent,
-	NavigateToUrlEvent,
-	TabClosedEvent,
 	TabCreatedEvent,
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
@@ -29,11 +26,8 @@ class AboutBlankWatchdog(BaseWatchdog):
 		BrowserStopEvent,
 		BrowserStoppedEvent,
 		TabCreatedEvent,
-		TabClosedEvent,
 	]
 	EMITS: ClassVar[list[type[BaseEvent]]] = [
-		NavigateToUrlEvent,
-		CloseTabEvent,
 		AboutBlankDVDScreensaverShownEvent,
 	]
 
@@ -57,56 +51,19 @@ class AboutBlankWatchdog(BaseWatchdog):
 		if event.url == 'about:blank':
 			await self._show_dvd_screensaver_on_about_blank_tabs()
 
-	async def on_TabClosedEvent(self, event: TabClosedEvent) -> None:
-		"""Check tabs when a tab is closed and proactively create about:blank if needed."""
-		# Don't create new tabs if browser is shutting down
-		if self._stopping:
-			return
-
-		# Don't attempt CDP operations if the WebSocket is dead — dispatching
-		# NavigateToUrlEvent on a broken connection will hang until timeout
-		if not self.browser_session.is_cdp_connected:
-			self.logger.debug('[AboutBlankWatchdog] CDP not connected, skipping tab recovery')
-			return
-
-		# Check if we're about to close the last tab (event happens BEFORE tab closes)
-		# Use _cdp_get_all_pages for quick check without fetching titles
-		page_targets = await self.browser_session._cdp_get_all_pages()
-		if len(page_targets) < 1:
-			self.logger.debug(
-				'[AboutBlankWatchdog] Last tab closing, creating new about:blank tab to avoid closing entire browser'
-			)
-			# Create the animation tab since no tabs should remain
-			navigate_event = self.event_bus.dispatch(NavigateToUrlEvent(url='about:blank', new_tab=True))
-			await navigate_event
-			# Show DVD screensaver on the new tab
-			await self._show_dvd_screensaver_on_about_blank_tabs()
-		else:
-			# Multiple tabs exist, check after close
-			await self._check_and_ensure_about_blank_tab()
-
 	async def attach_to_target(self, target_id: TargetID) -> None:
 		"""AboutBlankWatchdog doesn't monitor individual targets."""
 		pass
 
 	async def _check_and_ensure_about_blank_tab(self) -> None:
-		"""Check current tabs and ensure exactly one about:blank tab with animation exists."""
+		"""Decorate existing about:blank tabs without recreating closed user surfaces."""
 		try:
 			if not self.browser_session.is_cdp_connected:
 				return
 
-			# For quick checks, just get page targets without titles to reduce noise
 			page_targets = await self.browser_session._cdp_get_all_pages()
-
-			# If no tabs exist at all, create one to keep browser alive
-			if len(page_targets) == 0:
-				# Only create a new tab if there are no tabs at all
-				self.logger.debug('[AboutBlankWatchdog] No tabs exist, creating new about:blank DVD screensaver tab')
-				navigate_event = self.event_bus.dispatch(NavigateToUrlEvent(url='about:blank', new_tab=True))
-				await navigate_event
-				# Show DVD screensaver on the new tab
+			if page_targets:
 				await self._show_dvd_screensaver_on_about_blank_tabs()
-			# Otherwise there are tabs, don't create new ones to avoid interfering
 
 		except Exception as e:
 			self.logger.error(f'[AboutBlankWatchdog] Error ensuring about:blank tab: {e}')
