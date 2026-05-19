@@ -48,6 +48,9 @@ class EnhancedDOMTreeNode:
 	hidden_elements_info: list[dict[str, Any]] = field(default_factory=list)
 	has_hidden_content: bool = False
 	uuid: str = field(default_factory=uuid7str)
+	_stable_hash_cache: int | None = field(default=None, repr=False)
+	_parent_branch_cache: str | None = field(default=None, repr=False)
+	_meaningful_text_cache: str | None = field(default=None, repr=False)
 
 	@property
 	def parent(self) -> EnhancedDOMTreeNode | None:
@@ -160,6 +163,8 @@ class EnhancedDOMTreeNode:
 		return f'<{self.tag_name}>{cap_text_length(self.get_all_children_text(), max_text_length) or ""}'
 
 	def get_meaningful_text_for_llm(self) -> str:
+		if self._meaningful_text_cache is not None:
+			return self._meaningful_text_cache
 		meaningful_text = ''
 		if hasattr(self, 'attributes') and self.attributes:
 			for attr in ['value', 'aria-label', 'title', 'placeholder', 'alt']:
@@ -170,7 +175,8 @@ class EnhancedDOMTreeNode:
 		if not meaningful_text:
 			meaningful_text = self.get_all_children_text()
 
-		return meaningful_text.strip()
+		self._meaningful_text_cache = meaningful_text.strip()
+		return self._meaningful_text_cache
 
 	@property
 	def is_actually_scrollable(self) -> bool:
@@ -326,8 +332,12 @@ class EnhancedDOMTreeNode:
 		return hash(self)
 
 	def compute_stable_hash(self) -> int:
-		parent_branch_path = self._get_parent_branch_path()
-		parent_branch_path_string = '/'.join(parent_branch_path)
+		if self._stable_hash_cache is not None:
+			return self._stable_hash_cache
+		if self._parent_branch_cache is None:
+			parent_branch_path = self._get_parent_branch_path()
+			self._parent_branch_cache = '/'.join(parent_branch_path)
+		parent_branch_path_string = self._parent_branch_cache
 
 		filtered_attrs: dict[str, str] = {}
 		for k, v in self.attributes.items():
@@ -347,30 +357,20 @@ class EnhancedDOMTreeNode:
 
 		combined_string = f'{parent_branch_path_string}|{attributes_string}{ax_name}'
 		hash_hex = hashlib.sha256(combined_string.encode()).hexdigest()
-		return int(hash_hex[:16], 16)
+		self._stable_hash_cache = int(hash_hex[:16], 16)
+		return self._stable_hash_cache
 
 	def __str__(self) -> str:
 		return f'[<{self.tag_name}>#{self.frame_id[-4:] if self.frame_id else "?"}:{self.backend_node_id}]'
 
 	def __hash__(self) -> int:
-		parent_branch_path = self._get_parent_branch_path()
-		parent_branch_path_string = '/'.join(parent_branch_path)
-		attributes_string = ''.join(
-			f'{k}={v}' for k, v in sorted((k, v) for k, v in self.attributes.items() if k in STATIC_ATTRIBUTES)
-		)
-
-		ax_name = ''
-		if self.ax_node and self.ax_node.name:
-			ax_name = f'|ax_name={self.ax_node.name}'
-
-		combined_string = f'{parent_branch_path_string}|{attributes_string}{ax_name}'
-		element_hash = hashlib.sha256(combined_string.encode()).hexdigest()
-		return int(element_hash[:16], 16)
+		return self.compute_stable_hash()
 
 	def parent_branch_hash(self) -> int:
-		parent_branch_path = self._get_parent_branch_path()
-		parent_branch_path_string = '/'.join(parent_branch_path)
-		element_hash = hashlib.sha256(parent_branch_path_string.encode()).hexdigest()
+		if self._parent_branch_cache is None:
+			parent_branch_path = self._get_parent_branch_path()
+			self._parent_branch_cache = '/'.join(parent_branch_path)
+		element_hash = hashlib.sha256(self._parent_branch_cache.encode()).hexdigest()
 		return int(element_hash[:16], 16)
 
 	def _get_parent_branch_path(self) -> list[str]:
