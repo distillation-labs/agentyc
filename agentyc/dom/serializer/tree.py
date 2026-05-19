@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentyc.dom.serializer.clickable_elements import ClickableElementDetector
 from agentyc.dom.serializer.constants import DISABLED_ELEMENTS, SVG_ELEMENTS
 from agentyc.dom.views import EnhancedDOMTreeNode, NodeType, SimplifiedNode
 
@@ -64,6 +65,8 @@ class SerializerTreeMixin:
 			)
 			if not is_visible and is_file_input:
 				is_visible = True
+			if not is_visible and ClickableElementDetector.is_search_entry_control(node):
+				is_visible = True
 
 			if is_visible or is_scrollable or has_shadow_content or is_shadow_host:
 				simplified = SimplifiedNode(original_node=node, children=[], is_shadow_host=is_shadow_host)
@@ -105,6 +108,7 @@ class SerializerTreeMixin:
 			and node.original_node.attributes
 			and node.original_node.attributes.get('type') == 'file'
 		)
+		is_search_entry_control = ClickableElementDetector.is_search_entry_control(node.original_node)
 
 		if (
 			is_visible
@@ -112,6 +116,7 @@ class SerializerTreeMixin:
 			or node.original_node.node_type == NodeType.TEXT_NODE
 			or node.children
 			or is_file_input
+			or is_search_entry_control
 		):
 			return node
 
