@@ -14,6 +14,14 @@ Every interaction follows a **read → ref → act** loop:
 
 Refs are stable within a page load. They become invalid after navigation or a full reload.
 
+When working with a human in the loop, narrate intent before a likely pause:
+
+- `Opening the release page and checking publish state.`
+- `Waiting for validation to finish.`
+- `Looking for the Documentation link.`
+
+Keep these status lines short and concrete. They are progress narration, not chain-of-thought.
+
 ---
 
 ## Workflow Patterns
@@ -22,7 +30,7 @@ Refs are stable within a page load. They become invalid after navigation or a fu
 
 ```
 browser_navigate(url="https://example.com")
-browser_get_state()          # → captures refs, state_hash
+browser_get_state(mode="min")          # → captures refs, state_hash with a lighter payload
 browser_click(ref="e42")     # submit button
 browser_get_state(since_hash="<state_hash>")  # → only changed elements
 ```
@@ -30,7 +38,7 @@ browser_get_state(since_hash="<state_hash>")  # → only changed elements
 ### Type into a field
 
 ```
-browser_get_state()          # find the input's ref
+browser_get_state(mode="min")          # find the input's ref
 browser_click(ref="e17")     # focus it
 browser_type(text="hello", ref="e17")
 ```
@@ -40,7 +48,7 @@ browser_type(text="hello", ref="e17")
 Prefer `since_hash` polling over `browser_wait`:
 
 ```
-state = browser_get_state()
+state = browser_get_state(mode="min")
 # … trigger an action …
 browser_get_state(since_hash=state["state_hash"])
 # Returns changed=true once new content appears; changed=false means no update yet
@@ -124,6 +132,12 @@ Use `browser_new_tab` when you need to work in a fresh tab immediately — it cr
 | `focus` | Single referenced element from `focus_ref` |
 
 Use `mode="min"` when you want a lighter-weight state read with the most relevant interactive elements. Use `mode="focus"` when you want just one specific element.
+
+Default preference order for agents:
+
+1. `mode="min"` for routine reads
+2. `mode="focus"` when you already have a ref and only need one element
+3. `mode="full"` only when `min` omitted something you actually need
 
 ---
 
@@ -211,6 +225,10 @@ Wrap code in an IIFE when returning a value. Results are returned as JSON-compat
 
 **Don't poll with fixed waits.** `browser_wait(seconds=3)` is a guess. Use `since_hash` polling or `browser_wait_for_element` instead.
 
+**Don't default to `browser_get_state(mode="full")`.** Start with `mode="min"` and escalate to `full` only when necessary.
+
+**Don't go silent before a long operation.** Add a brief status line like `Waiting for upload to finish.` so humans do not mistake agent reasoning for browser slowness.
+
 **Don't ignore console errors.** If an action silently fails, `browser_get_console_logs(level="error")` almost always shows why.
 
 ---
@@ -219,10 +237,11 @@ Wrap code in an IIFE when returning a value. Results are returned as JSON-compat
 
 ```
 # Read
-browser_get_state()                          # full snapshot, returns state_hash + refs
+browser_get_state()                          # auto mode
+browser_get_state(mode="min")               # preferred default for lightweight reads
 browser_get_state(since_hash="…")           # delta — changed=true/false
-browser_get_state(mode="min")               # compact ranked subset of interactive elements
 browser_get_state(mode="focus", focus_ref="e42")  # only the referenced element
+browser_get_state(mode="full")              # full tree when min/focus is insufficient
 browser_screenshot()
 browser_get_html()
 browser_extract_content(query="…")
