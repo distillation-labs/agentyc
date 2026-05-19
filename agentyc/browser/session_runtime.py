@@ -181,11 +181,14 @@ async def on_FileDownloadedEvent(session: BrowserSession, event: FileDownloadedE
 async def kill(session: BrowserSession) -> None:
 	session._intentional_stop = True
 	session.logger.debug('🛑 kill() called - stopping browser with force=True and resetting state')
-	from agentyc.browser.events import SaveStorageStateEvent
+	from agentyc.browser.events import BrowserKillEvent, SaveStorageStateEvent
 
+	local_watchdog = session._local_browser_watchdog
 	save_event = session.event_bus.dispatch(SaveStorageStateEvent())
 	await save_event
 	await session.event_bus.dispatch(BrowserStopEvent(force=True))
+	if local_watchdog and getattr(local_watchdog, '_subprocess', None) is not None and getattr(local_watchdog, '_owns_browser_resources', True):
+		await local_watchdog.on_BrowserKillEvent(BrowserKillEvent())
 	await session.event_bus.stop(clear=True, timeout=5)
 	await reset(session)
 	session.event_bus = EventBus()
@@ -194,11 +197,14 @@ async def kill(session: BrowserSession) -> None:
 async def stop(session: BrowserSession) -> None:
 	session._intentional_stop = True
 	session.logger.debug('⏸️  stop() called - stopping browser gracefully (force=False) and resetting state')
-	from agentyc.browser.events import SaveStorageStateEvent
+	from agentyc.browser.events import BrowserKillEvent, SaveStorageStateEvent
 
+	local_watchdog = session._local_browser_watchdog
 	save_event = session.event_bus.dispatch(SaveStorageStateEvent())
 	await save_event
 	await session.event_bus.dispatch(BrowserStopEvent(force=False))
+	if local_watchdog and getattr(local_watchdog, '_subprocess', None) is not None and getattr(local_watchdog, '_owns_browser_resources', True):
+		await local_watchdog.on_BrowserKillEvent(BrowserKillEvent())
 	await session.event_bus.stop(clear=True, timeout=5)
 	await reset(session)
 	session.event_bus = EventBus()
