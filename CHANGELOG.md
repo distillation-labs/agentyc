@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.8] - 2026-05-18
+
+### Changed
+
+- **Distributed skills guide refresh** - `agentyc init` now writes a stronger packaged guide for coding agents, covering structured error recovery, visible-text waits, long-page search workflows, and safer multi-tab handoff after opening or closing tabs.
+
+### Fixed
+
+- **Visible-text waits for dynamic UI copy** - `browser_wait_for_element` now detects live visible text updates such as toasts, upload filenames, and validation messages instead of only depending on interactive controls.
+- **Active-tab close recovery** - tab switching now recovers to the surviving page correctly after closing the focused tab, so follow-up actions can continue on the remaining tab.
+- **Fresh tab titles and structured MCP failures** - current page titles refresh from the live page before state serialization, and textual tool failures now surface as MCP `isError` responses.
+- **Long-page compact-state control retention** - compact `browser_get_state` payloads keep high-value search entry controls discoverable after deep scroll on long documentation-style pages.
+
+## [0.2.7] - 2026-05-18
+
+### Changed
+
+- **Packaged skills guide refresh** - `agentyc init` now emits a more actionable MCP usage guide for coding agents, including escalation steps when refs are missing, explicit dropdown and file-upload recipes, keyboard and focus workflows, multi-tab guidance, and sharper debugging patterns.
+
 ## [0.2.6] - 2026-05-18
 
 ### Fixed
