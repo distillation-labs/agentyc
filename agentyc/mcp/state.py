@@ -132,9 +132,7 @@ def serialize_tab_info(tab: Any) -> dict[str, Any]:
 	return payload
 
 
-def _build_current_tab_payload(
-	tab_payload: dict[str, Any], *, include_page_identity: bool = True
-) -> dict[str, Any] | None:
+def _build_current_tab_payload(tab_payload: dict[str, Any], *, include_page_identity: bool = True) -> dict[str, Any] | None:
 	current_tab: dict[str, Any] = {}
 	keys = ('tab_id', 'parent_tab_id', 'display_title', 'ownership', 'window_bounds')
 	if include_page_identity:
@@ -472,8 +470,27 @@ def select_elements_for_min_mode(
 
 	selected_elements: list[tuple[float, int, int, EnhancedDOMTreeNode]] = []
 	selected_signature_counts: defaultdict[str, int] = defaultdict(int)
-	for scored_element in sorted(scored_elements, key=lambda item: (-item[0], item[1])):
+	sorted_scored_elements = sorted(scored_elements, key=lambda item: (-item[0], item[1]))
+	selected_backend_node_ids: set[int] = set()
+
+	for scored_element in sorted_scored_elements:
+		_, _, backend_node_id, element = scored_element
+		if not _should_pin_min_mode_element(element):
+			continue
+		signature = compaction_signature(element)
+		if selected_signature_counts[signature] >= _MAX_DUPLICATES_PER_SIGNATURE:
+			continue
+		selected_elements.append(scored_element)
+		selected_signature_counts[signature] += 1
+		selected_backend_node_ids.add(backend_node_id)
+		if len(selected_elements) >= max_elements:
+			break
+
+	for scored_element in sorted_scored_elements:
 		_, _, _, element = scored_element
+		backend_node_id = scored_element[2]
+		if backend_node_id in selected_backend_node_ids:
+			continue
 		signature = compaction_signature(element)
 		if selected_signature_counts[signature] >= _MAX_DUPLICATES_PER_SIGNATURE:
 			continue
@@ -483,6 +500,27 @@ def select_elements_for_min_mode(
 			break
 
 	return [element for _, _, _, element in sorted(selected_elements, key=lambda item: item[1])]
+
+
+def _should_pin_min_mode_element(element: EnhancedDOMTreeNode) -> bool:
+	tag = normalize_text(element.tag_name)
+	if tag not in {'input', 'textarea'}:
+		return False
+	attributes = element.attributes or {}
+	input_type = normalize_text(attributes.get('type', ''))
+	role = normalize_text(element.ax_node.role if element.ax_node and element.ax_node.role else '')
+	search_like_text = normalize_text(
+		' '.join(
+			str(candidate)
+			for candidate in (
+				attributes.get('aria-label'),
+				attributes.get('placeholder'),
+				attributes.get('name'),
+			)
+			if candidate
+		)
+	)
+	return input_type == 'search' or role == 'searchbox' or 'search' in search_like_text
 
 
 def score_element_for_compaction(element: EnhancedDOMTreeNode) -> float:
@@ -545,6 +583,19 @@ def summarize_interactive_element(
 	viewport_height: int | None = None,
 ) -> dict[str, Any]:
 	text = truncate_text(element.get_meaningful_text_for_llm())
+	if not text:
+		attributes = element.attributes or {}
+		tag = (element.tag_name or '').lower()
+		input_type = attributes.get('type', '').lower()
+		for candidate in (
+			attributes.get('aria-label'),
+			attributes.get('placeholder'),
+			attributes.get('title'),
+			attributes.get('value') if tag == 'input' and input_type in {'button', 'submit', 'reset'} else None,
+		):
+			if candidate and str(candidate).strip():
+				text = truncate_text(str(candidate))
+				break
 	info: dict[str, Any] = {
 		'ref': make_element_ref(element.backend_node_id),
 		'tag': element.tag_name,
