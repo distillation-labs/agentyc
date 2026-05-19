@@ -53,11 +53,13 @@ class DefaultActionNavigationMixin:
 					)
 					if is_iframe:
 						self.logger.debug('🔄 Forcing DOM refresh after iframe scroll')
-						await asyncio.sleep(0.2)
-					invalidate_dom_cache()
-					return None
+					await asyncio.sleep(0.2)
+				invalidate_dom_cache()
+				return None
 
-			await self._scroll_with_cdp_gesture(pixels)
+			gesture_scrolled = await self._scroll_with_cdp_gesture(pixels)
+			if not gesture_scrolled:
+				raise BrowserError('Failed to scroll page via CDP gesture')
 			invalidate_dom_cache()
 			self.logger.debug(f'📜 Scrolled {event.direction} by {event.amount} pixels')
 			return None
@@ -219,8 +221,22 @@ class DefaultActionNavigationMixin:
 	async def on_RefreshEvent(self, event: RefreshEvent) -> None:
 		cdp_session = await self.browser_session.get_or_create_cdp_session()
 		try:
+			target_id = cdp_session.target_id or self.browser_session.agent_focus_target_id
+			if not target_id:
+				raise BrowserError('No active target for refresh')
+			target = self.browser_session.session_manager.get_target(target_id)
+			current_url = target.url if target else await self.browser_session.get_current_page_url()
 			await cdp_session.cdp_client.send.Page.reload(session_id=cdp_session.session_id)
-			await asyncio.sleep(1.0)
+			from agentyc.browser import session_navigation
+
+			await session_navigation._navigate_and_wait(
+				self.browser_session,
+				current_url,
+				target_id,
+				timeout=3.0,
+				wait_until='load',
+				nav_timeout=8.0,
+			)
 			self.logger.info('🔄 Target refreshed')
 		except Exception:
 			raise
