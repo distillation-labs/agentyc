@@ -12,6 +12,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _configured_headless_value(profile_config: dict[str, Any], kwargs: dict[str, Any]) -> bool | None:
+	if 'headless' in kwargs:
+		return kwargs['headless']
+	if 'headless' in profile_config:
+		return profile_config['headless']
+	return None
+
+
 async def _init_browser_session(self, allowed_domains: list[str] | None = None, **kwargs):
 	"""Initialize browser session using config."""
 	if self.browser_session:
@@ -24,10 +32,27 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 
 	from agentyc.browser import BrowserProfile, BrowserSession
 	from agentyc.config import get_default_profile
+	from agentyc.mcp.shared_browser_registry import (
+		get_reusable_local_browser_cdp_url,
+		register_local_shared_browser,
+		reuse_local_browser_enabled,
+	)
 	from agentyc.tools.service import Tools
 
 	profile_config = get_default_profile(self.config)
-	cdp_url = self._cdp_url or kwargs.pop('cdp_url', None)
+	provided_cdp_url = kwargs.pop('cdp_url', None)
+	cdp_url = self._cdp_url or provided_cdp_url
+	headless = _configured_headless_value(profile_config, kwargs)
+	is_attaching_to_existing_browser = cdp_url is not None
+	should_reuse_local_browser = bool(
+		getattr(self, '_reuse_local_browser', True)
+		and reuse_local_browser_enabled()
+		and not getattr(self, '_explicit_cdp_url', False)
+	)
+	if cdp_url is None and should_reuse_local_browser:
+		cdp_url = await get_reusable_local_browser_cdp_url(headless=headless)
+		if cdp_url:
+			self._cdp_url = cdp_url
 
 	try:
 		if cdp_url:
@@ -52,6 +77,7 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 			profile = BrowserProfile(**profile_data)
 			self.browser_session = BrowserSession(browser_profile=profile)
 			await self.browser_session.start()
+			self._cdp_url = self.browser_session.browser_profile.cdp_url
 			try:
 				cdp_root = self.browser_session._cdp_client_root
 				if cdp_root is not None:
@@ -84,9 +110,30 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 				profile_data['allowed_domains'] = allowed_domains
 			for key, value in kwargs.items():
 				profile_data[key] = value
+			if should_reuse_local_browser and is_attaching_to_existing_browser:
+				profile_data['keep_alive'] = True
+				profile_data['shared_browser_mode'] = self._shared_browser_mode
+				profile_data['shared_browser_window_bounds'] = self._shared_browser_window_bounds
+				profile_data['shared_browser_focus_policy'] = self._shared_browser_focus_policy
 			profile = BrowserProfile(**profile_data)
 			self.browser_session = BrowserSession(browser_profile=profile)
 			await self.browser_session.start()
+			if should_reuse_local_browser and not is_attaching_to_existing_browser and self.browser_session.browser_profile.cdp_url:
+				local_watchdog = getattr(self.browser_session, '_local_browser_watchdog', None)
+				if local_watchdog is not None:
+					local_watchdog._owns_browser_resources = False
+				self._cdp_url = self.browser_session.browser_profile.cdp_url
+				browser_pid = getattr(local_watchdog, 'browser_pid', None)
+				register_local_shared_browser(
+					cdp_url=self.browser_session.browser_profile.cdp_url,
+					browser_pid=browser_pid,
+					headless=self.browser_session.browser_profile.headless,
+					user_data_dir=str(self.browser_session.browser_profile.user_data_dir)
+					if self.browser_session.browser_profile.user_data_dir
+					else None,
+				)
+			elif should_reuse_local_browser and is_attaching_to_existing_browser and self.browser_session.browser_profile.cdp_url:
+				self._cdp_url = self.browser_session.browser_profile.cdp_url
 
 		self._track_session(self.browser_session)
 		self.tools = Tools()
@@ -170,7 +217,7 @@ async def _list_sessions(self) -> str:
 		session = session_data['session']
 		created_at = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session_data['created_at']))
 		last_activity = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(session_data['last_activity']))
-		is_active = hasattr(session, 'cdp_client') and session.cdp_client is not None
+		is_active = bool(getattr(session, 'is_cdp_connected', False))
 		sessions_info.append(
 			{
 				'session_id': session_id,
@@ -201,7 +248,10 @@ async def _close_session(self, session_id: str) -> str:
 				if cdp_root:
 					await cdp_root.send.Target.disposeBrowserContext(params={'browserContextId': browser_context_id})
 			session._browser_context_id = None
-		if hasattr(session, 'kill'):
+		if getattr(session.browser_profile, 'keep_alive', False):
+			if hasattr(session, 'stop'):
+				await session.stop()
+		elif hasattr(session, 'kill'):
 			await session.kill()
 		del self.active_sessions[session_id]
 		if self.browser_session and self.browser_session.id == session_id:
