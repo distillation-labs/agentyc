@@ -45,13 +45,45 @@ def _convert_llm_coordinates_to_viewport(llm_x: int, llm_y: int, browser_session
 	return llm_x, llm_y
 
 
-async def _detect_new_tab_opened(browser_session: BrowserSession, tabs_before: set[str]) -> str:
+def _snapshot_page_target_ids(browser_session: BrowserSession) -> set[str]:
+	session_manager = getattr(browser_session, 'session_manager', None)
+	if session_manager is None:
+		return set()
 	try:
-		await asyncio.sleep(0.05)
-		tabs_after = await browser_session.get_tabs()
-		new_tabs = [tab for tab in tabs_after if tab.target_id not in tabs_before]
-		if new_tabs:
-			new_tab = new_tabs[0]
+		return {target.target_id for target in session_manager.get_all_page_targets()}
+	except Exception:
+		return set()
+
+
+def _might_open_new_tab(node: EnhancedDOMTreeNode) -> bool:
+	attrs = node.attributes or {}
+	tag_name = (node.tag_name or '').lower()
+	onclick = str(attrs.get('onclick', '')).lower()
+	role = str(attrs.get('role', '')).lower()
+	return bool(
+		attrs.get('target') == '_blank' or attrs.get('href') or tag_name == 'a' or role == 'link' or 'window.open' in onclick
+	)
+
+
+async def _detect_new_tab_opened(
+	browser_session: BrowserSession,
+	page_target_ids_before: set[str],
+	*,
+	wait_for_target: bool = False,
+) -> str:
+	try:
+		session_manager = getattr(browser_session, 'session_manager', None)
+		if session_manager is None:
+			return ''
+		attempts = 4 if wait_for_target else 1
+		for attempt in range(attempts):
+			if attempt > 0:
+				await asyncio.sleep(0.05)
+			page_targets_after = session_manager.get_all_page_targets()
+			new_tabs = [target for target in page_targets_after if target.target_id not in page_target_ids_before]
+			if not new_tabs:
+				continue
+			new_tab = new_tabs[-1]
 			new_tab_id = new_tab.target_id[-4:]
 			try:
 				switch_event = browser_session.event_bus.dispatch(SwitchTabEvent(target_id=new_tab.target_id))
@@ -135,7 +167,7 @@ def register_interaction_actions(tools: Any) -> None:
 				params.coordinate_y,
 				browser_session,
 			)
-			tabs_before = {tab.target_id for tab in await browser_session.get_tabs()}
+			page_target_ids_before = _snapshot_page_target_ids(browser_session)
 			asyncio.create_task(browser_session.highlight_coordinate_click(actual_x, actual_y))
 			event = browser_session.event_bus.dispatch(
 				ClickCoordinateEvent(coordinate_x=actual_x, coordinate_y=actual_y, force=True)
@@ -146,7 +178,7 @@ def register_interaction_actions(tools: Any) -> None:
 				return ActionResult(error=click_metadata['validation_error'])
 
 			memory = f'Clicked on coordinate {params.coordinate_x}, {params.coordinate_y}'
-			memory += await _detect_new_tab_opened(browser_session, tabs_before)
+			memory += await _detect_new_tab_opened(browser_session, page_target_ids_before)
 			logger.info(f'🖱️ {memory}')
 			return ActionResult(
 				extracted_content=memory,
@@ -174,7 +206,7 @@ def register_interaction_actions(tools: Any) -> None:
 				return ActionResult(extracted_content=msg)
 
 			element_desc = get_click_description(node)
-			tabs_before = {tab.target_id for tab in await browser_session.get_tabs()}
+			page_target_ids_before = _snapshot_page_target_ids(browser_session) if _might_open_new_tab(node) else None
 			create_task_with_error_handling(
 				browser_session.highlight_interaction_element(node),
 				name='highlight_click_element',
@@ -197,10 +229,15 @@ def register_interaction_actions(tools: Any) -> None:
 							'Failed to get dropdown options as shortcut during click on dropdown: '
 							f'{type(dropdown_error).__name__}: {dropdown_error}'
 						)
-				return ActionResult(error=error_msg)
+					return ActionResult(error=error_msg)
 
 			memory = f'Clicked {element_desc}'
-			memory += await _detect_new_tab_opened(browser_session, tabs_before)
+			if page_target_ids_before is not None:
+				memory += await _detect_new_tab_opened(
+					browser_session,
+					page_target_ids_before,
+					wait_for_target=True,
+				)
 			logger.info(f'🖱️ {memory}')
 			return ActionResult(
 				extracted_content=memory,
