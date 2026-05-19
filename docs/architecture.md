@@ -206,9 +206,11 @@ All MCP tool calls pass through the same high-level runtime flow:
 
 1. The MCP client sends a stdio tool call.
 2. `AgentycServer.handle_call_tool` delegates to `_execute_tool`.
-3. `agentyc.mcp.tool_dispatch` routes the tool name to the appropriate action, CDP, or session-lifecycle handler.
-4. Browser tools lazily initialize `BrowserSession` if needed.
-5. The handler returns text content, or text plus image content for tools such as `browser_get_state` and `browser_screenshot`.
+3. `AgentycServer` can emit MCP `notifications/progress` for the active request when the caller provided a `progressToken`.
+4. `agentyc.mcp.tool_dispatch` routes the tool name to the appropriate action, CDP, or session-lifecycle handler.
+5. Browser tools lazily initialize `BrowserSession` if needed.
+6. The handler returns text content, or text plus image content for tools such as `browser_get_state` and `browser_screenshot`.
+7. The first text content block carries `_meta` timing fields so clients can distinguish browser execution from their own reasoning time.
 
 ### `browser_get_state`
 
@@ -216,6 +218,7 @@ All MCP tool calls pass through the same high-level runtime flow:
 2. `AgentycServer` asks `BrowserSession` for a `BrowserStateSummary`.
 3. `agentyc.mcp.state` compacts and serializes that summary.
 4. The server returns JSON text plus optional MCP image content.
+5. Clients should prefer `mode="min"` and `since_hash` for follow-up polling to avoid repeated full-tree reads.
 
 ### `browser_extract_content`
 
