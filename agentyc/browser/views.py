@@ -113,6 +113,7 @@ class BrowserStateSummary:
 	pending_network_requests: list[NetworkRequest] = field(default_factory=list)  # Currently loading network requests
 	pagination_buttons: list[PaginationButton] = field(default_factory=list)  # Detected pagination buttons
 	closed_popup_messages: list[str] = field(default_factory=list)  # Messages from auto-closed JavaScript dialogs
+	state_hash: str | None = None  # Pre-computed state hash for unchanged-delta optimization
 
 
 @dataclass
