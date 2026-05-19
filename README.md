@@ -35,7 +35,7 @@ Run this once in your project directory to write a usage guide your coding agent
 agentyc init
 ```
 
-This copies the packaged skills guide to `agentyc-skill.md` by default, or to a custom destination with `--output`. The guide covers the read→ref→act loop, `since_hash` polling, extraction routes, auth persistence, and common pitfalls. Point Claude Code, Cursor, or Copilot at the generated file.
+This copies the packaged skills guide to `agentyc-skill.md` by default, or to a custom destination with `--output`. The guide covers the read→ref→act loop, `since_hash` polling, lightweight state modes, short progress narration, extraction routes, auth persistence, and common pitfalls. Point Claude Code, Cursor, or Copilot at the generated file.
 
 ```bash
 agentyc init --print          # print to stdout instead of writing a file
@@ -154,6 +154,17 @@ Observability and lifecycle:
 
 The public server exposes tools only. It does not publish MCP resources or prompts.
 
+## Perceived Speed
+
+agentyc can help clients separate browser work from agent thinking time:
+
+- MCP callers may provide a `progressToken` on tool calls; agentyc emits `notifications/progress` for long-running browser steps when present.
+- Tool results include `_meta` timing fields such as `agentyc/browser_duration_ms` and a short `agentyc/tool_phase` label on the first text content block.
+- Agents should prefer `browser_get_state(mode="min")`, `browser_get_state(mode="focus")`, and `since_hash` polling over repeated full-state reads.
+- Agents should narrate intent briefly before a likely pause, for example `Waiting for validation to finish.`
+
+This makes a live session feel responsive even when the browser is fast and the model is still deciding what to do next.
+
 ## State And Element Targeting
 
 `browser_get_state` is the primary inspection primitive.
@@ -163,6 +174,8 @@ The public server exposes tools only. It does not publish MCP resources or promp
 - `since_hash` allows unchanged-state checks without resending interactive element payloads.
 - Compact state payloads can surface `compaction_strategy`, truncation counts, ownership, and runtime metadata when relevant.
 - Screenshots are returned as MCP image content, with JSON metadata in a separate text payload.
+
+For best interactive performance, start with `mode="min"` and escalate to `full` only when the compact payload omitted an element you actually need.
 
 Prefer refs from `browser_get_state` over legacy numeric `index` arguments.
 
