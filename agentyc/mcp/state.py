@@ -181,6 +181,7 @@ def _build_unchanged_state_payload(
 	current_tab: dict[str, Any] | None,
 	serialized_current_tab_id: str | None,
 	interactive_element_count: int,
+	debug_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
 	result: dict[str, Any] = {
 		'url': state.url,
@@ -201,9 +202,12 @@ def _build_unchanged_state_payload(
 	# Always include scroll position so agents know where they are even when elements haven't changed
 	if state.page_info and (state.page_info.scroll_x != 0 or state.page_info.scroll_y != 0):
 		result['scroll'] = {'x': state.page_info.scroll_x, 'y': state.page_info.scroll_y}
-	debug_payload = _build_debug_payload(state)
 	if debug_payload is not None:
 		result['debug'] = debug_payload
+	else:
+		built_debug = _build_debug_payload(state)
+		if built_debug is not None:
+			result['debug'] = built_debug
 	return result
 
 
@@ -312,8 +316,11 @@ def build_browser_state_payload(
 	effective_mode = resolve_effective_mode(
 		mode=mode, interactive_element_count=len(selector_map), max_min_elements=max_min_elements
 	)
-	state_hash = compute_browser_state_hash(state)
-	tabs_payload = [serialize_tab_info(tab) for tab in state.tabs]
+	tabs_payload: list[dict[str, Any]] = [serialize_tab_info(tab) for tab in state.tabs]
+	state_hash = getattr(state, 'state_hash', None)
+	if state_hash is None:
+		state_hash = compute_browser_state_hash(state)
+		state.state_hash = state_hash
 	result: dict[str, Any] = {
 		'url': state.url,
 		'title': state.title,
@@ -364,6 +371,7 @@ def build_browser_state_payload(
 			current_tab=current_tab,
 			serialized_current_tab_id=serialized_current_tab_id,
 			interactive_element_count=len(selector_map),
+			debug_payload=debug_payload,
 		)
 
 	scroll_y: int | None = None
@@ -705,30 +713,42 @@ def _heading_text_from_ancestor(node: EnhancedDOMTreeNode) -> str | None:
 	return None
 
 
+def _fast_build_hash_input(state: BrowserStateSummary) -> str:
+	parts: list[str] = [state.url, state.title or '']
+	pi = state.page_info
+	if pi:
+		parts.extend(
+			[
+				str(pi.viewport_width),
+				str(pi.viewport_height),
+				str(pi.page_width),
+				str(pi.page_height),
+				str(pi.scroll_x),
+				str(pi.scroll_y),
+			]
+		)
+	for backend_node_id, element in sorted(state.dom_state.selector_map.items()):
+		parts.append(str(backend_node_id))
+		parts.append(str(compute_element_signature(element)))
+	return '|'.join(parts)
+
+
 def compute_browser_state_hash(state: BrowserStateSummary) -> str:
-	element_signatures = [
-		{
-			'backend_node_id': backend_node_id,
-			'stable_hash': compute_element_signature(element),
-		}
-		for backend_node_id, element in sorted(state.dom_state.selector_map.items())
-	]
-	page_signature = {
-		'url': state.url,
-		'title': state.title,
-		'viewport': ((state.page_info.viewport_width, state.page_info.viewport_height) if state.page_info else None),
-		'page': ((state.page_info.page_width, state.page_info.page_height) if state.page_info else None),
-		'scroll': ((state.page_info.scroll_x, state.page_info.scroll_y) if state.page_info else None),
-		'elements': element_signatures,
-	}
-	digest = hashlib.sha256(json.dumps(page_signature, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+	if not state.dom_state.selector_map:
+		pi = state.page_info
+		if pi is not None:
+			key = f'{state.url}|{state.title or ""}|{pi.viewport_width},{pi.viewport_height},{pi.scroll_x},{pi.scroll_y}'
+		else:
+			key = f'{state.url}|{state.title or ""}||||'
+	else:
+		key = _fast_build_hash_input(state)
+	digest = hashlib.md5(key.encode('utf-8')).hexdigest()
 	return digest[:16]
 
 
 def compute_element_signature(element: EnhancedDOMTreeNode) -> int:
-	compute_stable_hash = getattr(element, 'compute_stable_hash', None)
-	if callable(compute_stable_hash):
-		return int(cast(Any, compute_stable_hash)())
+	if hasattr(element, 'compute_stable_hash') and callable(element.compute_stable_hash):
+		return element.compute_stable_hash()
 
 	fallback_signature = {
 		'tag': element.tag_name,
