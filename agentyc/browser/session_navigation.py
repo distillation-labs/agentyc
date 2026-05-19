@@ -28,8 +28,11 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 	"""Handle navigation requests - core browser functionality."""
 	session.logger.debug(f'[on_NavigateToUrlEvent] Received NavigateToUrlEvent: url={event.url}, new_tab={event.new_tab}')
 	if not session.agent_focus_target_id:
-		session.logger.warning('Cannot navigate - browser not connected')
-		return
+		focus_recovered = False
+		if session.session_manager is not None:
+			focus_recovered = await session.session_manager.ensure_valid_focus(timeout=3.0)
+		if not focus_recovered or not session.agent_focus_target_id:
+			raise RuntimeError('Cannot navigate - browser not connected')
 
 	target_id = None
 	current_target_id = session.agent_focus_target_id
@@ -289,7 +292,9 @@ async def _navigation_ready_via_dom(session: BrowserSession, *, cdp_session: Any
 async def on_SwitchTabEvent(session: BrowserSession, event: SwitchTabEvent) -> TargetID:
 	"""Handle tab switching - core browser functionality."""
 	if not session.agent_focus_target_id:
-		raise RuntimeError('Cannot switch tabs - browser not connected')
+		focus_recovered = await session.session_manager.ensure_valid_focus(timeout=3.0)
+		if not focus_recovered or not session.agent_focus_target_id:
+			raise RuntimeError('Cannot switch tabs - browser not connected')
 
 	page_targets = session.session_manager.get_all_page_targets()
 	if event.target_id is None:
