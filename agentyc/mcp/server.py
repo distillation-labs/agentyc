@@ -100,6 +100,7 @@ from agentyc.mcp.action_runtime import (
 	_resolve_live_element,
 	_resolve_upload_available_file_paths,
 	_run_tool_action,
+	_save_as_pdf,
 	_scroll,
 	_search_page,
 	_select_option,
@@ -111,15 +112,19 @@ from agentyc.mcp.action_runtime import (
 )
 from agentyc.mcp.cdp_tools import (
 	_clear_cookies,
+	_clear_logs,
 	_close_tab,
 	_double_click,
 	_drag_to,
+	_get_attribute,
 	_get_console_logs,
 	_get_cookies,
+	_get_downloads,
 	_get_focused_element,
 	_get_html,
 	_get_network_log,
 	_get_viewport_coords,
+	_handle_dialog,
 	_hover,
 	_list_tabs,
 	_load_state,
@@ -131,8 +136,12 @@ from agentyc.mcp.cdp_tools import (
 	_screenshot,
 	_scroll_to_text,
 	_set_cookies,
+	_set_viewport,
+	_start_trace,
+	_stop_trace,
 	_switch_tab,
 	_wait_for_network_idle,
+	_wait_for_stable_dom,
 )
 from agentyc.mcp.session_lifecycle import (
 	_browser_runtime_is_ready,
@@ -240,6 +249,15 @@ class AgentycServer:
 	_execute_tool: Callable[[str, dict[str, Any]], Awaitable[Any]]
 	_start_cleanup_task: Callable[[], Awaitable[None]]
 	_shutdown: Callable[[], Awaitable[None]]
+	_save_as_pdf: Callable[..., Awaitable[str]]
+	_get_downloads: Callable[[], Awaitable[str]]
+	_set_viewport: Callable[..., Awaitable[str]]
+	_wait_for_stable_dom: Callable[..., Awaitable[str]]
+	_handle_dialog: Callable[..., Awaitable[str]]
+	_get_attribute: Callable[..., Awaitable[str]]
+	_clear_logs: Callable[..., Awaitable[str]]
+	_start_trace: Callable[..., Awaitable[str]]
+	_stop_trace: Callable[..., Awaitable[str]]
 
 	def __init__(
 		self,
@@ -291,6 +309,8 @@ class AgentycServer:
 		self._network_pending: dict[str, dict[str, Any]] = {}  # requestId -> in-flight entry
 		self._cdp_events_registered: bool = False
 		self._cdp_client_for_runtime: Any = None  # set after _register_cdp_event_listeners
+		self._trace_active: bool = False
+		self._trace_events: list[dict[str, Any]] = []
 
 		# Setup handlers
 		self._setup_handlers()
@@ -514,6 +534,9 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_get_dropdown_options': _get_dropdown_options,
 	'_find_elements': _find_elements,
 	'_wait_for_element': _wait_for_element,
+	'_save_as_pdf': _save_as_pdf,
+	'_get_downloads': _get_downloads,
+	'_set_viewport': _set_viewport,
 	'_search_page': _search_page,
 	'_get_html': _get_html,
 	'_screenshot': _screenshot,
@@ -529,9 +552,15 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_right_click': _right_click,
 	'_get_cookies': _get_cookies,
 	'_set_cookies': _set_cookies,
+	'_clear_logs': _clear_logs,
 	'_clear_cookies': _clear_cookies,
 	'_register_cdp_event_listeners': _register_cdp_event_listeners,
 	'_get_console_logs': _get_console_logs,
+	'_get_attribute': _get_attribute,
+	'_handle_dialog': _handle_dialog,
+	'_wait_for_stable_dom': _wait_for_stable_dom,
+	'_start_trace': _start_trace,
+	'_stop_trace': _stop_trace,
 	'_get_network_log': _get_network_log,
 	'_get_focused_element': _get_focused_element,
 	'_list_tabs': _list_tabs,
