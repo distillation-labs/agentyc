@@ -90,6 +90,9 @@ The runtime startup path is:
 | `browser_refresh` | none |
 | `browser_wait` | optional `seconds` |
 | `browser_wait_for_network_idle` | optional `timeout_seconds`, `idle_duration_ms` |
+| `browser_wait_for_stable_dom` | optional `timeout_seconds`, `quiet_ms` |
+| `browser_save_as_pdf` | optional `file_name`, `print_background`, `landscape`, `scale`, `paper_format` |
+| `browser_set_viewport` | `width`, `height`, optional `device_scale_factor` |
 | `browser_get_state` | optional `include_screenshot`, `mode`, `focus_ref`, `since_hash` |
 | `browser_get_html` | optional `selector` |
 | `browser_screenshot` | optional `full_page` |
@@ -110,6 +113,7 @@ The runtime startup path is:
 | `browser_select_option` | `text`, plus `ref` or `index` |
 | `browser_get_dropdown_options` | optional `ref`, optional `index` |
 | `browser_upload_file` | `path`, plus `ref` or `index` |
+| `browser_handle_dialog` | optional `accept`, optional `prompt_text` |
 
 ### Inspection And Extraction
 
@@ -120,6 +124,7 @@ The runtime startup path is:
 | `browser_search_page` | `pattern`, optional `regex`, optional `max_results` |
 | `browser_wait_for_element` | optional `text`, optional `ref`, optional `appear`, optional `timeout_seconds` |
 | `browser_get_focused_element` | none |
+| `browser_get_attribute` | `name`, optional `ref`, optional `index` |
 | `browser_evaluate` | `code` |
 
 ### Tabs And Tab Management
@@ -142,6 +147,10 @@ The runtime startup path is:
 |------|-----------|
 | `browser_get_console_logs` | optional `level`, optional `max_entries` |
 | `browser_get_network_log` | optional `type_filter`, optional `status_filter`, optional `max_entries`, optional `include_headers` (boolean, default: false) |
+| `browser_get_downloads` | none |
+| `browser_clear_logs` | optional `console`, optional `network` |
+| `browser_start_trace` | optional `categories` |
+| `browser_stop_trace` | none |
 | `browser_list_sessions` | none |
 | `browser_close_session` | `session_id` |
 | `browser_close_all` | none |
