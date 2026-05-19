@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Protocol, cast
 
@@ -5,6 +6,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 
 from agentyc.browser import BrowserProfile, BrowserSession
+from agentyc.browser.events import CloseTabEvent
 from agentyc.mcp.server import AgentycServer
 from agentyc.tools.service import Tools
 
@@ -136,3 +138,37 @@ async def test_switch_tab_recovers_after_closing_active_tab(
 	switch_back = await mcp_server._switch_tab(main_tab_id)
 	assert switch_back == f'Switched to tab {main_tab_id}: {base_url}/main'
 	assert await browser_session.get_current_page_url() == f'{base_url}/main'
+
+
+async def test_closing_last_tab_does_not_respawn_until_recovery_is_requested():
+	session = BrowserSession(
+		browser_profile=BrowserProfile(
+			headless=True,
+			keep_alive=True,
+			user_data_dir=None,
+		)
+	)
+	await session.start()
+	try:
+		assert session.agent_focus_target_id is not None
+		initial_pages = await session._cdp_get_all_pages()
+		assert len(initial_pages) == 1
+
+		close_event = session.event_bus.dispatch(CloseTabEvent(target_id=session.agent_focus_target_id))
+		await close_event
+		await close_event.event_result(raise_if_any=True, raise_if_none=False)
+		await asyncio.sleep(0.4)
+
+		assert session.agent_focus_target_id is None
+		pages_after_close = await session._cdp_get_all_pages()
+		assert pages_after_close == []
+
+		focus_valid = await session.session_manager.ensure_valid_focus(timeout=3.0)
+		assert focus_valid is True
+		assert session.agent_focus_target_id is not None
+
+		recovered_pages = await session._cdp_get_all_pages()
+		assert len(recovered_pages) == 1
+		assert recovered_pages[0]['url'] == 'about:blank'
+	finally:
+		await session.stop()
