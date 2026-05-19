@@ -43,8 +43,6 @@ def apply_target_info(target: Target, target_info: Mapping[str, Any], *, current
 			source='detected_runtime',
 			title_prefix_applied=True,
 		)
-	elif target.ownership and target.ownership.source == 'detected_runtime':
-		target.ownership = None
 
 
 def set_target_ownership(
