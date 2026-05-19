@@ -125,13 +125,13 @@ async def test_shared_attach_marks_unclaimed_tabs_as_human_owned():
 		target_id='target-other',
 		target_type='page',
 		title='Builds',
-		display_title='[Runtime abcd] Builds',
+		display_title='[abcd] Builds',
 		ownership=TargetOwnershipMetadata.for_runtime(
 			target_id='target-other',
 			runtime=RuntimeOwnershipMetadata.create(
 				session_id='runtime-abcd',
 				runtime_id='runtime-abcd',
-				runtime_label='Runtime abcd',
+				runtime_label='abcd',
 				runtime_role='detected',
 			),
 			current_runtime_id=session.runtime_metadata.runtime_id,
@@ -183,15 +183,15 @@ async def test_get_tabs_reconciles_missing_peer_targets_from_root_discovery():
 								'url': 'https://example.test/current',
 								'title': apply_title_prefix('Current', session.runtime_metadata),
 							},
-							{
-								'targetId': 'target-peer',
-								'type': 'page',
-								'url': 'https://example.test/peer',
-								'title': '[Runtime abcd] Peer page',
-							},
-						],
-					}
-				)
+						{
+							'targetId': 'target-peer',
+							'type': 'page',
+							'url': 'https://example.test/peer',
+							'title': '[abcd] Peer page',
+						},
+					],
+				}
+			)
 			)
 		)
 	)
@@ -202,7 +202,7 @@ async def test_get_tabs_reconciles_missing_peer_targets_from_root_discovery():
 	peer = next(tab for tab in tabs if tab.target_id == 'target-peer')
 	assert peer.ownership is not None
 	assert peer.ownership.runtime is not None
-	assert peer.ownership.runtime.runtime_label == 'Runtime abcd'
+	assert peer.ownership.runtime.runtime_label == 'abcd'
 
 
 async def test_set_window_bounds_uses_browser_domain_and_updates_target_cache():
