@@ -1,16 +1,21 @@
 import asyncio
 import json
+import os
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from bubus import EventBus
 from pytest_httpserver import HTTPServer
+from websockets.protocol import State
 
 from agentyc.actions import ActionResult
-from agentyc.browser import BrowserProfile, BrowserSession
-from agentyc.browser.events import BrowserLaunchEvent, BrowserStartEvent
+from agentyc.browser import BrowserProfile, BrowserSession, session_navigation, session_runtime
+from agentyc.browser.events import BrowserLaunchEvent, BrowserStartEvent, NavigateToUrlEvent, RefreshEvent
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata
 from agentyc.browser.views import TabInfo
+from agentyc.browser.watchdogs.default_action_navigation import DefaultActionNavigationMixin
 from agentyc.dom.serializer.serializer import DOMTreeSerializer
 from agentyc.dom.service import DomService
 from agentyc.dom.views import DOMRect, EnhancedAXNode, EnhancedDOMTreeNode, EnhancedSnapshotNode, NodeType
@@ -18,6 +23,7 @@ from agentyc.filesystem.file_system import FileSystem
 from agentyc.mcp.server import AgentycServer
 from agentyc.mcp.state import build_browser_state_payload, parse_element_ref
 from agentyc.tools.extraction.projection import build_table_structured_payload
+from agentyc.tools.javascript import validate_and_fix_javascript
 from agentyc.tools.service import Tools
 
 _ACCESSIBLE_HTML = """
@@ -675,6 +681,16 @@ class TestMCPHotPathFixes:
 		assert BrowserLaunchEvent().event_timeout == 60.0
 		assert BrowserStartEvent().event_timeout == 90.0
 
+	def test_validate_and_fix_javascript_preserves_escaped_selector_quotes(self):
+		code = (
+			'(function(){ var el=document.querySelector("button[aria-label=\\"Publish comment\\"]"); '
+			'if(!el) return null; return el.getAttribute("aria-label"); })()'
+		)
+
+		result = validate_and_fix_javascript(code)
+
+		assert 'querySelector("button[aria-label=\\"Publish comment\\"]")' in result
+
 	async def test_init_browser_session_clears_partial_runtime_after_start_failure(self):
 		server = AgentycServer()
 		broken_session = SimpleNamespace(
@@ -692,6 +708,88 @@ class TestMCPHotPathFixes:
 		assert server.tools is None
 		assert server.file_system is None
 
+	async def test_init_browser_session_reuses_registered_local_browser(self):
+		server = AgentycServer()
+		attached_session = SimpleNamespace(
+			id='session-shared',
+			start=AsyncMock(),
+			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-shared')),
+			event_bus=SimpleNamespace(dispatch=AsyncMock()),
+			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
+		)
+
+		with patch.dict(os.environ, {'AGENTYC_REUSE_LOCAL_BROWSER': 'true'}, clear=False):
+			with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
+				with patch(
+					'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
+					new=AsyncMock(return_value='http://127.0.0.1:9222/'),
+				) as reusable_cdp_url:
+					with patch(
+						'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
+					) as browser_profile:
+						with patch('agentyc.browser.BrowserSession', return_value=attached_session):
+							await server._init_browser_session()
+
+		reusable_cdp_url.assert_awaited_once_with(headless=True)
+		profile_kwargs = browser_profile.call_args.kwargs
+		assert profile_kwargs['cdp_url'] == 'http://127.0.0.1:9222/'
+		assert profile_kwargs['keep_alive'] is True
+		assert profile_kwargs['shared_browser_mode'] == 'tab'
+		assert profile_kwargs['shared_browser_focus_policy'] == 'preserve'
+		attached_session.start.assert_awaited_once()
+		assert server._cdp_url == 'http://127.0.0.1:9222/'
+
+	async def test_init_browser_session_does_not_register_local_browser_for_reuse_by_default(self):
+		server = AgentycServer()
+		fresh_session = SimpleNamespace(
+			id='session-local',
+			start=AsyncMock(),
+			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9333/', keep_alive=True, headless=True, user_data_dir=None),
+			_local_browser_watchdog=SimpleNamespace(browser_pid=1234, _owns_browser_resources=True),
+		)
+
+		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
+			with patch(
+				'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
+				new=AsyncMock(return_value=None),
+			):
+				with patch('agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)) as browser_profile:
+					with patch('agentyc.browser.BrowserSession', return_value=fresh_session):
+						with patch('agentyc.mcp.shared_browser_registry.register_local_shared_browser') as register_shared:
+							await server._init_browser_session(headless=True, user_data_dir=None)
+
+		profile_kwargs = browser_profile.call_args.kwargs
+		assert profile_kwargs['keep_alive'] is False
+		assert 'shared_browser_mode' not in profile_kwargs
+		register_shared.assert_not_called()
+		assert fresh_session._local_browser_watchdog._owns_browser_resources is True
+
+	async def test_init_browser_session_does_not_reuse_registered_local_browser_by_default(self):
+		server = AgentycServer()
+		local_session = SimpleNamespace(
+			id='session-local',
+			start=AsyncMock(),
+			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9333/', keep_alive=False),
+		)
+
+		with patch.dict(os.environ, {}, clear=False):
+			os.environ.pop('AGENTYC_REUSE_LOCAL_BROWSER', None)
+			with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
+				with patch(
+					'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
+					new=AsyncMock(return_value='http://127.0.0.1:9222/'),
+				) as reusable_cdp_url:
+					with patch(
+						'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
+					) as browser_profile:
+						with patch('agentyc.browser.BrowserSession', return_value=local_session):
+							await server._init_browser_session()
+
+		reusable_cdp_url.assert_not_awaited()
+		profile_kwargs = browser_profile.call_args.kwargs
+		assert profile_kwargs.get('cdp_url') is None
+		assert profile_kwargs['keep_alive'] is False
+
 	async def test_execute_tool_reinitializes_unhealthy_cached_browser_runtime(self):
 		server = AgentycServer()
 		server.browser_session = SimpleNamespace(is_cdp_connected=False)
@@ -706,6 +804,105 @@ class TestMCPHotPathFixes:
 		server._reset_broken_browser_runtime.assert_awaited_once()
 		server._init_browser_session.assert_awaited_once()
 		server._navigate.assert_awaited_once_with('https://example.com', False)
+
+	async def test_close_session_stops_keep_alive_runtime_without_killing_browser(self):
+		server = AgentycServer()
+		shared_session = SimpleNamespace(
+			id='session-shared',
+			_browser_context_id='context-123',
+			_cdp_client_root=SimpleNamespace(
+				send=SimpleNamespace(Target=SimpleNamespace(disposeBrowserContext=AsyncMock(return_value={})))
+			),
+			browser_profile=SimpleNamespace(keep_alive=True),
+			stop=AsyncMock(),
+			kill=AsyncMock(),
+		)
+		server.browser_session = shared_session
+		server.tools = SimpleNamespace()
+		server.active_sessions[shared_session.id] = {
+			'session': shared_session,
+			'created_at': 0.0,
+			'last_activity': 0.0,
+			'url': 'about:blank',
+		}
+
+		result = await server._close_session(shared_session.id)
+
+		assert 'Successfully closed session' in result
+		shared_session.stop.assert_awaited_once()
+		shared_session.kill.assert_not_called()
+		assert shared_session._browser_context_id is None
+		assert server.browser_session is None
+
+	async def test_session_kill_preserves_local_watchdog_cleanup_after_stop_reset(self):
+		class _AwaitableEvent:
+			def __init__(self, on_await=None):
+				self._on_await = on_await
+
+			def __await__(self):
+				async def _runner():
+					if self._on_await is not None:
+						self._on_await()
+					return None
+
+				return _runner().__await__()
+
+		local_watchdog = SimpleNamespace(
+			_subprocess=object(),
+			_owns_browser_resources=True,
+			on_BrowserKillEvent=AsyncMock(),
+		)
+		session = SimpleNamespace(
+			_intentional_stop=False,
+			logger=SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+			_local_browser_watchdog=local_watchdog,
+		)
+
+		def dispatch(event):
+			if type(event).__name__ == 'BrowserStopEvent':
+				return _AwaitableEvent(lambda: setattr(session, '_local_browser_watchdog', None))
+			return _AwaitableEvent()
+
+		stop_mock = AsyncMock()
+		session.event_bus = SimpleNamespace(dispatch=dispatch, stop=stop_mock)
+
+		with patch('agentyc.browser.session_runtime.reset', new=AsyncMock()):
+			with patch('agentyc.browser.session_runtime.EventBus', return_value=SimpleNamespace()):
+				await session_runtime.kill(session)
+
+		local_watchdog.on_BrowserKillEvent.assert_awaited_once()
+		stop_mock.assert_awaited_once_with(clear=True, timeout=5)
+
+	async def test_second_server_reuses_existing_local_browser_without_explicit_cdp_url(self, monkeypatch):
+		from agentyc.mcp.shared_browser_registry import clear_registered_local_shared_browser
+
+		monkeypatch.setenv('AGENTYC_REUSE_LOCAL_BROWSER', '1')
+		clear_registered_local_shared_browser()
+		primary = AgentycServer()
+		secondary = AgentycServer()
+		launched_process = None
+
+		try:
+			with patch.dict(os.environ, {'AGENTYC_REUSE_LOCAL_BROWSER': 'true'}, clear=False):
+				await primary._init_browser_session(headless=True, user_data_dir=None)
+				primary_watchdog = getattr(primary.browser_session, '_local_browser_watchdog', None)
+				launched_process = getattr(primary_watchdog, '_subprocess', None)
+				primary_cdp_url = primary.browser_session.browser_profile.cdp_url
+				assert primary_cdp_url
+
+				await secondary._init_browser_session(headless=True, user_data_dir=None)
+				secondary_cdp_url = secondary.browser_session.browser_profile.cdp_url
+				assert secondary_cdp_url == primary_cdp_url
+				assert secondary.browser_session.id != primary.browser_session.id
+				assert secondary.browser_session.agent_focus_target_id != primary.browser_session.agent_focus_target_id
+		finally:
+			await secondary._shutdown()
+			await primary._shutdown()
+			if launched_process is not None:
+				from agentyc.browser.watchdogs.local_browser_watchdog import LocalBrowserWatchdog
+
+				await LocalBrowserWatchdog._cleanup_process(launched_process)
+			clear_registered_local_shared_browser()
 
 	async def test_get_state_forwards_include_screenshot_flag(self):
 		server = AgentycServer()
@@ -829,6 +1026,47 @@ class TestMCPHotPathFixes:
 		assert elapsed < 0.5
 		fake_send.Page.navigate.assert_awaited_once()
 		fake_send.Runtime.evaluate.assert_awaited()
+
+	async def test_navigate_recovers_focus_before_reporting_browser_not_connected(self):
+		session = BrowserSession(browser_profile=BrowserProfile(headless=True))
+		session.agent_focus_target_id = None
+		session.session_manager = SimpleNamespace(
+			ensure_valid_focus=AsyncMock(side_effect=self._recover_focus_for_navigation(session)),
+			get_target=lambda _target_id: SimpleNamespace(url='about:blank'),
+		)
+		session.event_bus = EventBus()
+		session.event_bus.dispatch = lambda _event: _CompletedEvent()  # type: ignore[method-assign]
+		fake_send = SimpleNamespace(
+			Page=SimpleNamespace(navigate=AsyncMock(return_value={'loaderId': 'loader-1'})),
+			Runtime=SimpleNamespace(
+				evaluate=AsyncMock(
+					return_value={'result': {'value': {'readyState': 'complete', 'url': 'http://example.com/recovered'}}}
+				)
+			),
+		)
+		fake_cdp_session = SimpleNamespace(
+			session_id='session-1',
+			target_id='target-1',
+			cdp_client=SimpleNamespace(send=fake_send),
+			_lifecycle_events=[],
+		)
+
+		with patch.object(BrowserSession, 'get_or_create_cdp_session', new=AsyncMock(return_value=fake_cdp_session)):
+			await session.on_NavigateToUrlEvent(
+				NavigateToUrlEvent(url='http://example.com/recovered', new_tab=False, wait_until='load')
+			)
+
+		session.session_manager.ensure_valid_focus.assert_awaited_once_with(timeout=3.0)
+		assert session.agent_focus_target_id == 'target-1'
+		fake_send.Page.navigate.assert_awaited_once()
+
+	@staticmethod
+	def _recover_focus_for_navigation(session: BrowserSession):
+		async def _recover(*, timeout: float) -> bool:
+			session.agent_focus_target_id = 'target-1'
+			return True
+
+		return _recover
 
 	async def test_get_all_trees_uses_single_frame_ax_call_when_dom_has_no_iframes(self):
 		fake_send = SimpleNamespace(
@@ -1021,6 +1259,41 @@ class TestMCPHotPathFixes:
 		assert server.browser_session.get_dom_element_by_index.await_args_list[0].args == (42,)
 		assert server.browser_session.get_dom_element_by_index.await_args_list[1].args == (42,)
 
+	async def test_navigate_new_tab_accepts_reused_blank_tab(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.id = 'session-1'
+		server.browser_session.get_tabs = AsyncMock(return_value=[TabInfo(tab_id='blank1', url='about:blank', title='')])
+		server.browser_session.agent_focus_target_id = 'blank1'
+		server.tools = SimpleNamespace(act=AsyncMock(return_value=ActionResult(extracted_content='opened')))
+		server._update_session_activity = lambda *_args, **_kwargs: None
+
+		result = await server._navigate('https://example.com/next', new_tab=True)
+
+		assert result == 'Opened new tab with URL: https://example.com/next'
+
+	async def test_click_new_tab_accepts_reused_blank_tab(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.id = 'session-1'
+		server.browser_session.get_dom_element_by_index = AsyncMock(
+			return_value=_StubElement(42, 'Documentation', tag='a', attrs={'href': '/docs'})
+		)
+		server.browser_session.get_current_page_url = AsyncMock(return_value='https://example.com/current')
+		server.browser_session.get_tabs = AsyncMock(
+			return_value=[
+				TabInfo(tab_id='cur1', url='https://example.com/current', title='Current'),
+				TabInfo(tab_id='blank1', url='about:blank', title=''),
+			]
+		)
+		server.browser_session.agent_focus_target_id = 'blank1'
+		server.tools = SimpleNamespace(act=AsyncMock(return_value=ActionResult(extracted_content='opened')))
+		server._update_session_activity = lambda *_args, **_kwargs: None
+
+		result = await server._click(ref='e42', new_tab=True)
+
+		assert result == 'Clicked element e42 and opened in new tab https://example.com/...'
+
 	async def test_extract_content_appends_extraction_metadata(self, tmp_path):
 		server = AgentycServer()
 		server.browser_session = AsyncMock()
@@ -1164,6 +1437,81 @@ class TestMCPHotPathFixes:
 
 		assert result.startswith('Network idle after ')
 		assert elapsed < 0.4
+
+	async def test_wait_for_network_idle_ignores_requests_that_started_before_wait(self):
+		server = AgentycServer()
+		server.browser_session = AsyncMock()
+		server.browser_session.get_or_create_cdp_session = AsyncMock(return_value=SimpleNamespace())
+		server._network_pending = {'req-stale': {'request_id': 'req-stale', 'start_time': time.time() - 5.0}}
+
+		started = asyncio.get_event_loop().time()
+		result = await server._wait_for_network_idle(timeout_seconds=1.0, idle_duration_ms=100)
+		elapsed = asyncio.get_event_loop().time() - started
+
+		assert result.startswith('Network idle after ')
+		assert elapsed < 0.3
+
+	async def test_list_sessions_uses_connection_flag_without_touching_cdp_client_property(self):
+		server = AgentycServer()
+		connected_session = BrowserSession(headless=True, user_data_dir=None)
+		connected_session._cdp_client_root = SimpleNamespace(ws=SimpleNamespace(state=State.OPEN))
+
+		uninitialized_session = BrowserSession(headless=True, user_data_dir=None)
+		server.active_sessions = {
+			'session-open': {
+				'session': connected_session,
+				'created_at': 1000.0,
+				'last_activity': 1060.0,
+				'url': 'https://example.com/open',
+			},
+			'session-closed': {
+				'session': uninitialized_session,
+				'created_at': 1000.0,
+				'last_activity': 1060.0,
+				'url': 'https://example.com/closed',
+			},
+		}
+
+		result = json.loads(await server._list_sessions())
+
+		assert [entry['active'] for entry in result] == [True, False]
+
+	async def test_scroll_reports_error_when_gesture_fails(self):
+		watchdog = DefaultActionNavigationMixin()
+		watchdog.browser_session = SimpleNamespace(agent_focus_target_id='target-1', _dom_watchdog=None)
+		watchdog.logger = SimpleNamespace(debug=lambda *_args, **_kwargs: None)
+		watchdog._scroll_with_cdp_gesture = AsyncMock(return_value=False)
+
+		with pytest.raises(Exception, match='Failed to scroll page via CDP gesture'):
+			await watchdog.on_ScrollEvent(SimpleNamespace(direction='down', amount=400, node=None))
+
+	async def test_refresh_waits_for_navigation_readiness_instead_of_fixed_sleep(self):
+		watchdog = DefaultActionNavigationMixin()
+		fake_cdp_session = SimpleNamespace(
+			target_id='target-1',
+			session_id='session-1',
+			cdp_client=SimpleNamespace(send=SimpleNamespace(Page=SimpleNamespace(reload=AsyncMock(return_value={})))),
+		)
+		watchdog.browser_session = SimpleNamespace(
+			agent_focus_target_id='target-1',
+			session_manager=SimpleNamespace(get_target=lambda _target_id: SimpleNamespace(url='https://example.com/current')),
+			get_current_page_url=AsyncMock(return_value='https://example.com/current'),
+			get_or_create_cdp_session=AsyncMock(return_value=fake_cdp_session),
+		)
+		watchdog.logger = SimpleNamespace(info=lambda *_args, **_kwargs: None)
+
+		with patch.object(session_navigation, '_navigate_and_wait', new=AsyncMock()) as navigate_and_wait:
+			await watchdog.on_RefreshEvent(RefreshEvent())
+
+		fake_cdp_session.cdp_client.send.Page.reload.assert_awaited_once_with(session_id='session-1')
+		navigate_and_wait.assert_awaited_once_with(
+			watchdog.browser_session,
+			'https://example.com/current',
+			'target-1',
+			timeout=3.0,
+			wait_until='load',
+			nav_timeout=8.0,
+		)
 
 	async def test_network_log_entries_finalize_on_loading_finished_and_failures(self):
 		server = AgentycServer()
@@ -1733,6 +2081,22 @@ class TestMCPStateProtocolAndExtraction:
 
 		assert len(frame_input_elements) == 1
 		assert frame_input_elements[0]['tag'] == 'input'
+
+	async def test_browser_find_elements_uses_accessible_names_for_form_controls(
+		self, browser_session: BrowserSession, base_url: str
+	):
+		await browser_session.navigate_to(f'{base_url}/form')
+
+		server = AgentycServer()
+		server.browser_session = browser_session
+		server.tools = Tools()
+		server._update_session_activity = lambda *_args, **_kwargs: None
+
+		find_result = await server._find_elements('input, select, button', max_results=10)
+
+		assert 'Project name' in find_result
+		assert 'Repository URL' in find_result
+		assert 'Deploy preview' in find_result
 
 	async def test_public_mcp_contenteditable_workflow(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/editor')
