@@ -68,7 +68,14 @@ class SerializerIndexingMixin:
 	def _collect_interactive_elements(self: Any, node: SimplifiedNode, elements: list[SimplifiedNode]) -> None:
 		is_interactive = self._is_interactive_cached(node.original_node)
 		is_visible = node.original_node.snapshot_node and node.original_node.is_visible
-		if is_interactive and is_visible:
+		is_search_entry_control = ClickableElementDetector.is_search_entry_control(node.original_node)
+		is_file_input = (
+			node.original_node.tag_name
+			and node.original_node.tag_name.lower() == 'input'
+			and node.original_node.attributes
+			and node.original_node.attributes.get('type') == 'file'
+		)
+		if is_interactive and (is_visible or is_file_input or is_search_entry_control):
 			elements.append(node)
 
 		for child in node.children:
@@ -159,6 +166,7 @@ class SerializerIndexingMixin:
 				and node.original_node.tag_name.lower() in ['input', 'button', 'select', 'textarea', 'a']
 				and self._is_inside_shadow_dom(node)
 			)
+			is_search_entry_control = ClickableElementDetector.is_search_entry_control(node.original_node)
 
 			should_make_interactive = False
 			if is_scrollable:
@@ -182,7 +190,7 @@ class SerializerIndexingMixin:
 					has_interactive_desc = self._has_interactive_descendants(node)
 					if not has_interactive_desc:
 						should_make_interactive = True
-			elif is_interactive_assign and (is_visible or is_file_input or is_shadow_dom_element):
+			elif is_interactive_assign and (is_visible or is_file_input or is_shadow_dom_element or is_search_entry_control):
 				should_make_interactive = True
 
 			if (
