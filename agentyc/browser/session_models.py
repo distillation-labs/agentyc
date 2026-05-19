@@ -58,7 +58,7 @@ class RuntimeOwnershipMetadata(BaseModel):
 	) -> RuntimeOwnershipMetadata:
 		resolved_runtime_id = runtime_id or session_id
 		short_id = _short_runtime_id(resolved_runtime_id)
-		resolved_label = runtime_label or f'Runtime {short_id}'
+		resolved_label = runtime_label or short_id
 		return cls(
 			runtime_id=resolved_runtime_id,
 			session_id=session_id,
