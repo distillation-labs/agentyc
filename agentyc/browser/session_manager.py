@@ -32,7 +32,7 @@ from agentyc.browser.session_manager_support import (
 	set_target_window_context as set_target_window_context_helper,
 )
 from agentyc.browser.session_models import CDPSession, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
-from agentyc.utils import create_task_with_error_handling
+from agentyc.utils import create_task_with_error_handling, is_new_tab_page
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
@@ -742,8 +742,10 @@ class SessionManager:
 			is_existing_tab = False
 
 			if page_targets:
-				# Switch to most recent page that's not the crashed one
-				new_target_id = page_targets[-1].target_id
+				preferred_targets = [target for target in page_targets if not is_new_tab_page(target.url)]
+				candidate_targets = preferred_targets or page_targets
+				# Switch to the most recent real page when possible, otherwise fall back to any remaining tab.
+				new_target_id = candidate_targets[-1].target_id
 				is_existing_tab = True
 				self.logger.info(f'[SessionManager] Switching agent_focus to existing tab {new_target_id[:8]}...')
 			else:
