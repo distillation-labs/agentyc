@@ -183,15 +183,15 @@ async def test_get_tabs_reconciles_missing_peer_targets_from_root_discovery():
 								'url': 'https://example.test/current',
 								'title': apply_title_prefix('Current', session.runtime_metadata),
 							},
-						{
-							'targetId': 'target-peer',
-							'type': 'page',
-							'url': 'https://example.test/peer',
-							'title': '[abcd] Peer page',
-						},
-					],
-				}
-			)
+							{
+								'targetId': 'target-peer',
+								'type': 'page',
+								'url': 'https://example.test/peer',
+								'title': '[abcd] Peer page',
+							},
+						],
+					}
+				)
 			)
 		)
 	)
