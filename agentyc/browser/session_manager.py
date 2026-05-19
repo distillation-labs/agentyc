@@ -393,11 +393,13 @@ class SessionManager:
 					await asyncio.wait_for(self._recovery_complete_event.wait(), timeout=timeout)
 					# Check again after recovery - simple existence check
 					focus_id = self.browser_session.agent_focus_target_id
-					return bool(focus_id and self._get_session_for_target(focus_id))
+					if focus_id and self._get_session_for_target(focus_id):
+						return True
+					return await self._recover_focus_on_demand(timeout=timeout)
 				except TimeoutError:
 					self.logger.error(f'[SessionManager] ❌ Timed out waiting for recovery after {timeout}s')
 					return False
-			return False
+			return await self._recover_focus_on_demand(timeout=timeout)
 
 		# Simple existence check - does the focused target have a session?
 		cdp_session = self._get_session_for_target(self.browser_session.agent_focus_target_id)
@@ -420,7 +422,7 @@ class SessionManager:
 				'[SessionManager] ⚠️ Recovery not in progress for stale focus! '
 				'This indicates a bug - recovery should have been triggered.'
 			)
-			return False
+			return await self._recover_focus_on_demand(timeout=timeout)
 
 		# Wait for recovery complete event (event-driven, not polling!)
 		if self._recovery_complete_event:
@@ -441,7 +443,7 @@ class SessionManager:
 					self.logger.error(
 						f'[SessionManager] ❌ Recovery completed but focus still invalid after {elapsed * 1000:.0f}ms'
 					)
-					return False
+					return await self._recover_focus_on_demand(timeout=timeout)
 
 			except TimeoutError:
 				self.logger.error(
@@ -452,6 +454,63 @@ class SessionManager:
 				return False
 		else:
 			self.logger.error('[SessionManager] ❌ Recovery event not initialized')
+			return False
+
+	async def _recover_focus_on_demand(self, timeout: float = 3.0) -> bool:
+		"""Recover focus only when a caller explicitly needs a usable page."""
+		async with self._recovery_lock:
+			focus_id = self.browser_session.agent_focus_target_id
+			if focus_id:
+				cdp_session = self._get_session_for_target(focus_id)
+				if cdp_session and await self.validate_session(focus_id):
+					return True
+
+			if self.browser_session._cdp_client_root is None:
+				self.logger.debug('[SessionManager] Cannot recover focus on demand - browser is shutting down')
+				return False
+
+			page_targets = self.get_owned_page_targets()
+			preferred_targets = [target for target in page_targets if not is_new_tab_page(target.url)]
+			candidate_targets = preferred_targets or page_targets
+
+			for target in reversed(candidate_targets):
+				target_id = target.target_id
+				cdp_session = self._get_session_for_target(target_id)
+				if not cdp_session:
+					continue
+				if not await self.validate_session(target_id):
+					continue
+				self.browser_session.agent_focus_target_id = target_id
+				target_url = target.url or 'about:blank'
+				from agentyc.browser.events import AgentFocusChangedEvent
+
+				self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=target_id, url=target_url))
+				return True
+
+			self.logger.info('[SessionManager] No live tabs remain, creating a new tab on demand')
+			new_target_id = await self.browser_session._cdp_create_new_page(
+				'about:blank',
+				background=self.browser_session.browser_profile.shared_browser_focus_policy == 'preserve',
+			)
+
+			from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
+
+			self.browser_session.event_bus.dispatch(TabCreatedEvent(url='about:blank', target_id=new_target_id))
+
+			loop = asyncio.get_event_loop()
+			deadline = loop.time() + max(timeout, 0.1)
+			while loop.time() < deadline:
+				await asyncio.sleep(0.1)
+				cdp_session = self._get_session_for_target(new_target_id)
+				if not cdp_session:
+					continue
+				if not await self.validate_session(new_target_id):
+					continue
+				self.browser_session.agent_focus_target_id = new_target_id
+				self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url='about:blank'))
+				return True
+
+			self.logger.error(f'[SessionManager] ❌ Failed to establish a session for on-demand tab {new_target_id[:8]}...')
 			return False
 
 	async def _handle_target_attached(self, event: AttachedToTargetEvent) -> None:
@@ -749,18 +808,10 @@ class SessionManager:
 				is_existing_tab = True
 				self.logger.info(f'[SessionManager] Switching agent_focus to existing tab {new_target_id[:8]}...')
 			else:
-				# No pages exist - create a new one
-				self.logger.warning('[SessionManager] No tabs remain! Creating new tab for agent...')
-				new_target_id = await self.browser_session._cdp_create_new_page(
-					'about:blank',
-					background=self.browser_session.browser_profile.shared_browser_focus_policy == 'preserve',
+				self.logger.info(
+					'[SessionManager] No tabs remain after detach; leaving focus empty until a future action needs a page'
 				)
-				self.logger.info(f'[SessionManager] Created new tab {new_target_id[:8]}... for agent')
-
-				# Dispatch TabCreatedEvent so watchdogs can initialize
-				from agentyc.browser.events import TabCreatedEvent
-
-				self.browser_session.event_bus.dispatch(TabCreatedEvent(url='about:blank', target_id=new_target_id))
+				return
 
 			# Wait for CDP attach event to create session
 			# Note: This polling is necessary - waiting for external Chrome CDP event
