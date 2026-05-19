@@ -344,6 +344,25 @@ class DefaultActionClickEngineMixin:
 			self.logger.debug(f'Occlusion check failed: {error}, assuming not occluded')
 			return False
 
+	async def _move_mouse_before_click(self, cdp_session, session_id: str, x: float, y: float) -> None:
+		try:
+			await asyncio.wait_for(
+				cdp_session.cdp_client.send.Input.dispatchMouseEvent(
+					params={
+						'type': 'mouseMoved',
+						'x': x,
+						'y': y,
+					},
+					session_id=session_id,
+				),
+				timeout=0.1,
+			)
+			await asyncio.sleep(0.05)
+		except TimeoutError:
+			self.logger.debug('⏱️ Mouse move timed out before click, continuing with direct press...')
+		except Exception as error:
+			self.logger.debug(f'⚠️ Mouse move before click failed (non-critical): {type(error).__name__}: {error}')
+
 	async def _click_element_node_impl(self, element_node) -> dict | None:
 		try:
 			tag_name = element_node.tag_name.lower() if element_node.tag_name else ''
@@ -494,15 +513,7 @@ class DefaultActionClickEngineMixin:
 
 			try:
 				self.logger.debug(f'👆 Dragging mouse over element before clicking x: {center_x}px y: {center_y}px ...')
-				await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
-					params={
-						'type': 'mouseMoved',
-						'x': center_x,
-						'y': center_y,
-					},
-					session_id=session_id,
-				)
-				await asyncio.sleep(0.05)
+				await self._move_mouse_before_click(cdp_session, session_id, center_x, center_y)
 
 				self.logger.debug(f'👆🏾 Clicking x: {center_x}px y: {center_y}px ...')
 				try:
@@ -637,15 +648,7 @@ class DefaultActionClickEngineMixin:
 			session_id = cdp_session.session_id
 			self.logger.debug(f'👆 Moving mouse to ({coordinate_x}, {coordinate_y})...')
 
-			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
-				params={
-					'type': 'mouseMoved',
-					'x': coordinate_x,
-					'y': coordinate_y,
-				},
-				session_id=session_id,
-			)
-			await asyncio.sleep(0.05)
+			await self._move_mouse_before_click(cdp_session, session_id, coordinate_x, coordinate_y)
 
 			self.logger.debug(f'👆🏾 Clicking at ({coordinate_x}, {coordinate_y})...')
 			try:
