@@ -264,6 +264,7 @@ class BrowserSession(BaseModel):
 	_original_viewport_size: tuple[int, int] | None = PrivateAttr(default=None)
 	_runtime_metadata: RuntimeOwnershipMetadata | None = PrivateAttr(default=None)
 	_target_init_scripts: dict[str, set[str]] = PrivateAttr(default_factory=dict)
+	_runtime_marker_script_ids: dict[str, str] = PrivateAttr(default_factory=dict)
 	_global_init_script_targets: dict[str, set[str]] = PrivateAttr(default_factory=dict)
 	_browser_context_id: str | None = PrivateAttr(default=None)
 
