@@ -844,6 +844,36 @@ async def _wait_for_element(
 	return f'Error [timeout]: Element {target} did not {verb} within {timeout:.0f}s'
 
 
+async def _save_as_pdf(
+	self,
+	file_name: str | None = None,
+	print_background: bool = True,
+	landscape: bool = False,
+	scale: float = 1.0,
+	paper_format: str = 'Letter',
+) -> str:
+	"""Save the current page as a PDF file."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+
+	self._ensure_extract_runtime()
+	payload: dict[str, Any] = {
+		'print_background': print_background,
+		'landscape': landscape,
+		'scale': scale,
+		'paper_format': paper_format,
+	}
+	if file_name:
+		payload['file_name'] = file_name
+
+	action_result = await self._run_tool_action('save_as_pdf', payload)
+	if action_result.error:
+		return self._format_action_error(action_result.error, default_code='pdf_failed')
+	if action_result.attachments:
+		return f'PDF saved: {action_result.attachments[0]}'
+	return action_result.extracted_content or 'PDF saved successfully'
+
+
 async def _search_page(self, pattern: str, regex: bool = False, max_results: int = 25) -> str:
 	"""Search for text or regex pattern on the current page."""
 	if not self.browser_session:
