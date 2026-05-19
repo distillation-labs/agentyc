@@ -36,7 +36,7 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read → ref → act` loop, `since_hash` polling, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
+Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read → ref → act` loop, `since_hash` polling, lightweight state modes, short progress narration, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
 
 | Argument | Description |
 |----------|-------------|
@@ -148,6 +148,19 @@ The runtime startup path is:
 
 ## Result Semantics
 
+### Progress And Timing
+
+MCP clients may include a request `_meta.progressToken` on `tools/call`. When present, agentyc emits `notifications/progress` for long-running browser phases such as navigation, state reads, screenshot capture, extraction, and session startup.
+
+Tool results also attach timing metadata on the first returned text content block through `_meta`:
+
+- `agentyc/tool_name`
+- `agentyc/tool_phase`
+- `agentyc/browser_duration_ms`
+- `agentyc/is_error`
+
+Clients can use these fields to distinguish browser work from the agent's own reasoning time.
+
 ### `browser_get_state`
 
 `browser_get_state` returns a JSON text payload. When `include_screenshot=true`, the server also returns an MCP image content item.
@@ -170,6 +183,8 @@ Important fields:
 - `interactive_elements_truncated`, `interactive_elements_remaining`, and `compaction_strategy` when compact ranked state is used
 - `viewport`, `page`, and `scroll` when available
 - `screenshot_dimensions` when a screenshot is included
+
+For interactive use, prefer `mode="min"` first and pass `since_hash` on follow-up reads. Escalate to `mode="full"` only when the compact payload omitted an element you actually need.
 
 Interactive elements use stable refs such as `e123`. Those refs are the preferred public targeting contract.
 
