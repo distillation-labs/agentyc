@@ -49,6 +49,26 @@ async def _refresh_selector_map(self) -> None:
 	await self.browser_session.get_browser_state_summary(include_screenshot=False)
 
 
+async def _page_contains_visible_text(self, text: str) -> bool:
+	if self.browser_session is None:
+		return False
+
+	cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+	result = await cdp_session.cdp_client.send.Runtime.evaluate(
+		params={
+			'expression': f"""(function() {{
+				const root = document.body || document.documentElement;
+				if (!root) return false;
+				const visibleText = String(root.innerText || root.textContent || '').toLowerCase();
+				return visibleText.includes({json.dumps(text.lower())});
+			}})()""",
+			'returnByValue': True,
+		},
+		session_id=cdp_session.session_id,
+	)
+	return bool(result.get('result', {}).get('value'))
+
+
 async def _resolve_live_element(
 	self,
 	*,
@@ -224,20 +244,45 @@ def _inject_extraction_metadata(self, extracted_content: str, metadata: dict[str
 	return f'{extracted_content}\n<extraction_metadata>\n{json.dumps(visible_metadata, sort_keys=True)}\n</extraction_metadata>'
 
 
+def _new_tab_postcondition_satisfied(self, *, before_tabs: list[Any], before_focus_target_id: str | None) -> bool:
+	if not self.browser_session:
+		return False
+
+	from agentyc._utils_urls import is_new_tab_page
+
+	current_target_id = self.browser_session.agent_focus_target_id
+	if current_target_id is None:
+		return False
+
+	before_target_ids = {tab.target_id for tab in before_tabs}
+	if current_target_id not in before_target_ids:
+		return True
+	if before_focus_target_id is not None and current_target_id != before_focus_target_id:
+		return True
+	if before_focus_target_id is None:
+		return False
+
+	before_focus_tab = next((tab for tab in before_tabs if tab.target_id == before_focus_target_id), None)
+	return before_focus_tab is not None and is_new_tab_page(before_focus_tab.url)
+
+
 async def _navigate(self, url: str, new_tab: bool = False) -> str:
 	"""Navigate to a URL."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
 
 	self._update_session_activity(self.browser_session.id)
-	before_tabs = len(await self.browser_session.get_tabs()) if new_tab else None
+	before_tabs = await self.browser_session.get_tabs() if new_tab else None
+	before_focus_target_id = self.browser_session.agent_focus_target_id if new_tab else None
 	action_result = await self._run_tool_action('navigate', {'url': url, 'new_tab': new_tab})
 	if action_result.error:
 		return self._format_action_error(action_result.error, default_code='navigation_failed')
 	if new_tab:
 		assert before_tabs is not None
-		after_tabs = len(await self.browser_session.get_tabs())
-		if after_tabs <= before_tabs:
+		if not self._new_tab_postcondition_satisfied(
+			before_tabs=before_tabs,
+			before_focus_target_id=before_focus_target_id,
+		):
 			return self._format_action_error(
 				f'Navigation to {url} did not open a new tab as requested.',
 				default_code='postcondition_failed',
@@ -304,12 +349,15 @@ async def _click(
 			else:
 				full_url = href
 
-			before_tabs = len(await self.browser_session.get_tabs())
+			before_tabs = await self.browser_session.get_tabs()
+			before_focus_target_id = self.browser_session.agent_focus_target_id
 			action_result = await self._run_tool_action('navigate', {'url': full_url, 'new_tab': True})
 			if action_result.error:
 				return self._format_action_error(action_result.error, default_code='click_failed')
-			after_tabs = len(await self.browser_session.get_tabs())
-			if after_tabs <= before_tabs:
+			if not self._new_tab_postcondition_satisfied(
+				before_tabs=before_tabs,
+				before_focus_target_id=before_focus_target_id,
+			):
 				return self._format_action_error(
 					f'Click on element {ref or resolved_index} did not open a new tab.',
 					default_code='postcondition_failed',
@@ -758,15 +806,13 @@ async def _wait_for_element(
 			return f'Error: {e}'
 
 	while elapsed < timeout:
-		state = await self.browser_session.get_browser_state_summary(include_screenshot=False)
-		selector_map = state.dom_state.selector_map
-
 		if ref_index is not None:
+			state = await self.browser_session.get_browser_state_summary(include_screenshot=False)
+			selector_map = state.dom_state.selector_map
 			found = ref_index in selector_map
 		else:
 			assert text is not None
-			needle = text.lower()
-			found = any(needle in (element.get_meaningful_text_for_llm() or '').lower() for element in selector_map.values())
+			found = await self._page_contains_visible_text(text)
 
 		if found == appear:
 			verb = 'appeared' if appear else 'disappeared'
