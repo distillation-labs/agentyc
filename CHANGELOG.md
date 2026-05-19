@@ -6,6 +6,13 @@
 
 - **No stray blank window after closing the last tab** - Agentyc no longer recreates a background `about:blank` page with the `Starting agent ...` title after the final browser tab is closed. When no tabs remain, focus stays empty until a later action explicitly needs a page, at which point recovery creates a new tab on demand instead of respawning one in the background.
 
+## [0.2.9] - 2026-05-18
+
+### Fixed
+
+- **Last-tab close no longer respawns a stray browser surface** - closing the final Agentyc-controlled tab no longer causes a delayed `about:blank` window or `Starting agent ...` page to reappear after the user is done with automation.
+- **Tab recovery is now demand-driven when no pages remain** - the runtime stops background-creating replacement tabs on last-tab close. If a later tool action truly needs a page, focus recovery creates a fresh `about:blank` tab at that point instead of racing the user with proactive recovery.
+
 ## [0.2.8] - 2026-05-18
 
 ### Changed
