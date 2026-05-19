@@ -36,7 +36,7 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read → ref → act` loop, `since_hash` polling, lightweight state modes, short progress narration, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
+Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, `since_hash` polling, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
 
 | Argument | Description |
 |----------|-------------|
