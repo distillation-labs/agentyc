@@ -512,6 +512,15 @@ async def _register_cdp_event_listeners(self) -> None:
 	cdp_session.cdp_client.register.Network.loadingFinished(on_loading_finished)
 	cdp_session.cdp_client.register.Network.loadingFailed(on_loading_failed)
 
+	def on_trace_data_collected(event: Any, session_id: str | None = None) -> None:
+		if isinstance(event, dict):
+			value = event.get('value', [])
+			if isinstance(value, list):
+				self._trace_events.extend(value)
+
+	if hasattr(cdp_session.cdp_client.register, 'Tracing'):
+		cdp_session.cdp_client.register.Tracing.dataCollected(on_trace_data_collected)
+
 	self._cdp_events_registered = True
 
 
@@ -552,6 +561,46 @@ async def _get_network_log(
 	_omit = {'request_id', 'start_time'} if include_headers else {'request_id', 'start_time', 'req_headers', 'resp_headers'}
 	display = [{k: v for k, v in e.items() if k not in _omit and v is not None} for e in entries]
 	return json.dumps(display)
+
+
+async def _get_downloads(self) -> str:
+	"""List files downloaded during the current session."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+	files = self.browser_session.downloaded_files
+	if not files:
+		return 'No files downloaded in this session.'
+	result = []
+	for f in files:
+		p = Path(f)
+		result.append(
+			{
+				'path': str(p),
+				'name': p.name,
+				'size_bytes': p.stat().st_size if p.exists() else 0,
+			}
+		)
+	return json.dumps(result)
+
+
+async def _set_viewport(self, width: int, height: int, device_scale_factor: float = 1.0) -> str:
+	"""Set the browser viewport dimensions for the current tab."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+	try:
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		await cdp_session.cdp_client.send.Emulation.setDeviceMetricsOverride(
+			params={
+				'width': width,
+				'height': height,
+				'deviceScaleFactor': device_scale_factor,
+				'mobile': False,
+			},
+			session_id=cdp_session.session_id,
+		)
+		return f'Viewport set to {width}x{height} (scale: {device_scale_factor})'
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
 
 
 async def _get_focused_element(self) -> str:
@@ -690,3 +739,168 @@ async def _close_tab(self, tab_id: str) -> str:
 		await self.browser_session.session_manager.ensure_valid_focus(timeout=3.0)
 	current_url = await self.browser_session.get_current_page_url()
 	return f'Closed tab # {tab_id}, now on {current_url}'
+
+
+async def _wait_for_stable_dom(self, timeout_seconds: float = 10.0, quiet_ms: int = 500) -> str:
+	"""Wait until DOM mutations settle for the quiet period."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+	try:
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		if not cdp_session:
+			return 'Error: No active CDP session'
+		code = f"""
+		(async () => {{
+			const quietMs = {quiet_ms};
+			const timeoutMs = {int(timeout_seconds * 1000)};
+			return new Promise((resolve, reject) => {{
+				const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+				let timeoutId;
+				const observer = new MutationObserver(() => {{
+					clearTimeout(timeoutId);
+					timeoutId = setTimeout(() => {{
+						observer.disconnect();
+						clearTimeout(timer);
+						resolve("stable");
+					}}, quietMs);
+				}});
+				observer.observe(document.documentElement, {{
+					childList: true, subtree: true, attributes: true, characterData: true,
+				}});
+				timeoutId = setTimeout(() => {{
+					observer.disconnect();
+					clearTimeout(timer);
+					resolve("stable");
+				}}, quietMs);
+			}});
+		}})()
+		"""
+		result = await cdp_session.cdp_client.send.Runtime.evaluate(
+			params={'expression': code, 'awaitPromise': True, 'returnByValue': True},
+			session_id=cdp_session.session_id,
+		)
+		status = (result.get('result') or {}).get('value', 'unknown')
+		return f'DOM stable after quiet period ({status})'
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
+
+
+async def _handle_dialog(self, accept: bool = True, prompt_text: str | None = None) -> str:
+	"""Accept or dismiss a JavaScript dialog."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+	try:
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		if not cdp_session:
+			return 'Error: No active CDP session'
+		params: dict[str, Any] = {'accept': accept}
+		if prompt_text is not None:
+			params['promptText'] = prompt_text
+		await cdp_session.cdp_client.send.Page.handleJavaScriptDialog(
+			params=params,
+			session_id=cdp_session.session_id,
+		)
+		return f'Dialog {"accepted" if accept else "dismissed"}'
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
+
+
+async def _get_attribute(self, name: str, ref: str | None = None, index: int | None = None) -> str:
+	"""Get a specific attribute from a page element."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+	try:
+		self._update_session_activity(self.browser_session.id)
+
+		from agentyc.mcp.state import parse_element_ref
+
+		if ref:
+			backend_node_id = parse_element_ref(ref)
+		elif index is not None:
+			backend_node_id = index
+		else:
+			return 'Error: Either ref or index is required'
+
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		if not cdp_session:
+			return 'Error: No active CDP session'
+
+		resolve_result = await cdp_session.cdp_client.send.DOM.resolveNode(
+			params={'backendNodeId': backend_node_id},
+			session_id=cdp_session.session_id,
+		)
+		remote_obj = resolve_result.get('object', {})
+		object_id = remote_obj.get('objectId')
+		if not object_id:
+			return 'Error: Could not resolve element'
+
+		call_result = await cdp_session.cdp_client.send.Runtime.callFunctionOn(
+			params={
+				'functionDeclaration': f'function() {{ return this.getAttribute({json.dumps(name)}); }}',
+				'objectId': object_id,
+				'returnByValue': True,
+			},
+			session_id=cdp_session.session_id,
+		)
+		attr_value = call_result.get('result', {}).get('value')
+		if attr_value is None:
+			return f'Attribute "{name}" not found on element'
+		return str(attr_value)
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
+
+
+async def _clear_logs(self, console: bool = True, network: bool = True) -> str:
+	"""Clear console and/or network log buffers."""
+	if not hasattr(self, '_console_log_buffer') or not hasattr(self, '_network_log_buffer'):
+		return 'Error: Log buffers not initialized'
+	cleared = []
+	if console:
+		self._console_log_buffer.clear()
+		cleared.append('console')
+	if network:
+		self._network_log_buffer.clear()
+		self._network_pending.clear()
+		cleared.append('network')
+	return f'Cleared: {", ".join(cleared)} logs'
+
+
+async def _start_trace(self, categories: str | None = None) -> str:
+	"""Start a CDP performance trace."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+	try:
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		if not cdp_session:
+			return 'Error: No active CDP session'
+		trace_categories = categories or '-*,disabled-by-default-devtools.timeline,devtools.timeline,loading,net,network'
+		await cdp_session.cdp_client.send.Tracing.start(
+			params={'categories': trace_categories, 'transferMode': 'ReportEvents'},
+			session_id=cdp_session.session_id,
+		)
+		self._trace_active = True
+		self._trace_events = []
+		return 'Trace started'
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
+
+
+async def _stop_trace(self) -> str:
+	"""Stop the active CDP trace and return events as JSON."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+	try:
+		if not getattr(self, '_trace_active', False):
+			return 'Error: No active trace'
+		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
+		if not cdp_session:
+			return 'Error: No active CDP session'
+		await cdp_session.cdp_client.send.Tracing.end(
+			session_id=cdp_session.session_id,
+		)
+		events = getattr(self, '_trace_events', [])
+		self._trace_active = False
+		self._trace_events = []
+		return json.dumps(events, default=str)
+	except Exception as e:
+		return self._format_action_error(str(e), default_code='action_failed')
