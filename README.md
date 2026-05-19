@@ -2,7 +2,7 @@
 
 <p align="center">
   <em>Deterministic, MCP-first browser automation for coding agents.</em><br>
-  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 41 tools.
+  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 50 tools.
 </p>
 
 <p align="center">
@@ -44,12 +44,12 @@ agentyc                          # Starts the MCP server — that's it
 | **Context isolation** | Per-server `BrowserContext` for shared browser | N/A | N/A |
 | **Dependencies** | ~20 core (lean) | ~40+ (heavy) | Playwright + SDK |
 | **Install size** | Small (Python package) | Very large | Moderate |
-| **Tool count** | 41 | ~15-20 actions | ~20 tools |
+| **Tool count** | 50 | ~15-20 actions | ~20 tools |
 | **Console/Network capture** | CDP-native built-in | Limited | Limited |
 | **Deterministic extraction** | Tables, lists, forms, links, images, key-value | None (LLM only) | None |
 | **Headless by default** | No (visible), flag for headless | Configurable | Configurable |
 
-**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 41 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
+**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 50 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
 
 ---
 
@@ -102,9 +102,9 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 
 ---
 
-## MCP Surface: 41 Tools
+## MCP Surface: 50 Tools
 
-### Navigation & State (9 tools)
+### Navigation & State (12 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -114,11 +114,14 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 | `browser_refresh` | Reload current page |
 | `browser_wait` | Wait N seconds (bounded) |
 | `browser_wait_for_network_idle` | Wait until AJAX/XHR settles |
+| `browser_wait_for_stable_dom` | Wait until DOM mutations settle via `MutationObserver` |
 | `browser_get_state` | **Primary primitive** — structured DOM with stable refs, screenshots, 4 modes |
 | `browser_get_html` | Raw HTML (full or CSS-selected) |
 | `browser_screenshot` | Viewport or full-page PNG |
+| `browser_save_as_pdf` | Save current page as PDF via CDP `Page.printToPDF` |
+| `browser_set_viewport` | Set browser viewport width, height, and scale |
 
-### Interaction (12 tools)
+### Interaction (13 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -134,8 +137,9 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 | `browser_select_option` | Pick a `<select>` option by label |
 | `browser_get_dropdown_options` | Inspect all options in a combobox |
 | `browser_upload_file` | Upload a file to a file input |
+| `browser_handle_dialog` | Accept/dismiss JS dialogs (alert, confirm, prompt) |
 
-### Inspection & Extraction (6 tools)
+### Inspection & Extraction (7 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -144,6 +148,7 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 | `browser_search_page` | Ctrl+F for text or regex |
 | `browser_wait_for_element` | Poll until text/appears or disappears |
 | `browser_get_focused_element` | Current keyboard focus |
+| `browser_get_attribute` | Get attribute from element by ref/index (href, src, value, disabled) |
 | `browser_evaluate` | Execute JavaScript in page context |
 
 ### Tabs & Session State (9 tools)
@@ -160,12 +165,16 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 | `browser_save_state` | Persist cookies + storage to disk |
 | `browser_load_state` | Restore from disk |
 
-### Observability & Lifecycle (5 tools)
+### Observability & Lifecycle (9 tools)
 
 | Tool | What it does |
 |------|-------------|
 | `browser_get_console_logs` | CDP-native console capture (log/warn/error) |
 | `browser_get_network_log` | CDP-native network log with optional headers |
+| `browser_get_downloads` | List downloaded files from the session |
+| `browser_clear_logs` | Clear console and/or network log buffers |
+| `browser_start_trace` | Start CDP performance trace |
+| `browser_stop_trace` | Stop trace and return collected events as JSON |
 | `browser_list_sessions` | List tracked sessions |
 | `browser_close_session` | Close one session |
 | `browser_close_all` | Close all sessions |
