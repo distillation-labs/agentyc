@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.6] - 2026-05-18
+
+### Fixed
+
+- **Dense-catalog benchmark stability** — the stdio heavy-workload harness now captures a fresh post-action `state_hash` before checking `since_hash` unchanged responses. This removes false failures after intentional scroll actions without weakening runtime state semantics.
+- **Form-control discoverability in headed and headless runs** — `browser_find_elements` and `browser_get_state` now preserve accessible labels for unlabeled controls and file inputs, so upload and workflow fixtures stay discoverable across benchmark modes.
+- **Local browser restart cleanup** — `session_runtime.kill()` and `stop()` now preserve the owned local-browser watchdog long enough to tear down the previous browser after stop/reset, preventing restart-path instability in benchmark coverage and real MCP sessions.
+
 ## [0.2.5] - 2026-05-16
 
 ### Changed
