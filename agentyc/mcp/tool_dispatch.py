@@ -221,6 +221,58 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 		if tool_name == 'browser_clear_cookies':
 			return await self._clear_cookies(name=arguments.get('name'))
 
+		if tool_name == 'browser_save_as_pdf':
+			return await self._save_as_pdf(
+				file_name=arguments.get('file_name'),
+				print_background=arguments.get('print_background', True),
+				landscape=arguments.get('landscape', False),
+				scale=arguments.get('scale', 1.0),
+				paper_format=arguments.get('paper_format', 'Letter'),
+			)
+
+		if tool_name == 'browser_get_downloads':
+			return await self._get_downloads()
+
+		if tool_name == 'browser_set_viewport':
+			return await self._set_viewport(
+				width=arguments['width'],
+				height=arguments['height'],
+				device_scale_factor=arguments.get('device_scale_factor', 1.0),
+			)
+
+		if tool_name == 'browser_wait_for_stable_dom':
+			return await self._wait_for_stable_dom(
+				timeout_seconds=arguments.get('timeout_seconds', 10.0),
+				quiet_ms=arguments.get('quiet_ms', 500),
+			)
+
+		if tool_name == 'browser_handle_dialog':
+			return await self._handle_dialog(
+				accept=arguments.get('accept', True),
+				prompt_text=arguments.get('prompt_text'),
+			)
+
+		if tool_name == 'browser_get_attribute':
+			return await self._get_attribute(
+				name=arguments['name'],
+				ref=arguments.get('ref'),
+				index=arguments.get('index'),
+			)
+
+		if tool_name == 'browser_clear_logs':
+			return await self._clear_logs(
+				console=arguments.get('console', True),
+				network=arguments.get('network', True),
+			)
+
+		if tool_name == 'browser_start_trace':
+			return await self._start_trace(
+				categories=arguments.get('categories'),
+			)
+
+		if tool_name == 'browser_stop_trace':
+			return await self._stop_trace()
+
 		if tool_name == 'browser_get_console_logs':
 			return await self._get_console_logs(level=arguments.get('level', 'all'), max_entries=arguments.get('max_entries', 50))
 
