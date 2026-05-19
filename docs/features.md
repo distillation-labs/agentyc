@@ -93,6 +93,13 @@ Important behavior:
 - Shared-browser payloads can include `current_tab`, `ownership`, `runtime`, `display_title`, `parent_tab_id`, and `window_bounds`.
 - Screenshots are delivered as MCP image content, not embedded base64 inside the JSON state payload.
 
+Recommended usage:
+
+- Start with `mode="min"` for routine inspection.
+- Use `mode="focus"` when you already have a ref and only need one element.
+- Use `since_hash` for follow-up polling instead of repeating full-state reads.
+- Escalate to `mode="full"` only on ambiguity or failure.
+
 ## Deterministic Extraction
 
 `browser_extract_content` is deterministic-only in the public MCP server.
@@ -123,6 +130,8 @@ The MCP server records browser diagnostics directly from CDP event streams.
 - `browser_get_console_logs` uses the Runtime domain rather than page-side JavaScript injection.
 - `browser_get_network_log` uses the Network domain and keeps a bounded in-memory buffer.
 - Network and console capture follow the active browser session and its tabs.
+
+In addition, clients that pass a MCP `progressToken` on tool calls can receive `notifications/progress` for browser phases. Tool results also include `_meta` timing fields such as `agentyc/browser_duration_ms` so UIs can separate browser time from model reasoning time.
 
 ## Shared Browser Behavior
 
