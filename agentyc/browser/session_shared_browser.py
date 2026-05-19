@@ -15,6 +15,7 @@ from agentyc.browser.collaboration import (
 	build_runtime_metadata_probe_script,
 )
 from agentyc.browser.page import Page
+from agentyc.browser.session_manager_support import apply_target_info as apply_target_info_helper
 from agentyc.browser.session_manager_support import runtime_metadata_from_title
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 from agentyc.browser.views import TabInfo
@@ -34,6 +35,8 @@ def _tab_display_title(session: BrowserSession, target: Target) -> str:
 		and target.ownership.runtime.runtime_id == session.runtime_metadata.runtime_id
 	):
 		return apply_title_prefix(display_title, session.runtime_metadata)
+	if target.ownership and target.ownership.runtime and target.ownership.title_prefix_applied:
+		return apply_title_prefix(display_title, target.ownership.runtime)
 	return display_title
 
 
@@ -76,7 +79,6 @@ async def _reconcile_missing_page_targets(session: BrowserSession) -> None:
 		)
 		session.session_manager._apply_target_info(target, target_info)
 		session.session_manager._targets[target_id] = target
-
 
 
 def is_target_owned_by_current_runtime(session: BrowserSession, target_id: TargetID) -> bool:
@@ -129,6 +131,18 @@ async def _apply_runtime_markers_to_target(
 			target_id=target_id,
 			include_title_prefix=include_title_prefix,
 		)
+		target_key = str(target_id)
+		previous_script_id = session._runtime_marker_script_ids.get(target_key)
+		if previous_script_id is not None:
+			try:
+				await session._cdp_remove_init_script(previous_script_id, target_id=target_id)
+			except Exception:
+				pass
+		try:
+			script_id = await session._cdp_add_init_script(script, target_id=target_id)
+			session._runtime_marker_script_ids[target_key] = script_id
+		except Exception as exc:
+			session.logger.debug(f'Failed to register runtime marker init script for target {target_id[-8:]}: {exc}')
 		await cdp_session.cdp_client.send.Runtime.evaluate(
 			params={'expression': script, 'returnByValue': True},
 			session_id=cdp_session.session_id,
@@ -336,6 +350,25 @@ async def get_current_page_title(session: BrowserSession) -> str:
 	"""Get the title of the current page."""
 	if session.agent_focus_target_id:
 		target = session.session_manager.get_target(session.agent_focus_target_id)
+		if target is not None:
+			try:
+				cdp_session = await session.get_or_create_cdp_session(target_id=target.target_id, focus=False)
+				title_result = await cdp_session.cdp_client.send.Runtime.evaluate(
+					params={
+						'expression': '(function() { return document.title || ""; })()',
+						'returnByValue': True,
+					},
+					session_id=cdp_session.session_id,
+				)
+				live_title = str(title_result.get('result', {}).get('value') or '').strip()
+				if live_title:
+					apply_target_info_helper(
+						target,
+						{'title': live_title, 'url': target.url},
+						current_runtime_id=session.runtime_metadata.runtime_id,
+					)
+			except Exception:
+				pass
 		return _tab_display_title(session, target)
 	return 'Unknown page title'
 
