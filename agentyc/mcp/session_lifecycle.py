@@ -118,7 +118,11 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 			profile = BrowserProfile(**profile_data)
 			self.browser_session = BrowserSession(browser_profile=profile)
 			await self.browser_session.start()
-			if should_reuse_local_browser and not is_attaching_to_existing_browser and self.browser_session.browser_profile.cdp_url:
+			if (
+				should_reuse_local_browser
+				and not is_attaching_to_existing_browser
+				and self.browser_session.browser_profile.cdp_url
+			):
 				local_watchdog = getattr(self.browser_session, '_local_browser_watchdog', None)
 				if local_watchdog is not None:
 					local_watchdog._owns_browser_resources = False
