@@ -268,10 +268,14 @@ async def _wait_for_network_idle(self, timeout_seconds: float = 10.0, idle_durat
 				await self._register_cdp_event_listeners()
 			except Exception:
 				pass
+		baseline_started_at = time.time()
 		idle_start: float | None = None
 		deadline = start + timeout
 		while _time.monotonic() < deadline:
-			if not self._network_pending:
+			active_pending = [
+				entry for entry in self._network_pending.values() if float(entry.get('start_time') or 0.0) >= baseline_started_at
+			]
+			if not active_pending:
 				now = _time.monotonic()
 				if idle_start is None:
 					idle_start = now
@@ -682,5 +686,7 @@ async def _close_tab(self, tab_id: str) -> str:
 				default_code='postcondition_failed',
 			)
 		await asyncio.sleep(0.05)
+	if self.browser_session.agent_focus_target_id is None:
+		await self.browser_session.session_manager.ensure_valid_focus(timeout=3.0)
 	current_url = await self.browser_session.get_current_page_url()
 	return f'Closed tab # {tab_id}, now on {current_url}'
