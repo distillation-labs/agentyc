@@ -506,7 +506,24 @@ async def _get_browser_state(
 	if not self.browser_session:
 		return 'Error: No browser session active', None
 
-	from agentyc.mcp.state import build_browser_state_payload, make_element_ref
+	from agentyc.mcp.state import build_browser_state_payload, compute_browser_state_hash, make_element_ref
+
+	cached_state = getattr(self.browser_session, '_cached_browser_state_summary', None)
+	if since_hash is not None and cached_state is not None and cached_state.dom_state:
+		cached_hash = getattr(cached_state, 'state_hash', None)
+		if cached_hash is None:
+			cached_hash = compute_browser_state_hash(cached_state)
+			cached_state.state_hash = cached_hash
+		if since_hash == cached_hash:
+			result = build_browser_state_payload(
+				cached_state,
+				mode=mode,
+				focus_ref=focus_ref,
+				since_hash=since_hash,
+			)
+			result_json = json.dumps(result, separators=(',', ':'))
+			self._cache_state_payload(result)
+			return result_json, None
 
 	async def _fetch_state_payload(resolved_focus_ref: str | None) -> tuple[Any, dict[str, Any]]:
 		state = await self.browser_session.get_browser_state_summary(
