@@ -421,6 +421,122 @@ def get_tool_schemas() -> list[types.Tool]:
 			},
 		),
 		types.Tool(
+			name='browser_save_as_pdf',
+			description='Save the current page as a PDF file and return the file path. Uses CDP Page.printToPDF.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'file_name': {
+						'type': 'string',
+						'description': 'Output PDF filename (without path). Defaults to page title.',
+					},
+					'print_background': {'type': 'boolean', 'default': True, 'description': 'Include background graphics.'},
+					'landscape': {'type': 'boolean', 'default': False, 'description': 'Use landscape orientation.'},
+					'scale': {
+						'type': 'number',
+						'default': 1.0,
+						'description': 'Scale of the webpage rendering (0.1 to 2.0).',
+					},
+					'paper_format': {
+						'type': 'string',
+						'default': 'Letter',
+						'description': 'Paper size: Letter, Legal, A4, A3, or Tabloid.',
+					},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_get_downloads',
+			description='List files that have been downloaded during the current browser session.',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
+		types.Tool(
+			name='browser_set_viewport',
+			description='Set the browser viewport size (width x height). Applies to the current tab.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'width': {'type': 'integer', 'description': 'Viewport width in pixels.'},
+					'height': {'type': 'integer', 'description': 'Viewport height in pixels.'},
+					'device_scale_factor': {'type': 'number', 'default': 1.0, 'description': 'Device pixel ratio.'},
+				},
+				'required': ['width', 'height'],
+			},
+		),
+		types.Tool(
+			name='browser_wait_for_stable_dom',
+			description='Wait until the DOM has been stable (no mutations) for a quiet period. Use after AJAX calls, form submissions, or SPA navigation to let the page finish rendering before reading state.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'timeout_seconds': {'type': 'number', 'default': 10.0, 'description': 'Maximum wait time.'},
+					'quiet_ms': {
+						'type': 'integer',
+						'default': 500,
+						'description': 'Required quiet period (ms) with no DOM mutations.',
+					},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_handle_dialog',
+			description='Accept or dismiss a JavaScript dialog (alert, confirm, prompt, beforeunload). Use when a dialog is blocking further interaction.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'accept': {
+						'type': 'boolean',
+						'default': True,
+						'description': 'True to accept (OK), False to dismiss (Cancel).',
+					},
+					'prompt_text': {'type': 'string', 'description': 'Text to enter for prompt dialogs (accept must be True).'},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_get_attribute',
+			description='Get a specific attribute value from a page element by ref or index.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'name': {'type': 'string', 'description': 'Attribute name (e.g. "href", "src", "value", "disabled").'},
+					'ref': {'type': 'string', 'description': 'Stable ref from browser_get_state.'},
+					'index': {'type': 'integer', 'description': 'Legacy element index.'},
+				},
+				'required': ['name'],
+			},
+		),
+		types.Tool(
+			name='browser_clear_logs',
+			description='Clear console and/or network log buffers to free memory.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'console': {'type': 'boolean', 'default': True, 'description': 'Clear console log buffer.'},
+					'network': {'type': 'boolean', 'default': True, 'description': 'Clear network log buffer.'},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_start_trace',
+			description='Start a CDP performance trace for diagnosing page performance issues.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'categories': {
+						'type': 'string',
+						'default': '-*,disabled-by-default-devtools.timeline,devtools.timeline,loading,net,network',
+						'description': 'Comma-separated tracing categories.',
+					},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_stop_trace',
+			description='Stop the active CDP performance trace and return collected data as JSON.',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
+		types.Tool(
 			name='browser_get_console_logs',
 			description='Return browser console messages (log/warn/error/info). Captured via CDP — includes page-load errors.',
 			inputSchema={
