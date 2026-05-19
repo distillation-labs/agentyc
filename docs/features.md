@@ -14,6 +14,9 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_refresh` | Reload the current page |
 | `browser_wait` | Wait for a bounded number of seconds |
 | `browser_wait_for_network_idle` | Wait until network activity settles |
+| `browser_wait_for_stable_dom` | Wait until DOM mutations settle via `MutationObserver` |
+| `browser_save_as_pdf` | Save the current page as a PDF via CDP `Page.printToPDF` |
+| `browser_set_viewport` | Set browser viewport width, height, and device scale factor |
 | `browser_list_sessions` | List sessions tracked by the current MCP server |
 | `browser_close_session` | Close one tracked session |
 | `browser_close_all` | Close all tracked sessions |
@@ -47,6 +50,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_select_option` | Select an option by visible text |
 | `browser_get_dropdown_options` | Inspect available options for a dropdown |
 | `browser_upload_file` | Upload a local file to an upload control |
+| `browser_handle_dialog` | Accept or dismiss JavaScript dialogs (alert, confirm, prompt) |
 
 ### Tabs, Cookies, And Persisted Browser State
 
@@ -69,6 +73,11 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_extract_content` | Deterministically extract compatible content from the current page |
 | `browser_get_console_logs` | Return recent browser console messages captured through CDP |
 | `browser_get_network_log` | Return recent network requests captured through CDP; accepts `include_headers` to expose request and response headers |
+| `browser_get_downloads` | List files downloaded during the current browser session |
+| `browser_get_attribute` | Get a specific attribute value from an element by ref or index |
+| `browser_clear_logs` | Clear console and/or network log buffers |
+| `browser_start_trace` | Start a CDP performance trace |
+| `browser_stop_trace` | Stop the active trace and return collected events as JSON |
 
 ## Browser State
 
