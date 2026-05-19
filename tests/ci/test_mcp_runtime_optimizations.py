@@ -753,7 +753,9 @@ class TestMCPHotPathFixes:
 				'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
 				new=AsyncMock(return_value=None),
 			):
-				with patch('agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)) as browser_profile:
+				with patch(
+					'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
+				) as browser_profile:
 					with patch('agentyc.browser.BrowserSession', return_value=fresh_session):
 						with patch('agentyc.mcp.shared_browser_registry.register_local_shared_browser') as register_shared:
 							await server._init_browser_session(headless=True, user_data_dir=None)
