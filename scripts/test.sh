@@ -8,6 +8,7 @@ cd "$SCRIPT_DIR/.." || exit 1
 
 exec uv run pytest --numprocesses auto --confcutdir=tests/ci \
 	tests/ci/browser/test_cdp_headers.py \
+	tests/ci/browser/test_autonomous_agent_workflows.py \
 	tests/ci/browser/test_cross_origin_click.py \
 	tests/ci/browser/test_proxy.py \
 	tests/ci/browser/test_true_cross_origin_click.py \
