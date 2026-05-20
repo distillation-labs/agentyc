@@ -1754,6 +1754,63 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload == {
 			'url': 'https://example.com',
 			'title': 'Example page',
+			'tabs': [
+				{
+					'tab_id': '1234',
+					'url': 'https://example.com',
+					'title': 'Example page',
+					'display_title': '[Agent 1234] Example page',
+					'ownership': {
+						'target_id': 'target-owned-1234',
+						'owner_kind': 'agent',
+						'source': 'current_runtime',
+						'display_label': 'Agent 1234',
+						'runtime': {
+							'runtime_id': 'runtime-1234',
+							'session_id': 'session-1234',
+							'runtime_label': 'Agent 1234',
+							'runtime_role': 'primary',
+							'title_prefix': '[Agent 1234] ',
+						},
+					},
+					'window_bounds': {'left': 10, 'top': 20, 'width': 1200, 'height': 800},
+				}
+			],
+			'tab_groups': [
+				{
+					'group_id': 'runtime:runtime-1234',
+					'owner_kind': 'agent',
+					'display_label': 'Agent 1234',
+					'runtime_id': 'runtime-1234',
+					'runtime_label': 'Agent 1234',
+					'runtime_role': 'primary',
+					'parent_runtime_id': None,
+					'tab_count': 1,
+					'current_tab_id': '1234',
+					'tabs': [
+						{
+							'tab_id': '1234',
+							'url': 'https://example.com',
+							'title': 'Example page',
+							'display_title': '[Agent 1234] Example page',
+							'ownership': {
+								'target_id': 'target-owned-1234',
+								'owner_kind': 'agent',
+								'source': 'current_runtime',
+								'display_label': 'Agent 1234',
+								'runtime': {
+									'runtime_id': 'runtime-1234',
+									'session_id': 'session-1234',
+									'runtime_label': 'Agent 1234',
+									'runtime_role': 'primary',
+									'title_prefix': '[Agent 1234] ',
+								},
+							},
+							'window_bounds': {'left': 10, 'top': 20, 'width': 1200, 'height': 800},
+						}
+					],
+				}
+			],
 			'mode': 'min',
 			'effective_mode': 'min',
 			'state_hash': state_hash,
@@ -1828,6 +1885,9 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['tabs'][0]['ownership']['owner_kind'] == 'agent'
 		assert payload['tabs'][0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
 		assert payload['tabs'][0]['window_bounds']['width'] == 1200
+		assert payload['tab_groups'][0]['runtime_id'] == runtime.runtime_id
+		assert payload['tab_groups'][0]['tab_count'] == 1
+		assert payload['tab_groups'][0]['tabs'][0]['tab_id'] == '1234'
 		assert payload['current_tab_id'] == '1234'
 		assert payload['current_tab']['tab_id'] == '1234'
 		assert payload['current_tab']['display_title'].startswith('[Agent 1234]')
@@ -1836,6 +1896,58 @@ class TestMCPStateProtocolAndExtraction:
 		assert 'title' not in payload['current_tab']
 		assert payload['ownership']['runtime']['runtime_id'] == runtime.runtime_id
 		assert payload['runtime']['runtime_id'] == runtime.runtime_id
+
+	def test_browser_state_hash_changes_when_tab_ownership_changes(self):
+		runtime_a = RuntimeOwnershipMetadata.create(
+			session_id='session-a',
+			runtime_id='runtime-a',
+			runtime_label='Agent A',
+		)
+		runtime_b = RuntimeOwnershipMetadata.create(
+			session_id='session-b',
+			runtime_id='runtime-b',
+			runtime_label='Agent B',
+		)
+		state_a = _stub_state(
+			tabs=[
+				TabInfo(
+					target_id='target-owned-1234',
+					url='https://example.com',
+					title='Example page',
+					display_title=f'{runtime_a.title_prefix}Example page',
+					ownership={
+						'target_id': 'target-owned-1234',
+						'owner_kind': 'agent',
+						'source': 'current_runtime',
+						'display_label': runtime_a.runtime_label,
+						'runtime': runtime_a,
+					},
+				)
+			],
+			current_tab_id='target-owned-1234',
+		)
+		state_b = _stub_state(
+			tabs=[
+				TabInfo(
+					target_id='target-owned-1234',
+					url='https://example.com',
+					title='Example page',
+					display_title=f'{runtime_b.title_prefix}Example page',
+					ownership={
+						'target_id': 'target-owned-1234',
+						'owner_kind': 'runtime',
+						'source': 'detected_runtime',
+						'display_label': runtime_b.runtime_label,
+						'runtime': runtime_b,
+					},
+				)
+			],
+			current_tab_id='target-owned-1234',
+		)
+
+		assert build_browser_state_payload(state_a, mode='min')['state_hash'] != build_browser_state_payload(state_b, mode='min')[
+			'state_hash'
+		]
 
 	async def test_browser_list_tabs_includes_collaboration_metadata(self):
 		runtime = RuntimeOwnershipMetadata.create(
@@ -1866,11 +1978,13 @@ class TestMCPStateProtocolAndExtraction:
 
 		result = json.loads(await server._list_tabs())
 
-		assert result[0]['tab_id'] == '1234'
-		assert result[0]['display_title'].startswith('[Agent 1234]')
-		assert result[0]['ownership']['owner_kind'] == 'agent'
-		assert result[0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
-		assert result[0]['window_bounds']['left'] == 10
+		assert result['tabs'][0]['tab_id'] == '1234'
+		assert result['tabs'][0]['display_title'].startswith('[Agent 1234]')
+		assert result['tabs'][0]['ownership']['owner_kind'] == 'agent'
+		assert result['tabs'][0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
+		assert result['tabs'][0]['window_bounds']['left'] == 10
+		assert result['tab_groups'][0]['runtime_id'] == runtime.runtime_id
+		assert result['tab_groups'][0]['tab_count'] == 1
 
 	async def test_extract_links_can_run_without_llm(
 		self, tools: Tools, browser_session: BrowserSession, base_url: str, tmp_path

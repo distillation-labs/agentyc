@@ -110,6 +110,68 @@ async def test_get_tabs_exposes_display_title_and_ownership_metadata():
 	assert tabs[0].window_bounds.width == 1200
 
 
+def test_build_tab_groups_payload_groups_tabs_by_runtime_and_human_owner():
+	from agentyc.mcp.state import build_tab_groups_payload
+
+	runtime = RuntimeOwnershipMetadata.create(
+		session_id='session-1',
+		runtime_id='runtime-1',
+		runtime_label='Agent 1',
+	)
+	serialized_tabs = [
+		{
+			'tab_id': 'a111',
+			'url': 'https://example.test/a',
+			'title': 'A',
+			'display_title': '[Agent 1] A',
+			'ownership': {
+				'target_id': 'target-a111',
+				'owner_kind': 'agent',
+				'source': 'current_runtime',
+				'display_label': 'Agent 1',
+				'runtime': runtime.model_dump(mode='json'),
+			},
+		},
+		{
+			'tab_id': 'b222',
+			'url': 'https://example.test/b',
+			'title': 'B',
+			'display_title': '[Agent 1] B',
+			'ownership': {
+				'target_id': 'target-b222',
+				'owner_kind': 'agent',
+				'source': 'current_runtime',
+				'display_label': 'Agent 1',
+				'runtime': runtime.model_dump(mode='json'),
+			},
+		},
+		{
+			'tab_id': 'h333',
+			'url': 'https://example.test/human',
+			'title': 'Human tab',
+			'display_title': 'Human tab',
+			'ownership': {
+				'target_id': 'target-h333',
+				'owner_kind': 'human',
+				'source': 'shared_browser_human',
+				'display_label': 'Human',
+			},
+		},
+	]
+
+	groups = build_tab_groups_payload(serialized_tabs, current_tab_id='b222')
+
+	assert len(groups) == 2
+	assert groups[0]['runtime_id'] == 'runtime-1'
+	assert groups[0]['runtime_label'] == 'Agent 1'
+	assert groups[0]['tab_count'] == 2
+	assert groups[0]['current_tab_id'] == 'b222'
+	assert [tab['tab_id'] for tab in groups[0]['tabs']] == ['a111', 'b222']
+	assert groups[1]['group_id'] == 'human'
+	assert groups[1]['owner_kind'] == 'human'
+	assert groups[1]['tab_count'] == 1
+
+
 async def test_shared_attach_marks_unclaimed_tabs_as_human_owned():
 	session = BrowserSession(
 		browser_profile=BrowserProfile(

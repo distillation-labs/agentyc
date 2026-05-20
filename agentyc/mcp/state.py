@@ -132,6 +132,76 @@ def serialize_tab_info(tab: Any) -> dict[str, Any]:
 	return payload
 
 
+def _tab_group_sort_key(group: dict[str, Any]) -> tuple[int, str]:
+	owner_kind = str(group.get('owner_kind') or '')
+	runtime_label = str(group.get('runtime_label') or group.get('display_label') or group.get('group_label') or '')
+	priority = 2
+	if owner_kind == 'agent':
+		priority = 0
+	elif owner_kind == 'runtime':
+		priority = 1
+	elif owner_kind == 'human':
+		priority = 3
+	return (priority, runtime_label.lower())
+
+
+def build_tab_groups_payload(
+	serialized_tabs: list[dict[str, Any]],
+	*,
+	current_tab_id: str | None = None,
+) -> list[dict[str, Any]]:
+	grouped: dict[str, dict[str, Any]] = {}
+	for tab in serialized_tabs:
+		ownership = tab.get('ownership') if isinstance(tab.get('ownership'), dict) else None
+		runtime = ownership.get('runtime') if isinstance(ownership, dict) and isinstance(ownership.get('runtime'), dict) else None
+		if runtime is not None:
+			runtime_id = str(runtime.get('runtime_id') or '')
+			group_key = f'runtime:{runtime_id or ownership.get("display_label") or "unknown"}'
+			group = grouped.setdefault(
+				group_key,
+				{
+					'group_id': group_key,
+					'owner_kind': ownership.get('owner_kind') or 'runtime',
+					'display_label': ownership.get('display_label') or runtime.get('runtime_label') or 'Runtime',
+					'runtime_id': runtime_id or None,
+					'runtime_label': runtime.get('runtime_label') or ownership.get('display_label') or 'Runtime',
+					'runtime_role': runtime.get('runtime_role') or 'primary',
+					'parent_runtime_id': runtime.get('parent_runtime_id'),
+					'tab_count': 0,
+					'tabs': [],
+				},
+			)
+		else:
+			display_label = ownership.get('display_label') if isinstance(ownership, dict) else None
+			owner_kind = ownership.get('owner_kind') if isinstance(ownership, dict) else 'unknown'
+			if owner_kind == 'human':
+				group_key = 'human'
+				group_label = display_label or 'Human'
+			else:
+				group_key = f'ungrouped:{display_label or owner_kind or "unknown"}'
+				group_label = display_label or 'Ungrouped'
+			group = grouped.setdefault(
+				group_key,
+				{
+					'group_id': group_key,
+					'owner_kind': owner_kind,
+					'display_label': group_label,
+					'tab_count': 0,
+					'tabs': [],
+				},
+			)
+
+		group['tabs'].append(tab)
+		group['tab_count'] += 1
+		if current_tab_id is not None and tab.get('tab_id') == current_tab_id:
+			group['current_tab_id'] = current_tab_id
+
+	ordered_groups = sorted(grouped.values(), key=_tab_group_sort_key)
+	for group in ordered_groups:
+		group['tabs'] = sorted(group['tabs'], key=lambda item: str(item.get('display_title') or item.get('title') or item.get('url') or '').lower())
+	return ordered_groups
+
+
 def _build_current_tab_payload(tab_payload: dict[str, Any], *, include_page_identity: bool = True) -> dict[str, Any] | None:
 	current_tab: dict[str, Any] = {}
 	keys = ('tab_id', 'parent_tab_id', 'display_title', 'ownership', 'window_bounds')
@@ -199,6 +269,8 @@ def _build_unchanged_state_payload(
 		result['current_tab_id'] = current_tab['tab_id']
 	if focus_index is not None:
 		result['focus_ref'] = make_element_ref(focus_index)
+	if 'tabs' not in result:
+		result['tabs'] = []
 	# Always include scroll position so agents know where they are even when elements haven't changed
 	if state.page_info and (state.page_info.scroll_x != 0 or state.page_info.scroll_y != 0):
 		result['scroll'] = {'x': state.page_info.scroll_x, 'y': state.page_info.scroll_y}
@@ -317,6 +389,7 @@ def build_browser_state_payload(
 		mode=mode, interactive_element_count=len(selector_map), max_min_elements=max_min_elements
 	)
 	tabs_payload: list[dict[str, Any]] = [serialize_tab_info(tab) for tab in state.tabs]
+	tab_groups_payload = build_tab_groups_payload(tabs_payload, current_tab_id=_serialize_tab_id(getattr(state, 'current_tab_id', None)))
 	state_hash = getattr(state, 'state_hash', None)
 	if state_hash is None:
 		state_hash = compute_browser_state_hash(state)
@@ -325,6 +398,7 @@ def build_browser_state_payload(
 		'url': state.url,
 		'title': state.title,
 		'tabs': tabs_payload,
+		'tab_groups': tab_groups_payload,
 		'mode': mode,
 		'effective_mode': effective_mode,
 		'state_hash': state_hash,
@@ -362,7 +436,7 @@ def build_browser_state_payload(
 		result['debug'] = debug_payload
 
 	if since_hash == state_hash:
-		return _build_unchanged_state_payload(
+		unchanged = _build_unchanged_state_payload(
 			state=state,
 			mode=mode,
 			effective_mode=effective_mode,
@@ -373,6 +447,9 @@ def build_browser_state_payload(
 			interactive_element_count=len(selector_map),
 			debug_payload=debug_payload,
 		)
+		unchanged['tabs'] = tabs_payload
+		unchanged['tab_groups'] = tab_groups_payload
+		return unchanged
 
 	scroll_y: int | None = None
 	viewport_height: int | None = None
@@ -715,6 +792,23 @@ def _heading_text_from_ancestor(node: EnhancedDOMTreeNode) -> str | None:
 
 def _fast_build_hash_input(state: BrowserStateSummary) -> str:
 	parts: list[str] = [state.url, state.title or '']
+	for tab in getattr(state, 'tabs', []) or []:
+		serialized_tab = serialize_tab_info(tab)
+		parts.append(str(serialized_tab.get('tab_id') or ''))
+		parts.append(str(serialized_tab.get('url') or ''))
+		parts.append(str(serialized_tab.get('title') or ''))
+		parts.append(str(serialized_tab.get('display_title') or ''))
+		ownership = serialized_tab.get('ownership')
+		if isinstance(ownership, dict):
+			parts.append(str(ownership.get('owner_kind') or ''))
+			parts.append(str(ownership.get('display_label') or ''))
+			runtime = ownership.get('runtime')
+			if isinstance(runtime, dict):
+				parts.append(str(runtime.get('runtime_id') or ''))
+				parts.append(str(runtime.get('runtime_label') or ''))
+	current_tab_id = getattr(state, 'current_tab_id', None)
+	if current_tab_id is not None:
+		parts.append(str(current_tab_id))
 	pi = state.page_info
 	if pi:
 		parts.extend(

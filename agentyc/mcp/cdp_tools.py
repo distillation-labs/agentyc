@@ -643,11 +643,17 @@ async def _list_tabs(self) -> str:
 	if not self.browser_session:
 		return 'Error: No browser session active'
 
-	from agentyc.mcp.state import serialize_tab_info
+	from agentyc.mcp.state import build_tab_groups_payload, serialize_tab_info
 
 	tabs_info = await self.browser_session.get_tabs()
 	tabs = [serialize_tab_info(tab) for tab in tabs_info]
-	return json.dumps(tabs)
+	current_target_id = getattr(self.browser_session, 'agent_focus_target_id', None)
+	current_tab_id = str(current_target_id)[-4:] if current_target_id else None
+	payload = {
+		'tabs': tabs,
+		'tab_groups': build_tab_groups_payload(tabs, current_tab_id=current_tab_id),
+	}
+	return json.dumps(payload)
 
 
 async def _switch_tab(self, tab_id: str) -> str:

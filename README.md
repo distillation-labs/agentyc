@@ -157,7 +157,7 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 | Tool | What it does |
 |------|-------------|
 | `browser_new_tab` | Create tab + switch focus — **parallel agent primitive** |
-| `browser_list_tabs` | List open tabs |
+| `browser_list_tabs` | List open tabs, grouped by owning agent/runtime by default |
 | `browser_switch_tab` | Switch by 4-char `tab_id` |
 | `browser_close_tab` | Close by `tab_id` |
 | `browser_get_cookies` | Read cookies for current domain |
@@ -197,6 +197,7 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 - **`since_hash`**: Poll unchanged pages with `changed=false` — zero element payload sent.
 - **In `min` mode**: elements within 2× viewport height get a proximity score boost.
 - **Unchanged responses**: still return `url`, `title`, `state_hash`, `current_tab_id`, scroll position.
+- **Shared-browser tabs**: `tabs` stays flat for compatibility, and `tab_groups` groups tabs by owning agent/runtime by default.
 - **Screenshots**: delivered as MCP image content, not embedded base64.
 
 **Best practice:** Start with `mode="min"`, use `since_hash` for follow-up reads, escalate to `mode="full"` only when compact payload omitted something you need.
@@ -243,6 +244,8 @@ agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
 3. Each subagent calls `browser_new_tab` — dedicated tab, focus switched
 4. Subagents operate independently — refs, network logs, console logs scoped to their tab
 5. Primary coordinates and collects results
+
+When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by default so developers can quickly see which agent owns how many tabs.
 
 **Collaboration flags:**
 

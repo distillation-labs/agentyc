@@ -768,7 +768,7 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 		if release_notes_ref is not None
 		else 'missing-ref: Open release notes'
 	)
-	tabs = _safe_json_loads(await adapter._list_tabs(scenario='coverage-tabs-and-pointer')) or []
+	tabs = (_safe_json_loads(await adapter._list_tabs(scenario='coverage-tabs-and-pointer')) or {}).get('tabs', [])
 	release_notes_tab = next((tab for tab in tabs if tab.get('url', '').endswith('/release-notes.html')), None)
 	close_tab_result = (
 		await adapter._close_tab(release_notes_tab['tab_id'], scenario='coverage-tabs-and-pointer')
@@ -787,7 +787,7 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 		if doc_ref is not None
 		else 'missing-ref: Documentation'
 	)
-	tabs_two = _safe_json_loads(await adapter._list_tabs(scenario='coverage-tabs-and-pointer')) or []
+	tabs_two = (_safe_json_loads(await adapter._list_tabs(scenario='coverage-tabs-and-pointer')) or {}).get('tabs', [])
 	documentation_tab = next((tab for tab in tabs_two if '/docs/getting-started' in tab.get('url', '')), None)
 	switch_result = (
 		await adapter._switch_tab(documentation_tab['tab_id'], scenario='coverage-tabs-and-pointer')
@@ -1037,7 +1037,7 @@ HEAVY_PROFILES = [
 async def _issue_triage_workflow(adapter: MCPStdioAdapter, base_url: str) -> dict[str, Any]:
 	scenario = 'workflow:issue-triage'
 	await adapter._navigate(f'{base_url}/issue-queue.html', scenario=scenario)
-	origin_tabs = _safe_json_loads(await adapter._list_tabs(scenario=scenario)) or []
+	origin_tabs = (_safe_json_loads(await adapter._list_tabs(scenario=scenario)) or {}).get('tabs', [])
 	state, _ = await adapter.get_browser_state_json(mode='auto', scenario=scenario)
 	queue_tab_id = state.get('current_tab_id') or (state.get('current_tab') or {}).get('tab_id')
 	if queue_tab_id is None and origin_tabs:
@@ -1065,7 +1065,7 @@ async def _issue_triage_workflow(adapter: MCPStdioAdapter, base_url: str) -> dic
 		None,
 	)
 	open_issue = await adapter._navigate(f'{base_url}/issues/build-482.html', new_tab=True, scenario=scenario)
-	tabs = _safe_json_loads(await adapter._list_tabs(scenario=scenario)) or []
+	tabs = (_safe_json_loads(await adapter._list_tabs(scenario=scenario)) or {}).get('tabs', [])
 	issue_tab = next((tab for tab in tabs if tab.get('url', '').endswith('/issues/build-482.html')), None)
 	if issue_tab is None:
 		return {
@@ -1085,7 +1085,7 @@ async def _issue_triage_workflow(adapter: MCPStdioAdapter, base_url: str) -> dic
 			'switch_issue': switch_issue,
 		}
 	open_checklist = await adapter._navigate(f'{base_url}/triage-checklist.html', new_tab=True, scenario=scenario)
-	tabs_after = _safe_json_loads(await adapter._list_tabs(scenario=scenario)) or []
+	tabs_after = (_safe_json_loads(await adapter._list_tabs(scenario=scenario)) or {}).get('tabs', [])
 	checklist_tab = next((tab for tab in tabs_after if tab.get('url', '').endswith('/triage-checklist.html')), None)
 	if checklist_tab is None:
 		return {
@@ -1133,7 +1133,7 @@ async def _issue_triage_workflow(adapter: MCPStdioAdapter, base_url: str) -> dic
 async def _docs_tabs_workflow(adapter: MCPStdioAdapter, base_url: str) -> dict[str, Any]:
 	scenario = 'workflow:docs-tabs'
 	await adapter._navigate(f'{base_url}/search-results.html', scenario=scenario)
-	origin_tabs = _safe_json_loads(await adapter._list_tabs(scenario=scenario)) or []
+	origin_tabs = (_safe_json_loads(await adapter._list_tabs(scenario=scenario)) or {}).get('tabs', [])
 	state, _ = await adapter.get_browser_state_json(mode='auto', scenario=scenario)
 	search_tab_id = state.get('current_tab_id') or (state.get('current_tab') or {}).get('tab_id')
 	if search_tab_id is None and origin_tabs:
@@ -1170,7 +1170,7 @@ async def _docs_tabs_workflow(adapter: MCPStdioAdapter, base_url: str) -> dict[s
 	)
 	open_auth = await adapter._navigate(f'{base_url}/docs/authentication.html', new_tab=True, scenario=scenario)
 	open_webhooks = await adapter._navigate(f'{base_url}/docs/webhooks.html', new_tab=True, scenario=scenario)
-	tabs = _safe_json_loads(await adapter._list_tabs(scenario=scenario)) or []
+	tabs = (_safe_json_loads(await adapter._list_tabs(scenario=scenario)) or {}).get('tabs', [])
 	auth_tab = next((tab for tab in tabs if tab.get('url', '').endswith('/docs/authentication.html')), None)
 	webhooks_tab = next((tab for tab in tabs if tab.get('url', '').endswith('/docs/webhooks.html')), None)
 	if auth_tab is None or webhooks_tab is None:

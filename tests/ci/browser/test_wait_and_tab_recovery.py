@@ -117,13 +117,13 @@ async def test_switch_tab_recovers_after_closing_active_tab(
 
 	await browser_session.navigate_to(f'{base_url}/main')
 
-	initial_tabs = json.loads(await mcp_server._list_tabs())
+	initial_tabs = json.loads(await mcp_server._list_tabs())['tabs']
 	main_tab_id = next(tab['tab_id'] for tab in initial_tabs if tab['url'] == f'{base_url}/main')
 
 	open_result = await mcp_server._navigate(f'{base_url}/detail', new_tab=True)
 	assert open_result == f'Opened new tab with URL: {base_url}/detail'
 
-	tabs = json.loads(await mcp_server._list_tabs())
+	tabs = json.loads(await mcp_server._list_tabs())['tabs']
 	detail_tab_id = next(tab['tab_id'] for tab in tabs if tab['url'] == f'{base_url}/detail')
 
 	switch_detail = await mcp_server._switch_tab(detail_tab_id)

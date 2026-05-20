@@ -238,7 +238,12 @@ Supported deterministic route families:
 
 ## Tab And Session Shapes
 
-`browser_list_tabs` returns JSON objects with:
+`browser_list_tabs` returns a JSON object with:
+
+- `tabs` — flat compatibility list of tab objects
+- `tab_groups` — tabs grouped by owner/runtime for the default operator view
+
+Each tab object contains:
 
 - `tab_id`
 - optional `parent_tab_id`
@@ -247,6 +252,19 @@ Supported deterministic route families:
 - optional `display_title`
 - optional `ownership`
 - optional `window_bounds`
+
+Each `tab_groups[]` entry can contain:
+
+- `group_id`
+- `owner_kind`
+- `display_label`
+- optional `runtime_id`
+- optional `runtime_label`
+- optional `runtime_role`
+- optional `parent_runtime_id`
+- `tab_count`
+- optional `current_tab_id`
+- `tabs`
 
 `browser_list_sessions` returns JSON objects with:
 

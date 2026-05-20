@@ -1961,7 +1961,7 @@ async def _scenario_tab_workspace(server) -> dict[str, Any]:
 	click_result = await server._click(ref=link_ref, new_tab=True)
 	if click_result.startswith('Error'):
 		return {'scenario': 'tab-workspace', 'passed': False, 'click_result': click_result}
-	tabs = json.loads(await server._list_tabs())
+	tabs = (json.loads(await server._list_tabs()) or {}).get('tabs', [])
 	target_tab = next((tab for tab in tabs if tab['url'].endswith('/release-notes.html')), None)
 	if target_tab is None:
 		raise ValueError('Release notes tab was not created')
