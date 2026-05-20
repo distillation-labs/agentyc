@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.12] - 2026-05-19
+
+### Added
+
+- **Default tab grouping by owner/runtime** — `browser_list_tabs` and `browser_get_state` now return a `tab_groups` array alongside the flat `tabs` list. Groups are ordered by `owner_kind` priority (agent → runtime → human) and labeled by `runtime_label`/`display_label`. Each group includes `group_id`, `owner_kind`, `tab_count`, `runtime_id`, and the contained tabs. The flat `tabs` list is preserved for backward compatibility.
+- **`build_tab_groups_payload()` helper** — groups serialized tabs by `runtime_id` with deterministic sort order. Human-owned tabs go into a `human` group, unknown-ownership tabs fall into `ungrouped`.
+- **`state_hash` now tracks tab ownership metadata** — the hash includes `tab_id`, `url`, `title`, `display_title`, `owner_kind`, `display_label`, `runtime_id`, `runtime_label`, and `current_tab_id`. This means `since_hash` polling correctly detects when a tab is claimed or released by an agent.
+
+### Changed
+
+- **`browser_list_tabs` response changed** — from a bare JSON array to `{"tabs": […], "tab_groups": […]}` envelope. All in-repo consumers (benchmarks, tab-recovery tests) updated to read `['tabs']` from the envelope.
+- **`browser_get_state` now includes `tab_groups`** — the default state payload includes the grouped tab view so operators and parent agents can see tab distribution at a glance.
+
+### Tests
+
+- **Tab grouping unit test** — `test_build_tab_groups_payload_groups_tabs_by_runtime_and_human_owner` in `test_shared_browser_collaboration.py`.
+- **State-hash ownership-change test** — `test_browser_state_hash_changes_when_tab_ownership_changes` in `test_mcp_runtime_optimizations.py`.
+- **Updated existing tests** — `test_browser_state_includes_ownership_and_tab_groups`, `test_browser_list_tabs_includes_collaboration_metadata`, and `test_browser_state_hash_matches_min_payload` extended to verify `tab_groups` in output.
+
 ## [0.2.11] - 2026-05-19
 
 ### Added
