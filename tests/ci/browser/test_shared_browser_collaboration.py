@@ -166,7 +166,7 @@ def test_build_tab_groups_payload_groups_tabs_by_runtime_and_human_owner():
 	assert groups[0]['runtime_label'] == 'Agent 1'
 	assert groups[0]['tab_count'] == 2
 	assert groups[0]['current_tab_id'] == 'b222'
-	assert [tab['tab_id'] for tab in groups[0]['tabs']] == ['a111', 'b222']
+	assert groups[0]['tab_ids'] == ['a111', 'b222']
 	assert groups[1]['group_id'] == 'human'
 	assert groups[1]['owner_kind'] == 'human'
 	assert groups[1]['tab_count'] == 1

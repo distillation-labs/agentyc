@@ -168,7 +168,7 @@ def build_tab_groups_payload(
 					'runtime_role': runtime.get('runtime_role') or 'primary',
 					'parent_runtime_id': runtime.get('parent_runtime_id'),
 					'tab_count': 0,
-					'tabs': [],
+					'tab_ids': [],
 				},
 			)
 		else:
@@ -187,18 +187,16 @@ def build_tab_groups_payload(
 					'owner_kind': owner_kind,
 					'display_label': group_label,
 					'tab_count': 0,
-					'tabs': [],
+					'tab_ids': [],
 				},
 			)
 
-		group['tabs'].append(tab)
+		group['tab_ids'].append(tab.get('tab_id') or '')
 		group['tab_count'] += 1
 		if current_tab_id is not None and tab.get('tab_id') == current_tab_id:
 			group['current_tab_id'] = current_tab_id
 
 	ordered_groups = sorted(grouped.values(), key=_tab_group_sort_key)
-	for group in ordered_groups:
-		group['tabs'] = sorted(group['tabs'], key=lambda item: str(item.get('display_title') or item.get('title') or item.get('url') or '').lower())
 	return ordered_groups
 
 
@@ -269,8 +267,6 @@ def _build_unchanged_state_payload(
 		result['current_tab_id'] = current_tab['tab_id']
 	if focus_index is not None:
 		result['focus_ref'] = make_element_ref(focus_index)
-	if 'tabs' not in result:
-		result['tabs'] = []
 	# Always include scroll position so agents know where they are even when elements haven't changed
 	if state.page_info and (state.page_info.scroll_x != 0 or state.page_info.scroll_y != 0):
 		result['scroll'] = {'x': state.page_info.scroll_x, 'y': state.page_info.scroll_y}
@@ -436,7 +432,7 @@ def build_browser_state_payload(
 		result['debug'] = debug_payload
 
 	if since_hash == state_hash:
-		unchanged = _build_unchanged_state_payload(
+		return _build_unchanged_state_payload(
 			state=state,
 			mode=mode,
 			effective_mode=effective_mode,
@@ -447,9 +443,6 @@ def build_browser_state_payload(
 			interactive_element_count=len(selector_map),
 			debug_payload=debug_payload,
 		)
-		unchanged['tabs'] = tabs_payload
-		unchanged['tab_groups'] = tab_groups_payload
-		return unchanged
 
 	scroll_y: int | None = None
 	viewport_height: int | None = None
@@ -792,23 +785,6 @@ def _heading_text_from_ancestor(node: EnhancedDOMTreeNode) -> str | None:
 
 def _fast_build_hash_input(state: BrowserStateSummary) -> str:
 	parts: list[str] = [state.url, state.title or '']
-	for tab in getattr(state, 'tabs', []) or []:
-		serialized_tab = serialize_tab_info(tab)
-		parts.append(str(serialized_tab.get('tab_id') or ''))
-		parts.append(str(serialized_tab.get('url') or ''))
-		parts.append(str(serialized_tab.get('title') or ''))
-		parts.append(str(serialized_tab.get('display_title') or ''))
-		ownership = serialized_tab.get('ownership')
-		if isinstance(ownership, dict):
-			parts.append(str(ownership.get('owner_kind') or ''))
-			parts.append(str(ownership.get('display_label') or ''))
-			runtime = ownership.get('runtime')
-			if isinstance(runtime, dict):
-				parts.append(str(runtime.get('runtime_id') or ''))
-				parts.append(str(runtime.get('runtime_label') or ''))
-	current_tab_id = getattr(state, 'current_tab_id', None)
-	if current_tab_id is not None:
-		parts.append(str(current_tab_id))
 	pi = state.page_info
 	if pi:
 		parts.extend(

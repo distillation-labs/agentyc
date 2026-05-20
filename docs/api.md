@@ -264,7 +264,7 @@ Each `tab_groups[]` entry can contain:
 - optional `parent_runtime_id`
 - `tab_count`
 - optional `current_tab_id`
-- `tabs`
+- `tab_ids` — ordered list of 4-char tab IDs in this group (cross-reference with flat `tabs` for full tab data)
 
 `browser_list_sessions` returns JSON objects with:
 

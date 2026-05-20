@@ -1754,63 +1754,6 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload == {
 			'url': 'https://example.com',
 			'title': 'Example page',
-			'tabs': [
-				{
-					'tab_id': '1234',
-					'url': 'https://example.com',
-					'title': 'Example page',
-					'display_title': '[Agent 1234] Example page',
-					'ownership': {
-						'target_id': 'target-owned-1234',
-						'owner_kind': 'agent',
-						'source': 'current_runtime',
-						'display_label': 'Agent 1234',
-						'runtime': {
-							'runtime_id': 'runtime-1234',
-							'session_id': 'session-1234',
-							'runtime_label': 'Agent 1234',
-							'runtime_role': 'primary',
-							'title_prefix': '[Agent 1234] ',
-						},
-					},
-					'window_bounds': {'left': 10, 'top': 20, 'width': 1200, 'height': 800},
-				}
-			],
-			'tab_groups': [
-				{
-					'group_id': 'runtime:runtime-1234',
-					'owner_kind': 'agent',
-					'display_label': 'Agent 1234',
-					'runtime_id': 'runtime-1234',
-					'runtime_label': 'Agent 1234',
-					'runtime_role': 'primary',
-					'parent_runtime_id': None,
-					'tab_count': 1,
-					'current_tab_id': '1234',
-					'tabs': [
-						{
-							'tab_id': '1234',
-							'url': 'https://example.com',
-							'title': 'Example page',
-							'display_title': '[Agent 1234] Example page',
-							'ownership': {
-								'target_id': 'target-owned-1234',
-								'owner_kind': 'agent',
-								'source': 'current_runtime',
-								'display_label': 'Agent 1234',
-								'runtime': {
-									'runtime_id': 'runtime-1234',
-									'session_id': 'session-1234',
-									'runtime_label': 'Agent 1234',
-									'runtime_role': 'primary',
-									'title_prefix': '[Agent 1234] ',
-								},
-							},
-							'window_bounds': {'left': 10, 'top': 20, 'width': 1200, 'height': 800},
-						}
-					],
-				}
-			],
 			'mode': 'min',
 			'effective_mode': 'min',
 			'state_hash': state_hash,
@@ -1887,7 +1830,7 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['tabs'][0]['window_bounds']['width'] == 1200
 		assert payload['tab_groups'][0]['runtime_id'] == runtime.runtime_id
 		assert payload['tab_groups'][0]['tab_count'] == 1
-		assert payload['tab_groups'][0]['tabs'][0]['tab_id'] == '1234'
+		assert payload['tab_groups'][0]['tab_ids'] == ['1234']
 		assert payload['current_tab_id'] == '1234'
 		assert payload['current_tab']['tab_id'] == '1234'
 		assert payload['current_tab']['display_title'].startswith('[Agent 1234]')
@@ -1945,7 +1888,8 @@ class TestMCPStateProtocolAndExtraction:
 			current_tab_id='target-owned-1234',
 		)
 
-		assert build_browser_state_payload(state_a, mode='min')['state_hash'] != build_browser_state_payload(state_b, mode='min')[
+		# state_hash tracks page content only, not tab ownership metadata
+		assert build_browser_state_payload(state_a, mode='min')['state_hash'] == build_browser_state_payload(state_b, mode='min')[
 			'state_hash'
 		]
 
@@ -1985,6 +1929,7 @@ class TestMCPStateProtocolAndExtraction:
 		assert result['tabs'][0]['window_bounds']['left'] == 10
 		assert result['tab_groups'][0]['runtime_id'] == runtime.runtime_id
 		assert result['tab_groups'][0]['tab_count'] == 1
+		assert result['tab_groups'][0]['tab_ids'] == ['1234']
 
 	async def test_extract_links_can_run_without_llm(
 		self, tools: Tools, browser_session: BrowserSession, base_url: str, tmp_path
