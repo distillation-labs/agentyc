@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-05-22
+
+### Added
+
+- **`browser_wait_for_request` / `browser_wait_for_response`** — precise network synchronization tools that wait for a matching request or response by URL, method, optional resource type, and optional status. They are intended for API-heavy apps where `browser_wait_for_network_idle` is too broad.
+- **`browser_export_debug_bundle`** — one-shot debugging bundle that packages the current state payload, recent console logs, recent network activity, pending requests, trace summary, optional scoped HTML, and optional screenshot for agents and operators.
+
+### Changed
+
+- **Tool surface expanded from 50 to 53** — the public MCP server now includes precise request/response waits plus a compact debug bundle primitive.
+- **Network capture now records wall-clock observation timestamps** — `browser_wait_for_network_idle`, `browser_wait_for_request`, and `browser_wait_for_response` now share a consistent baseline for deciding which requests belong to the active wait window.
+
+### Tests
+
+- **New real-browser MCP coverage** — `tests/ci/browser/test_new_mcp_tools.py` now covers the debug bundle plus precise request/response waits.
+- **Headless stdio benchmark coverage expanded** — `scripts/benchmark_mcp_stdio_e2e.py` now exercises the new debug/network tools as part of the public-surface headless run.
+
 ## [0.2.13] - 2026-05-22
 
 ### Changed

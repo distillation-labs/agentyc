@@ -370,6 +370,43 @@ def get_tool_schemas() -> list[types.Tool]:
 			},
 		),
 		types.Tool(
+			name='browser_wait_for_request',
+			description='Wait until a matching network request is observed. Use after clicks or JS actions that trigger fetch/XHR.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'url_substring': {'type': 'string', 'description': 'Match requests whose URL contains this substring.'},
+					'url_regex': {'type': 'string', 'description': 'Regex alternative to url_substring.'},
+					'method': {'type': 'string', 'description': 'Optional HTTP method filter (e.g. POST).'},
+					'resource_type': {
+						'type': 'string',
+						'description': 'Optional CDP resource type filter such as XHR, Fetch, Document, Script, Stylesheet, or Image.',
+					},
+					'timeout_seconds': {'type': 'number', 'default': 10.0},
+					'include_headers': {'type': 'boolean', 'default': False},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_wait_for_response',
+			description='Wait until a matching network response arrives, optionally filtered by status. More precise than network-idle for API debugging.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'url_substring': {'type': 'string', 'description': 'Match responses whose URL contains this substring.'},
+					'url_regex': {'type': 'string', 'description': 'Regex alternative to url_substring.'},
+					'method': {'type': 'string', 'description': 'Optional HTTP method filter (e.g. POST).'},
+					'resource_type': {
+						'type': 'string',
+						'description': 'Optional CDP resource type filter such as XHR, Fetch, Document, Script, Stylesheet, or Image.',
+					},
+					'status': {'type': 'integer', 'description': 'Optional exact HTTP status filter.'},
+					'timeout_seconds': {'type': 'number', 'default': 10.0},
+					'include_headers': {'type': 'boolean', 'default': False},
+				},
+			},
+		),
+		types.Tool(
 			name='browser_right_click',
 			description='Right-click to open a context menu.',
 			inputSchema={
@@ -568,6 +605,32 @@ def get_tool_schemas() -> list[types.Tool]:
 						'type': 'boolean',
 						'description': 'Include request and response headers in each entry. Increases output size significantly.',
 						'default': False,
+					},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_export_debug_bundle',
+			description='Return a compact debug bundle with current state, recent console logs, recent network activity, trace summary, and an optional screenshot.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'state_mode': {'type': 'string', 'enum': ['auto', 'full', 'min', 'focus'], 'default': 'min'},
+					'focus_ref': {'type': 'string', 'description': 'Element ref for state_mode=focus.'},
+					'since_hash': {
+						'type': 'string',
+						'description': 'Optional previous state hash for unchanged-state optimization.',
+					},
+					'include_screenshot': {'type': 'boolean', 'default': True},
+					'include_headers': {'type': 'boolean', 'default': False},
+					'include_html': {'type': 'boolean', 'default': False},
+					'html_selector': {'type': 'string', 'description': 'Optional CSS selector for scoped HTML capture.'},
+					'console_max_entries': {'type': 'integer', 'default': 20},
+					'network_max_entries': {'type': 'integer', 'default': 20},
+					'network_status_filter': {
+						'type': 'string',
+						'enum': ['all', 'errors', 'success'],
+						'default': 'all',
 					},
 				},
 			},

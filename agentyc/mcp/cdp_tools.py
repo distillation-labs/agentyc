@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from agentyc.mcp.debug_tools import _network_entry_started_since, _serialize_network_entry
+
 
 async def _get_html(self, selector: str | None = None) -> str:
 	"""Get raw HTML of the page or a specific element."""
@@ -273,7 +275,7 @@ async def _wait_for_network_idle(self, timeout_seconds: float = 10.0, idle_durat
 		deadline = start + timeout
 		while _time.monotonic() < deadline:
 			active_pending = [
-				entry for entry in self._network_pending.values() if float(entry.get('start_time') or 0.0) >= baseline_started_at
+				entry for entry in self._network_pending.values() if _network_entry_started_since(entry, baseline_started_at)
 			]
 			if not active_pending:
 				now = _time.monotonic()
@@ -464,6 +466,7 @@ async def _register_cdp_event_listeners(self) -> None:
 			'status_text': None,
 			'error': None,
 			'start_time': event.get('timestamp', time.time()),
+			'observed_at': time.time(),
 			'duration_ms': None,
 			'req_headers': req.get('headers') or {},
 		}
@@ -480,6 +483,7 @@ async def _register_cdp_event_listeners(self) -> None:
 		entry['status'] = resp.get('status')
 		entry['status_text'] = resp.get('statusText')
 		entry['resp_headers'] = resp.get('headers') or {}
+		entry['response_at'] = time.time()
 
 	def on_loading_finished(event: Any, session_id: str | None = None) -> None:
 		if not _is_our_session(session_id) or not isinstance(event, dict):
@@ -491,6 +495,7 @@ async def _register_cdp_event_listeners(self) -> None:
 		now = event.get('timestamp', time.time())
 		start = entry['start_time']
 		entry['duration_ms'] = round((now - start) * 1000, 1)
+		entry['finished_at'] = time.time()
 		self._network_log_buffer.append(dict(entry))
 		self._network_pending.pop(req_id, None)
 
@@ -504,6 +509,7 @@ async def _register_cdp_event_listeners(self) -> None:
 		entry['error'] = event.get('errorText', 'Failed')
 		now = event.get('timestamp', time.time())
 		entry['duration_ms'] = round((now - entry['start_time']) * 1000, 1)
+		entry['finished_at'] = time.time()
 		self._network_log_buffer.append(dict(entry))
 		self._network_pending.pop(req_id, None)
 
@@ -558,8 +564,7 @@ async def _get_network_log(
 	entries = entries[-max_entries:]
 	if not entries:
 		return json.dumps([])
-	_omit = {'request_id', 'start_time'} if include_headers else {'request_id', 'start_time', 'req_headers', 'resp_headers'}
-	display = [{k: v for k, v in e.items() if k not in _omit and v is not None} for e in entries]
+	display = [_serialize_network_entry(e, include_headers=include_headers) for e in entries]
 	return json.dumps(display)
 
 
@@ -886,6 +891,8 @@ async def _start_trace(self, categories: str | None = None) -> str:
 		)
 		self._trace_active = True
 		self._trace_events = []
+		self._trace_categories = trace_categories
+		self._trace_started_at = time.time()
 		return 'Trace started'
 	except Exception as e:
 		return self._format_action_error(str(e), default_code='action_failed')
@@ -905,8 +912,16 @@ async def _stop_trace(self) -> str:
 			session_id=cdp_session.session_id,
 		)
 		events = getattr(self, '_trace_events', [])
+		self._last_trace_summary = {
+			'event_count': len(events),
+			'categories': getattr(self, '_trace_categories', None),
+			'started_at': getattr(self, '_trace_started_at', None),
+			'stopped_at': time.time(),
+		}
 		self._trace_active = False
 		self._trace_events = []
+		self._trace_categories = None
+		self._trace_started_at = None
 		return json.dumps(events, default=str)
 	except Exception as e:
 		return self._format_action_error(str(e), default_code='action_failed')

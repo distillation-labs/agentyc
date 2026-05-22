@@ -421,6 +421,50 @@ class MCPStdioAdapter:
 		arguments = {'timeout_seconds': timeout_seconds, 'idle_duration_ms': idle_duration_ms}
 		return (await self.call_tool('browser_wait_for_network_idle', arguments, scenario=scenario)).text
 
+	async def _wait_for_request(
+		self,
+		url_substring: str | None = None,
+		url_regex: str | None = None,
+		method: str | None = None,
+		resource_type: str | None = None,
+		timeout_seconds: float = 10,
+		include_headers: bool = False,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {
+			'url_substring': url_substring,
+			'url_regex': url_regex,
+			'method': method,
+			'resource_type': resource_type,
+			'timeout_seconds': timeout_seconds,
+			'include_headers': include_headers,
+		}
+		return (await self.call_tool('browser_wait_for_request', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _wait_for_response(
+		self,
+		url_substring: str | None = None,
+		url_regex: str | None = None,
+		method: str | None = None,
+		resource_type: str | None = None,
+		status: int | None = None,
+		timeout_seconds: float = 10,
+		include_headers: bool = False,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {
+			'url_substring': url_substring,
+			'url_regex': url_regex,
+			'method': method,
+			'resource_type': resource_type,
+			'status': status,
+			'timeout_seconds': timeout_seconds,
+			'include_headers': include_headers,
+		}
+		return (await self.call_tool('browser_wait_for_response', _drop_nones(arguments), scenario=scenario)).text
+
 	async def _right_click(
 		self,
 		ref: str | None = None,
@@ -451,6 +495,36 @@ class MCPStdioAdapter:
 	) -> str:
 		arguments = {'type_filter': type_filter, 'status_filter': status_filter, 'max_entries': max_entries}
 		return (await self.call_tool('browser_get_network_log', arguments, scenario=scenario)).text
+
+	async def _export_debug_bundle(
+		self,
+		*,
+		state_mode: str = 'min',
+		focus_ref: str | None = None,
+		since_hash: str | None = None,
+		include_screenshot: bool = True,
+		include_headers: bool = False,
+		include_html: bool = False,
+		html_selector: str | None = None,
+		console_max_entries: int = 20,
+		network_max_entries: int = 20,
+		network_status_filter: str = 'all',
+		scenario: str = 'fixture',
+	) -> tuple[str, str | None]:
+		arguments = {
+			'state_mode': state_mode,
+			'focus_ref': focus_ref,
+			'since_hash': since_hash,
+			'include_screenshot': include_screenshot,
+			'include_headers': include_headers,
+			'include_html': include_html,
+			'html_selector': html_selector,
+			'console_max_entries': console_max_entries,
+			'network_max_entries': network_max_entries,
+			'network_status_filter': network_status_filter,
+		}
+		result = await self.call_tool('browser_export_debug_bundle', _drop_nones(arguments), scenario=scenario)
+		return result.text, result.image_data[0] if result.image_data else None
 
 
 def _drop_nones(payload: dict[str, Any]) -> dict[str, Any]:
@@ -829,6 +903,72 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 			open_tab_two=open_tab_two,
 			switch_result=switch_result,
 			double_click_result=double_click_result,
+		)
+	)
+
+	await adapter._navigate(f'{base_url}/network-log.html', scenario='coverage-network-debug')
+	network_state, _ = await adapter.get_browser_state_json(mode='auto', scenario='coverage-network-debug')
+	post_ref = BENCH.find_element_ref(network_state, 'Post data')
+	request_match: dict[str, Any] = {}
+	response_match: dict[str, Any] = {}
+	post_click = 'missing-ref'
+	if post_ref is not None:
+		request_task = asyncio.create_task(
+			adapter._wait_for_request(
+				url_substring='/api/submit',
+				method='POST',
+				include_headers=True,
+				timeout_seconds=5,
+				scenario='coverage-network-debug',
+			)
+		)
+		response_task = asyncio.create_task(
+			adapter._wait_for_response(
+				url_substring='/api/submit',
+				method='POST',
+				include_headers=True,
+				timeout_seconds=5,
+				scenario='coverage-network-debug',
+			)
+		)
+		post_click = await adapter._click(ref=post_ref, scenario='coverage-network-debug')
+		request_match = _safe_json_loads(await request_task) or {}
+		response_match = _safe_json_loads(await response_task) or {}
+	debug_bundle_text, debug_bundle_image = await adapter._export_debug_bundle(
+		include_screenshot=True,
+		include_headers=True,
+		include_html=True,
+		html_selector='#status',
+		console_max_entries=20,
+		network_max_entries=20,
+		scenario='coverage-network-debug',
+	)
+	debug_bundle = _safe_json_loads(debug_bundle_text) or {}
+	network_entries = debug_bundle.get('network_log', []) if isinstance(debug_bundle, dict) else []
+	outcomes.append(
+		_scenario_result(
+			'coverage-network-debug',
+			passed=(
+				post_ref is not None
+				and 'Clicked element' in post_click
+				and isinstance(request_match, dict)
+				and request_match.get('method') == 'POST'
+				and '/api/submit' in str(request_match.get('url', ''))
+				and isinstance(response_match, dict)
+				and '/api/submit' in str(response_match.get('url', ''))
+				and (bool(response_match.get('error')) or int(response_match.get('status') or 0) >= 400)
+				and isinstance(debug_bundle, dict)
+				and debug_bundle_image is not None
+				and any('/api/submit' in str(entry.get('url', '')) for entry in network_entries if isinstance(entry, dict))
+				and (
+					'post failed:' in str(debug_bundle.get('html', '')).lower()
+					or 'post 501' in str(debug_bundle.get('html', '')).lower()
+				)
+			),
+			post_ref_found=post_ref is not None,
+			post_click=post_click,
+			request_match=request_match,
+			response_match=response_match,
 		)
 	)
 

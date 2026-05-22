@@ -144,6 +144,7 @@ from agentyc.mcp.cdp_tools import (
 	_wait_for_network_idle,
 	_wait_for_stable_dom,
 )
+from agentyc.mcp.debug_tools import _export_debug_bundle, _wait_for_request, _wait_for_response
 from agentyc.mcp.session_lifecycle import (
 	_browser_runtime_is_ready,
 	_cleanup_expired_sessions,
@@ -259,6 +260,9 @@ class AgentycServer:
 	_clear_logs: Callable[..., Awaitable[str]]
 	_start_trace: Callable[..., Awaitable[str]]
 	_stop_trace: Callable[..., Awaitable[str]]
+	_wait_for_request: Callable[..., Awaitable[str]]
+	_wait_for_response: Callable[..., Awaitable[str]]
+	_export_debug_bundle: Callable[..., Awaitable[tuple[str, str | None]]]
 
 	def __init__(
 		self,
@@ -312,6 +316,9 @@ class AgentycServer:
 		self._cdp_client_for_runtime: Any = None  # set after _register_cdp_event_listeners
 		self._trace_active: bool = False
 		self._trace_events: list[dict[str, Any]] = []
+		self._trace_categories: str | None = None
+		self._trace_started_at: float | None = None
+		self._last_trace_summary: dict[str, Any] | None = None
 
 		# Setup handlers
 		self._setup_handlers()
@@ -564,6 +571,9 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_start_trace': _start_trace,
 	'_stop_trace': _stop_trace,
 	'_get_network_log': _get_network_log,
+	'_wait_for_request': _wait_for_request,
+	'_wait_for_response': _wait_for_response,
+	'_export_debug_bundle': _export_debug_bundle,
 	'_get_focused_element': _get_focused_element,
 	'_list_tabs': _list_tabs,
 	'_new_tab': _new_tab,

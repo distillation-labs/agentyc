@@ -204,6 +204,27 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 				idle_duration_ms=arguments.get('idle_duration_ms', 500),
 			)
 
+		if tool_name == 'browser_wait_for_request':
+			return await self._wait_for_request(
+				url_substring=arguments.get('url_substring'),
+				url_regex=arguments.get('url_regex'),
+				method=arguments.get('method'),
+				resource_type=arguments.get('resource_type'),
+				timeout_seconds=arguments.get('timeout_seconds', 10.0),
+				include_headers=arguments.get('include_headers', False),
+			)
+
+		if tool_name == 'browser_wait_for_response':
+			return await self._wait_for_response(
+				url_substring=arguments.get('url_substring'),
+				url_regex=arguments.get('url_regex'),
+				method=arguments.get('method'),
+				resource_type=arguments.get('resource_type'),
+				status=arguments.get('status'),
+				timeout_seconds=arguments.get('timeout_seconds', 10.0),
+				include_headers=arguments.get('include_headers', False),
+			)
+
 		if tool_name == 'browser_right_click':
 			return await self._right_click(
 				ref=arguments.get('ref'),
@@ -283,5 +304,23 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 				max_entries=arguments.get('max_entries', 50),
 				include_headers=arguments.get('include_headers', False),
 			)
+
+		if tool_name == 'browser_export_debug_bundle':
+			bundle_json, screenshot_b64 = await self._export_debug_bundle(
+				state_mode=arguments.get('state_mode', 'min'),
+				focus_ref=arguments.get('focus_ref'),
+				since_hash=arguments.get('since_hash'),
+				include_screenshot=arguments.get('include_screenshot', True),
+				include_headers=arguments.get('include_headers', False),
+				include_html=arguments.get('include_html', False),
+				html_selector=arguments.get('html_selector'),
+				console_max_entries=arguments.get('console_max_entries', 20),
+				network_max_entries=arguments.get('network_max_entries', 20),
+				network_status_filter=arguments.get('network_status_filter', 'all'),
+			)
+			content: list[types.TextContent | types.ImageContent] = [types.TextContent(type='text', text=bundle_json)]
+			if screenshot_b64:
+				content.append(types.ImageContent(type='image', data=screenshot_b64, mimeType='image/png'))
+			return content
 
 	return f'Unknown tool: {tool_name}'

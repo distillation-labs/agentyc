@@ -36,7 +36,7 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, `since_hash` polling, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
+Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
 
 | Argument | Description |
 |----------|-------------|
@@ -90,6 +90,8 @@ The runtime startup path is:
 | `browser_refresh` | none |
 | `browser_wait` | optional `seconds` |
 | `browser_wait_for_network_idle` | optional `timeout_seconds`, `idle_duration_ms` |
+| `browser_wait_for_request` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `timeout_seconds`, optional `include_headers` |
+| `browser_wait_for_response` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `status`, optional `timeout_seconds`, optional `include_headers` |
 | `browser_wait_for_stable_dom` | optional `timeout_seconds`, `quiet_ms` |
 | `browser_save_as_pdf` | optional `file_name`, `print_background`, `landscape`, `scale`, `paper_format` |
 | `browser_set_viewport` | `width`, `height`, optional `device_scale_factor` |
@@ -147,6 +149,7 @@ The runtime startup path is:
 |------|-----------|
 | `browser_get_console_logs` | optional `level`, optional `max_entries` |
 | `browser_get_network_log` | optional `type_filter`, optional `status_filter`, optional `max_entries`, optional `include_headers` (boolean, default: false) |
+| `browser_export_debug_bundle` | optional `state_mode`, optional `focus_ref`, optional `since_hash`, optional `include_screenshot`, optional `include_headers`, optional `include_html`, optional `html_selector`, optional `console_max_entries`, optional `network_max_entries`, optional `network_status_filter` |
 | `browser_get_downloads` | none |
 | `browser_clear_logs` | optional `console`, optional `network` |
 | `browser_start_trace` | optional `categories` |
@@ -208,6 +211,32 @@ Interactive elements use stable refs such as `e123`. Those refs are the preferre
 ### `browser_screenshot`
 
 Returns JSON metadata as text and the PNG image as a separate MCP image content item.
+
+### `browser_wait_for_request` and `browser_wait_for_response`
+
+Both tools return a JSON text payload describing the matching network entry. Depending on timing, the payload can include:
+
+- `url`
+- `method`
+- `type`
+- `status` and `status_text`
+- `error`
+- `duration_ms`
+- `req_headers` and `resp_headers` when `include_headers=true`
+
+Timeouts return `Error [timeout]: ...`.
+
+### `browser_export_debug_bundle`
+
+Returns JSON text plus an optional screenshot image. The JSON bundle includes:
+
+- `state` — the nested `browser_get_state` payload
+- `console_logs`
+- `network_log`
+- `pending_requests`
+- `trace`
+- `summary`
+- `html` when requested
 
 ### `browser_extract_content`
 

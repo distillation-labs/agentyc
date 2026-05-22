@@ -14,6 +14,8 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_refresh` | Reload the current page |
 | `browser_wait` | Wait for a bounded number of seconds |
 | `browser_wait_for_network_idle` | Wait until network activity settles |
+| `browser_wait_for_request` | Wait until a matching request is observed |
+| `browser_wait_for_response` | Wait until a matching response or failure is observed |
 | `browser_wait_for_stable_dom` | Wait until DOM mutations settle via `MutationObserver` |
 | `browser_save_as_pdf` | Save the current page as a PDF via CDP `Page.printToPDF` |
 | `browser_set_viewport` | Set browser viewport width, height, and device scale factor |
@@ -73,6 +75,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_extract_content` | Deterministically extract compatible content from the current page |
 | `browser_get_console_logs` | Return recent browser console messages captured through CDP |
 | `browser_get_network_log` | Return recent network requests captured through CDP; accepts `include_headers` to expose request and response headers |
+| `browser_export_debug_bundle` | Return one compact debug artifact with state, logs, trace summary, optional HTML, and optional screenshot |
 | `browser_get_downloads` | List files downloaded during the current browser session |
 | `browser_get_attribute` | Get a specific attribute value from an element by ref or index |
 | `browser_clear_logs` | Clear console and/or network log buffers |
@@ -138,6 +141,8 @@ The MCP server records browser diagnostics directly from CDP event streams.
 
 - `browser_get_console_logs` uses the Runtime domain rather than page-side JavaScript injection.
 - `browser_get_network_log` uses the Network domain and keeps a bounded in-memory buffer.
+- `browser_wait_for_request` and `browser_wait_for_response` use the same capture buffer with wall-clock observation timestamps, so agents can wait for specific API activity instead of relying on generic idle heuristics.
+- `browser_export_debug_bundle` packages the current state, recent diagnostics, pending requests, and optional screenshot into one agent-readable response.
 - Network and console capture follow the active browser session and its tabs.
 
 In addition, clients that pass a MCP `progressToken` on tool calls can receive `notifications/progress` for browser phases. Tool results also include `_meta` timing fields such as `agentyc/browser_duration_ms` so UIs can separate browser time from model reasoning time.

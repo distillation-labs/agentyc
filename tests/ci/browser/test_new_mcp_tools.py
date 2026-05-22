@@ -1,4 +1,4 @@
-"""Headless browser tests for the 7 new MCP tools added in the production-readiness upgrade."""
+"""Headless browser tests for newer MCP browser tools."""
 
 import asyncio
 import json
@@ -49,6 +49,58 @@ _DOWNLOAD_PAGE = """
 </html>
 """
 
+_DEBUG_BUNDLE_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Debug bundle</title></head>
+<body>
+	<main>
+		<h1>Debug bundle</h1>
+		<div id="status">Loading</div>
+	</main>
+	<script>
+		console.log('bundle log ready');
+		fetch('/bundle-api', {headers: {'X-Debug-Mode': 'bundle'}})
+			.then(response => response.json())
+			.then(data => {
+				document.getElementById('status').textContent = data.status;
+				console.warn('bundle warning ready');
+			})
+			.catch(error => {
+				console.error('bundle failed', error && error.message ? error.message : String(error));
+			});
+	</script>
+</body>
+</html>
+"""
+
+_NETWORK_WAIT_PAGE = """
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Network waits</title></head>
+<body>
+	<main>
+		<button id="post-data">Post data</button>
+		<p id="result">Idle</p>
+	</main>
+	<script>
+		document.getElementById('post-data').addEventListener('click', async () => {
+			console.info('submit started');
+			const response = await fetch('/wait-api', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-Debug-Token': 'alpha'
+				},
+				body: JSON.stringify({message: 'hello'})
+			});
+			document.getElementById('result').textContent = 'POST ' + response.status;
+		});
+	</script>
+</body>
+</html>
+"""
+
 
 @pytest.fixture
 async def browser_session():
@@ -75,7 +127,7 @@ def mcp_server(browser_session: BrowserSession):
 
 
 class TestNewMCPTools:
-	"""Integration tests for the 7 new MCP browser tools."""
+	"""Integration tests for newer MCP browser tools."""
 
 	async def test_wait_for_stable_dom(self, httpserver: HTTPServer, browser_session: BrowserSession, mcp_server):
 		"""browser_wait_for_stable_dom must detect DOM stability after dynamic mutations settle."""
@@ -178,6 +230,103 @@ class TestNewMCPTools:
 
 		result = await mcp_server._get_attribute(name='nonexistent', ref='e1')
 		assert 'not found' in result.lower()
+
+	async def test_export_debug_bundle_includes_state_logs_network_and_screenshot(
+		self, httpserver: HTTPServer, browser_session: BrowserSession, mcp_server
+	):
+		"""browser_export_debug_bundle must compose state, logs, network activity, HTML, and screenshot."""
+		httpserver.expect_request('/debug-bundle').respond_with_data(_DEBUG_BUNDLE_PAGE, content_type='text/html')
+		httpserver.expect_request('/bundle-api').respond_with_data(
+			'{"status":"Loaded via API"}',
+			content_type='application/json',
+			headers={'X-Debug-Result': 'bundle'},
+		)
+
+		await mcp_server._register_cdp_event_listeners()
+		base_url = f'http://127.0.0.1:{httpserver.port}'
+		wait_task = asyncio.create_task(mcp_server._wait_for_response(url_substring='/bundle-api', timeout_seconds=5.0))
+		nav_result = await mcp_server._navigate(f'{base_url}/debug-bundle')
+		assert not nav_result.startswith('Error'), f'Navigation failed: {nav_result}'
+
+		wait_result = await wait_task
+		assert not wait_result.startswith('Error'), f'wait_for_response failed: {wait_result}'
+
+		bundle_json, screenshot_b64 = await mcp_server._export_debug_bundle(
+			include_screenshot=True,
+			include_headers=True,
+			include_html=True,
+			html_selector='#status',
+			console_max_entries=20,
+			network_max_entries=20,
+		)
+		assert not bundle_json.startswith('Error'), f'export_debug_bundle failed: {bundle_json}'
+		assert screenshot_b64 is not None
+
+		bundle = json.loads(bundle_json)
+		assert bundle['state']['url'].endswith('/debug-bundle')
+		assert any('bundle log ready' in str(entry.get('text', '')) for entry in bundle['console_logs'])
+		assert any('/bundle-api' in str(entry.get('url', '')) for entry in bundle['network_log'])
+		assert 'Loaded via API' in bundle['html']
+		assert bundle['summary']['screenshot_included'] is True
+		assert bundle['trace']['active'] is False
+
+	async def test_wait_for_request_and_response_capture_matching_entry(
+		self, httpserver: HTTPServer, browser_session: BrowserSession, mcp_server
+	):
+		"""browser_wait_for_request and browser_wait_for_response must match the triggered POST request."""
+		httpserver.expect_request('/network-waits').respond_with_data(_NETWORK_WAIT_PAGE, content_type='text/html')
+		httpserver.expect_request('/wait-api', method='POST').respond_with_data(
+			'{"saved":true}',
+			status=201,
+			content_type='application/json',
+			headers={'X-Debug-Result': 'saved'},
+		)
+
+		base_url = f'http://127.0.0.1:{httpserver.port}'
+		nav_result = await mcp_server._navigate(f'{base_url}/network-waits')
+		assert not nav_result.startswith('Error'), f'Navigation failed: {nav_result}'
+		state_json, _ = await mcp_server._get_browser_state(include_screenshot=False)
+		state = json.loads(state_json)
+		post_ref = next(
+			(el['ref'] for el in state.get('interactive_elements', []) if 'Post data' in (el.get('text') or '')),
+			None,
+		)
+		assert post_ref is not None
+
+		request_task = asyncio.create_task(
+			mcp_server._wait_for_request(
+				url_substring='/wait-api',
+				method='POST',
+				include_headers=True,
+				timeout_seconds=5.0,
+			)
+		)
+		response_task = asyncio.create_task(
+			mcp_server._wait_for_response(
+				url_substring='/wait-api',
+				method='POST',
+				status=201,
+				include_headers=True,
+				timeout_seconds=5.0,
+			)
+		)
+		click_result = await mcp_server._click(ref=post_ref)
+		assert not click_result.startswith('Error'), f'Click failed: {click_result}'
+
+		request_payload = json.loads(await request_task)
+		response_payload = json.loads(await response_task)
+		request_header_keys = {str(key).lower() for key in (request_payload.get('req_headers') or {}).keys()}
+		response_header_keys = {str(key).lower() for key in (response_payload.get('resp_headers') or {}).keys()}
+
+		assert request_payload['method'] == 'POST'
+		assert request_payload['url'].endswith('/wait-api')
+		assert 'x-debug-token' in request_header_keys
+		assert response_payload['status'] == 201
+		assert response_payload['url'].endswith('/wait-api')
+		assert 'x-debug-result' in response_header_keys
+
+		result_html = await mcp_server._get_html('#result')
+		assert 'POST 201' in result_html
 
 	async def test_clear_logs_console(self, httpserver: HTTPServer, browser_session: BrowserSession, mcp_server):
 		"""browser_clear_logs must clear the console log buffer."""
@@ -415,3 +564,20 @@ class TestNewMCPTools:
 		mcp_server.browser_session = None
 		result = await mcp_server._start_trace()
 		assert 'Error' in result
+
+	async def test_export_debug_bundle_no_session(self, mcp_server):
+		"""browser_export_debug_bundle must error when no browser session exists."""
+		mcp_server.browser_session = None
+		result, screenshot = await mcp_server._export_debug_bundle()
+		assert 'Error' in result
+		assert screenshot is None
+
+	async def test_wait_for_request_requires_match_target(self, mcp_server):
+		"""browser_wait_for_request must reject empty match criteria."""
+		result = await mcp_server._wait_for_request()
+		assert result.startswith('Error [invalid_argument]:')
+
+	async def test_wait_for_response_requires_match_target(self, mcp_server):
+		"""browser_wait_for_response must reject empty match criteria."""
+		result = await mcp_server._wait_for_response()
+		assert result.startswith('Error [invalid_argument]:')

@@ -2,7 +2,7 @@
 
 <p align="center">
   <em>Deterministic, MCP-first browser automation for coding agents.</em><br>
-  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 50 tools.
+  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 53 tools.
 </p>
 
 <p align="center">
@@ -45,12 +45,12 @@ agentyc                          # Starts the MCP server — that's it
 | **Parallel agent model** | Shared browser profile + per-runtime owned tabs | N/A | N/A |
 | **Dependencies** | ~20 core (lean) | ~40+ (heavy) | Playwright + SDK |
 | **Install size** | Small (Python package) | Very large | Moderate |
-| **Tool count** | 50 | ~15-20 actions | ~20 tools |
+| **Tool count** | 53 | ~15-20 actions | ~20 tools |
 | **Console/Network capture** | CDP-native built-in | Limited | Limited |
 | **Deterministic extraction** | Tables, lists, forms, links, images, key-value | None (LLM only) | None |
 | **Headless by default** | No (visible), flag for headless | Configurable | Configurable |
 
-**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 50 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
+**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 53 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
 
 ---
 
@@ -99,13 +99,13 @@ agentyc init --print              # stdout
 agentyc init --force              # overwrite
 ```
 
-The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, JS evaluation, and common pitfalls.
+The skills guide covers: read→ref→act loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, JS evaluation, and common pitfalls.
 
 ---
 
-## MCP Surface: 50 Tools
+## MCP Surface: 53 Tools
 
-### Navigation & State (12 tools)
+### Navigation & State (14 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -115,6 +115,8 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 | `browser_refresh` | Reload current page |
 | `browser_wait` | Wait N seconds (bounded) |
 | `browser_wait_for_network_idle` | Wait until AJAX/XHR settles |
+| `browser_wait_for_request` | Wait for a matching request by URL, method, or resource type |
+| `browser_wait_for_response` | Wait for a matching response or network failure by URL, method, or status |
 | `browser_wait_for_stable_dom` | Wait until DOM mutations settle via `MutationObserver` |
 | `browser_get_state` | **Primary primitive** — structured DOM with stable refs, screenshots, 4 modes |
 | `browser_get_html` | Raw HTML (full or CSS-selected) |
@@ -166,12 +168,13 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, dynamic-te
 | `browser_save_state` | Persist cookies + storage to disk |
 | `browser_load_state` | Restore from disk |
 
-### Observability & Lifecycle (9 tools)
+### Observability & Lifecycle (10 tools)
 
 | Tool | What it does |
 |------|-------------|
 | `browser_get_console_logs` | CDP-native console capture (log/warn/error) |
 | `browser_get_network_log` | CDP-native network log with optional headers |
+| `browser_export_debug_bundle` | Bundle state, console, network, trace summary, optional HTML, and screenshot in one round-trip |
 | `browser_get_downloads` | List downloaded files from the session |
 | `browser_clear_logs` | Clear console and/or network log buffers |
 | `browser_start_trace` | Start CDP performance trace |
@@ -256,6 +259,14 @@ When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by
 - `--shared-browser-window-bounds` — JSON bounds for window mode
 
 > Tab mode is the default for parallel subagents. Window mode remains optional when an operator needs a separate visible surface.
+
+---
+
+## Debugging Loops
+
+- **`browser_export_debug_bundle`** returns one compact artifact with current state, recent console logs, recent network activity, pending requests, trace summary, optional scoped HTML, and an optional screenshot.
+- **`browser_wait_for_request` / `browser_wait_for_response`** are the precise sync primitives for API-heavy apps when generic `networkidle` is too blunt.
+- Network waits use the same CDP capture buffer as `browser_get_network_log`, so agents can wait for a specific call and then immediately inspect the matching traffic.
 
 ---
 

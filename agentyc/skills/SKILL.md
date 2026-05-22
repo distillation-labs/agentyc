@@ -125,7 +125,9 @@ browser_get_state(mode="min", since_hash=state["state_hash"])
 
 Use:
 
-- `browser_wait_for_network_idle()` after navigation or XHR-heavy actions
+- `browser_wait_for_request(...)` when one specific API call should fire
+- `browser_wait_for_response(...)` when you need the matching response or HTTP failure
+- `browser_wait_for_network_idle()` after navigation or broad XHR-heavy actions
 - `browser_wait_for_element(text="Success")` when you know the exact success text or control
 - `browser_wait(seconds=1)` only as a last resort
 
@@ -257,10 +259,37 @@ browser_get_console_logs(level="error")
 browser_get_network_log(status_filter="errors")
 browser_get_network_log(type_filter="XHR")
 browser_get_network_log(include_headers=True)
+browser_wait_for_request(url_substring="/api/submit", method="POST")
+browser_wait_for_response(url_substring="/api/submit", status=200)
+browser_export_debug_bundle()
 browser_get_focused_element()
 ```
 
 If an action "did nothing," check console errors first, then network errors, then re-read state.
+
+For a compact one-shot artifact to hand back to a parent agent or human, use:
+
+```python
+browser_export_debug_bundle(
+    state_mode="min",
+    include_screenshot=True,
+    include_headers=False,
+    console_max_entries=20,
+    network_max_entries=20,
+)
+```
+
+`browser_export_debug_bundle` returns:
+
+- the nested `browser_get_state` payload
+- recent console logs
+- recent network log entries
+- pending requests
+- trace summary
+- optional scoped HTML
+- optional screenshot image
+
+Use it when you need a single debugging bundle instead of several separate tool calls.
 
 ---
 
@@ -299,7 +328,7 @@ Do **not** compare `since_hash` against a pre-action state when the action inten
 
 ## Parallel Agents with Shared Browser
 
-Multiple agents can share one Chrome instance, each in its own isolated tab and browser context.
+Multiple agents can share one Chrome instance. Each attached runtime gets a dedicated owned tab in the same shared browser profile.
 
 ### Setup
 
@@ -310,7 +339,9 @@ agentyc mcp --cdp-url "$cdp_url" --runtime-label "Agent-1"
 agentyc mcp --cdp-url "$cdp_url" --runtime-label "Agent-2"
 ```
 
-Each agent should immediately claim a tab:
+Each attached runtime already receives its own collaboration tab automatically.
+
+Open another tab only when one runtime needs more than its default owned tab:
 
 ```python
 browser_new_tab()
@@ -320,6 +351,7 @@ browser_navigate(url="https://example.com")
 Coordination rules:
 
 - each agent should work from its own tab
+- auth, cookies, localStorage, and sessionStorage are shared across attached runtimes because they stay in the same browser profile
 - use `browser_list_tabs` to inspect the shared browser surface
 - use display titles, URLs, and runtime metadata to confirm you are in the right tab before acting
 - do not call `browser_close_all` in a shared-browser session
@@ -352,9 +384,11 @@ Wrap the code in an IIFE when returning a value. Keep the script focused and nar
 
 **Do not use screenshots for structured extraction.** Use `browser_extract_content`.
 
-**Do not guess with long sleeps.** Use `since_hash`, `browser_wait_for_element`, or `browser_wait_for_network_idle`.
+**Do not guess with long sleeps.** Use `since_hash`, `browser_wait_for_element`, `browser_wait_for_request`, `browser_wait_for_response`, or `browser_wait_for_network_idle`.
 
 **Do not use `browser_navigate(new_tab=True)` when you need to act in the new tab immediately.** Use `browser_new_tab`.
+
+**Do not use `browser_wait_for_network_idle` when one specific API call matters.** Use `browser_wait_for_request` or `browser_wait_for_response`.
 
 **Do not keep acting after an MCP tool error.** Read the error code and hint, then recover with fresh state or tabs.
 
@@ -407,12 +441,15 @@ browser_search_page(pattern="Error", regex=True)
 
 # Wait and debug
 browser_wait_for_network_idle()
+browser_wait_for_request(url_substring="/api/...")
+browser_wait_for_response(url_substring="/api/...", status=200)
 browser_wait_for_element(text="Success")
 browser_wait_for_element(text="Saving...", appear=False)
 browser_wait(seconds=1)
 browser_get_console_logs(level="error")
 browser_get_network_log(status_filter="errors")
 browser_get_network_log(type_filter="Fetch")
+browser_export_debug_bundle()
 
 # State and sessions
 browser_save_state(path="...")
