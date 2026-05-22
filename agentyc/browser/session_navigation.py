@@ -210,6 +210,9 @@ async def _navigate_and_wait(
 	while (asyncio.get_event_loop().time() - start_time) < timeout:
 		try:
 			for event_data in list(cdp_session._lifecycle_events):
+				event_timestamp = event_data.get('timestamp')
+				if isinstance(event_timestamp, (int, float)) and event_timestamp < nav_start_time:
+					continue
 				event_name = event_data.get('name')
 				event_loader_id = event_data.get('loaderId')
 
@@ -246,6 +249,25 @@ async def _navigate_and_wait(
 		)
 	else:
 		session.logger.warning(f'⚠️ Page readiness timeout ({timeout}s, {duration_ms:.0f}ms) for {url}')
+	if wait_until in {'load', 'domcontentloaded'} and await _navigation_ready_via_dom(
+		session, cdp_session=cdp_session, url=url, wait_until=wait_until
+	):
+		session.logger.debug(f'✅ Page ready for {url} (final document.readyState fallback, {duration_ms:.0f}ms)')
+		return
+	probe = await _get_navigation_dom_probe(session, cdp_session=cdp_session)
+	if probe is not None:
+		current_url, ready_state = probe
+		if current_url and not _urls_match_for_navigation_ready(current_url, url):
+			raise RuntimeError(
+				f'Navigation timed out after {timeout}s before reaching {url}; '
+				f'current page remained {current_url} (readyState={ready_state or "unknown"})'
+			)
+		if current_url:
+			raise RuntimeError(
+				f'Navigation timed out after {timeout}s waiting for {wait_until} on {url} '
+				f'(current_url={current_url}, readyState={ready_state or "unknown"})'
+			)
+	raise RuntimeError(f'Navigation timed out after {timeout}s waiting for {wait_until} on {url}')
 
 
 def _urls_match_for_navigation_ready(current_url: str, target_url: str) -> bool:
@@ -265,6 +287,18 @@ def _urls_match_for_navigation_ready(current_url: str, target_url: str) -> bool:
 
 
 async def _navigation_ready_via_dom(session: BrowserSession, *, cdp_session: Any, url: str, wait_until: str) -> bool:
+	probe = await _get_navigation_dom_probe(session, cdp_session=cdp_session)
+	if probe is None:
+		return False
+	current_url, ready_state = probe
+	if not _urls_match_for_navigation_ready(current_url, url):
+		return False
+	if wait_until == 'domcontentloaded':
+		return ready_state in {'interactive', 'complete'}
+	return ready_state == 'complete'
+
+
+async def _get_navigation_dom_probe(session: BrowserSession, *, cdp_session: Any) -> tuple[str, str] | None:
 	try:
 		result = await cdp_session.cdp_client.send.Runtime.evaluate(
 			params={
@@ -275,18 +309,12 @@ async def _navigation_ready_via_dom(session: BrowserSession, *, cdp_session: Any
 		)
 	except Exception as e:
 		session.logger.debug(f'document.readyState fallback failed: {e}')
-		return False
+		return None
 
 	payload = result.get('result', {}).get('value')
 	if not isinstance(payload, dict):
-		return False
-	current_url = str(payload.get('url') or '')
-	ready_state = str(payload.get('readyState') or '')
-	if not _urls_match_for_navigation_ready(current_url, url):
-		return False
-	if wait_until == 'domcontentloaded':
-		return ready_state in {'interactive', 'complete'}
-	return ready_state == 'complete'
+		return None
+	return (str(payload.get('url') or ''), str(payload.get('readyState') or ''))
 
 
 async def on_SwitchTabEvent(session: BrowserSession, event: SwitchTabEvent) -> TargetID:

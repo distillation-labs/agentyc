@@ -10,10 +10,12 @@ from cdp_use.cdp.target import SessionID
 
 from agentyc.browser.collaboration import extract_title_prefix, strip_title_prefix
 from agentyc.browser.session_models import CDPSession, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
-from agentyc.utils import create_task_with_error_handling
 
 if TYPE_CHECKING:
 	from agentyc.browser.session_manager import SessionManager
+
+INITIAL_TARGET_ATTACH_WAIT_TIMEOUT_S = 0.25
+INITIAL_TARGET_ATTACH_POLL_INTERVAL_S = 0.05
 
 
 def runtime_metadata_from_title(title: str) -> RuntimeOwnershipMetadata | None:
@@ -108,37 +110,10 @@ async def initialize_existing_targets(manager: SessionManager) -> None:
 		if target_type in {'page', 'tab', 'iframe', 'background_page', 'service_worker', 'worker'}:
 			target_ids_to_wait_for.append(target_id)
 
-	ready_event = asyncio.Event()
+	if not target_ids_to_wait_for:
+		return
 
-	async def check_all_ready() -> None:
-		while True:
-			ready_count = 0
-			for target_id in target_ids_to_wait_for:
-				session = manager._get_session_for_target(target_id)
-				if session:
-					target = manager._targets.get(target_id)
-					target_type = target.target_type if target else 'unknown'
-					if target_type in ('page', 'tab'):
-						if hasattr(session, '_lifecycle_events') and session._lifecycle_events is not None:
-							ready_count += 1
-					else:
-						ready_count += 1
-
-			if ready_count == len(target_ids_to_wait_for):
-				ready_event.set()
-				return
-
-			await asyncio.sleep(0.05)
-
-	check_task = create_task_with_error_handling(
-		check_all_ready(),
-		name='check_all_targets_ready',
-		logger_instance=manager.logger,
-	)
-
-	try:
-		await asyncio.wait_for(ready_event.wait(), timeout=2.0)
-	except TimeoutError:
+	def _ready_count() -> int:
 		ready_count = 0
 		for target_id in target_ids_to_wait_for:
 			session = manager._get_session_for_target(target_id)
@@ -150,15 +125,21 @@ async def initialize_existing_targets(manager: SessionManager) -> None:
 						ready_count += 1
 				else:
 					ready_count += 1
-		manager.logger.warning(
-			f'[SessionManager] Initialization timeout after 2.0s: {ready_count}/{len(target_ids_to_wait_for)} sessions ready'
-		)
-	finally:
-		check_task.cancel()
-		try:
-			await check_task
-		except asyncio.CancelledError:
-			pass
+		return ready_count
+
+	loop = asyncio.get_running_loop()
+	deadline = loop.time() + INITIAL_TARGET_ATTACH_WAIT_TIMEOUT_S
+	ready_count = 0
+	while True:
+		ready_count = _ready_count()
+		if ready_count == len(target_ids_to_wait_for):
+			return
+		if loop.time() >= deadline:
+			manager.logger.debug(
+				f'[SessionManager] Initial target warmup ended with {ready_count}/{len(target_ids_to_wait_for)} sessions ready'
+			)
+			return
+		await asyncio.sleep(INITIAL_TARGET_ATTACH_POLL_INTERVAL_S)
 
 
 async def enable_page_monitoring(manager: SessionManager, cdp_session: CDPSession) -> None:

@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+## [0.2.13] - 2026-05-22
+
+### Changed
+
+- **Shared-browser subagents now stay in the same browser profile by default** — runtimes launched with `agentyc mcp --cdp-url ...` still claim a dedicated collaboration tab automatically, but they no longer create a per-runtime Chrome `BrowserContext` during attach. This keeps cookies, local storage, and authenticated workspace state available across parallel subagents while preserving tab-scoped refs, console logs, and network logs.
+- **Benchmark baseline refreshed** — the public benchmark references now use the confirmed two-run headless medians: runtime `import_ms=241.5`, `session_init_ms=1371.4`, `collaboration_latency_ms=1456.8`, plus stdio `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=53942.6`, `avg_ms=50.2`, `p95_ms=202.5`.
+
+### Tests
+
+- **New real-browser parallel-subagent coverage** — `tests/ci/browser/test_parallel_subagent_tabs.py` verifies that multiple attached subagents automatically get distinct owned tabs, share browser auth/storage state, and can run parallel actions without cross-tab bleed.
+
 ## [0.2.12] - 2026-05-19
 
 ### Added

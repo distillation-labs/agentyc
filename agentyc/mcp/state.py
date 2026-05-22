@@ -156,15 +156,18 @@ def build_tab_groups_payload(
 		runtime = ownership.get('runtime') if isinstance(ownership, dict) and isinstance(ownership.get('runtime'), dict) else None
 		if runtime is not None:
 			runtime_id = str(runtime.get('runtime_id') or '')
-			group_key = f'runtime:{runtime_id or ownership.get("display_label") or "unknown"}'
+			ownership_display_label = str(ownership.get('display_label') or '') if ownership is not None else ''
+			owner_kind = str(ownership.get('owner_kind') or 'runtime') if ownership is not None else 'runtime'
+			runtime_label = str(runtime.get('runtime_label') or ownership_display_label or 'Runtime')
+			group_key = f'runtime:{runtime_id or ownership_display_label or "unknown"}'
 			group = grouped.setdefault(
 				group_key,
 				{
 					'group_id': group_key,
-					'owner_kind': ownership.get('owner_kind') or 'runtime',
-					'display_label': ownership.get('display_label') or runtime.get('runtime_label') or 'Runtime',
+					'owner_kind': owner_kind,
+					'display_label': ownership_display_label or runtime_label,
 					'runtime_id': runtime_id or None,
-					'runtime_label': runtime.get('runtime_label') or ownership.get('display_label') or 'Runtime',
+					'runtime_label': runtime_label,
 					'runtime_role': runtime.get('runtime_role') or 'primary',
 					'parent_runtime_id': runtime.get('parent_runtime_id'),
 					'tab_count': 0,
@@ -385,7 +388,9 @@ def build_browser_state_payload(
 		mode=mode, interactive_element_count=len(selector_map), max_min_elements=max_min_elements
 	)
 	tabs_payload: list[dict[str, Any]] = [serialize_tab_info(tab) for tab in state.tabs]
-	tab_groups_payload = build_tab_groups_payload(tabs_payload, current_tab_id=_serialize_tab_id(getattr(state, 'current_tab_id', None)))
+	tab_groups_payload = build_tab_groups_payload(
+		tabs_payload, current_tab_id=_serialize_tab_id(getattr(state, 'current_tab_id', None))
+	)
 	state_hash = getattr(state, 'state_hash', None)
 	if state_hash is None:
 		state_hash = compute_browser_state_hash(state)

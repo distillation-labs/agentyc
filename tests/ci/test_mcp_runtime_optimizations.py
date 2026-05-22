@@ -11,11 +11,12 @@ from pytest_httpserver import HTTPServer
 from websockets.protocol import State
 
 from agentyc.actions import ActionResult
-from agentyc.browser import BrowserProfile, BrowserSession, session_navigation, session_runtime
+from agentyc.browser import BrowserProfile, BrowserSession, session_navigation, session_runtime, session_shared_browser
 from agentyc.browser.events import BrowserLaunchEvent, BrowserStartEvent, NavigateToUrlEvent, RefreshEvent
-from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata
+from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 from agentyc.browser.views import TabInfo
 from agentyc.browser.watchdogs.default_action_navigation import DefaultActionNavigationMixin
+from agentyc.browser.watchdogs.dom_watchdog import DOMWatchdog
 from agentyc.dom.serializer.serializer import DOMTreeSerializer
 from agentyc.dom.service import DomService
 from agentyc.dom.views import DOMRect, EnhancedAXNode, EnhancedDOMTreeNode, EnhancedSnapshotNode, NodeType
@@ -626,7 +627,9 @@ def _make_dom_node(
 
 @pytest.fixture(scope='session')
 def http_server():
-	server = HTTPServer()
+	# Parallel shared-browser tests can issue overlapping requests from multiple runtimes.
+	# Keep the fixture server concurrent so browser timing does not depend on request serialization.
+	server = HTTPServer(threaded=True)
 	server.start()
 	server.expect_request('/accessible').respond_with_data(_ACCESSIBLE_HTML, content_type='text/html')
 	server.expect_request('/editor').respond_with_data(_CONTENTEDITABLE_HTML, content_type='text/html')
@@ -1029,6 +1032,31 @@ class TestMCPHotPathFixes:
 		fake_send.Page.navigate.assert_awaited_once()
 		fake_send.Runtime.evaluate.assert_awaited()
 
+	async def test_navigate_wait_ignores_stale_lifecycle_events_from_previous_page(self):
+		session = BrowserSession(browser_profile=BrowserProfile(headless=True))
+		session.session_manager = SimpleNamespace(get_target=lambda _target_id: SimpleNamespace(url='http://example.com/old'))
+		fake_send = SimpleNamespace(
+			Page=SimpleNamespace(navigate=AsyncMock(return_value={'loaderId': 'loader-1'})),
+			Runtime=SimpleNamespace(
+				evaluate=AsyncMock(
+					return_value={'result': {'value': {'readyState': 'complete', 'url': 'http://example.com/old'}}}
+				)
+			),
+		)
+		fake_cdp_session = SimpleNamespace(
+			session_id='session-1',
+			target_id='target-1',
+			cdp_client=SimpleNamespace(send=fake_send),
+			_lifecycle_events=[{'name': 'load', 'loaderId': None, 'timestamp': 0.0}],
+		)
+
+		with patch.object(BrowserSession, 'get_or_create_cdp_session', new=AsyncMock(return_value=fake_cdp_session)):
+			with pytest.raises(RuntimeError, match='current page remained http://example.com/old'):
+				await session._navigate_and_wait('http://example.com/path', 'target-1', timeout=0.05, wait_until='load')
+
+		fake_send.Page.navigate.assert_awaited_once()
+		fake_send.Runtime.evaluate.assert_awaited()
+
 	async def test_navigate_recovers_focus_before_reporting_browser_not_connected(self):
 		session = BrowserSession(browser_profile=BrowserProfile(headless=True))
 		session.agent_focus_target_id = None
@@ -1260,6 +1288,191 @@ class TestMCPHotPathFixes:
 		assert type_result == "Typed 'hello' into element 42"
 		assert server.browser_session.get_dom_element_by_index.await_args_list[0].args == (42,)
 		assert server.browser_session.get_dom_element_by_index.await_args_list[1].args == (42,)
+
+	async def test_click_waits_for_submit_navigation_to_settle(self):
+		server = AgentycServer()
+		url_sequence = [
+			'http://example.com/workflow-form.html',
+			'http://example.com/workflow-form.html',
+			'http://example.com/workflow-form.html?',
+		]
+
+		async def next_url():
+			if url_sequence:
+				return url_sequence.pop(0)
+			return 'http://example.com/workflow-form.html?'
+
+		fake_cdp_session = SimpleNamespace(session_id='session-1')
+		navigation_ready = AsyncMock(return_value=True)
+		server.browser_session = SimpleNamespace(
+			id='session-1',
+			agent_focus_target_id='target-1',
+			get_current_page_url=AsyncMock(side_effect=next_url),
+			get_or_create_cdp_session=AsyncMock(return_value=fake_cdp_session),
+			get_current_page_title=AsyncMock(return_value='Workflow form'),
+			_navigation_ready_via_dom=navigation_ready,
+		)
+		server._update_session_activity = lambda *_args, **_kwargs: None
+		server._run_tool_action = AsyncMock(return_value=ActionResult())
+		form = _StubElement(7, '', tag='form')
+		button = _StubElement(42, 'Deploy preview', tag='button')
+		button.parent_node = form
+		server._resolve_live_element = AsyncMock(return_value=(button, 42, False))
+		result = await server._click(ref='e42')
+		assert result == 'Clicked element e42 → http://example.com/workflow-form.html? | "Workflow form"'
+		navigation_ready.assert_awaited_once_with(
+			cdp_session=fake_cdp_session,
+			url='http://example.com/workflow-form.html?',
+			wait_until='load',
+		)
+
+	async def test_pending_network_request_probe_uses_background_session(self):
+		fake_send = SimpleNamespace(
+			Runtime=SimpleNamespace(
+				evaluate=AsyncMock(
+					return_value={
+						'result': {
+							'type': 'object',
+							'value': {
+								'pending_requests': [],
+								'document_ready_state': 'complete',
+								'document_loading': False,
+								'debug': {'all_domains': []},
+							},
+						}
+					}
+				)
+			)
+		)
+		fake_cdp_session = SimpleNamespace(session_id='session-1', cdp_client=SimpleNamespace(send=fake_send))
+		fake_browser_session = SimpleNamespace(
+			get_or_create_cdp_session=AsyncMock(return_value=fake_cdp_session),
+			logger=SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+		)
+		watchdog = DOMWatchdog.model_construct(event_bus=EventBus(), browser_session=fake_browser_session)
+
+		pending = await watchdog._get_pending_network_requests()
+
+		assert pending == []
+		fake_browser_session.get_or_create_cdp_session.assert_awaited_once_with(focus=False)
+
+	async def test_page_info_uses_background_session(self):
+		fake_send = SimpleNamespace(
+			Page=SimpleNamespace(
+				getLayoutMetrics=AsyncMock(
+					return_value={
+						'layoutViewport': {'clientWidth': 1280, 'clientHeight': 720},
+						'visualViewport': {'clientWidth': 1280, 'clientHeight': 720},
+						'cssLayoutViewport': {'clientWidth': 1280, 'clientHeight': 720, 'pageX': 0, 'pageY': 0},
+						'cssVisualViewport': {'clientWidth': 1280, 'clientHeight': 720, 'pageX': 0, 'pageY': 0},
+						'contentSize': {'width': 1280, 'height': 2400},
+					}
+				)
+			)
+		)
+		fake_cdp_session = SimpleNamespace(session_id='session-1', cdp_client=SimpleNamespace(send=fake_send))
+		fake_browser_session = SimpleNamespace(
+			agent_focus_target_id='target-1',
+			is_shared_browser_runtime=False,
+			get_or_create_cdp_session=AsyncMock(return_value=fake_cdp_session),
+			logger=SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+		)
+		watchdog = DOMWatchdog.model_construct(event_bus=EventBus(), browser_session=fake_browser_session)
+
+		page_info = await watchdog._get_page_info()
+
+		assert page_info.viewport_width == 1280
+		assert page_info.page_height == 2400
+		fake_browser_session.get_or_create_cdp_session.assert_awaited_once_with(target_id='target-1', focus=False)
+
+	async def test_shared_browser_title_lookup_falls_back_quickly_to_cached_title(self):
+		session = BrowserSession(headless=True, cdp_url='ws://example.test/devtools/browser/test', shared_browser_mode='tab')
+		session.agent_focus_target_id = 'target-1'
+		session.session_manager = SimpleNamespace(
+			get_target=lambda _target_id: SimpleNamespace(
+				target_id='target-1',
+				url='https://example.com/runtime',
+				title='Example page',
+				display_title='Example page',
+				ownership=None,
+			)
+		)
+
+		async def stalled_evaluate(*_args, **_kwargs):
+			await asyncio.Future()
+
+		fake_send = SimpleNamespace(Runtime=SimpleNamespace(evaluate=AsyncMock(side_effect=stalled_evaluate)))
+		fake_cdp_session = SimpleNamespace(session_id='session-1', cdp_client=SimpleNamespace(send=fake_send))
+		loop = asyncio.get_event_loop()
+
+		with patch.object(BrowserSession, 'get_or_create_cdp_session', new=AsyncMock(return_value=fake_cdp_session)):
+			started = loop.time()
+			title = await session.get_current_page_title()
+			elapsed = loop.time() - started
+
+		assert title == 'Example page'
+		assert elapsed < 0.5
+
+	async def test_get_tabs_skips_live_peer_ownership_probe_for_detected_runtime_tabs(self):
+		current_runtime = RuntimeOwnershipMetadata.create(
+			session_id='session-self',
+			runtime_id='runtime-self',
+			runtime_label='Runtime Self',
+		)
+		peer_runtime = RuntimeOwnershipMetadata.create(
+			session_id='peer-runtime',
+			runtime_id='peer-runtime',
+			runtime_label='Peer Runtime',
+		)
+		current_target = Target(
+			target_id='target-self',
+			target_type='page',
+			url='https://example.com/self',
+			title='Self',
+			display_title='Self',
+			ownership=TargetOwnershipMetadata.for_runtime(
+				target_id='target-self',
+				runtime=current_runtime,
+				current_runtime_id=current_runtime.runtime_id,
+				source='current_runtime',
+			),
+		)
+		peer_target = Target(
+			target_id='target-peer',
+			target_type='page',
+			url='https://example.com/peer',
+			title='Peer',
+			display_title='Peer',
+			ownership=TargetOwnershipMetadata.for_runtime(
+				target_id='target-peer',
+				runtime=peer_runtime,
+				current_runtime_id=current_runtime.runtime_id,
+				source='detected_runtime',
+			),
+		)
+		fake_session = SimpleNamespace(
+			session_manager=SimpleNamespace(
+				get_all_page_targets=lambda: [current_target, peer_target],
+				get_target=lambda target_id: current_target if target_id == 'target-self' else peer_target,
+			),
+			agent_focus_target_id='target-self',
+			runtime_metadata=current_runtime,
+			logger=SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+			_cdp_client_root=SimpleNamespace(),
+		)
+
+		with (
+			patch.object(session_shared_browser, '_reconcile_missing_page_targets', new=AsyncMock()),
+			patch.object(
+				session_shared_browser, '_detect_target_ownership', new=AsyncMock(return_value=None)
+			) as detect_target_ownership,
+		):
+			tabs = await session_shared_browser.get_tabs(fake_session)
+
+		assert len(tabs) == 2
+		assert tabs[1].ownership is not None
+		assert tabs[1].ownership.source == 'detected_runtime'
+		detect_target_ownership.assert_not_awaited()
 
 	async def test_navigate_new_tab_accepts_reused_blank_tab(self):
 		server = AgentycServer()
@@ -1889,9 +2102,10 @@ class TestMCPStateProtocolAndExtraction:
 		)
 
 		# state_hash tracks page content only, not tab ownership metadata
-		assert build_browser_state_payload(state_a, mode='min')['state_hash'] == build_browser_state_payload(state_b, mode='min')[
-			'state_hash'
-		]
+		assert (
+			build_browser_state_payload(state_a, mode='min')['state_hash']
+			== build_browser_state_payload(state_b, mode='min')['state_hash']
+		)
 
 	async def test_browser_list_tabs_includes_collaboration_metadata(self):
 		runtime = RuntimeOwnershipMetadata.create(

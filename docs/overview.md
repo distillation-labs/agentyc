@@ -26,7 +26,7 @@ agentyc is designed to do a small set of things well:
 - Return deterministic browser state with stable element refs.
 - Provide deterministic extraction for common page structures.
 - Surface browser-native console and network diagnostics.
-- Support parallel automation through per-subagent tab isolation via `browser_new_tab`.
+- Support parallel automation through per-subagent owned tabs in a shared browser.
 
 The public server is not an autonomous agent framework. It does not ship a planner, prompt loop, cloud-first sync workflow, or LLM-backed extraction fallback in its default MCP path.
 
@@ -52,16 +52,17 @@ The public server is not an autonomous agent framework. It does not ship a plann
 
 agentyc supports attaching multiple MCP server processes to the same Chrome instance through `--cdp-url`, but the implementation should be described narrowly.
 
-- Each attached server creates its own collaboration target: a tab by default, or a separate window when configured.
+- Each attached server claims its own collaboration target: a tab by default, or a separate window when configured.
 - Attach and `new_tab=true` flows update the runtime's focused target automatically.
 - Visible activation is controlled by a focus policy: `preserve` avoids stealing the human-focused surface, while `activate` foregrounds the runtime target.
 - Stock Chrome and CDP do not offer reliable per-tab color ownership.
 - Shared-browser collaboration is best-effort operational behavior, not a strict isolation guarantee.
-- For parallel automation, each subagent calls `browser_new_tab` after attaching to claim a dedicated tab. State snapshots, element refs, and network logs are then scoped to that tab for the lifetime of the subagent.
+- Attached subagents stay in the shared browser profile, so cookies and local storage remain available across runtimes while state snapshots, element refs, and logs stay scoped to the owned tab.
+- `browser_new_tab` remains available when one runtime needs an additional tab after startup.
 
 ## Docs Index
 
-- [README](../README.md) — primary entry point with comparison table, benchmarks, and 41-tool inventory
+- [README](../README.md) — primary entry point with comparison table, benchmarks, and 50-tool inventory
 - [Features](./features.md)
 - [Architecture](./architecture.md)
 - [API Reference](./api.md)

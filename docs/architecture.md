@@ -194,11 +194,11 @@ Multiple subagent processes can work in the same browser simultaneously using th
 
 1. A primary agent starts a shared browser with `agentyc browser --port 9222 --detach` and obtains a CDP URL.
 2. Each subagent spawns its own `agentyc mcp --cdp-url <url>` process, attaching to the shared browser.
-3. Each subagent calls `browser_new_tab` immediately after attaching. This creates a dedicated tab and switches the runtime's focused target to that tab.
-4. Subagents then operate independently. State snapshots, stable element refs, and network logs are scoped to the tab each subagent owns.
+3. During attach, Agentyc claims a dedicated collaboration tab for that runtime inside the shared browser profile.
+4. Subagents then operate independently. State snapshots, stable element refs, and network logs are scoped to the tab each subagent owns, while cookies and local storage remain shared with the browser profile.
 5. The primary agent coordinates task assignment across subagents and collects results.
 
-`browser_new_tab` is the preferred mechanism for subagents to claim their own tab. Combining tab creation and focus switching in a single call avoids the race conditions that would otherwise arise from separate `browser_navigate` and `browser_switch_tab` calls during parallel startup.
+`browser_new_tab` remains the preferred mechanism when a runtime needs an additional working surface after startup. The initial collaboration tab is created automatically during attach.
 
 ## Request Flows
 

@@ -108,6 +108,7 @@ from agentyc.mcp.action_runtime import (
 	_upload_file,
 	_validate_actionable_element,
 	_wait,
+	_wait_for_click_navigation_settle,
 	_wait_for_element,
 )
 from agentyc.mcp.cdp_tools import (
@@ -515,6 +516,7 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_classify_action_error': _classify_action_error,
 	'_format_action_error': _format_action_error,
 	'_run_tool_action': _run_tool_action,
+	'_wait_for_click_navigation_settle': _wait_for_click_navigation_settle,
 	'_inject_extraction_metadata': _inject_extraction_metadata,
 	'_new_tab_postcondition_satisfied': _new_tab_postcondition_satisfied,
 	'_navigate': _navigate,

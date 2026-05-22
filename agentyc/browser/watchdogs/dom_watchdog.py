@@ -100,8 +100,7 @@ class DOMWatchdog(BaseWatchdog):
 		from agentyc.browser.views import NetworkRequest
 
 		try:
-			# get_or_create_cdp_session() now handles focus validation automatically
-			cdp_session = await self.browser_session.get_or_create_cdp_session(focus=True)
+			cdp_session = await self.browser_session.get_or_create_cdp_session(focus=False)
 
 			# Use performance API to get pending requests
 			js_code = """
@@ -759,14 +758,14 @@ class DOMWatchdog(BaseWatchdog):
 
 		from agentyc.browser.views import PageInfo
 
-		# get_or_create_cdp_session() handles focus validation automatically
 		cdp_session = await self.browser_session.get_or_create_cdp_session(
-			target_id=self.browser_session.agent_focus_target_id, focus=True
+			target_id=self.browser_session.agent_focus_target_id, focus=False
 		)
 
-		# Get layout metrics which includes all the information we need
+		metrics_timeout = 0.25 if self.browser_session.is_shared_browser_runtime else 10.0
 		metrics = await asyncio.wait_for(
-			cdp_session.cdp_client.send.Page.getLayoutMetrics(session_id=cdp_session.session_id), timeout=10.0
+			cdp_session.cdp_client.send.Page.getLayoutMetrics(session_id=cdp_session.session_id),
+			timeout=metrics_timeout,
 		)
 
 		# Extract different viewport types

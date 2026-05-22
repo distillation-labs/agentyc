@@ -254,11 +254,10 @@ async def get_tabs(session: BrowserSession) -> list[TabInfo]:
 			else:
 				title = ''
 
-		if (
-			(ownership is None or ownership.source == 'detected_runtime')
-			and not is_new_tab_page(url)
-			and not url.startswith('chrome://')
-		):
+		should_probe_ownership = ownership is None or (
+			ownership is not None and ownership.source == 'detected_runtime' and target_id == session.agent_focus_target_id
+		)
+		if should_probe_ownership and not is_new_tab_page(url) and not url.startswith('chrome://'):
 			detected_ownership = await _detect_target_ownership(session, target)
 			if detected_ownership is not None:
 				ownership = detected_ownership
@@ -353,12 +352,16 @@ async def get_current_page_title(session: BrowserSession) -> str:
 		if target is not None:
 			try:
 				cdp_session = await session.get_or_create_cdp_session(target_id=target.target_id, focus=False)
-				title_result = await cdp_session.cdp_client.send.Runtime.evaluate(
-					params={
-						'expression': '(function() { return document.title || ""; })()',
-						'returnByValue': True,
-					},
-					session_id=cdp_session.session_id,
+				title_timeout = 0.25 if session.is_shared_browser_runtime else 1.0
+				title_result = await asyncio.wait_for(
+					cdp_session.cdp_client.send.Runtime.evaluate(
+						params={
+							'expression': '(function() { return document.title || ""; })()',
+							'returnByValue': True,
+						},
+						session_id=cdp_session.session_id,
+					),
+					timeout=title_timeout,
 				)
 				live_title = str(title_result.get('result', {}).get('value') or '').strip()
 				if live_title:

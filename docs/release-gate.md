@@ -97,11 +97,12 @@ The generated JSON artifact includes:
 
 This lets CI distinguish between modules that need continued refactor pressure and modules that are too large to ship.
 
-## Checked-In Evidence
+## Current Reference Measurements
 
-- `roadmap/phase-6-shared-browser-baseline.json` captures the shared-browser benchmark baseline, including `avg_auto_payload_reduction_pct=8.3` and `collaboration_required_check_pass_rate=1.0`.
-- `roadmap/phase-9-modularity-guard.json` captures the current watchlist and confirms there are no Python files above the `1000`-line hard limit.
-- `roadmap/phase-9-release-gate/report.json` can be regenerated with the command above to capture the current release-gate benchmark output.
+- Confirmed two-run headless runtime gate median: `import_ms=241.5`, `session_init_ms=1371.4`, `avg_auto_payload_reduction_pct=8.3`, `avg_action_success=1.0`, `collaboration_latency_ms=1456.8`, `collaboration_required_check_pass_rate=1.0`.
+- Confirmed two-run headless stdio median: `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=53942.6`, `avg_ms=50.2`, `p95_ms=202.5`.
+- Latest validated modularity guard: `watchlist_count=8`, `violations=[]`.
+- Re-run the commands above to regenerate fresh local evidence for the current tree.
 
 ## CI Publish Flow
 

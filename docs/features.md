@@ -152,7 +152,8 @@ The CLI supports a shared-browser mode through `agentyc browser` plus `agentyc m
 - Visible activation is controlled by `--shared-browser-focus-policy`.
 - Chrome tab ownership cues are not a reliable public contract.
 - Separate windows and explicit focus changes are still the most dependable operator model.
-- For parallel automation, `browser_new_tab` is the recommended way for subagents to open their own tab. Each subagent calls `browser_new_tab` immediately after attaching so that its state, element refs, and network log are isolated from other agents working in the same browser.
+- Attached subagents stay in the shared browser profile and automatically receive a dedicated owned tab, so auth/cookies/local storage remain available across runtimes.
+- `browser_new_tab` is the recommended way for a subagent to open an additional tab after startup without disturbing other runtimes.
 - Shared-browser state now groups tabs by owning runtime in a `tab_groups` payload so operators can see which agent owns how many tabs at a glance. The flat `tabs` list is still present for compatibility.
 
 ## Python Surface

@@ -155,6 +155,66 @@ def _validate_actionable_element(self, element: Any, *, action_name: str) -> tup
 	return None
 
 
+def _element_triggers_form_navigation(element: Any) -> bool:
+	tag_name = str(getattr(element, 'tag_name', '') or '').lower()
+	attributes = getattr(element, 'attributes', {}) or {}
+	if tag_name == 'button':
+		button_type = str(attributes.get('type') or 'submit').lower()
+		if button_type != 'submit':
+			return False
+	elif tag_name == 'input':
+		input_type = str(attributes.get('type') or '').lower()
+		if input_type not in {'submit', 'image'}:
+			return False
+	else:
+		return False
+
+	parent = getattr(element, 'parent_node', None)
+	while parent is not None:
+		if str(getattr(parent, 'tag_name', '') or '').lower() == 'form':
+			return True
+		parent = getattr(parent, 'parent_node', None)
+	return False
+
+
+async def _wait_for_click_navigation_settle(
+	self,
+	*,
+	pre_click_url: str,
+	detect_timeout: float = 0.4,
+	readiness_timeout: float = 3.0,
+) -> str | None:
+	if self.browser_session is None or self.browser_session.agent_focus_target_id is None:
+		return None
+
+	loop = asyncio.get_event_loop()
+	deadline = loop.time() + detect_timeout
+	settled_url = None
+	while loop.time() < deadline:
+		current_url = await self.browser_session.get_current_page_url()
+		if current_url and current_url != pre_click_url:
+			settled_url = current_url
+			break
+		await asyncio.sleep(0.05)
+	if settled_url is None:
+		return None
+
+	cdp_session = await self.browser_session.get_or_create_cdp_session(
+		target_id=self.browser_session.agent_focus_target_id,
+		focus=False,
+	)
+	readiness_deadline = loop.time() + readiness_timeout
+	while loop.time() < readiness_deadline:
+		if await self.browser_session._navigation_ready_via_dom(
+			cdp_session=cdp_session,
+			url=settled_url,
+			wait_until='load',
+		):
+			return settled_url
+		await asyncio.sleep(0.05)
+	raise RuntimeError(f'Navigation timed out after {readiness_timeout}s waiting for load on {settled_url}')
+
+
 _ERROR_HINTS: dict[str, str] = {
 	'stale_ref': 'Call browser_get_state() to get fresh refs before retrying.',
 	'target_not_visible': 'Try browser_scroll() to bring the element into view, then retry.',
@@ -377,6 +437,17 @@ async def _click(
 	base_msg = f'Clicked element {label}'
 	if drift_recovered:
 		base_msg += ' (recovered after DOM drift)'
+	wait_for_submit_navigation = _element_triggers_form_navigation(element)
+	if wait_for_submit_navigation:
+		try:
+			settled_url = await self._wait_for_click_navigation_settle(pre_click_url=pre_click_url)
+		except Exception as error:
+			return self._format_action_error(
+				f'Click triggered navigation that did not settle: {error}',
+				default_code='click_failed',
+			)
+		if settled_url:
+			after_url = settled_url
 	if after_url and after_url != pre_click_url:
 		from agentyc.mcp.state import truncate_text
 

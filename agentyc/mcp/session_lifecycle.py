@@ -78,13 +78,8 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 			self.browser_session = BrowserSession(browser_profile=profile)
 			await self.browser_session.start()
 			self._cdp_url = self.browser_session.browser_profile.cdp_url
-			try:
-				cdp_root = self.browser_session._cdp_client_root
-				if cdp_root is not None:
-					ctx_result = await cdp_root.send.Target.createBrowserContext()
-					self.browser_session._browser_context_id = ctx_result['browserContextId']
-			except Exception as _ctx_e:
-				logger.debug(f'Browser context creation failed (non-critical): {_ctx_e}')
+			# Shared-browser runtimes intentionally stay in the existing browser profile so
+			# subagents can share auth/cookies/storage while working on separate owned tabs.
 			new_page = await self.browser_session.create_collaborative_page('about:blank')
 			new_target_id = new_page._target_id
 			from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent

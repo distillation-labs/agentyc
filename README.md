@@ -42,7 +42,7 @@ agentyc                          # Starts the MCP server — that's it
 | **Browser backend** | CDP direct (no Playwright) | Playwright | Playwright |
 | **Extraction API key** | Not needed | N/A | Not needed |
 | **Auto-close default** | No (session stays alive) | Varies | Varies |
-| **Context isolation** | Per-server `BrowserContext` for shared browser | N/A | N/A |
+| **Parallel agent model** | Shared browser profile + per-runtime owned tabs | N/A | N/A |
 | **Dependencies** | ~20 core (lean) | ~40+ (heavy) | Playwright + SDK |
 | **Install size** | Small (Python package) | Very large | Moderate |
 | **Tool count** | 50 | ~15-20 actions | ~20 tools |
@@ -240,9 +240,9 @@ agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
 **Parallel automation flow:**
 
 1. Primary agent starts a shared browser with `agentyc browser --detach`
-2. Each subagent spawns `agentyc mcp --cdp-url <url>` — gets its own `BrowserContext` (cookies/storage isolated)
-3. Each subagent calls `browser_new_tab` — dedicated tab, focus switched
-4. Subagents operate independently — refs, network logs, console logs scoped to their tab
+2. Each subagent spawns `agentyc mcp --cdp-url <url>` — Agentyc claims a dedicated collaboration tab in the shared browser profile
+3. Subagents can immediately navigate and work in that owned tab; `browser_new_tab` is only needed when one subagent wants an additional tab of its own
+4. Subagents operate independently — refs, network logs, and console logs stay scoped to the owned tab, while auth/cookies/local storage remain shared with the browser profile
 5. Primary coordinates and collects results
 
 When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by default so developers can quickly see which agent owns how many tabs.
@@ -255,7 +255,7 @@ When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by
 - `--shared-browser-focus-policy` — `preserve` or `activate`
 - `--shared-browser-window-bounds` — JSON bounds for window mode
 
-> Chrome does not offer reliable per-tab color ownership. Separate windows are the most dependable operator model.
+> Tab mode is the default for parallel subagents. Window mode remains optional when an operator needs a separate visible surface.
 
 ---
 
@@ -273,19 +273,26 @@ agentyc helps separate browser work from agent thinking time:
 
 ## Benchmarks
 
-Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py`):
+Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py`). The values below are the median of two confirmed headless post-change runs:
 
 | Metric | Threshold | Current |
 |--------|-----------|---------|
-| Python import time | ≤ 2500 ms | ~800 ms |
-| Cold-start session init | ≤ 35000 ms | ~7000 ms |
-| `auto` payload reduction | ≥ 8.0% | ~8.3% |
+| Python import time | ≤ 2500 ms | 241.5 ms |
+| Cold-start session init | ≤ 35000 ms | 1371.4 ms |
+| `auto` payload reduction | ≥ 8.0% | 8.3% |
 | `auto` element recall | ≥ 0.99 | 1.0 |
 | `min` element recall | ≥ 0.99 | 1.0 |
 | Deterministic extraction recall | ≥ 0.99 | 1.0 |
 | Structured extraction recall | ≥ 0.99 | 1.0 |
 | Action success rate | ≥ 1.0 | 1.0 |
 | Collaboration check pass rate | ≥ 1.0 | 1.0 |
+| Collaboration latency | informational | 1456.8 ms |
+
+Confirmed headless stdio tool-surface median across two runs (`scripts/benchmark_mcp_stdio_e2e.py --targets source`):
+
+- success / accuracy / precision: `1.0 / 1.0 / 1.0`
+- total duration: `53942.6 ms`
+- average / p95 tool latency: `50.2 ms / 202.5 ms`
 
 ---
 

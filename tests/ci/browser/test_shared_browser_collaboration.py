@@ -1,9 +1,10 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agentyc.browser import session_connection, session_navigation, session_shared_browser
+from agentyc.browser import session_connection, session_manager_support, session_navigation, session_shared_browser
 from agentyc.browser.collaboration import apply_title_prefix, extract_title_prefix, strip_title_prefix
 from agentyc.browser.events import CloseTabEvent, NavigateToUrlEvent, SwitchTabEvent
 from agentyc.browser.profile import BrowserProfile
@@ -436,6 +437,38 @@ async def test_initialize_existing_targets_does_not_manually_attach_when_auto_at
 	):
 		await manager._initialize_existing_targets()
 
+	manager.browser_session._cdp_client_root.send.Target.getTargets.assert_awaited_once()
+	manager.browser_session._cdp_client_root.send.Target.attachToTarget.assert_not_awaited()
+
+
+async def test_initialize_existing_targets_returns_quickly_when_existing_sessions_never_attach():
+	session = BrowserSession(headless=True, user_data_dir=None)
+	manager = SessionManager(session)
+	manager.browser_session._cdp_client_root = SimpleNamespace(
+		send=SimpleNamespace(
+			Target=SimpleNamespace(
+				getTargets=AsyncMock(
+					return_value={
+						'targetInfos': [
+							{'targetId': 'page-1', 'type': 'page'},
+						]
+					}
+				),
+				attachToTarget=AsyncMock(return_value={}),
+			)
+		)
+	)
+
+	with (
+		patch.object(session_manager_support, 'INITIAL_TARGET_ATTACH_WAIT_TIMEOUT_S', 0.01),
+		patch.object(session_manager_support, 'INITIAL_TARGET_ATTACH_POLL_INTERVAL_S', 0.001),
+		patch.object(SessionManager, '_get_session_for_target', return_value=None),
+	):
+		start = asyncio.get_running_loop().time()
+		await manager._initialize_existing_targets()
+		elapsed = asyncio.get_running_loop().time() - start
+
+	assert elapsed < 0.2
 	manager.browser_session._cdp_client_root.send.Target.getTargets.assert_awaited_once()
 	manager.browser_session._cdp_client_root.send.Target.attachToTarget.assert_not_awaited()
 
