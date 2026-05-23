@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Direct action pacing is leaner across hot MCP interaction paths** — `browser_click`, `browser_scroll`, and `browser_drag_to` now avoid conservative fixed sleeps that were adding latency without improving reliability on the validated headless workflows.
+- **History navigation now waits for actual page readiness instead of a blind half-second sleep** — `browser_go_back` and `browser_go_forward` now settle on URL change plus DOM readiness, cutting the benchmarked history-navigation latency from ~`505 ms` to ~`55 ms`.
+- **Benchmark baseline refreshed** — the current confirmed two-run headless medians are now runtime `import_ms=220.0`, `session_init_ms=1531.3`, `collaboration_latency_ms=1598.6`, plus stdio `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=45146.9`, `avg_ms=41.4`, `p95_ms=155.1`.
+
+### Tests
+
+- **New history-navigation readiness coverage** — `test_go_back_waits_for_history_navigation_readiness_instead_of_fixed_sleep` verifies that back-navigation no longer relies on the old fixed `0.5s` delay.
+
 ## [0.2.16] - 2026-05-23
 
 ### Changed

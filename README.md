@@ -288,8 +288,8 @@ Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py`
 
 | Metric | Threshold | Current |
 |--------|-----------|---------|
-| Python import time | ≤ 2500 ms | 241.5 ms |
-| Cold-start session init | ≤ 35000 ms | 1371.4 ms |
+| Python import time | ≤ 2500 ms | 220.0 ms |
+| Cold-start session init | ≤ 35000 ms | 1531.3 ms |
 | `auto` payload reduction | ≥ 8.0% | 8.3% |
 | `auto` element recall | ≥ 0.99 | 1.0 |
 | `min` element recall | ≥ 0.99 | 1.0 |
@@ -297,13 +297,13 @@ Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py`
 | Structured extraction recall | ≥ 0.99 | 1.0 |
 | Action success rate | ≥ 1.0 | 1.0 |
 | Collaboration check pass rate | ≥ 1.0 | 1.0 |
-| Collaboration latency | informational | 1456.8 ms |
+| Collaboration latency | informational | 1598.6 ms |
 
 Confirmed headless stdio tool-surface median across two runs (`scripts/benchmark_mcp_stdio_e2e.py --targets source`):
 
 - success / accuracy / precision: `1.0 / 1.0 / 1.0`
-- total duration: `53942.6 ms`
-- average / p95 tool latency: `50.2 ms / 202.5 ms`
+- total duration: `45146.9 ms`
+- average / p95 tool latency: `41.4 ms / 155.1 ms`
 
 ---
 

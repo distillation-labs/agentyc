@@ -99,8 +99,8 @@ This lets CI distinguish between modules that need continued refactor pressure a
 
 ## Current Reference Measurements
 
-- Confirmed two-run headless runtime gate median: `import_ms=241.5`, `session_init_ms=1371.4`, `avg_auto_payload_reduction_pct=8.3`, `avg_action_success=1.0`, `collaboration_latency_ms=1456.8`, `collaboration_required_check_pass_rate=1.0`.
-- Confirmed two-run headless stdio median: `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=53942.6`, `avg_ms=50.2`, `p95_ms=202.5`.
+- Confirmed two-run headless runtime gate median: `import_ms=220.0`, `session_init_ms=1531.3`, `avg_auto_payload_reduction_pct=8.3`, `avg_action_success=1.0`, `collaboration_latency_ms=1598.6`, `collaboration_required_check_pass_rate=1.0`.
+- Confirmed two-run headless stdio median: `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=45146.9`, `avg_ms=41.4`, `p95_ms=155.1`.
 - Latest validated modularity guard: `watchlist_count=8`, `violations=[]`.
 - Re-run the commands above to regenerate fresh local evidence for the current tree.
 
