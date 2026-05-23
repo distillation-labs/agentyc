@@ -12,9 +12,9 @@ from agentyc.dom.views import EnhancedDOMTreeNode
 StateMode = Literal['auto', 'full', 'min', 'focus']
 
 _DEFAULT_MIN_ELEMENTS = 24
-# Auto can safely use the compact element schema on small-to-medium pages because
-# min mode still preserves the full element set until the min-element cap is reached.
-_DEFAULT_AUTO_FULL_THRESHOLD = 5
+# Auto can safely use the compact element schema on medium pages because min mode
+# still preserves the full element set until the min-element cap is reached.
+_DEFAULT_AUTO_FULL_THRESHOLD = 10
 _MAX_DUPLICATES_PER_SIGNATURE = 3
 _DIGITS_PATTERN = re.compile(r'\d+')
 
