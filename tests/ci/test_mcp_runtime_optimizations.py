@@ -1861,6 +1861,22 @@ class TestMCPStateProtocolAndExtraction:
 		assert 'interactive_elements_truncated' not in payload
 		assert all('index' not in element for element in payload['interactive_elements'])
 
+	def test_auto_mode_compacts_five_element_pages_without_truncation(self):
+		selector_map = {
+			1: _StubElement(1, 'Email address', tag='input', attrs={'placeholder': 'Email address', 'type': 'email'}),
+			2: _StubElement(2, 'Password', tag='input', attrs={'placeholder': 'Password', 'type': 'password'}),
+			3: _StubElement(3, 'Remember me', tag='input', attrs={'type': 'checkbox'}, role='checkbox'),
+			4: _StubElement(4, 'Sign in', tag='button', role='button'),
+			5: _StubElement(5, 'Need help?', tag='a', attrs={'href': '/help'}, role='link'),
+		}
+
+		payload = build_browser_state_payload(_stub_state(selector_map=selector_map), mode='auto')
+
+		assert payload['effective_mode'] == 'min'
+		assert len(payload['interactive_elements']) == 5
+		assert 'interactive_elements_truncated' not in payload
+		assert all('index' not in element for element in payload['interactive_elements'])
+
 	def test_table_projection_supports_issue_queue_schema_aliases(self):
 		payload = build_table_structured_payload(
 			tables=[
