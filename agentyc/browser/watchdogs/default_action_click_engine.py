@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING, Any
 from agentyc.browser.views import BrowserError, URLNotAllowedError
 from agentyc.dom.service import EnhancedDOMTreeNode
 
+_POST_SCROLL_INTO_VIEW_SETTLE_S = 0.01
+_POST_MOUSE_MOVE_SETTLE_S = 0.02
+_POST_MOUSE_DOWN_SETTLE_S = 0.03
+
 
 class DefaultActionClickEngineMixin:
 	"""Protocol-level click helpers shared by element and coordinate handlers."""
@@ -357,7 +361,7 @@ class DefaultActionClickEngineMixin:
 				),
 				timeout=0.1,
 			)
-			await asyncio.sleep(0.05)
+			await asyncio.sleep(_POST_MOUSE_MOVE_SETTLE_S)
 		except TimeoutError:
 			self.logger.debug('⏱️ Mouse move timed out before click, continuing with direct press...')
 		except Exception as error:
@@ -417,7 +421,7 @@ class DefaultActionClickEngineMixin:
 				await cdp_session.cdp_client.send.DOM.scrollIntoViewIfNeeded(
 					params={'backendNodeId': backend_node_id}, session_id=session_id
 				)
-				await asyncio.sleep(0.02)
+				await asyncio.sleep(_POST_SCROLL_INTO_VIEW_SETTLE_S)
 				self.logger.debug('Scrolled element into view before getting coordinates')
 			except Exception as error:
 				self.logger.debug(f'Failed to scroll element into view: {error}')
@@ -530,7 +534,7 @@ class DefaultActionClickEngineMixin:
 						),
 						timeout=3.0,
 					)
-					await asyncio.sleep(0.08)
+					await asyncio.sleep(_POST_MOUSE_DOWN_SETTLE_S)
 				except TimeoutError:
 					self.logger.debug('⏱️ Mouse down timed out (likely due to dialog), continuing...')
 
@@ -665,7 +669,7 @@ class DefaultActionClickEngineMixin:
 					),
 					timeout=3.0,
 				)
-				await asyncio.sleep(0.05)
+				await asyncio.sleep(_POST_MOUSE_MOVE_SETTLE_S)
 			except TimeoutError:
 				self.logger.debug('⏱️ Mouse down timed out (likely due to dialog), continuing...')
 
