@@ -32,6 +32,40 @@ class DefaultActionNavigationMixin:
 		def _get_char_modifiers_and_vk(self, char: str) -> tuple[int, int, str]: ...
 		def _get_key_code_for_char(self, char: str) -> str: ...
 
+	async def _wait_for_history_navigation_settle(
+		self,
+		*,
+		cdp_session,
+		pre_navigation_url: str,
+		expected_url: str,
+		detect_timeout: float = 0.4,
+		readiness_timeout: float = 3.0,
+	) -> str:
+		loop = asyncio.get_event_loop()
+		detect_deadline = loop.time() + detect_timeout
+		settled_url = expected_url
+		while loop.time() < detect_deadline:
+			current_url = await self.browser_session.get_current_page_url()
+			if current_url and (current_url == expected_url or current_url != pre_navigation_url):
+				settled_url = current_url
+				break
+			await asyncio.sleep(0.05)
+		else:
+			current_url = await self.browser_session.get_current_page_url()
+			if current_url:
+				settled_url = current_url
+
+		readiness_deadline = loop.time() + readiness_timeout
+		while loop.time() < readiness_deadline:
+			if await self.browser_session._navigation_ready_via_dom(
+				cdp_session=cdp_session,
+				url=settled_url,
+				wait_until='load',
+			):
+				return settled_url
+			await asyncio.sleep(0.05)
+		raise BrowserError(f'History navigation timed out waiting for load on {settled_url}')
+
 	async def on_ScrollEvent(self, event: ScrollEvent) -> None:
 		if not self.browser_session.agent_focus_target_id:
 			raise BrowserError('No active target for scrolling')
@@ -191,12 +225,18 @@ class DefaultActionNavigationMixin:
 			if current_index <= 0:
 				self.logger.warning('⚠️ Cannot go back - no previous entry in history')
 				return
+			pre_navigation_url = entries[current_index]['url']
+			expected_url = entries[current_index - 1]['url']
 			previous_entry_id = entries[current_index - 1]['id']
 			await cdp_session.cdp_client.send.Page.navigateToHistoryEntry(
 				params={'entryId': previous_entry_id}, session_id=cdp_session.session_id
 			)
-			await asyncio.sleep(0.5)
-			self.logger.info(f'🔙 Navigated back to {entries[current_index - 1]["url"]}')
+			settled_url = await self._wait_for_history_navigation_settle(
+				cdp_session=cdp_session,
+				pre_navigation_url=pre_navigation_url,
+				expected_url=expected_url,
+			)
+			self.logger.info(f'🔙 Navigated back to {settled_url}')
 		except Exception:
 			raise
 
@@ -209,12 +249,18 @@ class DefaultActionNavigationMixin:
 			if current_index >= len(entries) - 1:
 				self.logger.warning('⚠️ Cannot go forward - no next entry in history')
 				return
+			pre_navigation_url = entries[current_index]['url']
+			expected_url = entries[current_index + 1]['url']
 			next_entry_id = entries[current_index + 1]['id']
 			await cdp_session.cdp_client.send.Page.navigateToHistoryEntry(
 				params={'entryId': next_entry_id}, session_id=cdp_session.session_id
 			)
-			await asyncio.sleep(0.5)
-			self.logger.info(f'🔜 Navigated forward to {entries[current_index + 1]["url"]}')
+			settled_url = await self._wait_for_history_navigation_settle(
+				cdp_session=cdp_session,
+				pre_navigation_url=pre_navigation_url,
+				expected_url=expected_url,
+			)
+			self.logger.info(f'🔜 Navigated forward to {settled_url}')
 		except Exception:
 			raise
 

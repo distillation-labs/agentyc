@@ -12,7 +12,7 @@ from websockets.protocol import State
 
 from agentyc.actions import ActionResult
 from agentyc.browser import BrowserProfile, BrowserSession, session_navigation, session_runtime, session_shared_browser
-from agentyc.browser.events import BrowserLaunchEvent, BrowserStartEvent, NavigateToUrlEvent, RefreshEvent
+from agentyc.browser.events import BrowserLaunchEvent, BrowserStartEvent, GoBackEvent, NavigateToUrlEvent, RefreshEvent
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 from agentyc.browser.views import TabInfo
 from agentyc.browser.watchdogs.default_action_navigation import DefaultActionNavigationMixin
@@ -1727,6 +1727,57 @@ class TestMCPHotPathFixes:
 			wait_until='load',
 			nav_timeout=8.0,
 		)
+
+	async def test_go_back_waits_for_history_navigation_readiness_instead_of_fixed_sleep(self):
+		watchdog = DefaultActionNavigationMixin()
+		fake_cdp_session = SimpleNamespace(
+			target_id='target-1',
+			session_id='session-1',
+			cdp_client=SimpleNamespace(
+				send=SimpleNamespace(
+					Page=SimpleNamespace(
+						getNavigationHistory=AsyncMock(
+							return_value={
+								'currentIndex': 1,
+								'entries': [
+									{'id': 11, 'url': 'https://example.com/previous'},
+									{'id': 12, 'url': 'https://example.com/current'},
+								],
+							}
+						),
+						navigateToHistoryEntry=AsyncMock(return_value={}),
+					)
+				)
+			),
+		)
+		current_urls = iter(
+			[
+				'https://example.com/current',
+				'https://example.com/previous',
+			]
+		)
+		navigation_ready = AsyncMock(return_value=True)
+		watchdog.browser_session = SimpleNamespace(
+			agent_focus_target_id='target-1',
+			get_current_page_url=AsyncMock(side_effect=lambda: next(current_urls, 'https://example.com/previous')),
+			get_or_create_cdp_session=AsyncMock(return_value=fake_cdp_session),
+			_navigation_ready_via_dom=navigation_ready,
+		)
+		watchdog.logger = SimpleNamespace(info=lambda *_args, **_kwargs: None, warning=lambda *_args, **_kwargs: None)
+
+		with patch('agentyc.browser.watchdogs.default_action_navigation.asyncio.sleep', new=AsyncMock()) as sleep_mock:
+			await watchdog.on_GoBackEvent(GoBackEvent())
+
+		fake_cdp_session.cdp_client.send.Page.navigateToHistoryEntry.assert_awaited_once_with(
+			params={'entryId': 11},
+			session_id='session-1',
+		)
+		navigation_ready.assert_awaited_once_with(
+			cdp_session=fake_cdp_session,
+			url='https://example.com/previous',
+			wait_until='load',
+		)
+		assert not any(call.args == (0.5,) for call in sleep_mock.await_args_list)
 
 	async def test_network_log_entries_finalize_on_loading_finished_and_failures(self):
 		server = AgentycServer()
