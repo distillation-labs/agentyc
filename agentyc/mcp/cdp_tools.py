@@ -10,6 +10,10 @@ from typing import Any, cast
 
 from agentyc.mcp.debug_tools import _network_entry_started_since, _serialize_network_entry
 
+_DRAG_MOUSE_MOVE_SETTLE_S = 0.01
+_DRAG_MOUSE_PRESS_SETTLE_S = 0.005
+_DRAG_STEP_SETTLE_S = 0.005
+
 
 async def _get_html(self, selector: str | None = None) -> str:
 	"""Get raw HTML of the page or a specific element."""
@@ -179,11 +183,11 @@ async def _drag_to(
 		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 			params={'type': 'mouseMoved', 'x': sx, 'y': sy}, session_id=sid
 		)
-		await asyncio.sleep(0.02)
+		await asyncio.sleep(_DRAG_MOUSE_MOVE_SETTLE_S)
 		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 			params={'type': 'mousePressed', 'x': sx, 'y': sy, 'button': 'left', 'clickCount': 1}, session_id=sid
 		)
-		await asyncio.sleep(0.01)
+		await asyncio.sleep(_DRAG_MOUSE_PRESS_SETTLE_S)
 
 		n = max(steps, 2)
 		for i in range(1, n + 1):
@@ -192,7 +196,7 @@ async def _drag_to(
 			await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 				params={'type': 'mouseMoved', 'x': mx, 'y': my, 'button': 'left'}, session_id=sid
 			)
-			await asyncio.sleep(0.01)
+			await asyncio.sleep(_DRAG_STEP_SETTLE_S)
 
 		await cdp_session.cdp_client.send.Input.dispatchMouseEvent(
 			params={'type': 'mouseReleased', 'x': tx, 'y': ty, 'button': 'left', 'clickCount': 1}, session_id=sid
