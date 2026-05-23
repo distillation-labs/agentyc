@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-05-23
+
+### Changed
+
+- **Click/navigation recovery helpers now live in `agentyc.mcp.navigation_runtime`** — this keeps `agentyc/mcp/action_runtime.py` under the enforced release file-size guard without changing MCP click, wait, or recovery behavior.
+- **The published package now carries forward the Home Depot headless reliability fixes from `0.2.15`** — transient navigation retries, click neterror recovery, and hidden responsive search deduping all ship in the released build.
+
 ## [0.2.15] - 2026-05-23
 
 ### Fixed
