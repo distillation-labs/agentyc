@@ -53,8 +53,8 @@ async def test_click_recovers_empty_http_navigation_with_direct_retry():
 		patch.object(server, '_resolve_live_element', new=AsyncMock(return_value=(element, 101, False))),
 		patch.object(server, '_validate_actionable_element', return_value=None),
 		patch.object(server, '_run_tool_action', new=AsyncMock(side_effect=run_tool_action)) as run_tool_action_mock,
-		patch('agentyc.mcp.action_runtime._page_is_site_unavailable', new=AsyncMock(return_value=False)),
-		patch('agentyc.mcp.action_runtime.asyncio.sleep', new=AsyncMock()),
+		patch('agentyc.mcp.navigation_runtime._page_is_site_unavailable', new=AsyncMock(return_value=False)),
+		patch('agentyc.mcp.navigation_runtime.asyncio.sleep', new=AsyncMock()),
 	):
 		result = await server._click(ref='e101')
 
@@ -90,8 +90,8 @@ async def test_click_reports_site_unavailable_when_direct_retry_fails():
 		patch.object(server, '_resolve_live_element', new=AsyncMock(return_value=(element, 101, False))),
 		patch.object(server, '_validate_actionable_element', return_value=None),
 		patch.object(server, '_run_tool_action', new=AsyncMock(side_effect=run_tool_action)),
-		patch('agentyc.mcp.action_runtime._page_is_site_unavailable', new=AsyncMock(return_value=False)),
-		patch('agentyc.mcp.action_runtime.asyncio.sleep', new=AsyncMock()),
+		patch('agentyc.mcp.navigation_runtime._page_is_site_unavailable', new=AsyncMock(return_value=False)),
+		patch('agentyc.mcp.navigation_runtime.asyncio.sleep', new=AsyncMock()),
 	):
 		result = await server._click(ref='e101')
 
