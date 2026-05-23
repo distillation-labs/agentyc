@@ -92,9 +92,7 @@ from agentyc.mcp.action_runtime import (
 	_inject_extraction_metadata,
 	_navigate,
 	_new_tab_postcondition_satisfied,
-	_page_contains_visible_text,
 	_press_key,
-	_recover_click_navigation_if_unavailable,
 	_refresh,
 	_refresh_selector_map,
 	_resolve_element_index,
@@ -109,7 +107,6 @@ from agentyc.mcp.action_runtime import (
 	_upload_file,
 	_validate_actionable_element,
 	_wait,
-	_wait_for_click_navigation_settle,
 	_wait_for_element,
 )
 from agentyc.mcp.cdp_tools import (
@@ -146,6 +143,11 @@ from agentyc.mcp.cdp_tools import (
 	_wait_for_stable_dom,
 )
 from agentyc.mcp.debug_tools import _export_debug_bundle, _wait_for_request, _wait_for_response
+from agentyc.mcp.navigation_runtime import (
+	_page_contains_visible_text,
+	_recover_click_navigation_if_unavailable,
+	_wait_for_click_navigation_settle,
+)
 from agentyc.mcp.session_lifecycle import (
 	_browser_runtime_is_ready,
 	_cleanup_expired_sessions,
