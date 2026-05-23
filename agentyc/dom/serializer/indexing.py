@@ -50,6 +50,15 @@ class SerializerIndexingMixin:
 
 		return False
 
+	def _is_rendered_search_entry_control(self: Any, node: EnhancedDOMTreeNode) -> bool:
+		if not ClickableElementDetector.is_search_entry_control(node):
+			return False
+		if self._is_explicitly_hidden(node):
+			return False
+		if not node.snapshot_node or not node.snapshot_node.bounds:
+			return False
+		return node.snapshot_node.bounds.width > 0 and node.snapshot_node.bounds.height > 0
+
 	def _assign_relaxed_interactive_indices_and_mark_new_nodes(self: Any, node: EnhancedDOMTreeNode | None) -> None:
 		if not node:
 			return
@@ -68,7 +77,7 @@ class SerializerIndexingMixin:
 	def _collect_interactive_elements(self: Any, node: SimplifiedNode, elements: list[SimplifiedNode]) -> None:
 		is_interactive = self._is_interactive_cached(node.original_node)
 		is_visible = node.original_node.snapshot_node and node.original_node.is_visible
-		is_search_entry_control = ClickableElementDetector.is_search_entry_control(node.original_node)
+		is_search_entry_control = self._is_rendered_search_entry_control(node.original_node)
 		is_file_input = (
 			node.original_node.tag_name
 			and node.original_node.tag_name.lower() == 'input'
@@ -166,7 +175,7 @@ class SerializerIndexingMixin:
 				and node.original_node.tag_name.lower() in ['input', 'button', 'select', 'textarea', 'a']
 				and self._is_inside_shadow_dom(node)
 			)
-			is_search_entry_control = ClickableElementDetector.is_search_entry_control(node.original_node)
+			is_search_entry_control = self._is_rendered_search_entry_control(node.original_node)
 
 			should_make_interactive = False
 			if is_scrollable:

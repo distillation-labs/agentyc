@@ -23,6 +23,24 @@ from agentyc.utils import create_task_with_error_handling, is_new_tab_page
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
 
+_TRANSIENT_NAVIGATION_ERROR_MARKERS = (
+	'ERR_HTTP2_PROTOCOL_ERROR',
+	'ERR_HTTP3_PROTOCOL_ERROR',
+	'ERR_QUIC_PROTOCOL_ERROR',
+	'ERR_NETWORK_CHANGED',
+	'ERR_CONNECTION_RESET',
+	'ERR_CONNECTION_CLOSED',
+	'ERR_CONNECTION_ABORTED',
+	'ERR_EMPTY_RESPONSE',
+)
+_TRANSIENT_NAVIGATION_MAX_ATTEMPTS = 5
+_TRANSIENT_NAVIGATION_RETRY_BASE_DELAY_S = 0.75
+
+
+def _is_transient_navigation_error(error: Exception) -> bool:
+	message = str(error).upper()
+	return any(marker in message for marker in _TRANSIENT_NAVIGATION_ERROR_MARKERS)
+
 
 async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEvent) -> None:
 	"""Handle navigation requests - core browser functionality."""
@@ -155,6 +173,37 @@ async def _navigate_and_wait(
 	nav_timeout: float | None = None,
 ) -> None:
 	"""Navigate to URL and wait for page readiness using CDP lifecycle events."""
+	for attempt in range(1, _TRANSIENT_NAVIGATION_MAX_ATTEMPTS + 1):
+		try:
+			await _navigate_and_wait_once(
+				session,
+				url,
+				target_id,
+				timeout=timeout,
+				wait_until=wait_until,
+				nav_timeout=nav_timeout,
+			)
+			return
+		except Exception as e:
+			if not _is_transient_navigation_error(e) or attempt >= _TRANSIENT_NAVIGATION_MAX_ATTEMPTS:
+				raise
+			retry_delay = _TRANSIENT_NAVIGATION_RETRY_BASE_DELAY_S * attempt
+			session.logger.warning(
+				f'⚠️ Transient navigation error for {url} on attempt {attempt}/{_TRANSIENT_NAVIGATION_MAX_ATTEMPTS}: '
+				f'{e}. Retrying in {retry_delay:.2f}s...'
+			)
+			await asyncio.sleep(retry_delay)
+
+
+async def _navigate_and_wait_once(
+	session: BrowserSession,
+	url: str,
+	target_id: str,
+	timeout: float | None = None,
+	wait_until: str = 'load',
+	nav_timeout: float | None = None,
+) -> None:
+	"""Perform one navigation attempt and wait for page readiness."""
 	cdp_session = await session.get_or_create_cdp_session(target_id, focus=True)
 
 	if timeout is None:

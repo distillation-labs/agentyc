@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-05-23
+
+### Fixed
+
+- **Headless navigation now retries transient transport failures** — `browser_navigate` is more resilient to flaky upstream errors such as `ERR_HTTP2_PROTOCOL_ERROR`, which was causing intermittent failures on sites like Home Depot in headless mode.
+- **Click-driven navigations no longer report false success on browser neterror pages** — when a link click lands on Chrome’s interstitial error page, Agentyc now retries/reclassifies the navigation instead of returning a success-shaped click result against an unusable page.
+- **Hidden responsive search duplicates are no longer exposed as interactive refs** — state serialization now keeps real rendered search inputs while excluding hidden mobile/tablet variants that were misleading agents on responsive sites like Home Depot.
+
+### Tests
+
+- **New navigation retry coverage** — `tests/ci/browser/test_navigation_retries.py` verifies bounded retries for transient document-load failures.
+- **New click recovery coverage** — `tests/ci/test_click_navigation_recovery.py` verifies that click-triggered HTTP navigations retry or return `site_unavailable` instead of a false success.
+- **New responsive-search visibility coverage** — `tests/ci/browser/test_state_compaction.py` now checks that hidden duplicate search controls are excluded while the real search input is preserved.
+
 ## [0.2.14] - 2026-05-22
 
 ### Added

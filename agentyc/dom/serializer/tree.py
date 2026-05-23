@@ -7,6 +7,31 @@ from agentyc.dom.serializer.constants import DISABLED_ELEMENTS, SVG_ELEMENTS
 from agentyc.dom.views import EnhancedDOMTreeNode, NodeType, SimplifiedNode
 
 
+def _is_rendered_search_entry_control(node: EnhancedDOMTreeNode) -> bool:
+	if not ClickableElementDetector.is_search_entry_control(node):
+		return False
+	attributes = node.attributes or {}
+	hidden_attr = attributes.get('hidden')
+	if hidden_attr is not None and str(hidden_attr).lower() != 'false':
+		return False
+	aria_hidden = attributes.get('aria-hidden')
+	if aria_hidden is not None and str(aria_hidden).lower() == 'true':
+		return False
+	inline_style = attributes.get('style', '').replace(' ', '').lower()
+	if 'display:none' in inline_style or 'visibility:hidden' in inline_style or 'opacity:0' in inline_style:
+		return False
+	if node.snapshot_node and node.snapshot_node.computed_styles:
+		computed_styles = node.snapshot_node.computed_styles
+		display = computed_styles.get('display', '').lower()
+		visibility = computed_styles.get('visibility', '').lower()
+		opacity = computed_styles.get('opacity', '').lower()
+		if display == 'none' or visibility == 'hidden' or opacity == '0':
+			return False
+	if not node.snapshot_node or not node.snapshot_node.bounds:
+		return False
+	return node.snapshot_node.bounds.width > 0 and node.snapshot_node.bounds.height > 0
+
+
 class SerializerTreeMixin:
 	def _create_simplified_tree(self: Any, node: EnhancedDOMTreeNode, depth: int = 0) -> SimplifiedNode | None:
 		if node.node_type == NodeType.DOCUMENT_NODE:
@@ -65,7 +90,7 @@ class SerializerTreeMixin:
 			)
 			if not is_visible and is_file_input:
 				is_visible = True
-			if not is_visible and ClickableElementDetector.is_search_entry_control(node):
+			if not is_visible and _is_rendered_search_entry_control(node):
 				is_visible = True
 
 			if is_visible or is_scrollable or has_shadow_content or is_shadow_host:
@@ -108,7 +133,7 @@ class SerializerTreeMixin:
 			and node.original_node.attributes
 			and node.original_node.attributes.get('type') == 'file'
 		)
-		is_search_entry_control = ClickableElementDetector.is_search_entry_control(node.original_node)
+		is_search_entry_control = _is_rendered_search_entry_control(node.original_node)
 
 		if (
 			is_visible
