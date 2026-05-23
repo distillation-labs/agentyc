@@ -14,6 +14,7 @@ from agentyc.tools.javascript import (
 from agentyc.tools.views import FindElementsAction, ScrollAction, SearchPageAction, SendKeysAction
 
 logger = logging.getLogger(__name__)
+_MULTI_PAGE_SCROLL_SETTLE_S = 0.05
 
 
 def register_exploration_actions(tools: Any) -> None:
@@ -123,7 +124,7 @@ def register_exploration_actions(tools: Any) -> None:
 						await event
 						await event.event_result(raise_if_any=True, raise_if_none=False)
 						completed_scrolls += 1
-						await asyncio.sleep(0.15)
+						await asyncio.sleep(_MULTI_PAGE_SCROLL_SETTLE_S)
 					except Exception as error:
 						logger.warning(f'Scroll {index + 1}/{num_full_pages} failed: {error}')
 
