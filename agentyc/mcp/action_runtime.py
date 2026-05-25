@@ -499,6 +499,7 @@ async def _get_browser_state(
 	mode: StateMode = 'auto',
 	focus_ref: str | None = None,
 	since_hash: str | None = None,
+	include_recent_events: bool = False,
 ) -> tuple[str, str | None]:
 	"""Get current browser state. Returns (state_json, screenshot_b64 | None)."""
 	if not self.browser_session:
@@ -507,7 +508,10 @@ async def _get_browser_state(
 	from agentyc.mcp.state import build_browser_state_payload, compute_browser_state_hash, make_element_ref
 
 	cached_state = getattr(self.browser_session, '_cached_browser_state_summary', None)
-	if since_hash is not None and cached_state is not None and cached_state.dom_state:
+	can_use_cached_state = cached_state is not None and cached_state.dom_state and (
+		not include_recent_events or getattr(cached_state, 'recent_events', None) is not None
+	)
+	if since_hash is not None and can_use_cached_state:
 		cached_hash = getattr(cached_state, 'state_hash', None)
 		if cached_hash is None:
 			cached_hash = compute_browser_state_hash(cached_state)
@@ -518,6 +522,7 @@ async def _get_browser_state(
 				mode=mode,
 				focus_ref=focus_ref,
 				since_hash=since_hash,
+				include_recent_events=include_recent_events,
 			)
 			result_json = json.dumps(result, separators=(',', ':'))
 			self._cache_state_payload(result)
@@ -526,7 +531,7 @@ async def _get_browser_state(
 	async def _fetch_state_payload(resolved_focus_ref: str | None) -> tuple[Any, dict[str, Any]]:
 		state = await self.browser_session.get_browser_state_summary(
 			include_screenshot=include_screenshot,
-			include_recent_events=True,
+			include_recent_events=include_recent_events,
 		)
 		try:
 			result = build_browser_state_payload(
@@ -534,6 +539,7 @@ async def _get_browser_state(
 				mode=mode,
 				focus_ref=resolved_focus_ref,
 				since_hash=since_hash,
+				include_recent_events=include_recent_events,
 			)
 		except ValueError:
 			if mode != 'focus' or resolved_focus_ref is None:
@@ -544,13 +550,14 @@ async def _get_browser_state(
 			recovered_focus_ref = make_element_ref(resolved_index)
 			state = await self.browser_session.get_browser_state_summary(
 				include_screenshot=include_screenshot,
-				include_recent_events=True,
+				include_recent_events=include_recent_events,
 			)
 			result = build_browser_state_payload(
 				state,
 				mode=mode,
 				focus_ref=recovered_focus_ref,
 				since_hash=since_hash,
+				include_recent_events=include_recent_events,
 			)
 		return state, result
 

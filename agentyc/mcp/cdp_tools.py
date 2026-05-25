@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from agentyc.browser.session import BrowserSession
 from agentyc.mcp.debug_tools import _network_entry_started_since, _serialize_network_entry
 
 _DRAG_MOUSE_MOVE_SETTLE_S = 0.01
@@ -50,10 +51,24 @@ async def _screenshot(self, full_page: bool = False) -> tuple[str, str | None]:
 
 	self._update_session_activity(self.browser_session.id)
 
+	session = self.browser_session
+	llm_processing_enabled = (
+		session.llm_screenshot_size is not None or session.llm_screenshot_format != 'png' or session.llm_screenshot_grayscale
+	)
 	data = await self.browser_session.take_screenshot(full_page=full_page)
+
+	if llm_processing_enabled:
+		data = BrowserSession.resize_screenshot_for_llm(
+			data,
+			target_size=session.llm_screenshot_size,
+			target_format=session.llm_screenshot_format,
+			quality=session.llm_screenshot_quality,
+			grayscale=session.llm_screenshot_grayscale,
+		)
+
 	b64 = base64.b64encode(data).decode()
 
-	state = await self.browser_session.get_browser_state_summary(include_screenshot=False)
+	state = await session.get_browser_state_summary(include_screenshot=False)
 	result: dict[str, Any] = {'size_bytes': len(data)}
 	if state.page_info:
 		result['viewport'] = {
@@ -771,6 +786,12 @@ async def _wait_for_stable_dom(self, timeout_seconds: float = 10.0, quiet_ms: in
 			return new Promise((resolve, reject) => {{
 				const timer = setTimeout(() => resolve("timeout"), timeoutMs);
 				let timeoutId;
+				const root = document.documentElement || document.body || document;
+				if (!root) {{
+					clearTimeout(timer);
+					resolve("stable");
+					return;
+				}}
 				const observer = new MutationObserver(() => {{
 					clearTimeout(timeoutId);
 					timeoutId = setTimeout(() => {{
@@ -779,7 +800,7 @@ async def _wait_for_stable_dom(self, timeout_seconds: float = 10.0, quiet_ms: in
 						resolve("stable");
 					}}, quietMs);
 				}});
-				observer.observe(document.documentElement, {{
+				observer.observe(root, {{
 					childList: true, subtree: true, attributes: true, characterData: true,
 				}});
 				timeoutId = setTimeout(() => {{
@@ -817,7 +838,12 @@ async def _handle_dialog(self, accept: bool = True, prompt_text: str | None = No
 		)
 		return f'Dialog {"accepted" if accept else "dismissed"}'
 	except Exception as e:
-		return self._format_action_error(str(e), default_code='action_failed')
+		error_message = str(e)
+		pending_dialogs = getattr(self.browser_session, '_pending_auto_handled_dialogs', [])
+		if 'No dialog is showing' in error_message and pending_dialogs:
+			dialog_summary = pending_dialogs.pop(0)
+			return f'Dialog already auto-handled by runtime: {dialog_summary}'
+		return self._format_action_error(error_message, default_code='action_failed')
 
 
 async def _get_attribute(self, name: str, ref: str | None = None, index: int | None = None) -> str:

@@ -323,6 +323,9 @@ class AgentycServer:
 		self._trace_started_at: float | None = None
 		self._last_trace_summary: dict[str, Any] | None = None
 
+		# MCP logging level — client uses logging/setLevel to control this
+		self._min_log_level: types.LoggingLevel = 'info'
+
 		# Setup handlers
 		self._setup_handlers()
 
@@ -344,17 +347,33 @@ class AgentycServer:
 			"""List available prompts (none for agentyc)."""
 			return []
 
+		@self.server.set_logging_level()
+		async def handle_set_logging_level(level: types.LoggingLevel) -> None:
+			"""Handle client logging level changes."""
+			self._min_log_level = level
+
 		@self.server.call_tool()
 		async def handle_call_tool(name: str, arguments: dict[str, Any] | None) -> types.CallToolResult:
 			"""Handle tool execution."""
 			start_time = time.time()
 			error_msg = None
+			args = arguments or {}
+
+			# Send starting notification
+			await self._send_log_notification('info', name, args)
+
 			try:
-				result = await self._execute_tool(name, arguments or {})
+				result = await self._execute_tool(name, args)
+				duration = time.time() - start_time
+
+				# Send completion notification (skip for rapid periodic tools to reduce noise)
+				if name not in ('browser_get_state', 'browser_wait', 'browser_wait_for_element'):
+					await self._send_log_notification('info', name, args, duration=duration, completed=True)
+
 				if isinstance(result, list):
 					content = self._attach_tool_result_metadata(
 						name=name,
-						arguments=arguments or {},
+						arguments=args,
 						content=result,
 						started_at=start_time,
 						is_error=self._tool_output_is_error(result),
@@ -365,7 +384,7 @@ class AgentycServer:
 					)
 				content = self._attach_tool_result_metadata(
 					name=name,
-					arguments=arguments or {},
+					arguments=args,
 					content=[types.TextContent(type='text', text=result)],
 					started_at=start_time,
 					is_error=self._tool_text_is_error(result),
@@ -377,9 +396,10 @@ class AgentycServer:
 			except Exception as e:
 				error_msg = str(e)
 				logger.error(f'Tool execution failed: {e}', exc_info=True)
+				await self._send_log_notification('error', name, args, error=error_msg)
 				content = self._attach_tool_result_metadata(
 					name=name,
-					arguments=arguments or {},
+					arguments=args,
 					content=[types.TextContent(type='text', text=f'Error: {str(e)}')],
 					started_at=start_time,
 					is_error=True,
@@ -458,6 +478,57 @@ class AgentycServer:
 		if tool_name == 'browser_close_tab':
 			return 'Closing browser tab'
 		return f'Running {tool_name}'
+
+	_LOG_LEVEL_RANK = {
+		'debug': 0,
+		'info': 1,
+		'notice': 2,
+		'warning': 3,
+		'error': 4,
+		'critical': 5,
+		'alert': 6,
+		'emergency': 7,
+	}
+
+	def _should_log(self, level: types.LoggingLevel) -> bool:
+		"""Return True if the given level meets the client's minimum threshold."""
+		try:
+			return self._LOG_LEVEL_RANK.get(level, 99) >= self._LOG_LEVEL_RANK.get(self._min_log_level, 1)
+		except Exception:
+			return True
+
+	async def _send_log_notification(
+		self,
+		level: types.LoggingLevel,
+		tool_name: str,
+		arguments: dict[str, Any],
+		*,
+		duration: float | None = None,
+		completed: bool = False,
+		error: str | None = None,
+	) -> None:
+		"""Send an MCP log message notification for a tool action.
+
+		This is best-effort — failures never propagate to the caller.
+		"""
+		if not self._should_log(level):
+			return
+		try:
+			message = self._tool_phase_message(tool_name, arguments)
+			if error:
+				message = f'{message} — Error: {error}'
+			elif completed and duration is not None:
+				ms = round(duration * 1000)
+				message = f'{message} — done ({ms}ms)'
+
+			ctx = self.server.request_context
+			await ctx.session.send_log_message(
+				level=level,
+				data=message,
+				logger='agentyc',
+			)
+		except Exception:
+			pass  # notification failures must never break tool execution
 
 	def _tool_text_is_error(self, text: str) -> bool:
 		return text.startswith('Error:') or text.startswith('Error [')

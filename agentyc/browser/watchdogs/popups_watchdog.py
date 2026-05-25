@@ -64,11 +64,16 @@ class PopupsWatchdog(BaseWatchdog):
 				try:
 					dialog_type = event_data.get('type', 'alert')
 					message = event_data.get('message', '')
+					should_accept = dialog_type in ('alert', 'confirm', 'beforeunload')
 
 					# Store the popup message in browser session for inclusion in browser state
 					if message:
 						formatted_message = f'[{dialog_type}] {message}'
 						self.browser_session._closed_popup_messages.append(formatted_message)
+						auto_action = 'accepted' if should_accept else 'dismissed'
+						self.browser_session._pending_auto_handled_dialogs.append(
+							f'{formatted_message} ({auto_action} automatically)'
+						)
 						self.logger.debug(f'📝 Stored popup message: {formatted_message[:100]}')
 
 					# Choose action based on dialog type:
@@ -76,8 +81,6 @@ class PopupsWatchdog(BaseWatchdog):
 					# - confirm: accept=true (click OK to proceed - safer for automation)
 					# - prompt: accept=false (click Cancel since we can't provide input)
 					# - beforeunload: accept=true (allow navigation)
-					should_accept = dialog_type in ('alert', 'confirm', 'beforeunload')
-
 					action_str = 'accepting (OK)' if should_accept else 'dismissing (Cancel)'
 					self.logger.info(f"🔔 JavaScript {dialog_type} dialog: '{message[:100]}' - {action_str}...")
 

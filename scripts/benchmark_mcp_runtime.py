@@ -1557,10 +1557,45 @@ def make_collaboration_runtime_html(runtime_name: str, button_label: str) -> str
 	"""
 
 
+def make_release_readiness_html() -> str:
+	return """
+	<!doctype html>
+	<html lang="en">
+	<head><meta charset="utf-8" /><title>Release readiness</title></head>
+	<body>
+		<main>
+			<h1>Release readiness</h1>
+			<p id="status">Booting checks...</p>
+			<p id="summary">Collecting metadata...</p>
+			<a href="/downloads/release-summary.txt" download aria-label="Download release summary">Download release summary</a>
+			<a href="/docs/runbook.html" aria-label="Open release runbook">Open release runbook</a>
+		</main>
+		<script>
+			console.log('release readiness page loaded');
+			setTimeout(() => {
+				document.getElementById('status').textContent = 'Collecting release metadata...';
+			}, 40);
+			fetch('/release-status.json')
+				.then(response => response.json())
+				.then(data => {
+					document.getElementById('summary').textContent = data.summary;
+					console.warn('release metadata fetched');
+				});
+			setTimeout(() => {
+				document.getElementById('status').textContent = 'Release summary ready';
+				document.body.dataset.ready = 'true';
+			}, 120);
+		</script>
+	</body>
+	</html>
+	"""
+
+
 def serve_fixture_pack(fixtures: list[BenchmarkFixture]) -> ServedFixturePack:
 	root = tempfile.TemporaryDirectory(prefix='agentyc-benchmark-')
 	root_path = Path(root.name)
 	(root_path / 'docs').mkdir(parents=True, exist_ok=True)
+	(root_path / 'downloads').mkdir(parents=True, exist_ok=True)
 	(root_path / 'issues').mkdir(parents=True, exist_ok=True)
 	for fixture in fixtures:
 		(root_path / f'{fixture.slug}.html').write_text(fixture.html, encoding='utf-8')
@@ -1568,6 +1603,15 @@ def serve_fixture_pack(fixtures: list[BenchmarkFixture]) -> ServedFixturePack:
 			(root_path / relative_path).parent.mkdir(parents=True, exist_ok=True)
 			(root_path / relative_path).write_text(content, encoding='utf-8')
 	(root_path / 'release-notes.html').write_text(make_release_notes_html(), encoding='utf-8')
+	(root_path / 'release-readiness.html').write_text(make_release_readiness_html(), encoding='utf-8')
+	(root_path / 'release-status.json').write_text(
+		json.dumps({'summary': 'Release summary ready for export.'}),
+		encoding='utf-8',
+	)
+	(root_path / 'downloads' / 'release-summary.txt').write_text(
+		'Release summary downloaded via agentyc benchmark coverage.\n',
+		encoding='utf-8',
+	)
 	(root_path / 'docs' / 'authentication.html').write_text(
 		make_issue_detail_html(
 			'Authentication quickstart',
@@ -2678,6 +2722,10 @@ def _ownership_runtime_id(payload: dict[str, Any] | None) -> str | None:
 	if not isinstance(payload, dict):
 		return None
 	ownership = payload.get('ownership')
+	if not isinstance(ownership, dict):
+		current_tab = payload.get('current_tab')
+		if isinstance(current_tab, dict):
+			ownership = current_tab.get('ownership')
 	if not isinstance(ownership, dict):
 		return None
 	runtime = ownership.get('runtime')

@@ -306,7 +306,7 @@ async def _export_debug_bundle(
 	state_mode: str = 'min',
 	focus_ref: str | None = None,
 	since_hash: str | None = None,
-	include_screenshot: bool = True,
+	include_screenshot: bool = False,
 	include_headers: bool = False,
 	include_html: bool = False,
 	html_selector: str | None = None,
@@ -328,6 +328,7 @@ async def _export_debug_bundle(
 		mode=state_mode,
 		focus_ref=focus_ref,
 		since_hash=since_hash,
+		include_recent_events=True,
 	)
 	try:
 		state_payload = json.loads(state_json)

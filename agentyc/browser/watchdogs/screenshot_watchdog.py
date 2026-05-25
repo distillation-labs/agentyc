@@ -6,6 +6,7 @@ from bubus import BaseEvent
 from cdp_use.cdp.page import CaptureScreenshotParameters
 
 from agentyc.browser.events import ScreenshotEvent
+from agentyc.browser.session import BrowserSession
 from agentyc.browser.views import BrowserError
 from agentyc.browser.watchdog_base import BaseWatchdog
 from agentyc.observability import observe_debug
@@ -62,6 +63,12 @@ class ScreenshotWatchdog(BaseWatchdog):
 				pass
 
 			# Prepare screenshot parameters
+			session = self.browser_session
+			llm_processing_enabled = (
+				session.llm_screenshot_size is not None
+				or session.llm_screenshot_format != 'png'
+				or session.llm_screenshot_grayscale
+			)
 			params_dict: dict[str, Any] = {'format': 'png', 'captureBeyondViewport': event.full_page}
 			if event.clip:
 				params_dict['clip'] = {
@@ -77,8 +84,23 @@ class ScreenshotWatchdog(BaseWatchdog):
 			self.logger.debug(f'[ScreenshotWatchdog] Taking screenshot with params: {params}')
 			result = await cdp_session.cdp_client.send.Page.captureScreenshot(params=params, session_id=cdp_session.session_id)
 
-			# Return base64-encoded screenshot data
 			if result and 'data' in result:
+				if llm_processing_enabled:
+					import base64
+
+					raw = base64.b64decode(result['data'])
+					resized = BrowserSession.resize_screenshot_for_llm(
+						raw,
+						target_size=session.llm_screenshot_size,
+						target_format=session.llm_screenshot_format,
+						quality=session.llm_screenshot_quality,
+						grayscale=session.llm_screenshot_grayscale,
+					)
+					result['data'] = base64.b64encode(resized).decode()
+					self.logger.debug(
+						f'[ScreenshotWatchdog] Resized screenshot: {len(raw):,}B -> {len(resized):,}B (format={session.llm_screenshot_format})'
+					)
+
 				self.logger.debug('[ScreenshotWatchdog] Screenshot captured successfully')
 				return result['data']
 

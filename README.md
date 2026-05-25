@@ -99,7 +99,7 @@ agentyc init --print              # stdout
 agentyc init --force              # overwrite
 ```
 
-The skills guide covers: read→ref→act loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, JS evaluation, and common pitfalls.
+The skills guide covers: read→ref→act loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, JS evaluation, and common pitfalls.
 
 ---
 
@@ -120,7 +120,7 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, precise ne
 | `browser_wait_for_stable_dom` | Wait until DOM mutations settle via `MutationObserver` |
 | `browser_get_state` | **Primary primitive** — structured DOM with stable refs, screenshots, 4 modes |
 | `browser_get_html` | Raw HTML (full or CSS-selected) |
-| `browser_screenshot` | Viewport or full-page PNG |
+| `browser_screenshot` | Viewport or full-page screenshot (WebP/JPEG/PNG, configurable format, resize, quality) |
 | `browser_save_as_pdf` | Save current page as PDF via CDP `Page.printToPDF` |
 | `browser_set_viewport` | Set browser viewport width, height, and scale |
 
@@ -201,9 +201,43 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, precise ne
 - **In `min` mode**: elements within 2× viewport height get a proximity score boost.
 - **Unchanged responses**: still return `url`, `title`, `state_hash`, `current_tab_id`, scroll position.
 - **Shared-browser tabs**: `tabs` stays flat for compatibility, and `tab_groups` groups tabs by owning agent/runtime by default.
-- **Screenshots**: delivered as MCP image content, not embedded base64.
+- **Screenshots**: delivered as MCP image content, not embedded base64. Screenshot format, size, quality, and grayscale are configurable via `BrowserSession` constructor parameters (see [LLM Screenshot Optimization](#llm-screenshot-optimization)).
 
 **Best practice:** Start with `mode="min"`, use `since_hash` for follow-up reads, escalate to `mode="full"` only when compact payload omitted something you need.
+
+---
+
+## LLM Screenshot Optimization
+
+Screenshots are the dominant token cost in browser automation. Agentyc automatically resizes and compresses screenshots before delivering them to the LLM, reducing token consumption by about **8.3×** on the benchmark fixture with no measured regression in the validated headless flows.
+
+| Config field | Default | Description |
+|-------------|---------|-------------|
+| `llm_screenshot_size` | `(480, 270)` | Target resize in pixels. `None` for full-viewport resolution. |
+| `llm_screenshot_format` | `"webp"` | Output format — `"png"`, `"jpeg"`, or `"webp"`. WebP gives best size. |
+| `llm_screenshot_quality` | `85` | Compression quality 1–100 (JPEG/WebP). |
+| `llm_screenshot_grayscale` | `False` | Convert to grayscale before encoding (saves ~20-30%). |
+
+Set these via the `BrowserSession` constructor:
+
+```python
+session = BrowserSession(
+    llm_screenshot_size=(480, 270),
+    llm_screenshot_format='webp',
+    llm_screenshot_quality=85,
+)
+```
+
+**Benchmark (1280×720 viewport, 3-run median):**
+
+| Format | Size | Base64 | Tokens (est.) | vs Baseline |
+|--------|------|--------|--------------|------------|
+| PNG (baseline) | 1280×720 | 58,816B | ~23,526 | — |
+| JPEG q=85 | 640×360 | 22,748B | ~9,099 | 2.6× smaller |
+| WebP q=85 (default) | 480×270 | 7,116B | ~2,846 | **8.3× smaller** |
+| Gray JPEG q=60 | 320×180 | 4,460B | ~1,784 | 13.2× smaller |
+
+All resize/encode operations complete in 30–50ms — negligible compared to CDP capture time.
 
 ---
 
@@ -331,9 +365,24 @@ The primary public story is MCP-first. Direct Python imports are available for e
 | `--shared-browser-mode` | `tab` | `tab` or `window` |
 | `--shared-browser-focus-policy` | `preserve` | `preserve` or `activate` |
 
-Environment variables: `AGENTYC_HEADLESS`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_ACTION_TIMEOUT_S`, `AGENTYC_PROXY_*`, `AGENTYC_LOGGING_LEVEL`.
+### BrowserSession config
 
-Browser defaults: `headless=false`, `downloads_path=~/Downloads/agentyc-mcp`, `user_data_dir=~/.config/agentyc/profiles/default`.
+| Constructor param | Default | Description |
+|------------------|---------|-------------|
+| `llm_screenshot_size` | `(480, 270)` | Target resize for LLM screenshots. `None` = full resolution. |
+| `llm_screenshot_format` | `"webp"` | Output format: `"png"`, `"jpeg"`, or `"webp"`. |
+| `llm_screenshot_quality` | `85` | Compression 1–100 (JPEG/WebP). |
+| `llm_screenshot_grayscale` | `False` | Grayscale encoding (~20-30% savings). |
+| `browser_profile` | required | `BrowserProfile` instance. |
+| `headless` | `False` | Override headless mode. |
+
+### Environment variables
+
+`AGENTYC_HEADLESS`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_ACTION_TIMEOUT_S`, `AGENTYC_PROXY_*`, `AGENTYC_LOGGING_LEVEL`.
+
+### Browser defaults
+
+`headless=false`, `downloads_path=~/Downloads/agentyc-mcp`, `user_data_dir=~/.config/agentyc/profiles/default`.
 
 ---
 

@@ -29,7 +29,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 |------|-------------|
 | `browser_get_state` | Return structured page state with stable refs and optional screenshot |
 | `browser_get_html` | Return full page HTML or HTML for a CSS-selected element |
-| `browser_screenshot` | Capture a viewport or full-page screenshot |
+| `browser_screenshot` | Capture a viewport or full-page screenshot (WebP/JPEG/PNG, configurable format, resize, and quality) |
 | `browser_find_elements` | Query the current page with a CSS selector |
 | `browser_search_page` | Search for text or a regex pattern on the current page |
 | `browser_wait_for_element` | Poll until text or a ref appears or disappears |
@@ -102,8 +102,9 @@ Important behavior:
 - Unchanged `since_hash` responses keep `url`, `title`, `state_hash`, `current_tab_id`, and optional `focus_ref`, but omit the interactive element payload.
 - Compact modes can omit the legacy numeric `index` field.
 - Compact ranked payloads can report `interactive_elements_truncated`, `interactive_elements_remaining`, and `compaction_strategy`.
-- Shared-browser payloads can include `current_tab`, `ownership`, `runtime`, `display_title`, `parent_tab_id`, and `window_bounds`.
+- Shared-browser payloads can include `current_tab` with nested ownership/runtime metadata, `display_title`, `parent_tab_id`, and `window_bounds`.
 - Screenshots are delivered as MCP image content, not embedded base64 inside the JSON state payload.
+- Screenshots are automatically resized, reformatted, and compressed via the LLM screenshot pipeline (configurable through `BrowserSession` constructor params).
 
 Recommended usage:
 
@@ -134,6 +135,21 @@ Behavioral guarantees:
 - Responses include route metadata through `<extraction_metadata>`.
 
 This makes deterministic extraction the default no-API-key path for the public server.
+
+## LLM Screenshot Optimization
+
+Screenshots are automatically optimized for LLM consumption through a configurable pipeline in `BrowserSession`:
+
+| Config field | Default | Effect |
+|-------------|---------|--------|
+| `llm_screenshot_size` | `(480, 270)` | Resize to target before encoding. `None` keeps full resolution. |
+| `llm_screenshot_format` | `"webp"` | `"png"`, `"jpeg"`, or `"webp"`. WebP gives the best size/quality ratio. |
+| `llm_screenshot_quality` | `85` | Compression quality 1–100 (JPEG/WebP only). |
+| `llm_screenshot_grayscale` | `False` | Grayscale conversion saves ~20-30% at marginal information loss for UI understanding. |
+
+The pipeline runs after CDP capture and before base64 encoding — all tools that return image content (`browser_get_state`, `browser_screenshot`, `browser_export_debug_bundle`) automatically apply the active config. The MCP `mimeType` is set dynamically to match the configured format.
+
+**Benchmark (1280×720 viewport):** Default WebP q=85 at 480×270 delivers about **8.3× smaller** than the raw PNG on the benchmark fixture (7,116B vs 58,816B base64).
 
 ## CDP-Native Observability
 

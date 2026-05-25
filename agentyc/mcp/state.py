@@ -58,6 +58,7 @@ _MAX_DEBUG_ERRORS = 5
 _MAX_DEBUG_PENDING_REQUESTS = 5
 _MAX_DEBUG_RECENT_EVENTS = 5
 _MAX_DEBUG_POPUP_MESSAGES = 5
+_IGNORED_RECENT_EVENT_TYPES = {'BrowserStateRequestEvent'}
 
 
 def _get_ax_prop(element: EnhancedDOMTreeNode, name: str) -> Any:
@@ -97,10 +98,44 @@ def _serialize_optional_model(value: Any, *, by_alias: bool = False) -> Any:
 	if value is None:
 		return None
 	if hasattr(value, 'model_dump'):
-		return cast(Any, value).model_dump(mode='json', by_alias=by_alias, exclude_none=True)
+		payload = cast(Any, value).model_dump(mode='json', by_alias=by_alias, exclude_none=True)
+		return payload
 	if isinstance(value, dict):
 		return value
 	return value
+
+
+def _serialize_runtime_metadata(runtime: Any) -> dict[str, Any] | None:
+	payload = _serialize_optional_model(runtime)
+	if not isinstance(payload, dict):
+		return None
+	serialized: dict[str, Any] = {}
+	for key in ('runtime_id', 'runtime_label', 'runtime_role', 'parent_runtime_id'):
+		value = payload.get(key)
+		if value is None:
+			continue
+		if key == 'runtime_role' and value == 'primary':
+			continue
+		serialized[key] = value
+	return serialized or None
+
+
+def _serialize_ownership_metadata(ownership: Any) -> dict[str, Any] | None:
+	payload = _serialize_optional_model(ownership)
+	if not isinstance(payload, dict):
+		return None
+	serialized: dict[str, Any] = {}
+	for key in ('owner_kind', 'source', 'display_label', 'title_prefix_applied'):
+		value = payload.get(key)
+		if value is None:
+			continue
+		if key == 'title_prefix_applied' and value is False:
+			continue
+		serialized[key] = value
+	runtime_payload = _serialize_runtime_metadata(payload.get('runtime'))
+	if runtime_payload is not None:
+		serialized['runtime'] = runtime_payload
+	return serialized or None
 
 
 def serialize_tab_info(tab: Any) -> dict[str, Any]:
@@ -120,12 +155,18 @@ def serialize_tab_info(tab: Any) -> dict[str, Any]:
 		display_title = getattr(tab, 'display_title', None)
 		if display_title is not None:
 			payload['display_title'] = display_title
-		ownership = _serialize_optional_model(getattr(tab, 'ownership', None))
+		ownership = _serialize_ownership_metadata(getattr(tab, 'ownership', None))
 		if ownership is not None:
 			payload['ownership'] = ownership
 		window_bounds = _serialize_optional_model(getattr(tab, 'window_bounds', None), by_alias=True)
 		if window_bounds is not None:
 			payload['window_bounds'] = window_bounds
+
+	ownership = _serialize_ownership_metadata(payload.get('ownership'))
+	if ownership is not None:
+		payload['ownership'] = ownership
+	else:
+		payload.pop('ownership', None)
 
 	if payload.get('title') is None:
 		payload['title'] = ''
@@ -168,12 +209,16 @@ def build_tab_groups_payload(
 					'display_label': ownership_display_label or runtime_label,
 					'runtime_id': runtime_id or None,
 					'runtime_label': runtime_label,
-					'runtime_role': runtime.get('runtime_role') or 'primary',
-					'parent_runtime_id': runtime.get('parent_runtime_id'),
 					'tab_count': 0,
 					'tab_ids': [],
 				},
 			)
+			runtime_role = runtime.get('runtime_role') or 'primary'
+			if runtime_role != 'primary':
+				group['runtime_role'] = runtime_role
+			parent_runtime_id = runtime.get('parent_runtime_id')
+			if parent_runtime_id:
+				group['parent_runtime_id'] = parent_runtime_id
 		else:
 			display_label = ownership.get('display_label') if isinstance(ownership, dict) else None
 			owner_kind = ownership.get('owner_kind') if isinstance(ownership, dict) else 'unknown'
@@ -297,20 +342,37 @@ def _serialize_recent_events(recent_events: str | None) -> tuple[list[dict[str, 
 	if not isinstance(parsed, list):
 		return [], 0
 	serialized: list[dict[str, Any]] = []
-	for item in parsed[:_MAX_DEBUG_RECENT_EVENTS]:
+	seen_signatures: set[tuple[str, str, str, str]] = set()
+	retained_count = 0
+	for item in parsed:
 		if not isinstance(item, dict):
 			continue
+		event_type = truncate_text(str(item.get('event_type') or ''), max_length=120)
+		if not event_type or event_type in _IGNORED_RECENT_EVENT_TYPES:
+			continue
+		url = truncate_text(str(item.get('url') or ''), max_length=160)
+		target_id = truncate_text(str(item.get('target_id') or ''), max_length=160)
+		error_message = truncate_text(str(item.get('error_message') or ''), max_length=200)
+		signature = (event_type, url, target_id, error_message)
+		if signature in seen_signatures:
+			continue
+		seen_signatures.add(signature)
 		entry: dict[str, Any] = {}
-		for key in ('event_type', 'timestamp', 'url', 'target_id'):
-			value = item.get(key)
-			if value:
-				entry[key] = truncate_text(str(value), max_length=160)
-		error_message = item.get('error_message')
+		entry['event_type'] = event_type
+		timestamp = item.get('timestamp')
+		if timestamp:
+			entry['timestamp'] = truncate_text(str(timestamp), max_length=160)
+		if url:
+			entry['url'] = url
+		if target_id:
+			entry['target_id'] = target_id
 		if error_message:
-			entry['error_message'] = truncate_text(str(error_message), max_length=200)
+			entry['error_message'] = error_message
 		if entry:
-			serialized.append(entry)
-	return serialized, max(0, len(parsed) - len(serialized))
+			retained_count += 1
+			if len(serialized) < _MAX_DEBUG_RECENT_EVENTS:
+				serialized.append(entry)
+	return serialized, max(0, retained_count - len(serialized))
 
 
 def _serialize_pending_requests(pending_requests: list[Any]) -> tuple[list[dict[str, Any]], int]:
@@ -329,6 +391,14 @@ def _serialize_pending_requests(pending_requests: list[Any]) -> tuple[list[dict[
 
 
 def _build_debug_payload(state: BrowserStateSummary) -> dict[str, Any] | None:
+	return _build_debug_payload_with_options(state, include_recent_events=True)
+
+
+def _build_debug_payload_with_options(
+	state: BrowserStateSummary,
+	*,
+	include_recent_events: bool = True,
+) -> dict[str, Any] | None:
 	debug: dict[str, Any] = {}
 	browser_errors = list(getattr(state, 'browser_errors', []) or [])
 	pending_network_requests = list(getattr(state, 'pending_network_requests', []) or [])
@@ -348,7 +418,7 @@ def _build_debug_payload(state: BrowserStateSummary) -> dict[str, Any] | None:
 			if truncated:
 				debug['pending_network_requests_remaining'] = truncated
 
-	if recent_events_raw:
+	if include_recent_events and recent_events_raw:
 		recent_events, truncated = _serialize_recent_events(recent_events_raw)
 		if recent_events:
 			debug['recent_events'] = recent_events
@@ -375,6 +445,7 @@ def build_browser_state_payload(
 	focus_ref: str | None = None,
 	since_hash: str | None = None,
 	max_min_elements: int = _DEFAULT_MIN_ELEMENTS,
+	include_recent_events: bool = True,
 ) -> dict[str, Any]:
 	if mode not in {'auto', 'full', 'min', 'focus'}:
 		raise ValueError(f'Invalid browser_get_state mode: {mode!r}. Expected auto, full, min, or focus.')
@@ -422,17 +493,12 @@ def build_browser_state_payload(
 	)
 	if current_tab is not None:
 		result['current_tab'] = current_tab
-		if 'ownership' in current_tab:
-			result['ownership'] = current_tab['ownership']
-			runtime_payload = current_tab['ownership'].get('runtime') if isinstance(current_tab['ownership'], dict) else None
-			if runtime_payload is not None:
-				result['runtime'] = runtime_payload
 		if 'current_tab_id' not in result and 'tab_id' in current_tab:
 			result['current_tab_id'] = current_tab['tab_id']
 
 	if focus_index is not None:
 		result['focus_ref'] = make_element_ref(focus_index)
-	debug_payload = _build_debug_payload(state)
+	debug_payload = _build_debug_payload_with_options(state, include_recent_events=include_recent_events)
 	if debug_payload is not None:
 		result['debug'] = debug_payload
 

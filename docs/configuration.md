@@ -142,7 +142,7 @@ Current shared-browser behavior should be understood operationally:
 - It creates a shared-browser tab by default, or a separate runtime window when configured.
 - Attach and `new_tab=true` flows update the runtime's focused target automatically.
 - Visible activation is policy-driven: `preserve` avoids foregrounding the runtime target, while `activate` calls into the Browser/Target domains to foreground it.
-- Shared-browser state surfaces ownership metadata, runtime labels, display titles, and optional window bounds.
+- Shared-browser state surfaces nested ownership/runtime metadata for owned tabs, display titles, runtime-group metadata when present, and optional window bounds.
 - Chrome does not expose reliable per-tab ownership coloring.
 
 For stronger visual separation, separate windows remain more dependable than assuming tab-level ownership cues.

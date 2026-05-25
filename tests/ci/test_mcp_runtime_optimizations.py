@@ -918,7 +918,7 @@ class TestMCPHotPathFixes:
 
 		server.browser_session.get_browser_state_summary.assert_awaited_once_with(
 			include_screenshot=False,
-			include_recent_events=True,
+			include_recent_events=False,
 		)
 		payload = json.loads(state_json)
 		assert payload['mode'] == 'auto'
@@ -958,12 +958,17 @@ class TestMCPHotPathFixes:
 		server = AgentycServer()
 		server.browser_session = AsyncMock()
 		server.browser_session.id = 'session-1'
+		server.browser_session.llm_screenshot_size = (480, 270)
+		server.browser_session.llm_screenshot_format = 'webp'
+		server.browser_session.llm_screenshot_quality = 85
+		server.browser_session.llm_screenshot_grayscale = False
 		server.browser_session.take_screenshot = AsyncMock(return_value=b'png-data')
 		server.browser_session.get_browser_state_summary = AsyncMock(return_value=_stub_state())
 		server._update_session_activity = lambda *_args, **_kwargs: None
 
 		meta_json, image_b64 = await server._screenshot(full_page=False)
 
+		server.browser_session.take_screenshot.assert_awaited_once_with(full_page=False)
 		server.browser_session.get_browser_state_summary.assert_awaited_once_with(include_screenshot=False)
 		assert json.loads(meta_json)['size_bytes'] == len(b'png-data')
 		assert image_b64
@@ -2090,7 +2095,15 @@ class TestMCPStateProtocolAndExtraction:
 
 		assert payload['tabs'][0]['tab_id'] == '1234'
 		assert payload['tabs'][0]['ownership']['owner_kind'] == 'agent'
+		assert payload['tabs'][0]['ownership']['source'] == 'current_runtime'
 		assert payload['tabs'][0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
+		assert 'target_id' not in payload['tabs'][0]['ownership']
+		assert 'marker_version' not in payload['tabs'][0]['ownership']
+		assert 'title_prefix_applied' not in payload['tabs'][0]['ownership']
+		assert 'session_id' not in payload['tabs'][0]['ownership']['runtime']
+		assert 'title_prefix' not in payload['tabs'][0]['ownership']['runtime']
+		assert 'runtime_role' not in payload['tabs'][0]['ownership']['runtime']
+		assert 'parent_runtime_id' not in payload['tabs'][0]['ownership']['runtime']
 		assert payload['tabs'][0]['window_bounds']['width'] == 1200
 		assert payload['tab_groups'][0]['runtime_id'] == runtime.runtime_id
 		assert payload['tab_groups'][0]['tab_count'] == 1
@@ -2101,8 +2114,17 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['current_tab']['window_bounds']['height'] == 800
 		assert 'url' not in payload['current_tab']
 		assert 'title' not in payload['current_tab']
-		assert payload['ownership']['runtime']['runtime_id'] == runtime.runtime_id
-		assert payload['runtime']['runtime_id'] == runtime.runtime_id
+		assert payload['current_tab']['ownership']['source'] == 'current_runtime'
+		assert payload['current_tab']['ownership']['runtime']['runtime_id'] == runtime.runtime_id
+		assert 'target_id' not in payload['current_tab']['ownership']
+		assert 'marker_version' not in payload['current_tab']['ownership']
+		assert 'title_prefix_applied' not in payload['current_tab']['ownership']
+		assert 'session_id' not in payload['current_tab']['ownership']['runtime']
+		assert 'title_prefix' not in payload['current_tab']['ownership']['runtime']
+		assert 'runtime_role' not in payload['current_tab']['ownership']['runtime']
+		assert 'parent_runtime_id' not in payload['current_tab']['ownership']['runtime']
+		assert 'ownership' not in payload
+		assert 'runtime' not in payload
 
 	def test_browser_state_hash_changes_when_tab_ownership_changes(self):
 		runtime_a = RuntimeOwnershipMetadata.create(
@@ -2190,7 +2212,15 @@ class TestMCPStateProtocolAndExtraction:
 		assert result['tabs'][0]['tab_id'] == '1234'
 		assert result['tabs'][0]['display_title'].startswith('[Agent 1234]')
 		assert result['tabs'][0]['ownership']['owner_kind'] == 'agent'
+		assert result['tabs'][0]['ownership']['source'] == 'current_runtime'
 		assert result['tabs'][0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
+		assert 'target_id' not in result['tabs'][0]['ownership']
+		assert 'marker_version' not in result['tabs'][0]['ownership']
+		assert 'title_prefix_applied' not in result['tabs'][0]['ownership']
+		assert 'session_id' not in result['tabs'][0]['ownership']['runtime']
+		assert 'title_prefix' not in result['tabs'][0]['ownership']['runtime']
+		assert 'runtime_role' not in result['tabs'][0]['ownership']['runtime']
+		assert 'parent_runtime_id' not in result['tabs'][0]['ownership']['runtime']
 		assert result['tabs'][0]['window_bounds']['left'] == 10
 		assert result['tab_groups'][0]['runtime_id'] == runtime.runtime_id
 		assert result['tab_groups'][0]['tab_count'] == 1

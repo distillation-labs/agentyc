@@ -294,6 +294,71 @@ class MCPStdioAdapter:
 	async def _close_all_sessions(self, *, scenario: str = 'coverage') -> str:
 		return (await self.call_tool('browser_close_all', {}, scenario=scenario)).text
 
+	async def _new_tab(self, url: str = 'about:blank', *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_new_tab', {'url': url}, scenario=scenario)).text
+
+	async def _wait_for_stable_dom(self, timeout_seconds: float = 10, quiet_ms: int = 500, *, scenario: str = 'coverage') -> str:
+		arguments = {'timeout_seconds': timeout_seconds, 'quiet_ms': quiet_ms}
+		return (await self.call_tool('browser_wait_for_stable_dom', arguments, scenario=scenario)).text
+
+	async def _handle_dialog(self, accept: bool = True, prompt_text: str | None = None, *, scenario: str = 'coverage') -> str:
+		arguments = {'accept': accept, 'prompt_text': prompt_text}
+		return (await self.call_tool('browser_handle_dialog', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _get_attribute(
+		self,
+		name: str,
+		ref: str | None = None,
+		index: int | None = None,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {'name': name, 'ref': ref, 'index': index}
+		return (await self.call_tool('browser_get_attribute', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _get_downloads(self, *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_get_downloads', {}, scenario=scenario)).text
+
+	async def _set_viewport(
+		self,
+		width: int,
+		height: int,
+		device_scale_factor: float = 1.0,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {'width': width, 'height': height, 'device_scale_factor': device_scale_factor}
+		return (await self.call_tool('browser_set_viewport', arguments, scenario=scenario)).text
+
+	async def _clear_logs(self, console: bool = True, network: bool = True, *, scenario: str = 'coverage') -> str:
+		arguments = {'console': console, 'network': network}
+		return (await self.call_tool('browser_clear_logs', arguments, scenario=scenario)).text
+
+	async def _start_trace(self, categories: str | None = None, *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_start_trace', _drop_nones({'categories': categories}), scenario=scenario)).text
+
+	async def _stop_trace(self, *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_stop_trace', {}, scenario=scenario)).text
+
+	async def _save_as_pdf(
+		self,
+		file_name: str | None = None,
+		print_background: bool = True,
+		landscape: bool = False,
+		scale: float = 1.0,
+		paper_format: str = 'Letter',
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {
+			'file_name': file_name,
+			'print_background': print_background,
+			'landscape': landscape,
+			'scale': scale,
+			'paper_format': paper_format,
+		}
+		return (await self.call_tool('browser_save_as_pdf', _drop_nones(arguments), scenario=scenario)).text
+
 	async def _scroll(
 		self,
 		direction: str = 'down',
@@ -969,6 +1034,126 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 			post_click=post_click,
 			request_match=request_match,
 			response_match=response_match,
+		)
+	)
+
+	new_tab_result = await adapter._new_tab(f'{base_url}/release-readiness.html', scenario='coverage-release-readiness')
+	tabs_after_new = (_safe_json_loads(await adapter._list_tabs(scenario='coverage-release-readiness')) or {}).get('tabs', [])
+	set_viewport_result = await adapter._set_viewport(
+		width=1024,
+		height=720,
+		device_scale_factor=1.0,
+		scenario='coverage-release-readiness',
+	)
+	stable_result = await adapter._wait_for_stable_dom(
+		timeout_seconds=5.0,
+		quiet_ms=250,
+		scenario='coverage-release-readiness',
+	)
+	status_html = await adapter._get_html('#status', scenario='coverage-release-readiness')
+	viewport_width = await adapter._evaluate(
+		'(function(){ return window.innerWidth; })()',
+		scenario='coverage-release-readiness',
+	)
+	probe_fetch = await adapter._evaluate(
+		'(async function(){ const response = await fetch("/release-status.json"); return response.status; })()',
+		scenario='coverage-release-readiness',
+	)
+	await adapter._wait(seconds=0.1, scenario='coverage-release-readiness')
+	release_state, _ = await adapter.get_browser_state_json(mode='auto', scenario='coverage-release-readiness')
+	download_ref = BENCH.find_element_ref(release_state, 'Download release summary')
+	runbook_ref = BENCH.find_element_ref(release_state, 'Open release runbook')
+	download_href = (
+		await adapter._get_attribute('href', ref=download_ref, scenario='coverage-release-readiness')
+		if download_ref is not None
+		else 'missing-ref'
+	)
+	runbook_href = (
+		await adapter._get_attribute('href', ref=runbook_ref, scenario='coverage-release-readiness')
+		if runbook_ref is not None
+		else 'missing-ref'
+	)
+	trace_start = await adapter._start_trace(scenario='coverage-release-readiness')
+	download_click = (
+		await adapter._click(ref=download_ref, scenario='coverage-release-readiness')
+		if download_ref is not None
+		else 'missing-ref'
+	)
+	downloads_payload: list[dict[str, Any]] = []
+	for _ in range(20):
+		raw_downloads = await adapter._get_downloads(scenario='coverage-release-readiness')
+		parsed_downloads = _safe_json_loads(raw_downloads)
+		if isinstance(parsed_downloads, list) and parsed_downloads:
+			downloads_payload = parsed_downloads
+			break
+		await asyncio.sleep(0.1)
+	trace_nav = await adapter._navigate(f'{base_url}/docs/runbook.html', scenario='coverage-release-readiness')
+	await adapter._wait(seconds=0.2, scenario='coverage-release-readiness')
+	trace_stop = await adapter._stop_trace(scenario='coverage-release-readiness')
+	trace_events = _safe_json_loads(trace_stop)
+	console_before = (
+		_safe_json_loads(await adapter._get_console_logs(max_entries=20, scenario='coverage-release-readiness')) or []
+	)
+	network_before = _safe_json_loads(await adapter._get_network_log(max_entries=20, scenario='coverage-release-readiness')) or []
+	clear_logs = await adapter._clear_logs(console=True, network=True, scenario='coverage-release-readiness')
+	console_after = _safe_json_loads(await adapter._get_console_logs(max_entries=20, scenario='coverage-release-readiness')) or []
+	network_after = _safe_json_loads(await adapter._get_network_log(max_entries=20, scenario='coverage-release-readiness')) or []
+	pdf_result = await adapter._save_as_pdf(file_name='release-readiness.pdf', scenario='coverage-release-readiness')
+	confirm_nav = await adapter._navigate(f'{base_url}/confirm-dialog.html', scenario='coverage-release-readiness')
+	confirm_state, _ = await adapter.get_browser_state_json(mode='auto', scenario='coverage-release-readiness')
+	confirm_delete_ref = BENCH.find_element_ref(confirm_state, 'Delete branch')
+	confirm_click = (
+		await adapter._click(ref=confirm_delete_ref, scenario='coverage-release-readiness')
+		if confirm_delete_ref is not None
+		else 'missing-ref'
+	)
+	confirm_status_html = await adapter._get_html('#status', scenario='coverage-release-readiness')
+	handle_dialog_result = await adapter._handle_dialog(accept=True, scenario='coverage-release-readiness')
+	outcomes.append(
+		_scenario_result(
+			'coverage-release-readiness',
+			passed=(
+				'Opened new tab:' in new_tab_result
+				and len(tabs_after_new) >= 2
+				and 'Viewport set to 1024x720' in set_viewport_result
+				and 'DOM stable after quiet period' in stable_result
+				and 'Release summary ready' in status_html
+				and '1024' in str(viewport_width)
+				and '200' in str(probe_fetch)
+				and '/downloads/release-summary.txt' in download_href
+				and '/docs/runbook.html' in runbook_href
+				and 'Trace started' in trace_start
+				and 'Clicked element' in download_click
+				and any(entry.get('name') == 'release-summary.txt' for entry in downloads_payload if isinstance(entry, dict))
+				and 'Navigated to:' in trace_nav
+				and isinstance(trace_events, list)
+				and any(
+					'release readiness page loaded' in str(entry.get('text', ''))
+					for entry in console_before
+					if isinstance(entry, dict)
+				)
+				and any(
+					'/release-status.json' in str(entry.get('url', '')) for entry in network_before if isinstance(entry, dict)
+				)
+				and 'Cleared:' in clear_logs
+				and console_after == []
+				and network_after == []
+				and 'release-readiness.pdf' in pdf_result
+				and 'Navigated to:' in confirm_nav
+				and confirm_delete_ref is not None
+				and 'Clicked element' in confirm_click
+				and 'Deleted' in confirm_status_html
+				and 'Dialog already auto-handled by runtime:' in handle_dialog_result
+				and 'Delete this branch?' in handle_dialog_result
+			),
+			tab_count=len(tabs_after_new),
+			download_ref_found=download_ref is not None,
+			runbook_ref_found=runbook_ref is not None,
+			download_count=len(downloads_payload),
+			pdf_result=pdf_result,
+			confirm_delete_ref_found=confirm_delete_ref is not None,
+			confirm_click=confirm_click,
+			handle_dialog_result=handle_dialog_result,
 		)
 	)
 

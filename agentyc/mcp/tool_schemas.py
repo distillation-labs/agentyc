@@ -621,7 +621,7 @@ def get_tool_schemas() -> list[types.Tool]:
 						'type': 'string',
 						'description': 'Optional previous state hash for unchanged-state optimization.',
 					},
-					'include_screenshot': {'type': 'boolean', 'default': True},
+					'include_screenshot': {'type': 'boolean', 'default': False},
 					'include_headers': {'type': 'boolean', 'default': False},
 					'include_html': {'type': 'boolean', 'default': False},
 					'html_selector': {'type': 'string', 'description': 'Optional CSS selector for scoped HTML capture.'},

@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+from typing import Any
 
+import mcp.types as types
 import pytest
 from pytest_httpserver import HTTPServer
 
@@ -167,9 +169,9 @@ class TestNewMCPTools:
 		assert '(timeout)' in result, f'Expected timeout indicator, got: {result}'
 
 	async def test_handle_dialog_no_dialog(self, httpserver: HTTPServer, browser_session: BrowserSession, mcp_server):
-		"""browser_handle_dialog must error informatively when no dialog is showing.
-		PopupsWatchdog auto-handles all dialogs, so in normal operation the tool will
-		only see 'No dialog is showing'.
+		"""browser_handle_dialog must error informatively when no dialog is pending.
+		Dialogs that the runtime auto-handled are acknowledged separately, but a page
+		with no active or recent dialog should still return an explicit error.
 		"""
 		httpserver.expect_request('/nodialog').respond_with_data(_TEST_PAGE, content_type='text/html')
 		base_url = f'http://127.0.0.1:{httpserver.port}'
@@ -179,6 +181,30 @@ class TestNewMCPTools:
 
 		result = await mcp_server._handle_dialog(accept=True)
 		assert 'Error' in result
+
+	async def test_handle_dialog_acknowledges_auto_handled_confirm(
+		self, httpserver: HTTPServer, browser_session: BrowserSession, mcp_server
+	):
+		"""browser_handle_dialog should acknowledge a recent confirm dialog the runtime auto-handled."""
+		httpserver.expect_request('/dialogs').respond_with_data(_TEST_PAGE, content_type='text/html')
+		base_url = f'http://127.0.0.1:{httpserver.port}'
+		nav_result = await mcp_server._navigate(f'{base_url}/dialogs')
+		assert not nav_result.startswith('Error'), f'Navigation failed: {nav_result}'
+		await asyncio.sleep(0.3)
+
+		state_json, _ = await mcp_server._get_browser_state(include_screenshot=False)
+		state = json.loads(state_json)
+		elements = state.get('interactive_elements', [])
+		confirm_ref = next((el['ref'] for el in elements if 'Show Confirm' in (el.get('text') or '')), None)
+		assert confirm_ref is not None
+
+		click_result = await mcp_server._click(ref=confirm_ref)
+		assert not click_result.startswith('Error'), f'Click failed: {click_result}'
+
+		result = await mcp_server._handle_dialog(accept=True)
+		assert not result.startswith('Error'), f'handle_dialog should acknowledge auto-handled dialog: {result}'
+		assert 'auto-handled' in result
+		assert 'Are you sure?' in result
 
 	async def test_get_attribute(self, httpserver: HTTPServer, browser_session: BrowserSession, mcp_server):
 		"""browser_get_attribute must read specific attributes from elements."""
@@ -581,3 +607,152 @@ class TestNewMCPTools:
 		"""browser_wait_for_response must reject empty match criteria."""
 		result = await mcp_server._wait_for_response()
 		assert result.startswith('Error [invalid_argument]:')
+
+
+class TestLogNotifications:
+	"""Tests for MCP log notifications during tool execution."""
+
+	async def test_send_log_notification_sends_message_via_session(self):
+		"""_send_log_notification must call session.send_log_message with the correct payload."""
+		from mcp.server.lowlevel.server import RequestContext, request_ctx
+
+		server = AgentycServer()
+
+		captured: list[dict[str, Any]] = []
+
+		class _MockSession:
+			async def send_log_message(
+				self, level: str, data: str, logger: str | None = None, **kwargs: Any
+			) -> None:
+				captured.append({'level': level, 'data': data, 'logger': logger})
+
+		ctx = RequestContext[Any, Any, Any](
+			request_id='notif-test-1',
+			meta=None,
+			session=_MockSession(),
+			lifespan_context=None,
+		)
+		token = request_ctx.set(ctx)
+		try:
+			await server._send_log_notification('info', 'browser_navigate', {'url': 'https://example.com'})
+		finally:
+			request_ctx.reset(token)
+
+		assert len(captured) == 1, f'Expected 1 notification, got {len(captured)}: {captured}'
+		assert captured[0]['level'] == 'info'
+		assert captured[0]['data'] == 'Navigating to https://example.com'
+		assert captured[0]['logger'] == 'agentyc'
+
+	async def test_send_log_notification_adds_duration_on_completion(self):
+		"""_send_log_notification must append timing info when completed=True."""
+		from mcp.server.lowlevel.server import RequestContext, request_ctx
+
+		server = AgentycServer()
+		captured: list[dict[str, Any]] = []
+
+		class _MockSession:
+			async def send_log_message(
+				self, level: str, data: str, logger: str | None = None, **kwargs: Any
+			) -> None:
+				captured.append({'level': level, 'data': data, 'logger': logger})
+
+		ctx = RequestContext[Any, Any, Any](
+			request_id='notif-test-2',
+			meta=None,
+			session=_MockSession(),
+			lifespan_context=None,
+		)
+		token = request_ctx.set(ctx)
+		try:
+			await server._send_log_notification('info', 'browser_click', {'ref': 'e42'}, completed=True, duration=1.234)
+		finally:
+			request_ctx.reset(token)
+
+		assert len(captured) == 1
+		assert 'done (1234ms)' in captured[0]['data']
+
+	async def test_send_log_notification_adds_error_info(self):
+		"""_send_log_notification must include error details on failure."""
+		from mcp.server.lowlevel.server import RequestContext, request_ctx
+
+		server = AgentycServer()
+		captured: list[dict[str, Any]] = []
+
+		class _MockSession:
+			async def send_log_message(
+				self, level: str, data: str, logger: str | None = None, **kwargs: Any
+			) -> None:
+				captured.append({'level': level, 'data': data, 'logger': logger})
+
+		ctx = RequestContext[Any, Any, Any](
+			request_id='notif-test-3',
+			meta=None,
+			session=_MockSession(),
+			lifespan_context=None,
+		)
+		token = request_ctx.set(ctx)
+		try:
+			await server._send_log_notification('error', 'browser_navigate', {'url': 'https://bad'}, error='Connection refused')
+		finally:
+			request_ctx.reset(token)
+
+		assert len(captured) == 1
+		assert captured[0]['level'] == 'error'
+		assert 'Error: Connection refused' in captured[0]['data']
+
+	async def test_send_log_notification_never_crashes_outside_request_context(self):
+		"""_send_log_notification must silently no-op when called outside a request context."""
+		server = AgentycServer()
+		# No request_ctx set — should not raise
+		await server._send_log_notification('info', 'browser_navigate', {'url': 'https://example.com'})
+		# If we got here without an exception, test passes
+
+	async def test_should_log_filters_by_level(self):
+		"""_should_log must respect the client's minimum log level."""
+		server = AgentycServer()
+		server._min_log_level = 'error'
+
+		assert not server._should_log('debug')
+		assert not server._should_log('info')
+		assert not server._should_log('warning')
+		assert server._should_log('error')
+		assert server._should_log('critical')
+
+	async def test_tool_callthrough_emits_start_and_done_notifications(self):
+		"""Calling a tool via the MCP handler must emit start + completion notifications."""
+		from mcp.server.lowlevel.server import RequestContext, request_ctx
+
+		server = AgentycServer()
+		captured: list[dict[str, Any]] = []
+
+		class _MockSession:
+			async def send_log_message(
+				self, level: str, data: str, logger: str | None = None, **kwargs: Any
+			) -> None:
+				captured.append({'level': level, 'data': data, 'logger': logger})
+
+		ctx = RequestContext[Any, Any, Any](
+			request_id='notif-test-4',
+			meta=None,
+			session=_MockSession(),
+			lifespan_context=None,
+		)
+		token = request_ctx.set(ctx)
+		try:
+			handler = server.server.request_handlers[types.CallToolRequest]
+			result = await handler(
+				types.CallToolRequest(
+					params=types.CallToolRequestParams(name='browser_list_sessions', arguments={})
+				)
+			)
+			tool_result = result.root
+			assert not tool_result.isError, f'Tool call failed: {tool_result}'
+		finally:
+			request_ctx.reset(token)
+
+		# Should have 2 notifications: start + done
+		assert len(captured) == 2, f'Expected 2 notifications, got {len(captured)}: {captured}'
+		assert captured[0]['level'] == 'info'
+		assert 'sessions' in captured[0]['data'].lower()
+		assert captured[1]['level'] == 'info'
+		assert 'done' in captured[1]['data'].lower()

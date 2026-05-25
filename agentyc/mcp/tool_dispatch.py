@@ -64,9 +64,11 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 				focus_ref=arguments.get('focus_ref'),
 				since_hash=arguments.get('since_hash'),
 			)
+			fmt = getattr(getattr(self, 'browser_session', None), 'llm_screenshot_format', 'png')
+			mime = f'image/{fmt}' if fmt in ('png', 'jpeg', 'webp') else 'image/png'
 			content: list[types.TextContent | types.ImageContent] = [types.TextContent(type='text', text=state_json)]
 			if screenshot_b64:
-				content.append(types.ImageContent(type='image', data=screenshot_b64, mimeType='image/png'))
+				content.append(types.ImageContent(type='image', data=screenshot_b64, mimeType=mime))
 			return content
 
 		if tool_name == 'browser_get_html':
@@ -74,9 +76,11 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 
 		if tool_name == 'browser_screenshot':
 			meta_json, screenshot_b64 = await self._screenshot(arguments.get('full_page', False))
+			fmt = getattr(getattr(self, 'browser_session', None), 'llm_screenshot_format', 'png')
+			mime = f'image/{fmt}' if fmt in ('png', 'jpeg', 'webp') else 'image/png'
 			content: list[types.TextContent | types.ImageContent] = [types.TextContent(type='text', text=meta_json)]
 			if screenshot_b64:
-				content.append(types.ImageContent(type='image', data=screenshot_b64, mimeType='image/png'))
+				content.append(types.ImageContent(type='image', data=screenshot_b64, mimeType=mime))
 			return content
 
 		if tool_name == 'browser_extract_content':
@@ -310,7 +314,7 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 				state_mode=arguments.get('state_mode', 'min'),
 				focus_ref=arguments.get('focus_ref'),
 				since_hash=arguments.get('since_hash'),
-				include_screenshot=arguments.get('include_screenshot', True),
+				include_screenshot=arguments.get('include_screenshot', False),
 				include_headers=arguments.get('include_headers', False),
 				include_html=arguments.get('include_html', False),
 				html_selector=arguments.get('html_selector'),
@@ -318,9 +322,11 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 				network_max_entries=arguments.get('network_max_entries', 20),
 				network_status_filter=arguments.get('network_status_filter', 'all'),
 			)
+			fmt = getattr(getattr(self, 'browser_session', None), 'llm_screenshot_format', 'png')
+			mime = f'image/{fmt}' if fmt in ('png', 'jpeg', 'webp') else 'image/png'
 			content: list[types.TextContent | types.ImageContent] = [types.TextContent(type='text', text=bundle_json)]
 			if screenshot_b64:
-				content.append(types.ImageContent(type='image', data=screenshot_b64, mimeType='image/png'))
+				content.append(types.ImageContent(type='image', data=screenshot_b64, mimeType=mime))
 			return content
 
 	return f'Unknown tool: {tool_name}'

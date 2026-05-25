@@ -36,7 +36,7 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, and a quick-reference tool list.
+Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, and a quick-reference tool list.
 
 | Argument | Description |
 |----------|-------------|
@@ -183,8 +183,6 @@ Important fields:
 - `title`
 - `tabs`
 - `current_tab_id` and `current_tab` when the active tab can be resolved
-- `ownership` when the active tab is owned by a tracked runtime
-- `runtime` when ownership metadata includes a tracked runtime
 - `mode`
 - `effective_mode`
 - `state_hash`
@@ -205,12 +203,14 @@ Interactive elements use stable refs such as `e123`. Those refs are the preferre
 - `tab_id`
 - `parent_tab_id`
 - `display_title`
-- `ownership`
+- `ownership` including nested runtime metadata when available
 - `window_bounds`
+
+`browser_get_state` keeps active-tab collaboration metadata under `current_tab`. The top-level state payload does not duplicate `ownership` or `runtime` separately.
 
 ### `browser_screenshot`
 
-Returns JSON metadata as text and the PNG image as a separate MCP image content item.
+Returns JSON metadata as text and the screenshot image as a separate MCP image content item. The image format matches the `BrowserSession` `llm_screenshot_format` config (default WebP). The MCP `mimeType` is set dynamically to `image/webp`, `image/jpeg`, or `image/png`.
 
 ### `browser_wait_for_request` and `browser_wait_for_response`
 
@@ -289,8 +289,8 @@ Each `tab_groups[]` entry can contain:
 - `display_label`
 - optional `runtime_id`
 - optional `runtime_label`
-- optional `runtime_role`
-- optional `parent_runtime_id`
+- optional `runtime_role` when the runtime uses a non-default role
+- optional `parent_runtime_id` when the runtime is attached to a parent runtime
 - `tab_count`
 - optional `current_tab_id`
 - `tab_ids` — ordered list of 4-char tab IDs in this group (cross-reference with flat `tabs` for full tab data)
@@ -315,6 +315,17 @@ Public package imports available from `agentyc` include:
 - `Controller`
 - `ActionModel`
 - `ActionResult`
+
+### `BrowserSession` Constructor
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `browser_profile` | required | `BrowserProfile` instance. |
+| `llm_screenshot_size` | `(480, 270)` | Target resize for LLM screenshots. `None` = full resolution. |
+| `llm_screenshot_format` | `"webp"` | Output format: `"png"`, `"jpeg"`, or `"webp"`. |
+| `llm_screenshot_quality` | `85` | Compression quality 1–100 (JPEG/WebP). |
+| `llm_screenshot_grayscale` | `False` | Grayscale encoding (~20-30% savings). |
+| `headless` | `None` | Override headless mode from profile. |
 
 The package also contains LLM-provider integrations, but those are separate from the public deterministic MCP extraction contract described here.
 

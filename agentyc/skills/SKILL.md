@@ -56,6 +56,7 @@ Common recoveries:
 - `stale_ref` -> call `browser_get_state(...)` again and resolve a fresh `ref`
 - element missing in `min` mode -> escalate to `full`, then `browser_find_elements(...)`
 - blocked or modal-like failure -> dismiss the dialog or modal, then re-read state
+- `browser_handle_dialog` returns `Dialog already auto-handled by runtime: ...` -> treat that as a success-shaped acknowledgment that the popup watchdog already accepted or dismissed the dialog
 - post-tab-close confusion -> call `browser_list_tabs()` or `browser_get_state(mode="min")` to confirm the surviving active tab before the next action
 
 Use the hint in the error payload. It is there to tell you the next safe move.
@@ -145,6 +146,48 @@ browser_upload_file(path="/absolute/path/report.pdf", ref="e5")
 browser_wait_for_element(text="report.pdf")
 browser_wait_for_element(text="Uploading...", appear=False)
 ```
+
+### Verify a headless release-readiness flow
+
+Use the observability tools as a tight bundle when you need to prove a browser workflow is ready for release:
+
+```python
+browser_new_tab(url="https://app.example.com/release-readiness")
+browser_set_viewport(width=1280, height=800)
+browser_wait_for_stable_dom(timeout_seconds=5, quiet_ms=250)
+
+state = browser_get_state(mode="full")
+browser_get_attribute(name="href", ref="e_download")
+
+browser_start_trace()
+browser_click(ref="e_download")
+browser_get_downloads()
+browser_stop_trace()
+
+browser_get_console_logs(max_entries=20)
+browser_get_network_log(max_entries=20)
+browser_clear_logs(console=True, network=True)
+browser_save_as_pdf(file_name="release-readiness.pdf")
+```
+
+Use this pattern for release checklists, admin dashboards, QA signoff pages, and any headless flow where you need a download, a PDF artifact, trace data, and a clean console/network snapshot in one pass.
+
+### Work with dialogs
+
+The runtime auto-handles blocking JavaScript dialogs immediately so the agent does not stall.
+
+```python
+browser_click(ref="e42")
+browser_handle_dialog(accept=True)
+```
+
+If the dialog already got handled by the popup watchdog, `browser_handle_dialog` may return:
+
+```text
+Dialog already auto-handled by runtime: [confirm] Delete this branch? (accepted automatically)
+```
+
+Treat that as a confirmation of what happened, not as a failure that needs a retry.
 
 ### Extract structured data
 
@@ -406,14 +449,17 @@ browser_get_state(mode="full")
 browser_get_state(mode="focus", focus_ref="e42")
 browser_get_state(mode="min", since_hash="...")
 browser_get_focused_element()
+browser_get_attribute(name="href", ref="e42")
 browser_get_html()
 browser_screenshot()
+browser_get_downloads()
 
 # Navigate and tabs
 browser_navigate(url="...")
 browser_navigate(url="...", new_tab=True)
 browser_new_tab()
 browser_new_tab(url="...")
+browser_set_viewport(width=1280, height=800)
 browser_go_back()
 browser_go_forward()
 browser_refresh()
@@ -431,6 +477,7 @@ browser_scroll_to_text(text="Webhook retries")
 browser_select_option(text="...", ref="e8")
 browser_get_dropdown_options(ref="e8")
 browser_upload_file(path="/absolute/path/file.pdf", ref="e5")
+browser_handle_dialog(accept=True)
 
 # Extract and inspect
 browser_extract_content(query="...")
@@ -443,13 +490,18 @@ browser_search_page(pattern="Error", regex=True)
 browser_wait_for_network_idle()
 browser_wait_for_request(url_substring="/api/...")
 browser_wait_for_response(url_substring="/api/...", status=200)
+browser_wait_for_stable_dom(timeout_seconds=5, quiet_ms=250)
 browser_wait_for_element(text="Success")
 browser_wait_for_element(text="Saving...", appear=False)
 browser_wait(seconds=1)
 browser_get_console_logs(level="error")
 browser_get_network_log(status_filter="errors")
 browser_get_network_log(type_filter="Fetch")
+browser_clear_logs(console=True, network=True)
+browser_start_trace()
+browser_stop_trace()
 browser_export_debug_bundle()
+browser_save_as_pdf(file_name="report.pdf")
 
 # State and sessions
 browser_save_state(path="...")

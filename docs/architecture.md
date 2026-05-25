@@ -137,7 +137,7 @@ Important behavior:
 - `auto` mode falls back to ranked compaction when pages are dense.
 - `focus` mode narrows the payload to one referenced element.
 - Unchanged `since_hash` responses use a metadata-only fast path.
-- Shared-browser payloads can expose ownership, runtime metadata, display titles, parent tab ids, and optional window bounds.
+- Shared-browser payloads can expose nested ownership/runtime metadata for owned tabs, display titles, parent tab ids, optional runtime-group metadata, and optional window bounds.
 
 This module is the reason the public docs should talk about refs and compaction, not old integer-only element targeting.
 

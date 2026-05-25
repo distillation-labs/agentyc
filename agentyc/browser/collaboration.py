@@ -129,7 +129,10 @@ def build_runtime_marker_script(
 		if (!window[OBSERVER_KEY]) {{
 			window[OBSERVER_KEY] = true;
 			const observer = new MutationObserver(() => applyTitlePrefix());
-			observer.observe(document.documentElement, {{ childList: true, subtree: true }});
+			const root = document.documentElement || document.body || document;
+			if (root) {{
+				observer.observe(root, {{ childList: true, subtree: true }});
+			}}
 			window.addEventListener('pageshow', applyTitlePrefix);
 			window.addEventListener('focus', applyTitlePrefix);
 			document.addEventListener('readystatechange', applyTitlePrefix);

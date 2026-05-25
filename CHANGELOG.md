@@ -1,16 +1,26 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.17] - 2026-05-25
+
+### Added
+
+- **LLM screenshot optimization pipeline** — `BrowserSession` now supports config-controlled screenshot resize, format, quality, and grayscale via `llm_screenshot_size`, `llm_screenshot_format`, `llm_screenshot_quality`, and `llm_screenshot_grayscale` constructor params. Default: WebP at 480×270 q=85 reduces screenshot token cost **8.3×** (58,816B → 7,116B base64, ~23,526 → ~2,846 estimated tokens) with no measured regression in the benchmark fixture used for UI understanding.
+- **`resize_screenshot_for_llm()` static method** on `BrowserSession` for programmatic screenshot conversion supporting PNG, JPEG, WebP, and grayscale.
+- **Dynamic MCP ImageContent mimeType** — `browser_get_state`, `browser_screenshot`, and `browser_export_debug_bundle` now return `image/webp` (or `image/jpeg`) instead of hardcoded `image/png` when the session format is configured accordingly.
+- **`include_screenshot` default changed to `False`** for `browser_export_debug_bundle` to reduce unnecessary token consumption.
 
 ### Changed
 
 - **Direct action pacing is leaner across hot MCP interaction paths** — `browser_click`, `browser_scroll`, and `browser_drag_to` now avoid conservative fixed sleeps that were adding latency without improving reliability on the validated headless workflows.
 - **History navigation now waits for actual page readiness instead of a blind half-second sleep** — `browser_go_back` and `browser_go_forward` now settle on URL change plus DOM readiness, cutting the benchmarked history-navigation latency from ~`505 ms` to ~`55 ms`.
 - **Benchmark baseline refreshed** — the current confirmed two-run headless medians are now runtime `import_ms=220.0`, `session_init_ms=1531.3`, `collaboration_latency_ms=1598.6`, plus stdio `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=45146.9`, `avg_ms=41.4`, `p95_ms=155.1`.
+- **Packaged skills guide refreshed** — `agentyc init` now teaches release-readiness workflows that combine viewport control, DOM stability waits, downloads, trace/log hygiene, and PDF export, and it explains that `browser_handle_dialog` may return a success-shaped acknowledgment when the runtime already auto-handled a blocking popup.
 
 ### Tests
 
 - **New history-navigation readiness coverage** — `test_go_back_waits_for_history_navigation_readiness_instead_of_fixed_sleep` verifies that back-navigation no longer relies on the old fixed `0.5s` delay.
+- **New headless release-readiness workflow coverage** — `tests/ci/browser/test_headless_release_readiness.py` exercises download, PDF export, trace, log, viewport, DOM stability, and confirm-dialog behavior together in headless mode.
+- **New dialog-acknowledgment coverage** — `tests/ci/browser/test_new_mcp_tools.py` now verifies that `browser_handle_dialog` acknowledges a recently auto-handled confirm dialog instead of only surfacing `No dialog is showing`.
 
 ## [0.2.16] - 2026-05-23
 

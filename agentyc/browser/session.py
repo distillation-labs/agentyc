@@ -32,6 +32,7 @@ from agentyc.browser.events import (
 # It automatically sets CDP logs to the same level as agentyc logs
 from agentyc.browser.page import Page
 from agentyc.browser.profile import BrowserProfile, ProxySettings
+from agentyc.browser.screenshot_processing import resize_screenshot_for_llm as process_screenshot_for_llm
 from agentyc.browser.session_dom import (
 	_get_element_bounds as session_dom_get_element_bounds,
 )
@@ -210,6 +211,11 @@ class BrowserSession(BaseModel):
 		# Iframe processing limits
 		max_iframes: int | None = None,
 		max_iframe_depth: int | None = None,
+		# LLM screenshot configuration
+		llm_screenshot_size: tuple[int, int] | None = None,
+		llm_screenshot_format: str | None = None,
+		llm_screenshot_quality: int | None = None,
+		llm_screenshot_grayscale: bool | None = None,
 	):
 		# Following the same pattern as AgentSettings in service.py
 		# Only pass non-None values to avoid validation errors
@@ -221,6 +227,10 @@ class BrowserSession(BaseModel):
 				'self',
 				'browser_profile',
 				'id',
+				'llm_screenshot_size',
+				'llm_screenshot_format',
+				'llm_screenshot_quality',
+				'llm_screenshot_grayscale',
 			]
 			and v is not None
 		}
@@ -239,10 +249,22 @@ class BrowserSession(BaseModel):
 		else:
 			resolved_browser_profile = BrowserProfile(**profile_kwargs)
 
+		# Build llm screenshot kwargs (only non-None)
+		llm_kwargs = {}
+		if llm_screenshot_size is not None:
+			llm_kwargs['llm_screenshot_size'] = llm_screenshot_size
+		if llm_screenshot_format is not None:
+			llm_kwargs['llm_screenshot_format'] = llm_screenshot_format
+		if llm_screenshot_quality is not None:
+			llm_kwargs['llm_screenshot_quality'] = llm_screenshot_quality
+		if llm_screenshot_grayscale is not None:
+			llm_kwargs['llm_screenshot_grayscale'] = llm_screenshot_grayscale
+
 		# Initialize the Pydantic model
 		super().__init__(
 			id=id or str(uuid7str()),
 			browser_profile=resolved_browser_profile,
+			**llm_kwargs,
 		)
 
 	# Session configuration (session identity only)
@@ -256,8 +278,28 @@ class BrowserSession(BaseModel):
 
 	# LLM screenshot resizing configuration
 	llm_screenshot_size: tuple[int, int] | None = Field(
-		default=None,
-		description='Target size (width, height) to resize screenshots before sending to LLM. Coordinates from LLM will be scaled back to original viewport size.',
+		default=(480, 270),
+		description='Target size (width, height) to resize screenshots before sending to LLM. '
+		'Set to None for full-resolution. Default 480x270 keeps the screenshot compact while preserving UI layout. '
+		'Coordinates from LLM are scaled back to original viewport size.',
+	)
+	llm_screenshot_format: str = Field(
+		default='webp',
+		description='Image format for LLM-targeted screenshots ("png", "jpeg", or "webp"). '
+		'WebP gives the best size/quality ratio (~5x reduction at q=85). '
+		'JPEG is universally supported (~2.6x reduction at q=85).',
+	)
+	llm_screenshot_quality: int = Field(
+		default=85,
+		ge=1,
+		le=100,
+		description='Compression quality 1-100 (used for jpeg and webp). '
+		'Higher = better quality, larger size. 85 is a good balance.',
+	)
+	llm_screenshot_grayscale: bool = Field(
+		default=False,
+		description='Convert screenshot to grayscale before encoding. '
+		'Reduces size ~20-30% with minimal loss for UI understanding.',
 	)
 
 	# Cache of original viewport size for coordinate conversion (set when browser state is captured)
@@ -392,6 +434,9 @@ class BrowserSession(BaseModel):
 	_cached_selector_map: dict[int, EnhancedDOMTreeNode] = PrivateAttr(default_factory=dict)
 	_downloaded_files: list[str] = PrivateAttr(default_factory=list)  # Track files downloaded during this session
 	_closed_popup_messages: list[str] = PrivateAttr(default_factory=list)  # Store messages from auto-closed JavaScript dialogs
+	_pending_auto_handled_dialogs: list[str] = PrivateAttr(
+		default_factory=list
+	)  # Queue of auto-handled dialogs awaiting MCP acknowledgment
 
 	# Watchdogs
 	_crash_watchdog: Any | None = PrivateAttr(default=None)
@@ -882,7 +927,29 @@ class BrowserSession(BaseModel):
 		clip: dict | None = None,
 	) -> bytes:
 		return await session_targets.take_screenshot(
-			self, path=path, full_page=full_page, format=format, quality=quality, clip=clip
+			self,
+			path=path,
+			full_page=full_page,
+			format=format,
+			quality=quality,
+			clip=clip,
+		)
+
+	@staticmethod
+	def resize_screenshot_for_llm(
+		data: bytes,
+		target_size: tuple[int, int] | None,
+		target_format: str = 'png',
+		quality: int = 85,
+		grayscale: bool = False,
+	) -> bytes:
+		"""Resize/convert screenshot for compact LLM consumption."""
+		return process_screenshot_for_llm(
+			data,
+			target_size=target_size,
+			target_format=target_format,
+			quality=quality,
+			grayscale=grayscale,
 		)
 
 	async def get_window_bounds(self, target_id: TargetID | None = None) -> dict[str, Any] | None:
