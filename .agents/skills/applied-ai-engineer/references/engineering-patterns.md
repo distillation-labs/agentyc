@@ -61,10 +61,10 @@ systems.
 - Measure the entire pipeline: chunking, retrieval, reranking, shaping, latency, memory.
 - The best architecture on paper is not the best architecture until it wins on the target corpus.
 
-## What This Means For Contextro
+## What This Means For Agentyc
 
-- The next gains should come from harness quality, workflow control, observability, and resume flows.
-- Research ideas should be translated into benchmarked, enforceable repo artifacts.
-- New behavior should land with tests, evals, metrics, and a rollback story.
+- Browser automation quality is measured by action reliability, not vibe. Use real browser tests with `pytest-httpserver` and representative page structures.
+- New MCP tools should land with CI tests, deterministic extraction benchmarks, and a clear fallback story.
+- Watchdog correctness, CDP session lifecycle, and network interception behavior should each have dedicated test coverage.
 - Implementation patterns from other teams should be translated into repo-local harnesses,
-  workflow state, and efficient context/task routing rather than copied superficially.
+  concrete browser tests, and efficient task routing rather than copied superficially.
