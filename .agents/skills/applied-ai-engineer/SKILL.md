@@ -70,15 +70,20 @@ You turn AI ideas into systems that can be measured, debugged, and shipped.
 - Keep evals aligned with the production task distribution.
 - Maintain a rollback path if the harness reveals regressions.
 
-For Contextro, prefer the existing benchmark surfaces:
+In agentyc, prefer the existing benchmark and quality surfaces:
 
-- `python scripts/benchmark_token_efficiency.py`
-- `python scripts/benchmark_retrieval_quality.py --path src --query-limit 20`
-- `python scripts/benchmark_chunk_profiles.py --path src --query-limit 20`
-- `python scripts/benchmark_disclosure.py`
-- `python scripts/bench_final.py`
-- `pytest -v`
-- `ruff check .`
+- `./scripts/test.sh` — full test suite
+- `uv run pytest -vxs tests/ci` — CI test suite with real browser
+- `./scripts/lint.sh` — linting and formatting
+- `uv run pyright` — type checking
+- `uv run ruff check --fix` — code quality
+- `uv run ruff format` — formatting
+
+For browser automation evals, treat these additional dimensions:
+- action success rate over representative page structures (forms, modals, SPAs, infinite scroll)
+- latency under active CDP interception and network conditions
+- watchdog correctness under concurrent tab operations
+- extraction quality across DOM complexity tiers
 
 ## System Design Patterns
 
@@ -90,7 +95,7 @@ For Contextro, prefer the existing benchmark surfaces:
 - Preserve stable response shapes, checkpoints, and resume artifacts.
 - Decompose work into orchestration, state, formatting, and domain logic.
 - Prefer reusable, modular architecture over large all-in-one flows; extract shared logic before duplicating it.
-- Keep active implementation files legible: treat 700-800 lines as the general upper bound, review files above 800 lines for refactor opportunities, and treat files above 1000 lines as priority modular-refactor candidates.
+- Keep files between 300-500 lines max. Files above 500 lines must be split up — this is a strict rule, no exceptions. This applies to all implementation files, test files, and documentation.
 - Benchmark the whole pipeline, not one stage in isolation.
 - Translate recurring review comments into docs, tests, lints, or evals.
 
