@@ -9,9 +9,9 @@ description: >
   implementation. Do not use for straightforward bug fixes, simple refactors, or direct
   implementation requests that already have a clear solution.
 when_to_use: >
-  Especially useful for retrieval, memory, compaction, context engineering, long-horizon
-  agents, benchmark strategy, evaluation design, architecture tradeoffs, and research-backed
-  roadmap decisions.
+  Especially useful for browser automation reliability, CDP session lifecycle,
+  DOM extraction accuracy, network interception, watchdog architecture, MCP tool
+  design, and benchmark strategy for agent-driven browser control.
 metadata:
   version: "0.1.0"
   category: research
@@ -55,15 +55,15 @@ Before citing outside systems, establish the current state of this repo:
 - benchmark commands and baseline metrics
 - constraints that cannot be violated
 
-For Contextro, default benchmark surfaces are:
+For agentyc, default benchmark surfaces are:
 
-- `python scripts/benchmark_retrieval_quality.py --path src --query-limit 20`
-- `python scripts/benchmark_chunk_profiles.py --path src --query-limit 20`
-- `python scripts/benchmark_token_efficiency.py`
-- `python scripts/benchmark_disclosure.py`
-- `python scripts/bench_final.py`
+- `./scripts/test.sh` — full test suite
+- `uv run pytest -vxs tests/ci` — CI tests with real browser behavior
+- `./scripts/lint.sh` — linting and formatting checks
+- `uv run pyright` — type checking
+- `uv run ruff check --fix` — code quality
 
-Prefer repository docs and benchmark outputs over intuition.
+Prefer repository tests and architecture docs over intuition.
 
 ### 2. Define The Research Question
 
