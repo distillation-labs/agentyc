@@ -11,7 +11,7 @@ when_to_use: >
   Especially useful for primitive selection, protocol correctness, lifecycle design, transport
   decisions, notifications, and long-term MCP API shape.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   category: mcp-development
   tags: [mcp, protocol, tools, resources, prompts, transport, lifecycle, capabilities]
 license: Proprietary
@@ -62,12 +62,39 @@ Model the user-facing workflow before writing code.
 - If a surface is filtered or role-based, model that up front.
 - Dynamic catalogs should advertise changes instead of relying on clients to guess.
 
-### Transport
+## Protocol Spec Versions
 
-- Use stdio for local subprocess workflows and single-host integrations.
-- Use Streamable HTTP when remote access, auth, or shared serving is required.
-- Treat SSE as legacy compatibility rather than the default.
-- Do not choose a transport just because it sounds modern.
+The MCP specification has evolved through three major versions:
+
+| Version | Date | Key changes |
+|---|---|---|
+| `2024-11-05` | Nov 2024 | Initial spec; HTTP+SSE transport (dual endpoint) |
+| `2025-03-26` | Mar 2025 | Streamable HTTP transport (single endpoint); current **stable** |
+| `2026-07-28` | Jul 2026 | **Release candidate** (locked May 2026); stateless sessions, `Mcp-Method`/`Mcp-Name` headers, `ttlMs` caching, SEP-based extensions framework |
+
+### Streamable HTTP (2025-03-26 — Current Stable)
+
+- Single `/mcp` endpoint for all operations (vs dual-endpoint HTTP+SSE).
+- Session identified via `Mcp-Session-Id` header (not query params).
+- Client sends POST; server streams response as SSE when needed.
+- No sticky sessions or shared session store required.
+- `DELETE /mcp` for explicit session termination.
+- Stateless mode available by setting `sessionId` to undefined.
+
+### 2026-07-28 Release Candidate (Locked May 2026)
+
+Key additions over 2025-03-26:
+- `Mcp-Method` and `Mcp-Name` headers allow load balancers to route on operation type.
+- `ttlMs` and `cacheScope` enable clients to cache `tools/list` responses.
+- Stateless session model eliminates need for per-instance affinity.
+- SEP (Specification Enhancement Proposal) framework for extensions like Tasks and MCP Apps.
+- Tier 1 SDKs expected to ship support within the release window.
+
+### Transport Choice Guidelines
+
+- **stdio**: Local subprocess workflows, single-host integrations, IDE tool servers. Default for agentyc.
+- **Streamable HTTP**: Remote access, auth, shared serving, stateless scaling. Use for production deployments.
+- **HTTP+SSE (legacy)**: Only for backward compatibility with older clients. Don't choose for new designs.
 
 ## Output Expectations
 
