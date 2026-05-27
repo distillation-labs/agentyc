@@ -38,6 +38,7 @@ The public server is not an autonomous agent framework. It does not ship a plann
 - The default server launches a local browser unless `--cdp-url` is provided.
 - Deterministic extraction is the default and only public MCP extraction mode.
 - No API key is required for the default MCP browser runtime.
+- Optional HUD surfaces can mirror sanitized runtime activity in-browser (`demo_mode`) or in a transparent desktop overlay (`--hud-overlay`).
 
 ## Primary Use Cases
 
@@ -62,7 +63,7 @@ agentyc supports attaching multiple MCP server processes to the same Chrome inst
 
 ## Docs Index
 
-- [README](../README.md) — primary entry point with comparison table, benchmarks, and 50-tool inventory
+- [README](../README.md) — primary entry point with comparison table, benchmarks, HUD notes, and 66-tool inventory
 - [Features](./features.md)
 - [Architecture](./architecture.md)
 - [API Reference](./api.md)
