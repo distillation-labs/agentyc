@@ -20,6 +20,9 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 	if tool_name == 'browser_close_all':
 		return await self._close_all_sessions()
 
+	if tool_name == 'browser_set_intent':
+		return await self._set_intent(arguments['intent'])
+
 	if tool_name.startswith('browser_'):
 		if not self._browser_runtime_is_ready():
 			# If a WebSocket reconnect is already in progress, wait for it to
