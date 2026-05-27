@@ -494,13 +494,3 @@ CONFIG = Config()
 def load_agentyc_config() -> dict[str, Any]:
 	"""Load agentyc configuration for MCP components."""
 	return CONFIG.load_config()
-
-
-def get_default_profile(config: dict[str, Any]) -> dict[str, Any]:
-	"""Get default browser profile from config dict."""
-	return config.get('browser_profile', {})
-
-
-def get_default_llm(config: dict[str, Any]) -> dict[str, Any]:
-	"""Get default LLM config from config dict."""
-	return config.get('llm', {})

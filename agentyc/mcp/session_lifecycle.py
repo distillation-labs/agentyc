@@ -203,7 +203,7 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 	_ensure_all_loggers_use_stderr()
 	logger.debug('Initializing browser session...')
 
-	from agentyc.config import get_default_profile
+	from agentyc.mcp.config_helpers import get_default_profile
 	from agentyc.mcp.shared_browser_registry import (
 		get_reusable_local_browser_cdp_url,
 		register_local_shared_browser,
