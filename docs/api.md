@@ -18,6 +18,7 @@ Supported MCP CLI arguments:
 | Argument | Description |
 |----------|-------------|
 | `--session-timeout-minutes` | Idle timeout in minutes; `0` (default) keeps the session alive indefinitely |
+| `--hud-overlay` | Open the optional transparent desktop HUD that mirrors sanitized runtime activity |
 | `--cdp-url` | Attach to an existing Chrome or Chromium instance instead of launching a local browser |
 | `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
 | `--runtime-role` | Collaboration role string for this runtime, such as `primary` or `assistant` |
@@ -113,6 +114,7 @@ The runtime startup path is:
 
 | Tool | Arguments |
 |------|-----------|
+| `browser_set_intent` | `intent` |
 | `browser_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y`, optional `new_tab` |
 | `browser_right_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
 | `browser_double_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
@@ -180,6 +182,8 @@ The runtime startup path is:
 ### Logging And Timing
 
 The MCP server emits tool-phase log messages over the MCP logging channel for start, completion, and error events when the client enables logging.
+
+Those same browser-tool lifecycle events also feed the shipped HUD surfaces: the in-browser demo-mode panel, the optional `--hud-overlay` desktop window, and the public `browser_set_intent` operator label.
 
 Tool results also attach timing metadata on the first returned text content block through `_meta`:
 
