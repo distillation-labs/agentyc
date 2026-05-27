@@ -4,6 +4,15 @@
 
 The public MCP server in `agentyc.mcp.server` exposes tools only. It does not publish MCP resources or prompts.
 
+## Operator HUD Surfaces
+
+Agentyc now ships two optional user-visible HUD surfaces on top of the same sanitized activity stream:
+
+- **Browser HUD** via `BrowserProfile(demo_mode=True)` — a compact square-border panel injected into the controlled page
+- **Desktop HUD** via `agentyc mcp --hud-overlay` or `AGENTYC_HUD_OVERLAY=1` — a small transparent desktop window for local operator visibility
+
+Both surfaces show short intent/action labels only. They do not expose raw chain-of-thought, typed secrets, cookies, storage values, or raw network payloads. The browser HUD also includes a `REPORT` menu that copies sanitized context and opens bug, feature, or private security destinations.
+
 ### Navigation And Session Control
 
 | Tool | Description |
@@ -53,6 +62,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | Tool | Description |
 |------|-------------|
 | `browser_click` | Click by stable ref, legacy index, or viewport coordinates |
+| `browser_set_intent` | Publish a short operator-facing intent label into the live HUD |
 | `browser_right_click` | Open a context menu by ref, index, or coordinates |
 | `browser_double_click` | Double-click an element or coordinates |
 | `browser_hover` | Trigger hover states and hover-driven UI |
