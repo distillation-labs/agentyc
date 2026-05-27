@@ -12,7 +12,7 @@ when_to_use: >
   background task error handling, structured async startup/shutdown, and safe concurrency
   within the browser session and watchdog architecture.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   category: async-python
   tags: [asyncio, async, bubus, event-bus, tasks, concurrency, lifecycle, watchdogs, error-handling]
 license: Proprietary
@@ -32,7 +32,7 @@ background tasks. The session lifecycle is the unit of correctness.
 - Prefer `async with` context managers for resource lifecycle over manual `try/finally` pairs.
 - Use `asyncio.Event` or `asyncio.Queue` for inter-coroutine signaling, not bare `await asyncio.sleep(0)` polling.
 - Do not keep piling lifecycle, task orchestration, watchdog behavior, and event wiring into one giant async file; split by concern into focused modules and helpers.
-- Treat 700-800 lines as the general upper bound for active implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
+- Keep files between 300-500 lines max. Files above 500 lines must be split up — this is a strict rule, no exceptions.
 
 ## bubus EventBus Patterns
 
@@ -105,10 +105,41 @@ Emit stop events before cancelling tasks so watchdogs can flush state.
 ## Structured Concurrency Patterns
 
 - Prefer `asyncio.TaskGroup` (Python 3.11+) for grouped tasks that should all succeed or all cancel.
-- Use `asyncio.timeout(seconds)` or `asyncio.wait_for(coro, timeout=seconds)` for bounded waits.
-- Never use bare `asyncio.sleep(long_timeout)` as a guard — use `asyncio.wait_for`.
+  When one task fails, TaskGroup cancels all siblings and raises an `ExceptionGroup`.
+- Use `except*` (PEP 654, Python 3.11+) to handle specific exceptions within an ExceptionGroup:
+
+```python
+try:
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(fetch_page_a())
+        tg.create_task(fetch_page_b())
+except* TimeoutError as eg:
+    for exc in eg.exceptions:
+        logger.warning(f'Timeout: {exc}')
+```
+
+- Use `asyncio.timeout(seconds)` (Python 3.11+) as a context manager for bounded waits.
+  It replaces both `asyncio.wait_for()` and bare timeout patterns:
+
+```python
+async with asyncio.timeout(30):
+    await page.wait_for_selector('#results')
+# TimeoutError raised if 30s elapses
+```
+
+- `asyncio.wait_for(coro, timeout=seconds)` is still valid for single-coroutine timeouts.
+- Never use bare `asyncio.sleep(long_timeout)` as a guard — use `asyncio.timeout`.
 - For producer/consumer fan-out, use `asyncio.Queue` with explicit maxsize.
 - Keep entrypoints thin: push reusable cancellation, lifecycle transitions, watchdog wiring, and task supervision into dedicated async helpers or modules.
+
+### TaskGroup vs gather
+
+| Pattern | When to use |
+|---|---|
+| `asyncio.gather(*coros, return_exceptions=False)` | Fan out, propagate first failure immediately, need all results |
+| `asyncio.gather(*coros, return_exceptions=True)` | Need all results regardless of failures |
+| `asyncio.TaskGroup` | Sibling tasks that all must complete or all cancel; structured lifecycle |
+| `create_task_with_error_handling` | Fire-and-forget with explicit error logging (watchdog callbacks, event handlers) |
 
 ## Output Format
 
