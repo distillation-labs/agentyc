@@ -10,7 +10,7 @@ when_to_use: >
   Especially useful for CDP domain calls, session/target plumbing, watchdog patterns, event bus
   wiring, accessibility tree extraction, element highlighting, and browser lifecycle management.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   category: browser-automation
   tags: [cdp, cdp-use, browser-session, watchdog, bubus, dom, accessibility, targets, automation]
 license: Proprietary
@@ -67,7 +67,7 @@ cdp_client.register.Target.targetCreated(self._on_target_created)
 - Attach to new targets using `cdp_client.send.Target.attachToTarget(...)` and store the returned `SessionID`.
 - Use `browser_session.event_bus` to publish/subscribe to lifecycle events — do not couple components directly.
 - Keep `BrowserSession` thin where possible: split target management, event registration, overlays/highlights, domain-specific helpers, and lifecycle wiring by concern instead of growing one giant session file.
-- Treat 700-800 lines as the general upper bound for active implementation files, scrutinize files above 800 lines for modular refactor, and treat files above 1000 lines as priority candidates.
+- Treat 300-500 lines as the strict upper bound for implementation files. Files above 500 lines must be split up — no exceptions.
 
 ## Watchdog Pattern
 
@@ -98,6 +98,113 @@ Do NOT read or mutate watchdog-local state from other watchdogs. Shared state be
 - Use `DOMTreeSerializer` for converting raw CDP output to structured `EnhancedDOMTreeNode` objects.
 - Element highlight state lives in `DomService` — call its methods rather than issuing raw CDP highlight commands.
 - Prefer extracting shared CDP helpers, parser/formatter modules, and feature-specific watchdog helpers instead of duplicating protocol glue across session code.
+
+## Fetch Domain (Network Interception)
+
+The CDP Fetch domain enables request/response interception and mocking. agentyc uses this for
+proxy authentication, network mocking, and network condition emulation.
+
+### Enabling Fetch Interception
+
+```python
+# Enable Fetch for a target session with URL pattern matching
+await cdp_client.send.Fetch.enable(
+    params={
+        'handleAuthRequests': True,       # proxy auth interception
+        'patterns': [{'urlPattern': '*'}],  # intercept all URLs
+    },
+    session_id=session_id,
+)
+
+# Disable Fetch when no longer needed
+await cdp_client.send.Fetch.disable(session_id=session_id)
+```
+
+### Handling Intercepted Requests
+
+Register event handlers BEFORE enabling Fetch:
+
+```python
+cdp_client.register.Fetch.requestPaused(on_request_paused)
+cdp_client.register.Fetch.authRequired(on_auth_required)
+```
+
+Three responses to a paused request:
+1. **Continue** — let the request proceed normally:
+```python
+await cdp_client.send.Fetch.continueRequest(
+    params={'requestId': request_id},
+    session_id=session_id,
+)
+```
+
+2. **Fulfill** — respond with a mock:
+```python
+await cdp_client.send.Fetch.fulfillRequest(
+    params={
+        'requestId': request_id,
+        'responseCode': 200,
+        'responseHeaders': [{'name': 'Content-Type', 'value': 'application/json'}],
+        'body': base64.b64encode(response_text.encode()).decode(),
+    },
+    session_id=session_id,
+)
+```
+
+3. **Fail** — return a network error:
+```python
+await cdp_client.send.Fetch.failRequest(
+    params={'requestId': request_id, 'errorReason': 'ConnectionRefused'},
+    session_id=session_id,
+)
+```
+
+### Event Handler Patterns
+
+Use `create_task_with_error_handling` for event callbacks to avoid silent failures:
+
+```python
+def on_request_paused(event: RequestPausedEvent, session_id: SessionID | None = None):
+    create_task_with_error_handling(
+        _handle_request_paused_async(session, event=event, session_id=session_id),
+        name='fetch_request_paused',
+        logger_instance=session.logger,
+        suppress_exceptions=True,
+    )
+```
+
+### Session-Scoped Fetch
+
+- Root-level Fetch (`_cdp_client_root.send.Fetch`): use for proxy auth before target sessions exist.
+- Target-scoped Fetch: enable per-target-session for network mocking and conditions.
+- After attaching to a new target, call `configure_attached_network_session()` to apply active network interception and conditions.
+
+### Forbidden Fetch Headers
+
+When constructing mock responses, strip these headers (they are controlled by the browser):
+`accept-charset`, `accept-encoding`, `connection`, `content-length`, `cookie`, `host`, `origin`, `referer`, plus any `sec-` prefixed headers.
+
+### Network Conditions
+
+Use the Network domain (separate from Fetch) for emulating network conditions:
+
+```python
+await cdp_client.send.Network.enable(session_id=session_id)
+await cdp_client.send.Network.emulateNetworkConditions(
+    params={
+        'offline': False,
+        'latency': 100,            # ms
+        'downloadThroughput': -1,   # -1 = no throttling
+        'uploadThroughput': -1,
+    },
+    session_id=session_id,
+)
+```
+
+Key considerations:
+- Fetch domain is for interception/mocking, Network domain is for condition emulation.
+- Both are session-scoped — pass `session_id` for target-specific control.
+- `connectionType` values: `'none'`, `'cellular2g'`, `'cellular3g'`, `'cellular4g'`, `'bluetooth'`, `'ethernet'`, `'wifi'`, `'wimax'`, `'other'`.
 
 ## Output Format
 
