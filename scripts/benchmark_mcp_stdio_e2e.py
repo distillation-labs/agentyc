@@ -44,6 +44,30 @@ UPLOAD_HTML = """
 </body>
 </html>
 """
+FRAME_STORAGE_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Frame Storage Parent</title></head>
+<body>
+	<main>
+		<h1>Frame Storage Parent</h1>
+		<iframe name="child-frame" src="/iframe-child.html" style="width: 480px; height: 240px;"></iframe>
+	</main>
+</body>
+</html>
+"""
+FRAME_STORAGE_CHILD_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Frame Child Title</title></head>
+<body>
+	<main>
+		<h2>Iframe child payload</h2>
+		<p id="child-copy">Frame child body content</p>
+	</main>
+</body>
+</html>
+"""
 
 
 def _load_runtime_benchmark_module() -> Any:
@@ -125,9 +149,10 @@ class MCPStdioAdapter:
 		self._stdio_cm = stdio_client(server)
 		read_stream, write_stream = await self._stdio_cm.__aenter__()
 		self._session_cm = ClientSession(read_stream, write_stream)
-		self.session = await self._session_cm.__aenter__()
-		await self.session.initialize()
-		tool_result = await self.session.list_tools()
+		session = await self._session_cm.__aenter__()
+		self.session = session
+		await session.initialize()
+		tool_result = await session.list_tools()
 		self.available_tools = [tool.name for tool in tool_result.tools]
 		return self
 
@@ -143,7 +168,14 @@ class MCPStdioAdapter:
 				pass
 			self._agentyc_config_dir = None
 
-	async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None, *, scenario: str) -> ToolCallResult:
+	async def call_tool(
+		self,
+		tool_name: str,
+		arguments: dict[str, Any] | None = None,
+		*,
+		scenario: str,
+		expected_error_substring: str | None = None,
+	) -> ToolCallResult:
 		if self.session is None:
 			raise RuntimeError('MCP session is not initialized')
 		start = time.perf_counter()
@@ -162,9 +194,14 @@ class MCPStdioAdapter:
 		success = not result.isError
 		for line in texts:
 			if line.startswith('Error'):
-				success = False
 				error_text = line
 				break
+		if error_text is not None:
+			if expected_error_substring and expected_error_substring in error_text:
+				success = True
+				error_text = None
+			else:
+				success = False
 		preview = text.replace('\n', ' ')[:220]
 		self.call_records.append(
 			ToolCallRecord(
@@ -591,6 +628,169 @@ class MCPStdioAdapter:
 		result = await self.call_tool('browser_export_debug_bundle', _drop_nones(arguments), scenario=scenario)
 		return result.text, result.image_data[0] if result.image_data else None
 
+	async def _list_frames(self, *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_list_frames', {}, scenario=scenario)).text
+
+	async def _get_frame_html(
+		self,
+		frame_id: str,
+		*,
+		scenario: str = 'coverage',
+		expected_error_substring: str | None = None,
+	) -> str:
+		arguments = {'frame_id': frame_id}
+		return (
+			await self.call_tool(
+				'browser_get_frame_html',
+				arguments,
+				scenario=scenario,
+				expected_error_substring=expected_error_substring,
+			)
+		).text
+
+	async def _get_storage(
+		self,
+		origin: str | None = None,
+		storage_type: str | None = None,
+		key: str | None = None,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {'origin': origin, 'storage_type': storage_type, 'key': key}
+		return (await self.call_tool('browser_get_storage', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _set_storage(
+		self,
+		origin: str,
+		storage_type: str,
+		key: str,
+		value: str,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {'origin': origin, 'storage_type': storage_type, 'key': key, 'value': value}
+		return (await self.call_tool('browser_set_storage', arguments, scenario=scenario)).text
+
+	async def _clear_storage(
+		self,
+		origin: str,
+		storage_type: str | None = None,
+		key: str | None = None,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {'origin': origin, 'storage_type': storage_type, 'key': key}
+		return (await self.call_tool('browser_clear_storage', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _inspect_network_entry(
+		self,
+		request_id: str | None = None,
+		url_substring: str | None = None,
+		url_regex: str | None = None,
+		method: str | None = None,
+		resource_type: str | None = None,
+		status: int | None = None,
+		include_headers: bool = False,
+		include_request_body: bool = True,
+		include_response_body: bool = True,
+		max_body_bytes: int | None = None,
+		decode_json: bool = True,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {
+			'request_id': request_id,
+			'url_substring': url_substring,
+			'url_regex': url_regex,
+			'method': method,
+			'resource_type': resource_type,
+			'status': status,
+			'include_headers': include_headers,
+			'include_request_body': include_request_body,
+			'include_response_body': include_response_body,
+			'max_body_bytes': max_body_bytes,
+			'decode_json': decode_json,
+		}
+		return (await self.call_tool('browser_inspect_network_entry', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _add_network_mock(
+		self,
+		url_substring: str | None = None,
+		url_regex: str | None = None,
+		method: str | None = None,
+		resource_type: str | None = None,
+		action: str = 'fulfill',
+		status: int = 200,
+		headers: dict[str, Any] | None = None,
+		body: str = '',
+		error_reason: str = 'Failed',
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {
+			'url_substring': url_substring,
+			'url_regex': url_regex,
+			'method': method,
+			'resource_type': resource_type,
+			'action': action,
+			'status': status,
+			'headers': headers,
+			'body': body,
+			'error_reason': error_reason,
+		}
+		return (await self.call_tool('browser_add_network_mock', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _remove_network_mock(self, mock_id: str | None = None, *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_remove_network_mock', _drop_nones({'mock_id': mock_id}), scenario=scenario)).text
+
+	async def _list_network_mocks(self, *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_list_network_mocks', {}, scenario=scenario)).text
+
+	async def _set_network_conditions(
+		self,
+		offline: bool = False,
+		latency_ms: float = 0.0,
+		download_kbps: float | None = None,
+		upload_kbps: float | None = None,
+		connection_type: str | None = None,
+		reset: bool = False,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {
+			'offline': offline,
+			'latency_ms': latency_ms,
+			'download_kbps': download_kbps,
+			'upload_kbps': upload_kbps,
+			'connection_type': connection_type,
+			'reset': reset,
+		}
+		return (await self.call_tool('browser_set_network_conditions', _drop_nones(arguments), scenario=scenario)).text
+
+	async def _get_network_conditions(self, *, scenario: str = 'coverage') -> str:
+		return (await self.call_tool('browser_get_network_conditions', {}, scenario=scenario)).text
+
+	async def _replay_request(
+		self,
+		request_id: str | None = None,
+		url_substring: str | None = None,
+		url_regex: str | None = None,
+		method: str | None = None,
+		body: str | None = None,
+		headers: dict[str, Any] | None = None,
+		*,
+		scenario: str = 'coverage',
+	) -> str:
+		arguments = {
+			'request_id': request_id,
+			'url_substring': url_substring,
+			'url_regex': url_regex,
+			'method': method,
+			'body': body,
+			'headers': headers,
+		}
+		return (await self.call_tool('browser_replay_request', _drop_nones(arguments), scenario=scenario)).text
+
 
 def _drop_nones(payload: dict[str, Any]) -> dict[str, Any]:
 	return {key: value for key, value in payload.items() if value is not None}
@@ -672,6 +872,25 @@ def _parse_find_elements_output(text: str) -> list[dict[str, Any]]:
 				entry['attrs'] = attrs
 		results.append(entry)
 	return results
+
+
+async def _wait_for_frame_url_suffix(
+	adapter: MCPStdioAdapter,
+	*,
+	url_suffix: str,
+	scenario: str,
+	attempts: int = 30,
+	delay_seconds: float = 0.1,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+	frames: list[dict[str, Any]] = []
+	for _ in range(attempts):
+		parsed = _safe_json_loads(await adapter._list_frames(scenario=scenario))
+		frames = parsed if isinstance(parsed, list) else []
+		match = next((frame for frame in frames if str(frame.get('url') or '').endswith(url_suffix)), None)
+		if match is not None:
+			return frames, match
+		await asyncio.sleep(delay_seconds)
+	return frames, None
 
 
 def _accuracy_from_outcomes(outcomes: list[dict[str, Any]]) -> float:
@@ -898,6 +1117,107 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 		)
 	)
 
+	await adapter._navigate(f'{base_url}/frame-storage.html', scenario='coverage-frame-and-storage')
+	frames, child_frame = await _wait_for_frame_url_suffix(
+		adapter,
+		url_suffix='/iframe-child.html',
+		scenario='coverage-frame-and-storage',
+	)
+	root_frame = next((frame for frame in frames if str(frame.get('url') or '').endswith('/frame-storage.html')), None)
+	child_html = (
+		await adapter._get_frame_html(str(child_frame['frame_id']), scenario='coverage-frame-and-storage')
+		if child_frame is not None
+		else 'missing-frame'
+	)
+	missing_frame_result = await adapter._get_frame_html(
+		'missing-frame-id',
+		scenario='coverage-frame-and-storage',
+		expected_error_substring='Unknown frame_id: missing-frame-id',
+	)
+	origin = base_url
+	set_local_payload = (
+		_safe_json_loads(
+			await adapter._set_storage(
+				origin=origin,
+				storage_type='localStorage',
+				key='release',
+				value='train',
+				scenario='coverage-frame-and-storage',
+			)
+		)
+		or {}
+	)
+	set_session_payload = (
+		_safe_json_loads(
+			await adapter._set_storage(
+				origin=origin,
+				storage_type='sessionStorage',
+				key='panel',
+				value='network',
+				scenario='coverage-frame-and-storage',
+			)
+		)
+		or {}
+	)
+	storage_payload = _safe_json_loads(await adapter._get_storage(origin=origin, scenario='coverage-frame-and-storage')) or []
+	filtered_payload = (
+		_safe_json_loads(
+			await adapter._get_storage(
+				origin=origin,
+				storage_type='localStorage',
+				key='release',
+				scenario='coverage-frame-and-storage',
+			)
+		)
+		or []
+	)
+	clear_key_payload = (
+		_safe_json_loads(
+			await adapter._clear_storage(
+				origin=origin,
+				storage_type='localStorage',
+				key='release',
+				scenario='coverage-frame-and-storage',
+			)
+		)
+		or {}
+	)
+	storage_after_key_clear = (
+		_safe_json_loads(await adapter._get_storage(origin=origin, key='release', scenario='coverage-frame-and-storage')) or []
+	)
+	clear_all_payload = _safe_json_loads(await adapter._clear_storage(origin=origin, scenario='coverage-frame-and-storage')) or {}
+	storage_after_clear_all = (
+		_safe_json_loads(await adapter._get_storage(origin=origin, scenario='coverage-frame-and-storage')) or []
+	)
+	outcomes.append(
+		_scenario_result(
+			'coverage-frame-and-storage',
+			passed=(
+				root_frame is not None
+				and child_frame is not None
+				and child_frame.get('parent_frame_id') == root_frame.get('frame_id')
+				and child_frame.get('name') == 'child-frame'
+				and child_frame.get('is_cross_origin') is False
+				and 'Frame Child Title' in child_html
+				and 'Frame child body content' in child_html
+				and missing_frame_result.startswith('Error [not_found]:')
+				and set_local_payload.get('ok') is True
+				and set_session_payload.get('ok') is True
+				and len(storage_payload) == 1
+				and any(item == {'name': 'release', 'value': 'train'} for item in storage_payload[0].get('localStorage', []))
+				and any(item == {'name': 'panel', 'value': 'network'} for item in storage_payload[0].get('sessionStorage', []))
+				and filtered_payload == [{'origin': origin, 'localStorage': [{'name': 'release', 'value': 'train'}]}]
+				and clear_key_payload.get('ok') is True
+				and storage_after_key_clear == []
+				and clear_all_payload.get('ok') is True
+				and clear_all_payload.get('storage_type') == 'all'
+				and storage_after_clear_all == []
+			),
+			frame_count=len(frames),
+			child_frame=child_frame,
+		)
+	)
+
 	await adapter._navigate(f'{base_url}/tab-workspace.html', scenario='coverage-tabs-and-pointer')
 	tab_state, _ = await adapter.get_browser_state_json(mode='auto', scenario='coverage-tabs-and-pointer')
 	workspace_tab_id = tab_state.get('current_tab_id') or (tab_state.get('current_tab') or {}).get('tab_id')
@@ -1034,6 +1354,151 @@ async def _run_remaining_tool_coverage(adapter: MCPStdioAdapter, base_url: str, 
 			post_click=post_click,
 			request_match=request_match,
 			response_match=response_match,
+		)
+	)
+
+	await adapter._navigate(f'{base_url}/network-log.html', scenario='coverage-network-controls')
+	network_control_state, _ = await adapter.get_browser_state_json(mode='auto', scenario='coverage-network-controls')
+	post_control_ref = BENCH.find_element_ref(network_control_state, 'Post data')
+	post_control_click = 'missing-ref'
+	captured_request: dict[str, Any] = {}
+	captured_response: dict[str, Any] = {}
+	inspected_entry: dict[str, Any] = {}
+	replay_payload: dict[str, Any] = {}
+	if post_control_ref is not None:
+		request_task = asyncio.create_task(
+			adapter._wait_for_request(
+				url_substring='/api/submit',
+				method='POST',
+				include_headers=True,
+				timeout_seconds=5,
+				scenario='coverage-network-controls',
+			)
+		)
+		response_task = asyncio.create_task(
+			adapter._wait_for_response(
+				url_substring='/api/submit',
+				method='POST',
+				include_headers=True,
+				timeout_seconds=5,
+				scenario='coverage-network-controls',
+			)
+		)
+		post_control_click = await adapter._click(ref=post_control_ref, scenario='coverage-network-controls')
+		captured_request = _safe_json_loads(await request_task) or {}
+		captured_response = _safe_json_loads(await response_task) or {}
+		inspected_entry = (
+			_safe_json_loads(
+				await adapter._inspect_network_entry(
+					url_substring='/api/submit',
+					method='POST',
+					include_headers=True,
+					scenario='coverage-network-controls',
+				)
+			)
+			or {}
+		)
+		request_id = inspected_entry.get('request_id')
+		if request_id:
+			replay_payload = (
+				_safe_json_loads(
+					await adapter._replay_request(
+						request_id=str(request_id),
+						body=json.dumps({'x': 2}),
+						headers={'Content-Type': 'application/json', 'X-Replay': 'yes'},
+						scenario='coverage-network-controls',
+					)
+				)
+				or {}
+			)
+	add_mock_payload = (
+		_safe_json_loads(
+			await adapter._add_network_mock(
+				url_substring='/api/data',
+				action='fulfill',
+				status=200,
+				headers={'Content-Type': 'text/plain'},
+				body='mocked data',
+				scenario='coverage-network-controls',
+			)
+		)
+		or {}
+	)
+	mock_id = add_mock_payload.get('mock_id')
+	list_before_mock = _safe_json_loads(await adapter._list_network_mocks(scenario='coverage-network-controls')) or []
+	mocked_result = await adapter._evaluate(
+		'(async function(){ const response = await fetch("/api/data"); return await response.text(); })()',
+		scenario='coverage-network-controls',
+	)
+	list_after_mock = list_before_mock
+	for _ in range(20):
+		parsed_mocks = _safe_json_loads(await adapter._list_network_mocks(scenario='coverage-network-controls'))
+		if isinstance(parsed_mocks, list):
+			list_after_mock = parsed_mocks
+		if list_after_mock and list_after_mock[0].get('match_count', 0) >= 1:
+			break
+		await asyncio.sleep(0.1)
+	remove_mock_payload = (
+		_safe_json_loads(await adapter._remove_network_mock(mock_id=str(mock_id), scenario='coverage-network-controls'))
+		if mock_id
+		else {}
+	)
+	list_after_remove = _safe_json_loads(await adapter._list_network_mocks(scenario='coverage-network-controls')) or []
+	conditions_payload = (
+		_safe_json_loads(
+			await adapter._set_network_conditions(offline=True, latency_ms=5.0, scenario='coverage-network-controls')
+		)
+		or {}
+	)
+	condition_list = _safe_json_loads(await adapter._get_network_conditions(scenario='coverage-network-controls')) or []
+	offline_result = await adapter._evaluate(
+		"(async function(){ try { await fetch('/release-status.json'); return 'unexpected-success'; } catch (error) { return 'offline:' + (error && error.name ? error.name : String(error)); } })()",
+		scenario='coverage-network-controls',
+	)
+	reset_conditions_payload = (
+		_safe_json_loads(await adapter._set_network_conditions(reset=True, scenario='coverage-network-controls')) or {}
+	)
+	conditions_after_reset = _safe_json_loads(await adapter._get_network_conditions(scenario='coverage-network-controls')) or []
+	await adapter._wait(seconds=0.2, scenario='coverage-network-controls')
+	online_result = await adapter._evaluate(
+		'(async function(){ const response = await fetch("/release-status.json"); return response.status + ":" + await response.text(); })()',
+		scenario='coverage-network-controls',
+	)
+	outcomes.append(
+		_scenario_result(
+			'coverage-network-controls',
+			passed=(
+				post_control_ref is not None
+				and 'Clicked element' in post_control_click
+				and captured_request.get('method') == 'POST'
+				and '/api/submit' in str(captured_request.get('url', ''))
+				and '/api/submit' in str(captured_response.get('url', ''))
+				and bool(inspected_entry.get('request_id'))
+				and inspected_entry.get('method') == 'POST'
+				and '/api/submit' in str(inspected_entry.get('url', ''))
+				and int(replay_payload.get('status') or 0) >= 400
+				and mock_id is not None
+				and len(list_before_mock) == 1
+				and list_before_mock[0].get('mock_id') == mock_id
+				and 'mocked data' in mocked_result
+				and bool(list_after_mock)
+				and list_after_mock[0].get('match_count', 0) >= 1
+				and remove_mock_payload.get('removed') == 1
+				and list_after_remove == []
+				and conditions_payload.get('offline') is True
+				and conditions_payload.get('reset') is False
+				and len(condition_list) == 1
+				and condition_list[0].get('offline') is True
+				and 'offline:' in offline_result
+				and 'unexpected-success' not in offline_result
+				and reset_conditions_payload.get('reset') is True
+				and reset_conditions_payload.get('offline') is False
+				and conditions_after_reset == []
+				and '200:' in online_result
+				and 'Release summary ready for export.' in online_result
+			),
+			mock_id=mock_id,
+			request_id=inspected_entry.get('request_id'),
 		)
 	)
 
@@ -1781,6 +2246,8 @@ async def _run_target(target: TargetConfig, minimum_total_calls: int, scratch_ro
 	try:
 		root_path = Path(served.root.name)
 		(root_path / 'upload.html').write_text(UPLOAD_HTML, encoding='utf-8')
+		(root_path / 'frame-storage.html').write_text(FRAME_STORAGE_HTML, encoding='utf-8')
+		(root_path / 'iframe-child.html').write_text(FRAME_STORAGE_CHILD_HTML, encoding='utf-8')
 		async with MCPStdioAdapter(target) as adapter:
 			coverage_outcomes: list[dict[str, Any]] = []
 			fixture_results: dict[str, Any] = {}
