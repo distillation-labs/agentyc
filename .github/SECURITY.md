@@ -4,7 +4,7 @@ If you believe you have found a security vulnerability in agentyc, please report
 
 **Please do not report security vulnerabilities through the repository issues, discussions, or pull requests.**
 
-Instead, please open a new [Github security advisory](https://github.com/agentyc/agentyc/security/advisories/new).
+Instead, please review the current [security policy](https://github.com/distillation-labs/agentyc/security/policy) and use the linked private reporting flow there.
 
 Please include as much of the information listed below as you can to help me better understand and resolve the issue:
 
