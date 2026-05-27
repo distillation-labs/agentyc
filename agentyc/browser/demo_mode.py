@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agentyc.browser.demo_mode_script import DEMO_PANEL_SCRIPT
+from agentyc.browser.feedback import build_feedback_config
+from agentyc.browser.hud_stream import HudEvent, HudStream
 from agentyc.browser.session import BrowserSession
 
 
@@ -24,19 +26,29 @@ class DemoMode:
 		self._script_source: str | None = None
 		self._panel_ready = False
 		self._lock = asyncio.Lock()
+		self._stream = HudStream.get()
+		self._subscribed = False
+		self._stream.subscribe(self._on_hud_event)
+		self._subscribed = True
 
 	def reset(self) -> None:
 		self._script_identifier = None
 		self._panel_ready = False
 
+	def cleanup(self) -> None:
+		if not self._subscribed:
+			return
+		self._stream.unsubscribe(self._on_hud_event)
+		self._subscribed = False
+
 	def _load_script(self) -> str:
 		if self._script_source is None:
 			self._script_source = DEMO_PANEL_SCRIPT
 
-		session_id = self.session.id
-		script_with_session_id = self._script_source.replace('__AGENTYC_SESSION_ID_PLACEHOLDER__', session_id)
-		self.logger.debug(f'Injecting session ID {session_id} into demo panel script')
-		return script_with_session_id
+		config = build_feedback_config(self.session.id)
+		script = self._script_source.replace('__AGENTYC_HUD_CONFIG_PLACEHOLDER__', json.dumps(config, ensure_ascii=False))
+		self.logger.debug(f'Injecting HUD config for session {self.session.id}')
+		return script
 
 	async def ensure_ready(self) -> None:
 		"""Add init script and inject overlay into currently open pages."""
@@ -77,7 +89,7 @@ class DemoMode:
 		payload = {
 			'message': message,
 			'level': level_value,
-			'metadata': metadata or {},
+			'metadata': {'session_id': self.session.id, **(metadata or {})},
 			'timestamp': datetime.now(timezone.utc).isoformat(),
 		}
 
@@ -95,6 +107,39 @@ class DemoMode:
 			)
 		except Exception as exc:
 			self.logger.debug(f'Failed to send demo log: {exc}')
+
+	def _on_hud_event(self, event: HudEvent) -> None:
+		if event.session_id != self.session.id:
+			return
+		try:
+			loop = asyncio.get_running_loop()
+		except RuntimeError:
+			return
+		loop.create_task(self._send_hud_event(event))
+
+	async def _send_hud_event(self, event: HudEvent) -> None:
+		metadata: dict[str, Any] = {
+			'kind': event.kind,
+			'session_id': event.session_id,
+		}
+		if event.tool_name:
+			metadata['tool_name'] = event.tool_name
+		if event.duration_ms is not None:
+			metadata['duration_ms'] = event.duration_ms
+		if event.error:
+			metadata['error'] = event.error
+		if event.details:
+			metadata['details'] = event.details
+		await self.send_log(event.label, level=self._hud_level(event), metadata=metadata)
+
+	def _hud_level(self, event: HudEvent) -> str:
+		if event.kind == 'tool_error':
+			return 'error'
+		if event.kind == 'tool_done':
+			return 'success'
+		if event.kind == 'intent':
+			return 'thought'
+		return 'action'
 
 	def _build_event_expression(self, payload: str) -> str:
 		return f"""
