@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-from agentyc.mcp.server import main as mcp_main
+from agentyc.mcp.server_main import main as mcp_main
 
 _SKILL_FILE = Path(__file__).parent.parent / 'skills' / 'SKILL.md'
 
@@ -46,6 +46,7 @@ def _cmd_mcp(args: argparse.Namespace) -> None:
 		mcp_main(
 			session_timeout_minutes=args.session_timeout_minutes,
 			cdp_url=args.cdp_url,
+			hud_overlay=args.hud_overlay,
 			runtime_label=args.runtime_label,
 			runtime_role=args.runtime_role,
 			parent_runtime_id=args.parent_runtime_id,
@@ -136,6 +137,12 @@ def main() -> None:
 		help='Idle timeout in minutes for managed browser sessions. 0 (default) disables automatic cleanup and keeps sessions alive indefinitely.',
 	)
 	mcp_parser.add_argument(
+		'--hud-overlay',
+		action=argparse.BooleanOptionalAction,
+		default=None,
+		help='Show a small transparent desktop HUD that mirrors sanitized MCP runtime activity.',
+	)
+	mcp_parser.add_argument(
 		'--cdp-url',
 		type=str,
 		default=None,
@@ -193,6 +200,7 @@ def main() -> None:
 		# Re-parse with the flat mcp args for backward compat
 		flat_parser = argparse.ArgumentParser(description='agentyc MCP server')
 		flat_parser.add_argument('--session-timeout-minutes', type=int, default=0)
+		flat_parser.add_argument('--hud-overlay', action=argparse.BooleanOptionalAction, default=None)
 		flat_parser.add_argument('--cdp-url', type=str, default=None)
 		flat_parser.add_argument('--runtime-label', type=str, default=None)
 		flat_parser.add_argument('--runtime-role', type=str, default='primary')
@@ -206,6 +214,7 @@ def main() -> None:
 			mcp_main(
 				session_timeout_minutes=flat_args.session_timeout_minutes,
 				cdp_url=flat_args.cdp_url,
+				hud_overlay=flat_args.hud_overlay,
 				runtime_label=flat_args.runtime_label,
 				runtime_role=flat_args.runtime_role,
 				parent_runtime_id=flat_args.parent_runtime_id,
