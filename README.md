@@ -2,7 +2,7 @@
 
 <p align="center">
   <em>Deterministic, MCP-first browser automation for coding agents.</em><br>
-  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 65 tools.
+  No API key needed. No LLM fallback. Just CDP, stdio MCP, live HUD surfaces, and 66 tools.
 </p>
 
 <p align="center">
@@ -45,12 +45,12 @@ agentyc                          # Starts the MCP server — that's it
 | **Parallel agent model** | Shared browser profile + per-runtime owned tabs | N/A | N/A |
 | **Dependencies** | ~20 core (lean) | ~40+ (heavy) | Playwright + SDK |
 | **Install size** | Small (Python package) | Very large | Moderate |
-| **Tool count** | 65 | ~15-20 actions | ~20 tools |
+| **Tool count** | 66 | ~15-20 actions | ~20 tools |
 | **Console/Network capture** | CDP-native built-in | Limited | Limited |
 | **Deterministic extraction** | Tables, lists, forms, links, images, key-value | None (LLM only) | None |
 | **Headless by default** | No (visible), flag for headless | Configurable | Configurable |
 
-**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 65 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
+**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 66 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
 
 ---
 
@@ -103,7 +103,15 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, frame list
 
 ---
 
-## MCP Surface: 65 Tools
+## Live HUD
+
+When `BrowserProfile(demo_mode=True)` is enabled, Agentyc now injects a compact square-border HUD into the controlled browser page. It shows the current step, a short recent timeline, and a `REPORT` menu that copies sanitized context before opening the repo's bug-report, feature-request, or private security flow.
+
+For local operator visibility outside the browser, `agentyc mcp --hud-overlay` opens a small transparent desktop HUD window that mirrors the same sanitized activity stream. Agents can also call `browser_set_intent` to push a short human-readable status label into both HUD surfaces.
+
+---
+
+## MCP Surface: 66 Tools
 
 ### Navigation & State (14 tools)
 
@@ -178,7 +186,7 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, frame list
 | `browser_save_state` | Persist cookies + storage to disk |
 | `browser_load_state` | Restore cookies + storage from disk |
 
-### Observability, Network Control & Lifecycle (17 tools)
+### Observability, Network Control & Lifecycle (18 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -192,6 +200,7 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, frame list
 | `browser_get_network_conditions` | List active per-tab network conditions |
 | `browser_replay_request` | Replay a captured request with optional header/body overrides |
 | `browser_export_debug_bundle` | Bundle state, console, network, trace summary, optional HTML, and screenshot in one round-trip |
+| `browser_set_intent` | Publish a short operator-facing intent label into the live HUD surfaces |
 | `browser_get_downloads` | List downloaded files from the session |
 | `browser_clear_logs` | Clear console and/or network log buffers |
 | `browser_start_trace` | Start CDP performance trace |
@@ -378,6 +387,7 @@ The primary public story is MCP-first. Direct Python imports are available for e
 | CLI flag | Default | Description |
 |----------|---------|-------------|
 | `--session-timeout-minutes` | 0 (never) | Auto-close idle sessions |
+| `--hud-overlay` | off | Show a small transparent desktop HUD for sanitized live activity |
 | `--cdp-url` | — | Attach to existing browser |
 | `--runtime-label` | — | Ownership label for shared browser |
 | `--runtime-role` | — | Collaboration role |
@@ -397,7 +407,7 @@ The primary public story is MCP-first. Direct Python imports are available for e
 
 ### Environment variables
 
-`AGENTYC_HEADLESS`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_ACTION_TIMEOUT_S`, `AGENTYC_PROXY_*`, `AGENTYC_LOGGING_LEVEL`.
+`AGENTYC_HEADLESS`, `AGENTYC_HUD_OVERLAY`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_ACTION_TIMEOUT_S`, `AGENTYC_PROXY_*`, `AGENTYC_LOGGING_LEVEL`.
 
 ### Browser defaults
 
