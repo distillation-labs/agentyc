@@ -19,6 +19,7 @@ from agentyc.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
+from agentyc.browser.hud_events import publish_browser_event
 from agentyc.browser.session_models import RuntimeOwnershipMetadata
 from agentyc.browser.views import BrowserStateSummary
 
@@ -78,6 +79,7 @@ async def reset(session: BrowserSession) -> None:
 	session._captcha_watchdog = None
 	session._watchdogs_attached = False
 	if session._demo_mode:
+		session._demo_mode.cleanup()
 		session._demo_mode.reset()
 		session._demo_mode = None
 
@@ -171,6 +173,7 @@ async def on_FileDownloadedEvent(session: BrowserSession, event: FileDownloadedE
 	session.logger.debug(f'FileDownloadedEvent received: {event.file_name} at {event.path}')
 	if event.path and event.path not in session._downloaded_files:
 		session._downloaded_files.append(event.path)
+		publish_browser_event(session_id=session.id, label=f'Downloaded {event.file_name}')
 		session.logger.info(
 			f'📁 Tracked download: {event.file_name} ({len(session._downloaded_files)} total downloads in session)'
 		)
