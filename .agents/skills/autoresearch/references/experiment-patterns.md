@@ -14,14 +14,15 @@ surfaces.
 7. Log the result and the insight.
 8. Reassess after clusters of failures or wins.
 
-## Contextro-Specific Surfaces
+## Agentyc-Specific Surfaces
 
-- Retrieval quality: `python scripts/benchmark_retrieval_quality.py --path src --query-limit 20`
-- Chunking: `python scripts/benchmark_chunk_profiles.py --path src --query-limit 20`
-- Token efficiency: `python scripts/benchmark_token_efficiency.py`
-- Disclosure and compression: `python scripts/benchmark_disclosure.py`
-- Embeddings: `python scripts/benchmark_embeddings.py`
-- Full benchmark: `python scripts/bench_final.py`
+- Full test suite: `./scripts/test.sh`
+- CI tests with real browser: `uv run pytest -vxs tests/ci`
+- Linting and formatting: `./scripts/lint.sh`
+- Type checking: `uv run pyright`
+- Code quality: `uv run ruff check --fix`
+- Browser tests under `tests/ci/browser/` validate real CDP behavior
+- MCP tool tests under `tests/ci/` validate stdio integration
 
 ## Keep Or Discard Rules
 
