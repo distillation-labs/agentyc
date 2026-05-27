@@ -55,10 +55,14 @@ done
 | Skill | Purpose |
 |---|---|
 | `applied-ai-engineer` | Turn research ideas into benchmarked, observable, production-ready systems |
+| `async-python-engineer` | Async Python patterns for agentyc: asyncio tasks, bubus EventBus, concurrency |
 | `autoresearch` | Autonomous metric-driven experiment loops until a breakthrough target is met |
 | `breakthrough-researcher` | Deep technical research, hypothesis generation, ranked experiment backlog |
+| `cdp-browser-engineer` | CDP browser automation: cdp-use typed client, BrowserSession, watchdogs, DOM |
 | `dev-contextro-mcp` | Use Contextro MCP for codebase discovery, search, call graphs, git history, memory |
 | `docs-maintainer` | Changelogs, README updates, release notes, publication manifests, doc sync |
 | `fastmcp-server-engineer` | Build or refactor FastMCP servers, tools, resources, middleware, and validation |
+| `llm-provider-engineer` | LLM provider integrations: BaseChatModel Protocol, token tracking, structured output |
 | `mcp-protocol-architect` | Design MCP servers around correct protocol primitives and transport choices |
-| `rust-extension-engineer` | PyO3/maturin Rust extensions for hot paths, FFI boundaries, parity testing |
+| `pydantic-v2-engineer` | Pydantic v2 model design for agentyc: ConfigDict, validators, views/services split |
+| `pytest-async-engineer` | Testing patterns for agentyc: pytest-asyncio, pytest-httpserver, BrowserSession lifecycle |
