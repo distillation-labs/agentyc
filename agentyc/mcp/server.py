@@ -22,46 +22,15 @@ logging.basicConfig(
 	stream=sys.stderr, level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', force=True
 )
 
-try:
-	import psutil
-
-	PSUTIL_AVAILABLE = True
-except ImportError:
-	PSUTIL_AVAILABLE = False
-
 # Add the repository root to path if running from source without shadowing the external `mcp` SDK.
 source_root = str(Path(__file__).resolve().parents[2])
 if source_root not in sys.path:
 	sys.path.insert(0, source_root)
 
-# Import and configure logging to use stderr before other imports
-from agentyc.logging_config import setup_logging
-
-
-def _configure_mcp_server_logging():
-	"""Configure logging for MCP server mode - redirect all logs to stderr to prevent JSON RPC interference."""
-	# Set environment to suppress agentyc logging during server mode
-	os.environ['AGENTYC_LOGGING_LEVEL'] = 'warning'
-	os.environ['AGENTYC_SETUP_LOGGING'] = 'false'  # Prevent automatic logging setup
-
-	# Configure logging to stderr for MCP mode - preserve warnings and above for troubleshooting
-	setup_logging(stream=sys.stderr, log_level='warning', force_setup=True)
-
-	# Also configure the root logger and all existing loggers to use stderr
-	logging.root.handlers = []
-	stderr_handler = logging.StreamHandler(sys.stderr)
-	stderr_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-	logging.root.addHandler(stderr_handler)
-	logging.root.setLevel(logging.CRITICAL)
-
-	# Configure all existing loggers to use stderr and CRITICAL level
-	for name in list(logging.root.manager.loggerDict.keys()):
-		logger_obj = logging.getLogger(name)
-		logger_obj.handlers = []
-		logger_obj.setLevel(logging.CRITICAL)
-		logger_obj.addHandler(stderr_handler)
-		logger_obj.propagate = False
-
+from agentyc.mcp.server_bootstrap import (
+	_configure_mcp_server_logging,
+	_ensure_all_loggers_use_stderr,
+)
 
 # Configure MCP server logging before any agentyc imports to capture early log lines
 _configure_mcp_server_logging()
@@ -76,139 +45,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from agentyc.mcp.action_runtime import (
-	_cache_state_payload,
-	_classify_action_error,
-	_click,
-	_ensure_extract_runtime,
-	_evaluate,
-	_extract_content,
-	_find_elements,
-	_format_action_error,
-	_get_browser_state,
-	_get_dropdown_options,
-	_go_back,
-	_go_forward,
-	_inject_extraction_metadata,
-	_mark_browser_state_cache_clean,
-	_mark_browser_state_cache_dirty,
-	_navigate,
-	_new_tab_postcondition_satisfied,
-	_press_key,
-	_refresh,
-	_refresh_selector_map,
-	_resolve_element_index,
-	_resolve_live_element,
-	_resolve_upload_available_file_paths,
-	_run_tool_action,
-	_save_as_pdf,
-	_scroll,
-	_search_page,
-	_select_option,
-	_type_text,
-	_upload_file,
-	_validate_actionable_element,
-	_wait,
-	_wait_for_element,
-)
-from agentyc.mcp.cdp_tools import (
-	_clear_cookies,
-	_clear_logs,
-	_close_tab,
-	_double_click,
-	_drag_to,
-	_get_attribute,
-	_get_console_logs,
-	_get_cookies,
-	_get_downloads,
-	_get_focused_element,
-	_get_html,
-	_get_network_log,
-	_get_viewport_coords,
-	_handle_dialog,
-	_hover,
-	_list_tabs,
-	_load_state,
-	_new_tab,
-	_register_cdp_event_listeners,
-	_resolve_element_coords,
-	_right_click,
-	_save_state,
-	_screenshot,
-	_scroll_to_text,
-	_set_cookies,
-	_set_viewport,
-	_start_trace,
-	_stop_trace,
-	_switch_tab,
-	_wait_for_network_idle,
-	_wait_for_stable_dom,
-)
-from agentyc.mcp.debug_tools import _export_debug_bundle, _wait_for_request, _wait_for_response
-from agentyc.mcp.navigation_runtime import (
-	_page_contains_visible_text,
-	_recover_click_navigation_if_unavailable,
-	_wait_for_click_navigation_settle,
-)
-from agentyc.mcp.network_tools import (
-	_add_network_mock,
-	_clear_storage,
-	_get_frame_html,
-	_get_network_conditions,
-	_get_storage,
-	_inspect_network_entry,
-	_list_frames,
-	_list_network_mocks,
-	_remove_network_mock,
-	_replay_request,
-	_set_network_conditions,
-	_set_storage,
-)
-from agentyc.mcp.session_lifecycle import (
-	_browser_runtime_is_ready,
-	_cleanup_expired_sessions,
-	_close_all_sessions,
-	_close_session,
-	_init_browser_session,
-	_list_sessions,
-	_reset_broken_browser_runtime,
-	_shutdown,
-	_start_cleanup_task,
-	_track_session,
-	_update_session_activity,
-	_update_session_url,
-)
-from agentyc.mcp.tool_dispatch import _execute_tool
-
-
-def _ensure_all_loggers_use_stderr():
-	"""Ensure ALL loggers only output to stderr, not stdout."""
-	# Get the stderr handler
-	stderr_handler = None
-	for handler in logging.root.handlers:
-		if hasattr(handler, 'stream') and handler.stream == sys.stderr:  # type: ignore
-			stderr_handler = handler
-			break
-
-	if not stderr_handler:
-		stderr_handler = logging.StreamHandler(sys.stderr)
-		stderr_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-
-	# Configure root logger
-	logging.root.handlers = [stderr_handler]
-	logging.root.setLevel(logging.CRITICAL)
-
-	# Configure all existing loggers
-	for name in list(logging.root.manager.loggerDict.keys()):
-		logger_obj = logging.getLogger(name)
-		logger_obj.handlers = [stderr_handler]
-		logger_obj.setLevel(logging.CRITICAL)
-		logger_obj.propagate = False
-
-
-# Ensure stderr logging after all imports
-_ensure_all_loggers_use_stderr()
-
+from agentyc.mcp.server_methods import SERVER_METHODS
+from agentyc.mcp.tool_feedback import _extract_tool_error_message
 
 # Try to import MCP SDK
 try:
@@ -233,43 +71,20 @@ except ImportError:
 	sys.exit(1)
 
 
-def get_parent_process_cmdline() -> str | None:
-	"""Get the command line of all parent processes up the chain."""
-	if not PSUTIL_AVAILABLE:
-		return None
-
-	try:
-		cmdlines = []
-		current_process = psutil.Process()
-		parent = current_process.parent()
-
-		while parent:
-			try:
-				cmdline = parent.cmdline()
-				if cmdline:
-					cmdlines.append(' '.join(cmdline))
-			except (psutil.AccessDenied, psutil.NoSuchProcess):
-				# Skip processes we can't access (like system processes)
-				pass
-
-			try:
-				parent = parent.parent()
-			except (psutil.AccessDenied, psutil.NoSuchProcess):
-				# Can't go further up the chain
-				break
-
-		return ';'.join(cmdlines) if cmdlines else None
-	except Exception:
-		# If we can't get parent process info, just return None
-		return None
-
-
 class AgentycServer:
 	"""MCP Server for agentyc capabilities."""
 
 	_execute_tool: Callable[[str, dict[str, Any]], Awaitable[Any]]
+	_set_intent: Callable[[str], Awaitable[str]]
 	_start_cleanup_task: Callable[[], Awaitable[None]]
 	_shutdown: Callable[[], Awaitable[None]]
+	_tool_phase_message: Callable[[str, dict[str, Any]], str]
+	_should_log: Callable[[types.LoggingLevel], bool]
+	_send_log_notification: Callable[..., Awaitable[None]]
+	_tool_text_is_error: Callable[[str], bool]
+	_tool_output_is_error: Callable[[list[types.TextContent | types.ImageContent]], bool]
+	_attach_tool_result_metadata: Callable[..., list[types.TextContent | types.ImageContent]]
+	_publish_hud_event: Callable[..., None]
 	_save_as_pdf: Callable[..., Awaitable[str]]
 	_get_downloads: Callable[[], Awaitable[str]]
 	_set_viewport: Callable[..., Awaitable[str]]
@@ -300,6 +115,7 @@ class AgentycServer:
 		session_timeout_minutes: int = 0,
 		cdp_url: str | None = None,
 		*,
+		hud_overlay: bool | None = None,
 		runtime_label: str | None = None,
 		runtime_role: str = 'primary',
 		parent_runtime_id: str | None = None,
@@ -323,6 +139,10 @@ class AgentycServer:
 		self._start_time = time.time()
 		self._cdp_url = cdp_url  # shared-browser CDP URL for parallel tab mode
 		self._explicit_cdp_url = cdp_url is not None
+		self._hud_overlay_enabled = bool(
+			self.config.get('browser_profile', {}).get('hud_overlay', False) if hud_overlay is None else hud_overlay
+		)
+		self._hud_overlay = None
 		self._runtime_label = runtime_label
 		self._runtime_role = runtime_role
 		self._parent_runtime_id = parent_runtime_id
@@ -355,6 +175,15 @@ class AgentycServer:
 
 		# MCP logging level — client uses logging/setLevel to control this
 		self._min_log_level: types.LoggingLevel = 'info'
+
+		if self._hud_overlay_enabled:
+			try:
+				from agentyc.browser.hud_overlay import HudOverlay
+
+				self._hud_overlay = HudOverlay()
+				self._hud_overlay.start()
+			except Exception:
+				self._hud_overlay = None
 
 		# Setup handlers
 		self._setup_handlers()
@@ -389,6 +218,7 @@ class AgentycServer:
 			error_msg = None
 			args = arguments or {}
 
+			self._publish_hud_event('tool_start', name, args)
 			# Send starting notification
 			await self._send_log_notification('info', name, args)
 
@@ -401,31 +231,56 @@ class AgentycServer:
 					await self._send_log_notification('info', name, args, duration=duration, completed=True)
 
 				if isinstance(result, list):
+					is_error = self._tool_output_is_error(result)
 					content = self._attach_tool_result_metadata(
 						name=name,
 						arguments=args,
 						content=result,
 						started_at=start_time,
-						is_error=self._tool_output_is_error(result),
+						is_error=is_error,
 					)
+					is_error = self._tool_output_is_error(content)
+					if is_error:
+						self._publish_hud_event(
+							'tool_error',
+							name,
+							args,
+							duration=duration,
+							error=_extract_tool_error_message(content),
+						)
+					else:
+						self._publish_hud_event('tool_done', name, args, duration=duration)
 					return types.CallToolResult(
 						content=cast(list[types.ContentBlock], content),
-						isError=self._tool_output_is_error(content),
+						isError=is_error,
 					)
+				is_error = self._tool_text_is_error(result)
 				content = self._attach_tool_result_metadata(
 					name=name,
 					arguments=args,
 					content=[types.TextContent(type='text', text=result)],
 					started_at=start_time,
-					is_error=self._tool_text_is_error(result),
+					is_error=is_error,
 				)
+				is_error = self._tool_output_is_error(content)
+				if is_error:
+					self._publish_hud_event(
+						'tool_error',
+						name,
+						args,
+						duration=duration,
+						error=_extract_tool_error_message(content),
+					)
+				else:
+					self._publish_hud_event('tool_done', name, args, duration=duration)
 				return types.CallToolResult(
 					content=cast(list[types.ContentBlock], content),
-					isError=self._tool_output_is_error(content),
+					isError=is_error,
 				)
 			except Exception as e:
 				error_msg = str(e)
 				logger.error(f'Tool execution failed: {e}', exc_info=True)
+				self._publish_hud_event('tool_error', name, args, error=error_msg)
 				await self._send_log_notification('error', name, args, error=error_msg)
 				content = self._attach_tool_result_metadata(
 					name=name,
@@ -481,288 +336,10 @@ class AgentycServer:
 		finally:
 			await self._shutdown()
 
-	def _tool_phase_message(self, tool_name: str, arguments: dict[str, Any]) -> str:
-		if tool_name == 'browser_navigate':
-			return f'Navigating to {arguments.get("url", "page")}'
-		if tool_name == 'browser_get_state':
-			mode = arguments.get('mode', 'auto')
-			if arguments.get('since_hash'):
-				return f'Checking page state delta ({mode})'
-			return f'Reading page state ({mode})'
-		if tool_name == 'browser_click':
-			if arguments.get('new_tab'):
-				return 'Opening link in new tab'
-			return 'Clicking page element'
-		if tool_name == 'browser_type':
-			return 'Typing into focused field'
-		if tool_name == 'browser_wait_for_element':
-			return 'Waiting for page element to change'
-		if tool_name == 'browser_wait_for_network_idle':
-			return 'Waiting for network to go idle'
-		if tool_name == 'browser_screenshot':
-			return 'Capturing screenshot'
-		if tool_name == 'browser_extract_content':
-			return 'Extracting structured page content'
-		if tool_name == 'browser_switch_tab':
-			return 'Switching browser tab'
-		if tool_name == 'browser_close_tab':
-			return 'Closing browser tab'
-		return f'Running {tool_name}'
 
-	_LOG_LEVEL_RANK = {
-		'debug': 0,
-		'info': 1,
-		'notice': 2,
-		'warning': 3,
-		'error': 4,
-		'critical': 5,
-		'alert': 6,
-		'emergency': 7,
-	}
-
-	def _should_log(self, level: types.LoggingLevel) -> bool:
-		"""Return True if the given level meets the client's minimum threshold."""
-		try:
-			return self._LOG_LEVEL_RANK.get(level, 99) >= self._LOG_LEVEL_RANK.get(self._min_log_level, 1)
-		except Exception:
-			return True
-
-	async def _send_log_notification(
-		self,
-		level: types.LoggingLevel,
-		tool_name: str,
-		arguments: dict[str, Any],
-		*,
-		duration: float | None = None,
-		completed: bool = False,
-		error: str | None = None,
-	) -> None:
-		"""Send an MCP log message notification for a tool action.
-
-		This is best-effort — failures never propagate to the caller.
-		"""
-		if not self._should_log(level):
-			return
-		try:
-			message = self._tool_phase_message(tool_name, arguments)
-			if error:
-				message = f'{message} — Error: {error}'
-			elif completed and duration is not None:
-				ms = round(duration * 1000)
-				message = f'{message} — done ({ms}ms)'
-
-			ctx = self.server.request_context
-			await ctx.session.send_log_message(
-				level=level,
-				data=message,
-				logger='agentyc',
-			)
-		except Exception:
-			pass  # notification failures must never break tool execution
-
-	def _tool_text_is_error(self, text: str) -> bool:
-		return text.startswith('Error:') or text.startswith('Error [')
-
-	def _tool_output_is_error(self, content: list[types.TextContent | types.ImageContent]) -> bool:
-		for item in content:
-			if isinstance(item, types.TextContent) and item.text:
-				return self._tool_text_is_error(item.text)
-		return False
-
-	def _attach_tool_result_metadata(
-		self,
-		*,
-		name: str,
-		arguments: dict[str, Any],
-		content: list[types.TextContent | types.ImageContent],
-		started_at: float,
-		is_error: bool,
-	) -> list[types.TextContent | types.ImageContent]:
-		duration_ms = round((time.time() - started_at) * 1000, 1)
-		phase_message = self._tool_phase_message(name, arguments)
-		metadata = {
-			'agentyc/tool_name': name,
-			'agentyc/tool_phase': phase_message,
-			'agentyc/browser_duration_ms': duration_ms,
-			'agentyc/is_error': is_error,
-		}
-		updated_content: list[types.TextContent | types.ImageContent] = []
-		attached = False
-		for item in content:
-			if not attached and isinstance(item, types.TextContent):
-				merged_meta = dict(getattr(item, 'meta', None) or {})
-				merged_meta.update(metadata)
-				updated_content.append(
-					types.TextContent(
-						type='text',
-						text=item.text,
-						annotations=item.annotations,
-						_meta=merged_meta,
-					)
-				)
-				attached = True
-			else:
-				updated_content.append(item)
-		if not attached:
-			updated_content.insert(
-				0,
-				types.TextContent(type='text', text='', _meta=metadata),
-			)
-		return updated_content
-
-
-_SERVER_METHODS: dict[str, Any] = {
-	'_execute_tool': _execute_tool,
-	'_init_browser_session': _init_browser_session,
-	'_browser_runtime_is_ready': _browser_runtime_is_ready,
-	'_reset_broken_browser_runtime': _reset_broken_browser_runtime,
-	'_ensure_extract_runtime': _ensure_extract_runtime,
-	'_recover_click_navigation_if_unavailable': _recover_click_navigation_if_unavailable,
-	'_resolve_element_index': _resolve_element_index,
-	'_cache_state_payload': _cache_state_payload,
-	'_mark_browser_state_cache_clean': _mark_browser_state_cache_clean,
-	'_mark_browser_state_cache_dirty': _mark_browser_state_cache_dirty,
-	'_refresh_selector_map': _refresh_selector_map,
-	'_page_contains_visible_text': _page_contains_visible_text,
-	'_resolve_live_element': _resolve_live_element,
-	'_resolve_upload_available_file_paths': _resolve_upload_available_file_paths,
-	'_validate_actionable_element': _validate_actionable_element,
-	'_classify_action_error': _classify_action_error,
-	'_format_action_error': _format_action_error,
-	'_run_tool_action': _run_tool_action,
-	'_wait_for_click_navigation_settle': _wait_for_click_navigation_settle,
-	'_inject_extraction_metadata': _inject_extraction_metadata,
-	'_new_tab_postcondition_satisfied': _new_tab_postcondition_satisfied,
-	'_navigate': _navigate,
-	'_click': _click,
-	'_type_text': _type_text,
-	'_upload_file': _upload_file,
-	'_get_browser_state': _get_browser_state,
-	'_extract_content': _extract_content,
-	'_scroll': _scroll,
-	'_go_back': _go_back,
-	'_go_forward': _go_forward,
-	'_refresh': _refresh,
-	'_press_key': _press_key,
-	'_wait': _wait,
-	'_evaluate': _evaluate,
-	'_select_option': _select_option,
-	'_get_dropdown_options': _get_dropdown_options,
-	'_find_elements': _find_elements,
-	'_wait_for_element': _wait_for_element,
-	'_save_as_pdf': _save_as_pdf,
-	'_get_downloads': _get_downloads,
-	'_set_viewport': _set_viewport,
-	'_search_page': _search_page,
-	'_get_html': _get_html,
-	'_screenshot': _screenshot,
-	'_get_viewport_coords': _get_viewport_coords,
-	'_resolve_element_coords': _resolve_element_coords,
-	'_hover': _hover,
-	'_double_click': _double_click,
-	'_drag_to': _drag_to,
-	'_scroll_to_text': _scroll_to_text,
-	'_save_state': _save_state,
-	'_load_state': _load_state,
-	'_wait_for_network_idle': _wait_for_network_idle,
-	'_right_click': _right_click,
-	'_get_cookies': _get_cookies,
-	'_set_cookies': _set_cookies,
-	'_clear_logs': _clear_logs,
-	'_clear_cookies': _clear_cookies,
-	'_register_cdp_event_listeners': _register_cdp_event_listeners,
-	'_get_console_logs': _get_console_logs,
-	'_get_attribute': _get_attribute,
-	'_handle_dialog': _handle_dialog,
-	'_wait_for_stable_dom': _wait_for_stable_dom,
-	'_start_trace': _start_trace,
-	'_stop_trace': _stop_trace,
-	'_get_network_log': _get_network_log,
-	'_wait_for_request': _wait_for_request,
-	'_wait_for_response': _wait_for_response,
-	'_export_debug_bundle': _export_debug_bundle,
-	'_inspect_network_entry': _inspect_network_entry,
-	'_list_frames': _list_frames,
-	'_get_frame_html': _get_frame_html,
-	'_get_storage': _get_storage,
-	'_set_storage': _set_storage,
-	'_clear_storage': _clear_storage,
-	'_add_network_mock': _add_network_mock,
-	'_remove_network_mock': _remove_network_mock,
-	'_list_network_mocks': _list_network_mocks,
-	'_set_network_conditions': _set_network_conditions,
-	'_get_network_conditions': _get_network_conditions,
-	'_replay_request': _replay_request,
-	'_get_focused_element': _get_focused_element,
-	'_list_tabs': _list_tabs,
-	'_new_tab': _new_tab,
-	'_switch_tab': _switch_tab,
-	'_close_tab': _close_tab,
-	'_track_session': _track_session,
-	'_update_session_activity': _update_session_activity,
-	'_update_session_url': _update_session_url,
-	'_list_sessions': _list_sessions,
-	'_close_session': _close_session,
-	'_close_all_sessions': _close_all_sessions,
-	'_cleanup_expired_sessions': _cleanup_expired_sessions,
-	'_start_cleanup_task': _start_cleanup_task,
-	'_shutdown': _shutdown,
-}
-
-for _method_name, _method in _SERVER_METHODS.items():
+for _method_name, _method in SERVER_METHODS.items():
 	setattr(AgentycServer, _method_name, _method)
-
-
-async def main(
-	session_timeout_minutes: int = 0,
-	cdp_url: str | None = None,
-	*,
-	runtime_label: str | None = None,
-	runtime_role: str = 'primary',
-	parent_runtime_id: str | None = None,
-	shared_browser_mode: str = 'tab',
-	shared_browser_window_bounds: dict[str, Any] | None = None,
-	shared_browser_focus_policy: str = 'preserve',
-):
-	if not MCP_AVAILABLE:
-		print('MCP SDK is required. Install with: pip install mcp', file=sys.stderr)
-		sys.exit(1)
-
-	server = AgentycServer(
-		session_timeout_minutes=session_timeout_minutes,
-		cdp_url=cdp_url,
-		runtime_label=runtime_label,
-		runtime_role=runtime_role,
-		parent_runtime_id=parent_runtime_id,
-		shared_browser_mode=shared_browser_mode,
-		shared_browser_window_bounds=shared_browser_window_bounds,
-		shared_browser_focus_policy=shared_browser_focus_policy,
-	)
-	from agentyc.telemetry import MCPServerTelemetryEvent
-	from agentyc.utils import get_agentyc_version
-
-	server._telemetry.capture(
-		MCPServerTelemetryEvent(
-			version=get_agentyc_version(),
-			action='start',
-			parent_process_cmdline=get_parent_process_cmdline(),
-		)
-	)
-
-	try:
-		await server.run()
-	finally:
-		duration = time.time() - server._start_time
-		server._telemetry.capture(
-			MCPServerTelemetryEvent(
-				version=get_agentyc_version(),
-				action='stop',
-				duration_seconds=duration,
-				parent_process_cmdline=get_parent_process_cmdline(),
-			)
-		)
-		server._telemetry.flush()
-
+from agentyc.mcp.server_main import main
 
 if __name__ == '__main__':
 	asyncio.run(main())
