@@ -13,6 +13,15 @@ Grounded in agentyc's test suite: pytest-asyncio auto mode, pytest-httpserver, a
 - One `tests/ci/test_action_EventName.py` file per event or feature under test.
 - Assertions target `ActionResult` fields and public session state, not private attrs.
 
+## Network Interception Testing
+
+- Use `add_network_mock()` and `remove_network_mock()` from `agentyc.browser.session_network`
+  with real `pytest-httpserver` endpoints to verify mock interception.
+- Use `set_network_conditions()` for offline, latency, and bandwidth throttling tests.
+- Verify mock rules via `list_network_mocks()` and `get_network_conditions()` public APIs.
+- Test that Fetch domain interceptors clean up properly in fixture teardown.
+- Network tests live in `tests/ci/browser/` alongside other browser interaction tests.
+
 ## What To Avoid
 
 - `@pytest.mark.asyncio` on test functions
