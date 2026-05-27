@@ -57,6 +57,9 @@ async def reset(session: BrowserSession) -> None:
 	session._cached_browser_state_summary = None
 	session._cached_selector_map.clear()
 	session._downloaded_files.clear()
+	session._network_mock_rules.clear()
+	session._network_conditions_by_target.clear()
+	session._fetch_handlers_registered = False
 	session.agent_focus_target_id = None
 	if session.is_local:
 		session.browser_profile.cdp_url = None

@@ -279,10 +279,10 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	)
 	paint_order_filtering: bool = Field(default=True, description='Enable paint order filtering. Slightly experimental.')
 	interaction_highlight_color: str = Field(
-		default='rgb(59, 130, 246)',
+		default='rgb(194, 88, 24)',
 		description='Color to use for highlighting elements during interactions (CSS color string).',
 	)
-	interaction_highlight_duration: float = Field(default=1.0, description='Duration in seconds to show interaction highlights.')
+	interaction_highlight_duration: float = Field(default=0.3, description='Duration in seconds to show interaction highlights.')
 	auto_download_pdfs: bool = Field(default=True, description='Automatically download PDFs when navigating to PDF viewer pages.')
 	profile_directory: str = 'Default'
 	record_video_dir: Path | None = Field(

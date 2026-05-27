@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -14,6 +15,9 @@ from agentyc.mcp.navigation_runtime import (
 
 if TYPE_CHECKING:
 	from agentyc.mcp.state import StateMode
+
+
+_MAX_CLEAN_STATE_REUSE_S = 0.25
 
 
 def _ensure_extract_runtime(self) -> None:
@@ -45,6 +49,16 @@ def _cache_state_payload(self, payload: dict[str, Any]) -> None:
 	self._last_state_elements_by_ref.update(
 		{str(element['ref']): element for element in elements if isinstance(element, dict) and element.get('ref')}
 	)
+	self._browser_state_cache_timestamp = time.monotonic()
+
+
+def _mark_browser_state_cache_clean(self) -> None:
+	self._browser_state_cache_clean = True
+	self._browser_state_cache_timestamp = time.monotonic()
+
+
+def _mark_browser_state_cache_dirty(self) -> None:
+	self._browser_state_cache_clean = False
 
 
 async def _refresh_selector_map(self) -> None:
@@ -256,6 +270,7 @@ async def _navigate(self, url: str, new_tab: bool = False) -> str:
 		return 'Error: No browser session active'
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	before_tabs = await self.browser_session.get_tabs() if new_tab else None
 	before_focus_target_id = self.browser_session.agent_focus_target_id if new_tab else None
 	action_result = await self._run_tool_action('navigate', {'url': url, 'new_tab': new_tab})
@@ -300,6 +315,7 @@ async def _click(
 		return 'Error: No browser session active'
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 
 	if coordinate_x is not None and coordinate_y is not None:
 		action_result = await self._run_tool_action('click', {'coordinate_x': coordinate_x, 'coordinate_y': coordinate_y})
@@ -388,6 +404,7 @@ async def _type_text(self, text: str, index: int | None = None, ref: str | None 
 	"""Type text into an element."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
+	self._mark_browser_state_cache_dirty()
 
 	element, resolved_index, drift_recovered = await self._resolve_live_element(index=index, ref=ref)
 	if not element:
@@ -470,6 +487,7 @@ async def _upload_file(self, path: str, index: int | None = None, ref: str | Non
 		return 'Error: Provide either ref or index'
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	self._ensure_extract_runtime()
 
 	element, resolved_index, drift_recovered = await self._resolve_live_element(index=index, ref=ref)
@@ -508,10 +526,15 @@ async def _get_browser_state(
 	from agentyc.mcp.state import build_browser_state_payload, compute_browser_state_hash, make_element_ref
 
 	cached_state = getattr(self.browser_session, '_cached_browser_state_summary', None)
-	can_use_cached_state = cached_state is not None and cached_state.dom_state and (
-		not include_recent_events or getattr(cached_state, 'recent_events', None) is not None
+	can_use_cached_state = (
+		cached_state is not None
+		and cached_state.dom_state
+		and (not include_recent_events or getattr(cached_state, 'recent_events', None) is not None)
 	)
-	if since_hash is not None and can_use_cached_state:
+	cache_age_s = max(0.0, time.monotonic() - getattr(self, '_browser_state_cache_timestamp', 0.0))
+	cache_is_fresh = cache_age_s <= _MAX_CLEAN_STATE_REUSE_S
+	cache_is_clean = bool(getattr(self, '_browser_state_cache_clean', False)) and cache_is_fresh
+	if since_hash is not None and can_use_cached_state and cache_is_clean:
 		cached_hash = getattr(cached_state, 'state_hash', None)
 		if cached_hash is None:
 			cached_hash = compute_browser_state_hash(cached_state)
@@ -527,6 +550,18 @@ async def _get_browser_state(
 			result_json = json.dumps(result, separators=(',', ':'))
 			self._cache_state_payload(result)
 			return result_json, None
+
+	if can_use_cached_state and cache_is_clean and not include_screenshot and focus_ref is None and since_hash is None:
+		result = build_browser_state_payload(
+			cached_state,
+			mode=mode,
+			focus_ref=focus_ref,
+			since_hash=since_hash,
+			include_recent_events=include_recent_events,
+		)
+		result_json = json.dumps(result, separators=(',', ':'))
+		self._cache_state_payload(result)
+		return result_json, None
 
 	async def _fetch_state_payload(resolved_focus_ref: str | None) -> tuple[Any, dict[str, Any]]:
 		state = await self.browser_session.get_browser_state_summary(
@@ -583,6 +618,7 @@ async def _get_browser_state(
 			}
 
 	self._cache_state_payload(result)
+	self._mark_browser_state_cache_clean()
 	return json.dumps(result, separators=(',', ':')), screenshot_b64
 
 
@@ -642,6 +678,7 @@ async def _scroll(
 		return 'Error: No browser session active'
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 
 	payload: dict[str, Any] = {'down': direction == 'down', 'pages': pages}
 	if ref is not None or index is not None:
@@ -666,6 +703,8 @@ async def _go_back(self) -> str:
 
 	from agentyc.browser.events import GoBackEvent
 
+	self._mark_browser_state_cache_dirty()
+
 	event = self.browser_session.event_bus.dispatch(GoBackEvent())
 	await event
 	await event.event_result(raise_if_any=True, raise_if_none=False)
@@ -679,6 +718,8 @@ async def _go_forward(self) -> str:
 		return 'Error: No browser session active'
 
 	from agentyc.browser.events import GoForwardEvent
+
+	self._mark_browser_state_cache_dirty()
 
 	event = self.browser_session.event_bus.dispatch(GoForwardEvent())
 	await event
@@ -695,6 +736,7 @@ async def _refresh(self) -> str:
 	from agentyc.browser.events import RefreshEvent
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	event = self.browser_session.event_bus.dispatch(RefreshEvent())
 	await event
 	await event.event_result(raise_if_any=True, raise_if_none=False)
@@ -710,6 +752,7 @@ async def _press_key(self, key: str) -> str:
 	from agentyc.browser.events import SendKeysEvent
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	event = self.browser_session.event_bus.dispatch(SendKeysEvent(keys=key))
 	await event
 	await event.event_result(raise_if_any=True, raise_if_none=False)
@@ -729,6 +772,7 @@ async def _evaluate(self, code: str) -> str:
 		return 'Error: No browser session active'
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	action_result = await self._run_tool_action('evaluate', {'code': code})
 	if action_result.error:
 		return self._format_action_error(action_result.error, default_code='evaluate_failed')
@@ -743,6 +787,7 @@ async def _select_option(self, text: str, ref: str | None = None, index: int | N
 		return 'Error: Provide either ref or index'
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	element, resolved_index, drift_recovered = await self._resolve_live_element(index=index, ref=ref)
 	if element is None:
 		return self._format_action_error(

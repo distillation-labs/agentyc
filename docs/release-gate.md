@@ -31,7 +31,7 @@ uv run python scripts/benchmark_mcp_runtime.py \
   --min-collaboration-required-check-pass-rate 1.0
 ```
 
-The payload-reduction threshold should be treated as a regression floor, not an aspirational Phase 7 target. The current dogfood benchmark baseline in this repository reports `avg_auto_payload_reduction_pct=8.3`, so the publish gate uses `8.0` until a higher measured floor is demonstrated and checked in.
+The payload-reduction threshold should be treated as a regression floor, not an aspirational Phase 7 target. The current two-run local dogfood baseline in this repository reports `avg_auto_payload_reduction_pct=10.0`, but the publish gate continues to use `8.0` as a conservative floor until a broader CI baseline is intentionally raised.
 
 The gate fails when either of these conditions is true:
 
@@ -99,8 +99,8 @@ This lets CI distinguish between modules that need continued refactor pressure a
 
 ## Current Reference Measurements
 
-- Confirmed two-run headless runtime gate median: `import_ms=220.0`, `session_init_ms=1531.3`, `avg_auto_payload_reduction_pct=8.3`, `avg_action_success=1.0`, `collaboration_latency_ms=1598.6`, `collaboration_required_check_pass_rate=1.0`.
-- Confirmed two-run headless stdio median: `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=45146.9`, `avg_ms=41.4`, `p95_ms=155.1`.
+- Confirmed two-run headless runtime gate median: `import_ms=667.8`, `session_init_ms=1174.0`, `avg_auto_payload_reduction_pct=10.0`, `avg_action_success=1.0`, `collaboration_latency_ms=1302.5`, `collaboration_required_check_pass_rate=1.0`.
+- Confirmed two-run headless stdio median: `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=26233.2`, `avg_ms=50.9`, `p95_ms=174.5`.
 - Latest validated modularity guard: `watchlist_count=8`, `violations=[]`.
 - Re-run the commands above to regenerate fresh local evidence for the current tree.
 

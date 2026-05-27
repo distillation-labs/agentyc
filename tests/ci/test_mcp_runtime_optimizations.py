@@ -3,7 +3,7 @@ import json
 import os
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from bubus import EventBus
@@ -12,7 +12,15 @@ from websockets.protocol import State
 
 from agentyc.actions import ActionResult
 from agentyc.browser import BrowserProfile, BrowserSession, session_navigation, session_runtime, session_shared_browser
-from agentyc.browser.events import BrowserLaunchEvent, BrowserStartEvent, GoBackEvent, NavigateToUrlEvent, RefreshEvent
+from agentyc.browser.events import (
+	AgentFocusChangedEvent,
+	BrowserLaunchEvent,
+	BrowserStartEvent,
+	GoBackEvent,
+	NavigateToUrlEvent,
+	RefreshEvent,
+	TabCreatedEvent,
+)
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
 from agentyc.browser.views import TabInfo
 from agentyc.browser.watchdogs.default_action_navigation import DefaultActionNavigationMixin
@@ -741,6 +749,102 @@ class TestMCPHotPathFixes:
 		assert profile_kwargs['shared_browser_focus_policy'] == 'preserve'
 		attached_session.start.assert_awaited_once()
 		assert server._cdp_url == 'http://127.0.0.1:9222/'
+
+	async def test_init_browser_session_claims_existing_blank_tab_on_explicit_attach(self):
+		server = AgentycServer(cdp_url='http://127.0.0.1:9222/')
+		current_runtime = RuntimeOwnershipMetadata.create(
+			session_id='session-shared',
+			runtime_id='runtime-shared',
+			runtime_label='Attached runtime',
+		)
+		blank_target = Target(
+			target_id='target-blank',
+			target_type='page',
+			url='about:blank',
+			title='Blank',
+			ownership=TargetOwnershipMetadata.human(target_id='target-blank'),
+		)
+		dispatch = AsyncMock()
+		set_target_ownership = Mock()
+		attached_session = SimpleNamespace(
+			id='session-shared',
+			start=AsyncMock(),
+			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-new')),
+			event_bus=SimpleNamespace(dispatch=dispatch),
+			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
+			runtime_metadata=current_runtime,
+			session_manager=SimpleNamespace(
+				get_all_page_targets=lambda: [blank_target],
+				set_target_ownership=set_target_ownership,
+			),
+		)
+
+		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
+			with patch('agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)):
+				with patch('agentyc.browser.BrowserSession', return_value=attached_session):
+					await server._init_browser_session(headless=True, user_data_dir=None)
+
+		attached_session.start.assert_awaited_once()
+		attached_session.create_collaborative_page.assert_not_awaited()
+		set_target_ownership.assert_called_once_with('target-blank', current_runtime, source='current_runtime')
+		assert dispatch.call_count == 1
+		dispatched_event = dispatch.call_args.args[0]
+		assert isinstance(dispatched_event, AgentFocusChangedEvent)
+		assert dispatched_event.target_id == 'target-blank'
+
+	async def test_init_browser_session_creates_new_tab_when_existing_tabs_are_owned(self):
+		server = AgentycServer(cdp_url='http://127.0.0.1:9222/')
+		current_runtime = RuntimeOwnershipMetadata.create(
+			session_id='session-shared',
+			runtime_id='runtime-shared',
+			runtime_label='Attached runtime',
+		)
+		peer_runtime = RuntimeOwnershipMetadata.create(
+			session_id='session-peer',
+			runtime_id='runtime-peer',
+			runtime_label='Peer runtime',
+		)
+		owned_target = Target(
+			target_id='target-peer',
+			target_type='page',
+			url='about:blank',
+			title='Owned blank',
+			ownership=TargetOwnershipMetadata.for_runtime(
+				target_id='target-peer',
+				runtime=peer_runtime,
+				current_runtime_id=current_runtime.runtime_id,
+				source='detected_runtime',
+				title_prefix_applied=True,
+			),
+		)
+		dispatch = AsyncMock()
+		set_target_ownership = Mock()
+		attached_session = SimpleNamespace(
+			id='session-shared',
+			start=AsyncMock(),
+			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-new')),
+			event_bus=SimpleNamespace(dispatch=dispatch),
+			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
+			runtime_metadata=current_runtime,
+			session_manager=SimpleNamespace(
+				get_all_page_targets=lambda: [owned_target],
+				set_target_ownership=set_target_ownership,
+			),
+		)
+
+		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
+			with patch('agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)):
+				with patch('agentyc.browser.BrowserSession', return_value=attached_session):
+					await server._init_browser_session(headless=True, user_data_dir=None)
+
+		attached_session.start.assert_awaited_once()
+		attached_session.create_collaborative_page.assert_awaited_once_with('about:blank')
+		set_target_ownership.assert_not_called()
+		assert dispatch.call_count == 2
+		assert isinstance(dispatch.call_args_list[0].args[0], TabCreatedEvent)
+		assert dispatch.call_args_list[0].args[0].target_id == 'target-new'
+		assert isinstance(dispatch.call_args_list[1].args[0], AgentFocusChangedEvent)
+		assert dispatch.call_args_list[1].args[0].target_id == 'target-new'
 
 	async def test_init_browser_session_does_not_register_local_browser_for_reuse_by_default(self):
 		server = AgentycServer()
@@ -2045,6 +2149,45 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['mode'] == 'auto'
 		assert payload['effective_mode'] == 'full'
 		assert len(payload['interactive_elements']) == payload['interactive_element_count']
+
+	async def test_browser_get_state_reuses_clean_cached_state_without_since_hash(self):
+		server = AgentycServer()
+		state = _stub_state()
+		server.browser_session = SimpleNamespace(
+			_cached_browser_state_summary=state,
+			get_browser_state_summary=AsyncMock(side_effect=AssertionError('should not fetch fresh state')),
+		)
+		server._browser_state_cache_clean = True
+		server._browser_state_cache_timestamp = time.monotonic()
+
+		state_json, _ = await server._get_browser_state(mode='auto')
+		payload = json.loads(state_json)
+
+		assert payload['title'] == 'Example page'
+		assert payload['interactive_element_count'] == 2
+		assert server.browser_session.get_browser_state_summary.await_count == 0
+
+	async def test_browser_get_state_fetches_fresh_state_when_cache_is_dirty(self):
+		server = AgentycServer()
+		fresh_state = _stub_state(
+			selector_map={
+				11: _StubElement(11, 'Email address', tag='input', attrs={'placeholder': 'you@example.com', 'type': 'email'}),
+				42: _StubElement(42, 'Start checkout', tag='button', role='button'),
+				77: _StubElement(77, 'Help center', tag='a', attrs={'href': '/help'}),
+			}
+		)
+		server.browser_session = SimpleNamespace(
+			_cached_browser_state_summary=_stub_state(),
+			get_browser_state_summary=AsyncMock(return_value=fresh_state),
+		)
+		server._browser_state_cache_clean = False
+		server._browser_state_cache_timestamp = time.monotonic()
+
+		state_json, _ = await server._get_browser_state(mode='auto')
+		payload = json.loads(state_json)
+
+		assert payload['interactive_element_count'] == 3
+		assert server.browser_session.get_browser_state_summary.await_count == 1
 
 	def test_browser_state_payload_includes_collaboration_metadata_for_current_tab(self):
 		runtime = RuntimeOwnershipMetadata.create(

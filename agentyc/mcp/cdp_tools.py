@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from agentyc.mcp.debug_tools import _network_entry_started_since, _serialize_net
 _DRAG_MOUSE_MOVE_SETTLE_S = 0.01
 _DRAG_MOUSE_PRESS_SETTLE_S = 0.005
 _DRAG_STEP_SETTLE_S = 0.005
+_MAX_CAPTURED_BODY_BYTES = 64 * 1024
 
 
 async def _get_html(self, selector: str | None = None) -> str:
@@ -130,6 +132,7 @@ async def _hover(
 	if not self.browser_session:
 		return 'Error: No browser session active'
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	try:
 		x, y = await self._resolve_element_coords(ref, index, coordinate_x, coordinate_y)
 		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
@@ -153,6 +156,7 @@ async def _double_click(
 	if not self.browser_session:
 		return 'Error: No browser session active'
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	try:
 		x, y = await self._resolve_element_coords(ref, index, coordinate_x, coordinate_y)
 		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
@@ -188,6 +192,7 @@ async def _drag_to(
 	if not self.browser_session:
 		return 'Error: No browser session active'
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	try:
 		sx, sy = await self._resolve_element_coords(source_ref, None, source_x, source_y)
 		tx, ty = await self._resolve_element_coords(target_ref, None, target_x, target_y)
@@ -229,6 +234,7 @@ async def _scroll_to_text(self, text: str) -> str:
 	if not self.browser_session:
 		return 'Error: No browser session active'
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	from agentyc.browser.events import ScrollToTextEvent
 
 	event = self.browser_session.event_bus.dispatch(ScrollToTextEvent(text=text))
@@ -476,8 +482,13 @@ async def _register_cdp_event_listeners(self) -> None:
 			return
 		req_id = event.get('requestId', '')
 		req = event.get('request') or {}
+		target_id = None
+		if session_id and self.browser_session and self.browser_session.session_manager:
+			target_id = self.browser_session.session_manager.get_target_id_from_session_id(session_id)
+		post_data = req.get('postData')
 		entry: dict[str, Any] = {
 			'request_id': req_id,
+			'target_id': target_id,
 			'url': req.get('url', ''),
 			'method': req.get('method', 'GET'),
 			'type': event.get('type', 'Other'),
@@ -488,6 +499,11 @@ async def _register_cdp_event_listeners(self) -> None:
 			'observed_at': time.time(),
 			'duration_ms': None,
 			'req_headers': req.get('headers') or {},
+			'post_data': post_data,
+			'post_data_base64': base64.b64encode(str(post_data).encode('utf-8')).decode('ascii') if post_data else None,
+			'response_body_text': None,
+			'response_body_base64': None,
+			'response_body_truncated': None,
 		}
 		self._network_pending[req_id] = entry
 
@@ -515,7 +531,38 @@ async def _register_cdp_event_listeners(self) -> None:
 		start = entry['start_time']
 		entry['duration_ms'] = round((now - start) * 1000, 1)
 		entry['finished_at'] = time.time()
-		self._network_log_buffer.append(dict(entry))
+
+		async def _fetch_response_body() -> None:
+			if session_id is None or self.browser_session is None:
+				return
+			try:
+				cdp_session_for_body = (
+					self.browser_session.session_manager.get_session(session_id) if self.browser_session.session_manager else None
+				)
+				if cdp_session_for_body is None:
+					return
+				result = await cdp_session_for_body.cdp_client.send.Network.getResponseBody(
+					params={'requestId': req_id},
+					session_id=cdp_session_for_body.session_id,
+				)
+				body = result.get('body')
+				if body is None:
+					return
+				if result.get('base64Encoded'):
+					decoded = base64.b64decode(body)
+					entry['response_body_truncated'] = len(decoded) > _MAX_CAPTURED_BODY_BYTES
+					entry['response_body_base64'] = base64.b64encode(decoded[:_MAX_CAPTURED_BODY_BYTES]).decode('ascii')
+				else:
+					body_text = str(body)
+					body_bytes = body_text.encode('utf-8')
+					entry['response_body_truncated'] = len(body_bytes) > _MAX_CAPTURED_BODY_BYTES
+					entry['response_body_text'] = body_bytes[:_MAX_CAPTURED_BODY_BYTES].decode('utf-8', errors='replace')
+			except Exception:
+				return
+
+		if session_id is not None:
+			asyncio.create_task(_fetch_response_body())
+		self._network_log_buffer.append(entry)
 		self._network_pending.pop(req_id, None)
 
 	def on_loading_failed(event: Any, session_id: str | None = None) -> None:
@@ -611,6 +658,7 @@ async def _set_viewport(self, width: int, height: int, device_scale_factor: floa
 	"""Set the browser viewport dimensions for the current tab."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
+	self._mark_browser_state_cache_dirty()
 	try:
 		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
 		await cdp_session.cdp_client.send.Emulation.setDeviceMetricsOverride(
@@ -684,6 +732,7 @@ async def _switch_tab(self, tab_id: str) -> str:
 	"""Switch to a different tab."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
+	self._mark_browser_state_cache_dirty()
 
 	from agentyc.browser.events import SwitchTabEvent
 
@@ -716,6 +765,7 @@ async def _new_tab(self, url: str = 'about:blank') -> str:
 		return 'Error: No browser session active'
 
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 
 	try:
 		from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
@@ -745,6 +795,7 @@ async def _close_tab(self, tab_id: str) -> str:
 	"""Close a specific tab."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
+	self._mark_browser_state_cache_dirty()
 
 	from agentyc.browser.events import CloseTabEvent
 
@@ -775,6 +826,7 @@ async def _wait_for_stable_dom(self, timeout_seconds: float = 10.0, quiet_ms: in
 	"""Wait until DOM mutations settle for the quiet period."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
+	self._mark_browser_state_cache_dirty()
 	try:
 		cdp_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
 		if not cdp_session:

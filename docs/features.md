@@ -29,12 +29,24 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 |------|-------------|
 | `browser_get_state` | Return structured page state with stable refs and optional screenshot |
 | `browser_get_html` | Return full page HTML or HTML for a CSS-selected element |
+| `browser_list_frames` | List known frames, including frame ids, URLs, and cross-origin markers |
+| `browser_get_frame_html` | Return raw HTML for one frame identified by `frame_id` |
 | `browser_screenshot` | Capture a viewport or full-page screenshot (WebP/JPEG/PNG, configurable format, resize, and quality) |
 | `browser_find_elements` | Query the current page with a CSS selector |
 | `browser_search_page` | Search for text or a regex pattern on the current page |
 | `browser_wait_for_element` | Poll until text or a ref appears or disappears |
 | `browser_get_focused_element` | Return the element that currently has keyboard focus |
 | `browser_evaluate` | Execute JavaScript in the current page context and return the result as text |
+
+### Storage And Browser State Persistence
+
+| Tool | Description |
+|------|-------------|
+| `browser_get_storage` | Inspect `localStorage` and `sessionStorage` by origin, storage type, or key |
+| `browser_set_storage` | Set one storage key for the current origin-scoped page context |
+| `browser_clear_storage` | Clear one key, one storage area, or all storage for the current origin-scoped page context |
+| `browser_save_state` | Persist cookies and storage to disk |
+| `browser_load_state` | Restore cookies and storage from disk |
 
 ### Interaction
 
@@ -54,7 +66,7 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_upload_file` | Upload a local file to an upload control |
 | `browser_handle_dialog` | Accept or dismiss JavaScript dialogs (alert, confirm, prompt) |
 
-### Tabs, Cookies, And Persisted Browser State
+### Tabs And Cookies
 
 | Tool | Description |
 |------|-------------|
@@ -65,16 +77,21 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 | `browser_get_cookies` | Read cookies for the current page URL |
 | `browser_set_cookies` | Set one or more cookies |
 | `browser_clear_cookies` | Delete one cookie or clear browser cookies |
-| `browser_save_state` | Persist cookies and storage to disk |
-| `browser_load_state` | Restore cookies and storage from disk |
 
-### Deterministic Extraction And Observability
+### Deterministic Extraction, Network Control, And Observability
 
 | Tool | Description |
 |------|-------------|
 | `browser_extract_content` | Deterministically extract compatible content from the current page |
 | `browser_get_console_logs` | Return recent browser console messages captured through CDP |
 | `browser_get_network_log` | Return recent network requests captured through CDP; accepts `include_headers` to expose request and response headers |
+| `browser_inspect_network_entry` | Inspect one captured network entry with optional request and response bodies |
+| `browser_add_network_mock` | Add a narrow fulfill/abort network mock rule for the active tab |
+| `browser_remove_network_mock` | Remove one network mock rule or all rules |
+| `browser_list_network_mocks` | List active network mock rules and match counts |
+| `browser_set_network_conditions` | Apply offline mode or throttling to the active tab |
+| `browser_get_network_conditions` | List active per-tab network conditions |
+| `browser_replay_request` | Replay a captured request with optional header or body overrides |
 | `browser_export_debug_bundle` | Return one compact debug artifact with state, logs, trace summary, optional HTML, and optional screenshot |
 | `browser_get_downloads` | List files downloaded during the current browser session |
 | `browser_get_attribute` | Get a specific attribute value from an element by ref or index |
@@ -158,10 +175,13 @@ The MCP server records browser diagnostics directly from CDP event streams.
 - `browser_get_console_logs` uses the Runtime domain rather than page-side JavaScript injection.
 - `browser_get_network_log` uses the Network domain and keeps a bounded in-memory buffer.
 - `browser_wait_for_request` and `browser_wait_for_response` use the same capture buffer with wall-clock observation timestamps, so agents can wait for specific API activity instead of relying on generic idle heuristics.
+- `browser_inspect_network_entry` rehydrates captured request/response bodies from that same buffer without inflating the default log output.
+- `browser_add_network_mock`, `browser_remove_network_mock`, `browser_list_network_mocks`, `browser_set_network_conditions`, and `browser_get_network_conditions` expose deterministic per-tab network control on top of CDP Fetch and Network domains.
+- `browser_replay_request` turns a captured request into a page-context `fetch()` replay with sanitized header overrides.
 - `browser_export_debug_bundle` packages the current state, recent diagnostics, pending requests, and optional screenshot into one agent-readable response.
 - Network and console capture follow the active browser session and its tabs.
 
-In addition, clients that pass a MCP `progressToken` on tool calls can receive `notifications/progress` for browser phases. Tool results also include `_meta` timing fields such as `agentyc/browser_duration_ms` so UIs can separate browser time from model reasoning time.
+In addition, the server emits MCP log messages for tool start/completion/error phases, and tool results include `_meta` timing fields such as `agentyc/browser_duration_ms` so UIs can separate browser time from model reasoning time.
 
 ## Shared Browser Behavior
 

@@ -586,20 +586,10 @@ class SessionManager:
 		# Add to sessions dict
 		self._sessions[session_id] = cdp_session
 
-		# If proxy auth is configured, enable Fetch auth handling on this session
-		# Avoids overwriting Target.attachedToTarget handlers elsewhere
 		try:
-			proxy_cfg = self.browser_session.browser_profile.proxy
-			username = proxy_cfg.username if proxy_cfg else None
-			password = proxy_cfg.password if proxy_cfg else None
-			if username and password:
-				await cdp_session.cdp_client.send.Fetch.enable(
-					params={'handleAuthRequests': True},
-					session_id=cdp_session.session_id,
-				)
-				self.logger.debug(f'[SessionManager] Fetch.enable(handleAuthRequests=True) on session {session_id[:8]}...')
+			await self.browser_session.configure_attached_network_session(cdp_session)
 		except Exception as e:
-			self.logger.debug(f'[SessionManager] Fetch.enable on attached session failed: {type(e).__name__}: {e}')
+			self.logger.debug(f'[SessionManager] Network attach configuration failed: {type(e).__name__}: {e}')
 
 		self.logger.debug(
 			f'[SessionManager] Created session {session_id[:8]}... for target {target_id[:8]}... '

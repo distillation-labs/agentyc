@@ -14,7 +14,14 @@ from cdp_use.cdp.target import TargetID
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from uuid_extensions import uuid7str
 
-from agentyc.browser import session_connection, session_navigation, session_runtime, session_shared_browser, session_targets
+from agentyc.browser import (
+	session_connection,
+	session_navigation,
+	session_network,
+	session_runtime,
+	session_shared_browser,
+	session_targets,
+)
 from agentyc.browser._cdp_timeout import TimeoutWrappedCDPClient
 from agentyc.browser.events import (
 	AgentFocusChangedEvent,
@@ -309,6 +316,9 @@ class BrowserSession(BaseModel):
 	_runtime_marker_script_ids: dict[str, str] = PrivateAttr(default_factory=dict)
 	_global_init_script_targets: dict[str, set[str]] = PrivateAttr(default_factory=dict)
 	_browser_context_id: str | None = PrivateAttr(default=None)
+	_network_mock_rules: dict[str, Any] = PrivateAttr(default_factory=dict)
+	_network_conditions_by_target: dict[str, Any] = PrivateAttr(default_factory=dict)
+	_fetch_handlers_registered: bool = PrivateAttr(default=False)
 
 	@classmethod
 	def from_system_chrome(cls, profile_directory: str | None = None, **kwargs: Any) -> Self:
@@ -645,6 +655,30 @@ class BrowserSession(BaseModel):
 
 	async def _setup_proxy_auth(self) -> None:
 		await session_connection._setup_proxy_auth(self)
+
+	async def configure_fetch_interception(self) -> None:
+		await session_network.configure_fetch_interception(self)
+
+	async def configure_attached_network_session(self, cdp_session: CDPSession) -> None:
+		await session_network.configure_attached_network_session(self, cdp_session)
+
+	async def add_network_mock(self, **kwargs: Any) -> dict[str, Any]:
+		return await session_network.add_network_mock(self, **kwargs)
+
+	async def remove_network_mock(self, mock_id: str | None = None) -> dict[str, Any]:
+		return await session_network.remove_network_mock(self, mock_id)
+
+	def list_network_mocks(self) -> list[dict[str, Any]]:
+		return session_network.list_network_mocks(self)
+
+	async def set_network_conditions(self, **kwargs: Any) -> dict[str, Any]:
+		return await session_network.set_network_conditions(self, **kwargs)
+
+	def get_network_conditions(self) -> list[dict[str, Any]]:
+		return session_network.get_network_conditions(self)
+
+	def sanitize_replay_headers(self, headers: dict[str, Any] | None) -> dict[str, str]:
+		return session_network.sanitize_replay_headers(headers)
 
 	async def reconnect(self) -> None:
 		await session_connection.reconnect(self)

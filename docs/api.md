@@ -36,7 +36,7 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, and a quick-reference tool list.
+Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, `since_hash` polling, frame listing and frame HTML inspection, storage inspection/mutation, precise network waits, network entry inspection and replay, narrow network mocks, per-tab offline/throttling controls, debug bundles, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, and a quick-reference tool list.
 
 | Argument | Description |
 |----------|-------------|
@@ -97,7 +97,17 @@ The runtime startup path is:
 | `browser_set_viewport` | `width`, `height`, optional `device_scale_factor` |
 | `browser_get_state` | optional `include_screenshot`, `mode`, `focus_ref`, `since_hash` |
 | `browser_get_html` | optional `selector` |
+| `browser_list_frames` | none |
+| `browser_get_frame_html` | `frame_id` |
 | `browser_screenshot` | optional `full_page` |
+
+### Storage And Origin State
+
+| Tool | Arguments |
+|------|-----------|
+| `browser_get_storage` | optional `origin`, optional `storage_type`, optional `key` |
+| `browser_set_storage` | `origin`, `storage_type`, `key`, `value` |
+| `browser_clear_storage` | `origin`, optional `storage_type`, optional `key` |
 
 ### Interaction
 
@@ -149,6 +159,13 @@ The runtime startup path is:
 |------|-----------|
 | `browser_get_console_logs` | optional `level`, optional `max_entries` |
 | `browser_get_network_log` | optional `type_filter`, optional `status_filter`, optional `max_entries`, optional `include_headers` (boolean, default: false) |
+| `browser_inspect_network_entry` | optional `request_id`, optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `status`, optional `include_headers`, optional `include_request_body`, optional `include_response_body`, optional `max_body_bytes`, optional `decode_json` |
+| `browser_add_network_mock` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `action`, optional `status`, optional `headers`, optional `body`, optional `error_reason` |
+| `browser_remove_network_mock` | optional `mock_id` |
+| `browser_list_network_mocks` | none |
+| `browser_set_network_conditions` | optional `offline`, optional `latency_ms`, optional `download_kbps`, optional `upload_kbps`, optional `connection_type`, optional `reset` |
+| `browser_get_network_conditions` | none |
+| `browser_replay_request` | optional `request_id`, optional `url_substring`, optional `url_regex`, optional `method`, optional `body`, optional `headers` |
 | `browser_export_debug_bundle` | optional `state_mode`, optional `focus_ref`, optional `since_hash`, optional `include_screenshot`, optional `include_headers`, optional `include_html`, optional `html_selector`, optional `console_max_entries`, optional `network_max_entries`, optional `network_status_filter` |
 | `browser_get_downloads` | none |
 | `browser_clear_logs` | optional `console`, optional `network` |
@@ -160,9 +177,9 @@ The runtime startup path is:
 
 ## Result Semantics
 
-### Progress And Timing
+### Logging And Timing
 
-MCP clients may include a request `_meta.progressToken` on `tools/call`. When present, agentyc emits `notifications/progress` for long-running browser phases such as navigation, state reads, screenshot capture, extraction, and session startup.
+The MCP server emits tool-phase log messages over the MCP logging channel for start, completion, and error events when the client enables logging.
 
 Tool results also attach timing metadata on the first returned text content block through `_meta`:
 
@@ -212,9 +229,9 @@ Interactive elements use stable refs such as `e123`. Those refs are the preferre
 
 Returns JSON metadata as text and the screenshot image as a separate MCP image content item. The image format matches the `BrowserSession` `llm_screenshot_format` config (default WebP). The MCP `mimeType` is set dynamically to `image/webp`, `image/jpeg`, or `image/png`.
 
-### `browser_wait_for_request` and `browser_wait_for_response`
+### `browser_wait_for_request`, `browser_wait_for_response`, and `browser_inspect_network_entry`
 
-Both tools return a JSON text payload describing the matching network entry. Depending on timing, the payload can include:
+These tools return JSON text describing one matching network entry. Depending on timing and options, the payload can include:
 
 - `url`
 - `method`
@@ -222,9 +239,29 @@ Both tools return a JSON text payload describing the matching network entry. Dep
 - `status` and `status_text`
 - `error`
 - `duration_ms`
+- `target_tab_id`
 - `req_headers` and `resp_headers` when `include_headers=true`
+- `request_body` and `response_body` when inspection is asked to include bodies
 
 Timeouts return `Error [timeout]: ...`.
+
+### `browser_add_network_mock`, `browser_list_network_mocks`, and `browser_set_network_conditions`
+
+- `browser_add_network_mock` returns the created rule with a generated `mock_id`.
+- `browser_list_network_mocks` returns active rules with `match_count` and any public match metadata.
+- `browser_remove_network_mock` returns `{removed, remaining}`.
+- `browser_set_network_conditions` returns the current tab's network condition payload plus `reset`.
+- `browser_get_network_conditions` returns the active per-tab condition list for the session.
+
+### `browser_replay_request`
+
+Returns JSON text describing the replayed `fetch()` result:
+
+- `status`
+- `ok`
+- `body`
+
+Replay uses a previously captured request as the source, applies sanitized header overrides, and executes the request from the current page context.
 
 ### `browser_export_debug_bundle`
 

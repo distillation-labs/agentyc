@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 _MAX_DEBUG_PENDING_REQUESTS = 5
+_DEFAULT_BODY_PREVIEW_BYTES = 2048
 
 
 def _isoformat_timestamp(timestamp: float | None) -> str | None:
@@ -59,11 +60,130 @@ def _serialize_network_entry(entry: dict[str, Any], *, include_headers: bool = F
 	for key, value in entry.items():
 		if value is None:
 			continue
-		if key in {'request_id', 'start_time', 'observed_at', 'response_at', 'finished_at'}:
+		if key in {
+			'request_id',
+			'start_time',
+			'observed_at',
+			'response_at',
+			'finished_at',
+			'response_body_bytes',
+			'response_body_base64',
+		}:
 			continue
 		if not include_headers and key in {'req_headers', 'resp_headers'}:
 			continue
 		payload[key] = value
+	return payload
+
+
+def _truncate_text_bytes(text: str, *, max_bytes: int) -> tuple[str, bool]:
+	encoded = text.encode('utf-8')
+	if len(encoded) <= max_bytes:
+		return text, False
+	truncated = encoded[:max_bytes].decode('utf-8', errors='replace')
+	return truncated, True
+
+
+def _decode_entry_body(
+	entry: dict[str, Any],
+	*,
+	body_key: str,
+	base64_key: str,
+	max_body_bytes: int,
+	decode_json: bool,
+) -> dict[str, Any] | None:
+	body_text = entry.get(body_key)
+	if isinstance(body_text, str):
+		preview, truncated = _truncate_text_bytes(body_text, max_bytes=max_body_bytes)
+		payload: dict[str, Any] = {
+			'text': preview,
+			'truncated': truncated,
+			'encoding': 'utf-8',
+			'size_bytes': len(body_text.encode('utf-8')),
+		}
+		if decode_json:
+			try:
+				payload['json'] = json.loads(preview)
+			except Exception:
+				pass
+		return payload
+	body_b64 = entry.get(base64_key)
+	if not isinstance(body_b64, str) or not body_b64:
+		return None
+	try:
+		import base64
+
+		decoded = base64.b64decode(body_b64)
+	except Exception:
+		return {'base64': body_b64, 'truncated': False, 'encoding': 'base64'}
+	truncated = len(decoded) > max_body_bytes
+	preview_bytes = decoded[:max_body_bytes]
+	try:
+		preview_text = preview_bytes.decode('utf-8')
+		payload = {
+			'text': preview_text,
+			'truncated': truncated,
+			'encoding': 'utf-8',
+			'size_bytes': len(decoded),
+		}
+		if decode_json:
+			try:
+				payload['json'] = json.loads(preview_text)
+			except Exception:
+				pass
+		return payload
+	except UnicodeDecodeError:
+		import base64
+
+		return {
+			'base64': base64.b64encode(preview_bytes).decode('ascii'),
+			'truncated': truncated,
+			'encoding': 'base64',
+			'size_bytes': len(decoded),
+		}
+
+
+def _entry_target_tab_id(entry: dict[str, Any]) -> str | None:
+	target_id = entry.get('target_id')
+	if not target_id:
+		return None
+	return str(target_id)[-4:]
+
+
+def _build_inspected_network_entry(
+	entry: dict[str, Any],
+	*,
+	include_headers: bool,
+	include_request_body: bool,
+	include_response_body: bool,
+	max_body_bytes: int,
+	decode_json: bool,
+) -> dict[str, Any]:
+	payload = _serialize_network_entry(entry, include_headers=include_headers)
+	tab_id = _entry_target_tab_id(entry)
+	if tab_id is not None:
+		payload['target_tab_id'] = tab_id
+	payload['request_id'] = entry.get('request_id')
+	if include_request_body:
+		request_body = _decode_entry_body(
+			entry,
+			body_key='post_data',
+			base64_key='post_data_base64',
+			max_body_bytes=max_body_bytes,
+			decode_json=decode_json,
+		)
+		if request_body is not None:
+			payload['request_body'] = request_body
+	if include_response_body:
+		response_body = _decode_entry_body(
+			entry,
+			body_key='response_body_text',
+			base64_key='response_body_base64',
+			max_body_bytes=max_body_bytes,
+			decode_json=decode_json,
+		)
+		if response_body is not None:
+			payload['response_body'] = response_body
 	return payload
 
 
@@ -318,6 +438,7 @@ async def _export_debug_bundle(
 	if not self.browser_session:
 		return 'Error: No browser session active', None
 	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
 	if not self._cdp_events_registered:
 		try:
 			await self._register_cdp_event_listeners()

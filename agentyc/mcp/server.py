@@ -90,6 +90,8 @@ from agentyc.mcp.action_runtime import (
 	_go_back,
 	_go_forward,
 	_inject_extraction_metadata,
+	_mark_browser_state_cache_clean,
+	_mark_browser_state_cache_dirty,
 	_navigate,
 	_new_tab_postcondition_satisfied,
 	_press_key,
@@ -147,6 +149,20 @@ from agentyc.mcp.navigation_runtime import (
 	_page_contains_visible_text,
 	_recover_click_navigation_if_unavailable,
 	_wait_for_click_navigation_settle,
+)
+from agentyc.mcp.network_tools import (
+	_add_network_mock,
+	_clear_storage,
+	_get_frame_html,
+	_get_network_conditions,
+	_get_storage,
+	_inspect_network_entry,
+	_list_frames,
+	_list_network_mocks,
+	_remove_network_mock,
+	_replay_request,
+	_set_network_conditions,
+	_set_storage,
 )
 from agentyc.mcp.session_lifecycle import (
 	_browser_runtime_is_ready,
@@ -266,6 +282,18 @@ class AgentycServer:
 	_wait_for_request: Callable[..., Awaitable[str]]
 	_wait_for_response: Callable[..., Awaitable[str]]
 	_export_debug_bundle: Callable[..., Awaitable[tuple[str, str | None]]]
+	_inspect_network_entry: Callable[..., Awaitable[str]]
+	_list_frames: Callable[[], Awaitable[str]]
+	_get_frame_html: Callable[[str], Awaitable[str]]
+	_get_storage: Callable[..., Awaitable[str]]
+	_set_storage: Callable[..., Awaitable[str]]
+	_clear_storage: Callable[..., Awaitable[str]]
+	_add_network_mock: Callable[..., Awaitable[str]]
+	_remove_network_mock: Callable[..., Awaitable[str]]
+	_list_network_mocks: Callable[[], Awaitable[str]]
+	_set_network_conditions: Callable[..., Awaitable[str]]
+	_get_network_conditions: Callable[[], Awaitable[str]]
+	_replay_request: Callable[..., Awaitable[str]]
 
 	def __init__(
 		self,
@@ -309,6 +337,8 @@ class AgentycServer:
 		self._cleanup_task: Any = None
 		self._last_state_elements_by_ref: dict[str, dict[str, Any]] = {}
 		self._last_state_cache_url: str | None = None
+		self._browser_state_cache_clean: bool = False
+		self._browser_state_cache_timestamp: float = 0.0
 		self._action_model_cache: dict[str, Any] = {}
 
 		# CDP event capture buffers — populated by native CDP events, not JS injection
@@ -590,6 +620,8 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_recover_click_navigation_if_unavailable': _recover_click_navigation_if_unavailable,
 	'_resolve_element_index': _resolve_element_index,
 	'_cache_state_payload': _cache_state_payload,
+	'_mark_browser_state_cache_clean': _mark_browser_state_cache_clean,
+	'_mark_browser_state_cache_dirty': _mark_browser_state_cache_dirty,
 	'_refresh_selector_map': _refresh_selector_map,
 	'_page_contains_visible_text': _page_contains_visible_text,
 	'_resolve_live_element': _resolve_live_element,
@@ -649,6 +681,18 @@ _SERVER_METHODS: dict[str, Any] = {
 	'_wait_for_request': _wait_for_request,
 	'_wait_for_response': _wait_for_response,
 	'_export_debug_bundle': _export_debug_bundle,
+	'_inspect_network_entry': _inspect_network_entry,
+	'_list_frames': _list_frames,
+	'_get_frame_html': _get_frame_html,
+	'_get_storage': _get_storage,
+	'_set_storage': _set_storage,
+	'_clear_storage': _clear_storage,
+	'_add_network_mock': _add_network_mock,
+	'_remove_network_mock': _remove_network_mock,
+	'_list_network_mocks': _list_network_mocks,
+	'_set_network_conditions': _set_network_conditions,
+	'_get_network_conditions': _get_network_conditions,
+	'_replay_request': _replay_request,
 	'_get_focused_element': _get_focused_element,
 	'_list_tabs': _list_tabs,
 	'_new_tab': _new_tab,

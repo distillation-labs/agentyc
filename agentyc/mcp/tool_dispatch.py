@@ -74,6 +74,34 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 		if tool_name == 'browser_get_html':
 			return await self._get_html(arguments.get('selector'))
 
+		if tool_name == 'browser_list_frames':
+			return await self._list_frames()
+
+		if tool_name == 'browser_get_frame_html':
+			return await self._get_frame_html(arguments['frame_id'])
+
+		if tool_name == 'browser_get_storage':
+			return await self._get_storage(
+				origin=arguments.get('origin'),
+				storage_type=arguments.get('storage_type'),
+				key=arguments.get('key'),
+			)
+
+		if tool_name == 'browser_set_storage':
+			return await self._set_storage(
+				origin=arguments['origin'],
+				storage_type=arguments['storage_type'],
+				key=arguments['key'],
+				value=arguments['value'],
+			)
+
+		if tool_name == 'browser_clear_storage':
+			return await self._clear_storage(
+				origin=arguments['origin'],
+				storage_type=arguments.get('storage_type'),
+				key=arguments.get('key'),
+			)
+
 		if tool_name == 'browser_screenshot':
 			meta_json, screenshot_b64 = await self._screenshot(arguments.get('full_page', False))
 			fmt = getattr(getattr(self, 'browser_session', None), 'llm_screenshot_format', 'png')
@@ -307,6 +335,63 @@ async def _execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> str 
 				status_filter=arguments.get('status_filter', 'all'),
 				max_entries=arguments.get('max_entries', 50),
 				include_headers=arguments.get('include_headers', False),
+			)
+
+		if tool_name == 'browser_inspect_network_entry':
+			return await self._inspect_network_entry(
+				request_id=arguments.get('request_id'),
+				url_substring=arguments.get('url_substring'),
+				url_regex=arguments.get('url_regex'),
+				method=arguments.get('method'),
+				resource_type=arguments.get('resource_type'),
+				status=arguments.get('status'),
+				include_headers=arguments.get('include_headers', False),
+				include_request_body=arguments.get('include_request_body', True),
+				include_response_body=arguments.get('include_response_body', True),
+				max_body_bytes=arguments.get('max_body_bytes', 2048),
+				decode_json=arguments.get('decode_json', True),
+			)
+
+		if tool_name == 'browser_add_network_mock':
+			return await self._add_network_mock(
+				url_substring=arguments.get('url_substring'),
+				url_regex=arguments.get('url_regex'),
+				method=arguments.get('method'),
+				resource_type=arguments.get('resource_type'),
+				action=arguments.get('action', 'fulfill'),
+				status=arguments.get('status', 200),
+				headers=arguments.get('headers'),
+				body=arguments.get('body', ''),
+				error_reason=arguments.get('error_reason', 'Failed'),
+			)
+
+		if tool_name == 'browser_remove_network_mock':
+			return await self._remove_network_mock(mock_id=arguments.get('mock_id'))
+
+		if tool_name == 'browser_list_network_mocks':
+			return await self._list_network_mocks()
+
+		if tool_name == 'browser_set_network_conditions':
+			return await self._set_network_conditions(
+				offline=arguments.get('offline', False),
+				latency_ms=arguments.get('latency_ms', 0.0),
+				download_kbps=arguments.get('download_kbps'),
+				upload_kbps=arguments.get('upload_kbps'),
+				connection_type=arguments.get('connection_type'),
+				reset=arguments.get('reset', False),
+			)
+
+		if tool_name == 'browser_get_network_conditions':
+			return await self._get_network_conditions()
+
+		if tool_name == 'browser_replay_request':
+			return await self._replay_request(
+				request_id=arguments.get('request_id'),
+				url_substring=arguments.get('url_substring'),
+				url_regex=arguments.get('url_regex'),
+				method=arguments.get('method'),
+				body=arguments.get('body'),
+				headers=arguments.get('headers'),
 			)
 
 		if tool_name == 'browser_export_debug_bundle':

@@ -109,6 +109,69 @@ def get_tool_schemas() -> list[types.Tool]:
 			},
 		),
 		types.Tool(
+			name='browser_list_frames',
+			description='List known page frames, including cross-origin frames and their IDs.',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
+		types.Tool(
+			name='browser_get_frame_html',
+			description='Get raw HTML for a specific frame by frame_id.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'frame_id': {'type': 'string', 'description': 'Frame ID from browser_list_frames.'},
+				},
+				'required': ['frame_id'],
+			},
+		),
+		types.Tool(
+			name='browser_get_storage',
+			description='Inspect localStorage and sessionStorage by origin, type, or key.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'origin': {'type': 'string', 'description': 'Filter to one exact origin.'},
+					'storage_type': {
+						'type': 'string',
+						'enum': ['localStorage', 'sessionStorage'],
+						'description': 'Optional storage area filter.',
+					},
+					'key': {'type': 'string', 'description': 'Optional key filter within matching storage entries.'},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_set_storage',
+			description='Set one localStorage or sessionStorage key for the current origin-scoped page context.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'origin': {'type': 'string', 'description': 'Expected current page origin.'},
+					'storage_type': {'type': 'string', 'enum': ['localStorage', 'sessionStorage']},
+					'key': {'type': 'string'},
+					'value': {'type': 'string'},
+				},
+				'required': ['origin', 'storage_type', 'key', 'value'],
+			},
+		),
+		types.Tool(
+			name='browser_clear_storage',
+			description='Clear storage for the current origin-scoped page context, optionally by area or key.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'origin': {'type': 'string', 'description': 'Expected current page origin.'},
+					'storage_type': {
+						'type': 'string',
+						'enum': ['localStorage', 'sessionStorage'],
+						'description': 'Optional storage area to clear.',
+					},
+					'key': {'type': 'string', 'description': 'Optional single key to remove.'},
+				},
+				'required': ['origin'],
+			},
+		),
+		types.Tool(
 			name='browser_screenshot',
 			description='Take a screenshot. Returns viewport metadata (text) and image.',
 			inputSchema={
@@ -605,6 +668,102 @@ def get_tool_schemas() -> list[types.Tool]:
 						'type': 'boolean',
 						'description': 'Include request and response headers in each entry. Increases output size significantly.',
 						'default': False,
+					},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_inspect_network_entry',
+			description='Inspect one captured network entry, including optional request and response bodies.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'request_id': {'type': 'string', 'description': 'Exact captured request ID.'},
+					'url_substring': {'type': 'string', 'description': 'Match a captured request by URL substring.'},
+					'url_regex': {'type': 'string', 'description': 'Regex alternative to url_substring.'},
+					'method': {'type': 'string', 'description': 'Optional HTTP method filter.'},
+					'resource_type': {'type': 'string', 'description': 'Optional CDP resource type filter.'},
+					'status': {'type': 'integer', 'description': 'Optional exact HTTP status filter.'},
+					'include_headers': {'type': 'boolean', 'default': False},
+					'include_request_body': {'type': 'boolean', 'default': True},
+					'include_response_body': {'type': 'boolean', 'default': True},
+					'max_body_bytes': {'type': 'integer', 'default': 2048},
+					'decode_json': {'type': 'boolean', 'default': True},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_add_network_mock',
+			description='Add a URL-matching network mock rule for the active tab.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'url_substring': {'type': 'string', 'description': 'URL substring matcher.'},
+					'url_regex': {'type': 'string', 'description': 'Regex URL matcher.'},
+					'method': {'type': 'string', 'description': 'Optional HTTP method filter.'},
+					'resource_type': {'type': 'string', 'description': 'Optional CDP resource type filter.'},
+					'action': {'type': 'string', 'enum': ['fulfill', 'abort'], 'default': 'fulfill'},
+					'status': {'type': 'integer', 'default': 200},
+					'headers': {
+						'type': 'object',
+						'additionalProperties': True,
+						'description': 'Response headers for fulfill mocks.',
+					},
+					'body': {'type': 'string', 'default': '', 'description': 'Response body for fulfill mocks.'},
+					'error_reason': {'type': 'string', 'default': 'Failed', 'description': 'CDP error reason for abort mocks.'},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_remove_network_mock',
+			description='Remove one network mock by mock_id, or all mocks when omitted.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'mock_id': {'type': 'string', 'description': 'Specific mock ID from browser_list_network_mocks.'},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_list_network_mocks',
+			description='List active network mock rules for the current browser session.',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
+		types.Tool(
+			name='browser_set_network_conditions',
+			description='Apply offline or throttling conditions to the active tab.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'offline': {'type': 'boolean', 'default': False},
+					'latency_ms': {'type': 'number', 'default': 0.0},
+					'download_kbps': {'type': 'number'},
+					'upload_kbps': {'type': 'number'},
+					'connection_type': {'type': 'string', 'description': 'Optional CDP connection type label.'},
+					'reset': {'type': 'boolean', 'default': False},
+				},
+			},
+		),
+		types.Tool(
+			name='browser_get_network_conditions',
+			description='List active per-tab network conditions configured in this session.',
+			inputSchema={'type': 'object', 'properties': {}},
+		),
+		types.Tool(
+			name='browser_replay_request',
+			description='Replay a captured request with optional header or body overrides.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'request_id': {'type': 'string', 'description': 'Exact captured request ID.'},
+					'url_substring': {'type': 'string', 'description': 'Match a captured request by URL substring.'},
+					'url_regex': {'type': 'string', 'description': 'Regex alternative to url_substring.'},
+					'method': {'type': 'string', 'description': 'Optional method override or filter.'},
+					'body': {'type': 'string', 'description': 'Optional request body override.'},
+					'headers': {
+						'type': 'object',
+						'additionalProperties': True,
+						'description': 'Optional request header overrides.',
 					},
 				},
 			},

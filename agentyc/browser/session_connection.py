@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import urlparse, urlunparse
 
 from cdp_use import CDPClient
-from cdp_use.cdp.fetch import AuthRequiredEvent, RequestPausedEvent
-from cdp_use.cdp.target import SessionID
 
 from agentyc.browser.events import (
 	AgentFocusChangedEvent,
@@ -24,7 +22,8 @@ from agentyc.browser.events import (
 	BrowserStoppedEvent,
 	TabCreatedEvent,
 )
-from agentyc.utils import create_task_with_error_handling, get_agentyc_version, is_new_tab_page
+from agentyc.browser.session_network import configure_fetch_interception
+from agentyc.utils import get_agentyc_version, is_new_tab_page
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
@@ -418,118 +417,9 @@ async def connect(session: SessionT, cdp_url: str | None = None) -> SessionT:
 
 
 async def _setup_proxy_auth(session: BrowserSession) -> None:
-	"""Enable CDP Fetch auth handling for authenticated proxy, if credentials provided."""
-	assert session._cdp_client_root
-
+	"""Configure Fetch interception for proxy auth and active network mocks."""
 	try:
-		proxy_cfg = session.browser_profile.proxy
-		username = proxy_cfg.username if proxy_cfg else None
-		password = proxy_cfg.password if proxy_cfg else None
-		if not username or not password:
-			session.logger.debug('Proxy credentials not provided; skipping proxy auth setup')
-			return
-
-		try:
-			await session._cdp_client_root.send.Fetch.enable(params={'handleAuthRequests': True})
-			session.logger.debug('Fetch.enable(handleAuthRequests=True) enabled on root client')
-		except Exception as e:
-			session.logger.debug(f'Fetch.enable on root failed: {type(e).__name__}: {e}')
-
-		try:
-			if session.agent_focus_target_id:
-				cdp_session = await session.get_or_create_cdp_session(session.agent_focus_target_id, focus=False)
-				await cdp_session.cdp_client.send.Fetch.enable(
-					params={'handleAuthRequests': True},
-					session_id=cdp_session.session_id,
-				)
-				session.logger.debug('Fetch.enable(handleAuthRequests=True) enabled on focused session')
-		except Exception as e:
-			session.logger.debug(f'Fetch.enable on focused session failed: {type(e).__name__}: {e}')
-
-		def _on_auth_required(event: AuthRequiredEvent, session_id: SessionID | None = None) -> None:
-			request_id = event.get('requestId') or event.get('request_id')
-			if not request_id:
-				return
-
-			challenge = event.get('authChallenge') or event.get('auth_challenge') or {}
-			source = (challenge.get('source') or '').lower()
-			if source == 'proxy' and request_id:
-
-				async def _respond() -> None:
-					assert session._cdp_client_root
-					try:
-						await session._cdp_client_root.send.Fetch.continueWithAuth(
-							params={
-								'requestId': request_id,
-								'authChallengeResponse': {
-									'response': 'ProvideCredentials',
-									'username': username,
-									'password': password,
-								},
-							},
-							session_id=session_id,
-						)
-					except Exception as e:
-						session.logger.debug(f'Proxy auth respond failed: {type(e).__name__}: {e}')
-
-				create_task_with_error_handling(
-					_respond(), name='auth_respond', logger_instance=session.logger, suppress_exceptions=True
-				)
-			else:
-
-				async def _default() -> None:
-					assert session._cdp_client_root
-					try:
-						await session._cdp_client_root.send.Fetch.continueWithAuth(
-							params={'requestId': request_id, 'authChallengeResponse': {'response': 'Default'}},
-							session_id=session_id,
-						)
-					except Exception as e:
-						session.logger.debug(f'Default auth respond failed: {type(e).__name__}: {e}')
-
-				create_task_with_error_handling(
-					_default(), name='auth_default', logger_instance=session.logger, suppress_exceptions=True
-				)
-
-		def _on_request_paused(event: RequestPausedEvent, session_id: SessionID | None = None) -> None:
-			request_id = event.get('requestId') or event.get('request_id')
-			if not request_id:
-				return
-
-			async def _continue() -> None:
-				assert session._cdp_client_root
-				try:
-					await session._cdp_client_root.send.Fetch.continueRequest(
-						params={'requestId': request_id},
-						session_id=session_id,
-					)
-				except Exception:
-					pass
-
-			create_task_with_error_handling(
-				_continue(), name='request_continue', logger_instance=session.logger, suppress_exceptions=True
-			)
-
-		try:
-			session._cdp_client_root.register.Fetch.authRequired(_on_auth_required)
-			session._cdp_client_root.register.Fetch.requestPaused(_on_request_paused)
-			if session.agent_focus_target_id:
-				cdp_session = await session.get_or_create_cdp_session(session.agent_focus_target_id, focus=False)
-				cdp_session.cdp_client.register.Fetch.authRequired(_on_auth_required)
-				cdp_session.cdp_client.register.Fetch.requestPaused(_on_request_paused)
-			session.logger.debug('Registered Fetch.authRequired handlers')
-		except Exception as e:
-			session.logger.debug(f'Failed to register authRequired handlers: {type(e).__name__}: {e}')
-
-		try:
-			if session.agent_focus_target_id:
-				cdp_session = await session.get_or_create_cdp_session(session.agent_focus_target_id, focus=False)
-				await cdp_session.cdp_client.send.Fetch.enable(
-					params={'handleAuthRequests': True, 'patterns': [{'urlPattern': '*'}]},
-					session_id=cdp_session.session_id,
-				)
-		except Exception as e:
-			session.logger.debug(f'Fetch.enable on focused session failed: {type(e).__name__}: {e}')
+		await configure_fetch_interception(session)
 	except Exception as e:
 		session.logger.debug(f'Skipping proxy auth setup: {type(e).__name__}: {e}')
 

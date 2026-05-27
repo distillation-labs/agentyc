@@ -9,6 +9,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from agentyc.utils import is_new_tab_page
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,6 +20,60 @@ def _configured_headless_value(profile_config: dict[str, Any], kwargs: dict[str,
 	if 'headless' in profile_config:
 		return profile_config['headless']
 	return None
+
+
+def _select_reusable_attach_target(browser_session) -> Any | None:
+	"""Pick an existing blank tab that can be claimed on first attach.
+
+	Prefer a current-runtime tab when one already exists. Otherwise only reuse
+	placeholder surfaces that are still unowned/human-owned and blank.
+	"""
+	session_manager = getattr(browser_session, 'session_manager', None)
+	if session_manager is None or not hasattr(session_manager, 'get_all_page_targets'):
+		return None
+
+	runtime_metadata = getattr(browser_session, 'runtime_metadata', None)
+	current_runtime_id = getattr(runtime_metadata, 'runtime_id', None)
+	reusable_target = None
+
+	for target in session_manager.get_all_page_targets():
+		ownership = getattr(target, 'ownership', None)
+		runtime = getattr(ownership, 'runtime', None) if ownership is not None else None
+		if runtime is not None and getattr(runtime, 'runtime_id', None) == current_runtime_id:
+			return target
+
+		target_url = str(getattr(target, 'url', '') or '')
+		if target_url != 'about:blank' and not is_new_tab_page(target_url):
+			continue
+		if ownership is None or getattr(ownership, 'owner_kind', None) == 'human':
+			reusable_target = target
+			break
+
+	return reusable_target
+
+
+async def _focus_or_create_attach_target(self) -> None:
+	assert self.browser_session is not None
+	from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
+
+	reusable_target = _select_reusable_attach_target(self.browser_session)
+	if reusable_target is not None:
+		session_manager = getattr(self.browser_session, 'session_manager', None)
+		if session_manager is not None and hasattr(session_manager, 'set_target_ownership'):
+			session_manager.set_target_ownership(
+				reusable_target.target_id,
+				self.browser_session.runtime_metadata,
+				source='current_runtime',
+			)
+		await self.browser_session.event_bus.dispatch(
+			AgentFocusChangedEvent(target_id=reusable_target.target_id, url=reusable_target.url)
+		)
+		return
+
+	new_page = await self.browser_session.create_collaborative_page('about:blank')
+	new_target_id = new_page._target_id
+	await self.browser_session.event_bus.dispatch(TabCreatedEvent(target_id=new_target_id, url='about:blank'))
+	await self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url='about:blank'))
 
 
 async def _init_browser_session(self, allowed_domains: list[str] | None = None, **kwargs):
@@ -79,13 +135,9 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 			await self.browser_session.start()
 			self._cdp_url = self.browser_session.browser_profile.cdp_url
 			# Shared-browser runtimes intentionally stay in the existing browser profile so
-			# subagents can share auth/cookies/storage while working on separate owned tabs.
-			new_page = await self.browser_session.create_collaborative_page('about:blank')
-			new_target_id = new_page._target_id
-			from agentyc.browser.events import AgentFocusChangedEvent, TabCreatedEvent
-
-			await self.browser_session.event_bus.dispatch(TabCreatedEvent(target_id=new_target_id, url='about:blank'))
-			await self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url='about:blank'))
+			# subagents can share auth/cookies/storage. On first attach, claim an existing
+			# blank tab when possible instead of leaving it idle and opening a second tab.
+			await _focus_or_create_attach_target(self)
 		else:
 			from agentyc.config import CONFIG
 
@@ -166,6 +218,8 @@ async def _reset_broken_browser_runtime(self) -> None:
 	self.tools = None
 	self.file_system = None
 	self._file_system_base_dir = None
+	self._browser_state_cache_clean = False
+	self._browser_state_cache_timestamp = 0.0
 
 	if broken_session is None:
 		return

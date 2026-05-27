@@ -2,7 +2,7 @@
 
 <p align="center">
   <em>Deterministic, MCP-first browser automation for coding agents.</em><br>
-  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 53 tools.
+  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 65 tools.
 </p>
 
 <p align="center">
@@ -45,12 +45,12 @@ agentyc                          # Starts the MCP server — that's it
 | **Parallel agent model** | Shared browser profile + per-runtime owned tabs | N/A | N/A |
 | **Dependencies** | ~20 core (lean) | ~40+ (heavy) | Playwright + SDK |
 | **Install size** | Small (Python package) | Very large | Moderate |
-| **Tool count** | 53 | ~15-20 actions | ~20 tools |
+| **Tool count** | 65 | ~15-20 actions | ~20 tools |
 | **Console/Network capture** | CDP-native built-in | Limited | Limited |
 | **Deterministic extraction** | Tables, lists, forms, links, images, key-value | None (LLM only) | None |
 | **Headless by default** | No (visible), flag for headless | Configurable | Configurable |
 
-**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 53 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
+**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 65 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
 
 ---
 
@@ -99,11 +99,11 @@ agentyc init --print              # stdout
 agentyc init --force              # overwrite
 ```
 
-The skills guide covers: read→ref→act loop, `since_hash` polling, precise network waits, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, JS evaluation, and common pitfalls.
+The skills guide covers: read→ref→act loop, `since_hash` polling, frame listing and frame HTML inspection, storage inspection and mutation, precise network waits, network entry inspection and replay, narrow network mocks, per-tab offline/throttling controls, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, JS evaluation, and common pitfalls.
 
 ---
 
-## MCP Surface: 53 Tools
+## MCP Surface: 65 Tools
 
 ### Navigation & State (14 tools)
 
@@ -154,6 +154,16 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, precise ne
 | `browser_get_attribute` | Get attribute from element by ref/index (href, src, value, disabled) |
 | `browser_evaluate` | Execute JavaScript in page context |
 
+### Frames & Storage (5 tools)
+
+| Tool | What it does |
+|------|-------------|
+| `browser_list_frames` | List known frames with frame IDs, URLs, and cross-origin markers |
+| `browser_get_frame_html` | Raw HTML for one frame by `frame_id` |
+| `browser_get_storage` | Inspect `localStorage` / `sessionStorage` by origin, type, or key |
+| `browser_set_storage` | Set one `localStorage` / `sessionStorage` key for the current origin |
+| `browser_clear_storage` | Clear one key, one storage area, or all storage for the current origin |
+
 ### Tabs & Session State (9 tools)
 
 | Tool | What it does |
@@ -166,14 +176,21 @@ The skills guide covers: read→ref→act loop, `since_hash` polling, precise ne
 | `browser_set_cookies` | Inject cookies (auth persistence) |
 | `browser_clear_cookies` | Delete one or all cookies |
 | `browser_save_state` | Persist cookies + storage to disk |
-| `browser_load_state` | Restore from disk |
+| `browser_load_state` | Restore cookies + storage from disk |
 
-### Observability & Lifecycle (10 tools)
+### Observability, Network Control & Lifecycle (17 tools)
 
 | Tool | What it does |
 |------|-------------|
 | `browser_get_console_logs` | CDP-native console capture (log/warn/error) |
 | `browser_get_network_log` | CDP-native network log with optional headers |
+| `browser_inspect_network_entry` | Inspect one captured request/response with optional bodies |
+| `browser_add_network_mock` | Add a narrow URL-matching fulfill/abort rule for the active tab |
+| `browser_remove_network_mock` | Remove one mock rule or clear them all |
+| `browser_list_network_mocks` | List active mock rules and match counts |
+| `browser_set_network_conditions` | Apply offline or throttling conditions to the active tab |
+| `browser_get_network_conditions` | List active per-tab network conditions |
+| `browser_replay_request` | Replay a captured request with optional header/body overrides |
 | `browser_export_debug_bundle` | Bundle state, console, network, trace summary, optional HTML, and screenshot in one round-trip |
 | `browser_get_downloads` | List downloaded files from the session |
 | `browser_clear_logs` | Clear console and/or network log buffers |
@@ -300,7 +317,9 @@ When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by
 
 - **`browser_export_debug_bundle`** returns one compact artifact with current state, recent console logs, recent network activity, pending requests, trace summary, optional scoped HTML, and an optional screenshot.
 - **`browser_wait_for_request` / `browser_wait_for_response`** are the precise sync primitives for API-heavy apps when generic `networkidle` is too blunt.
-- Network waits use the same CDP capture buffer as `browser_get_network_log`, so agents can wait for a specific call and then immediately inspect the matching traffic.
+- **`browser_inspect_network_entry` / `browser_replay_request`** turn captured traffic into a concrete request/response artifact with optional bodies, then let agents reissue the same call with narrow overrides.
+- **`browser_add_network_mock` / `browser_set_network_conditions`** provide deterministic per-tab stubbing, offline mode, and throttling without switching to a separate test runner abstraction.
+- Network waits, inspection, replay, and mocks all build on the same CDP capture/interception layer, so agents can wait for a specific call and then inspect or control the matching traffic immediately.
 
 ---
 
@@ -308,9 +327,9 @@ When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by
 
 agentyc helps separate browser work from agent thinking time:
 
-- **MCP progress notifications** — emit `notifications/progress` for long browser phases when the caller provides a `progressToken`.
+- **MCP log notifications** — emit start/completion/error tool-phase messages through MCP logging when the client enables them.
 - **Tool timing** — every result includes `_meta.agentyc/browser_duration_ms` and `agentyc/tool_phase`.
-- **Since-hash polling** — unchanged pages return in <1 ms without resending element payloads.
+- **Since-hash polling** — unchanged pages avoid resending interactive-element payloads.
 - **Compact mode** — `mode="min"` surfaces the 30 most actionable elements with proximity scoring.
 - **Agent narration** — agents should narrate intent briefly before a likely pause: "Waiting for validation to finish."
 
@@ -318,26 +337,26 @@ agentyc helps separate browser work from agent thinking time:
 
 ## Benchmarks
 
-Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py`). The values below are the median of two confirmed headless post-change runs:
+Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate`). The values below are the median of two confirmed headless post-change runs:
 
 | Metric | Threshold | Current |
 |--------|-----------|---------|
-| Python import time | ≤ 2500 ms | 220.0 ms |
-| Cold-start session init | ≤ 35000 ms | 1531.3 ms |
-| `auto` payload reduction | ≥ 8.0% | 8.3% |
+| Python import time | ≤ 2500 ms | 667.8 ms |
+| Cold-start session init | ≤ 35000 ms | 1174.0 ms |
+| `auto` payload reduction | ≥ 8.0% | 10.0% |
 | `auto` element recall | ≥ 0.99 | 1.0 |
 | `min` element recall | ≥ 0.99 | 1.0 |
 | Deterministic extraction recall | ≥ 0.99 | 1.0 |
 | Structured extraction recall | ≥ 0.99 | 1.0 |
 | Action success rate | ≥ 1.0 | 1.0 |
 | Collaboration check pass rate | ≥ 1.0 | 1.0 |
-| Collaboration latency | informational | 1598.6 ms |
+| Collaboration latency | informational | 1302.5 ms |
 
-Confirmed headless stdio tool-surface median across two runs (`scripts/benchmark_mcp_stdio_e2e.py --targets source`):
+Confirmed headless stdio tool-surface median across two runs (`scripts/benchmark_mcp_stdio_e2e.py --targets source --minimum-total-calls 100`):
 
 - success / accuracy / precision: `1.0 / 1.0 / 1.0`
-- total duration: `45146.9 ms`
-- average / p95 tool latency: `41.4 ms / 155.1 ms`
+- total duration: `26233.2 ms`
+- average / p95 tool latency: `50.9 ms / 174.5 ms`
 
 ---
 

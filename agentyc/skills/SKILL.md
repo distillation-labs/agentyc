@@ -38,10 +38,11 @@ Use this order instead of jumping straight to screenshots or brittle selectors:
 
 1. `browser_get_state(mode="min")`
 2. `browser_get_state(mode="full")` if the target is missing
-3. `browser_find_elements(selector="...")` when you know the DOM shape and need a raw query
-4. `browser_search_page(pattern="...")` when the page is long and you need a text hit quickly
-5. `browser_get_html(selector="...")` or `browser_evaluate(...)` only for a specific DOM question
-6. `browser_screenshot()` only when you truly need visual confirmation
+3. `browser_list_frames()` when the target may live inside an iframe or OOPIF
+4. `browser_find_elements(selector="...")` when you know the DOM shape and need a raw query
+5. `browser_search_page(pattern="...")` when the page is long and you need a text hit quickly
+6. `browser_get_html(selector="...")`, `browser_get_frame_html(frame_id="...")`, or `browser_evaluate(...)` only for a specific DOM question
+7. `browser_screenshot()` only when you truly need visual confirmation
 
 After `browser_hover`, `browser_press_key("Tab")`, or any other action that changes focus or visibility, re-read state. Do not keep using the old element list blindly.
 
@@ -131,6 +132,38 @@ Use:
 - `browser_wait_for_network_idle()` after navigation or broad XHR-heavy actions
 - `browser_wait_for_element(text="Success")` when you know the exact success text or control
 - `browser_wait(seconds=1)` only as a last resort
+
+### Inspect frames directly
+
+When an iframe or OOPIF matters, inspect the frame surface explicitly instead of guessing from the merged DOM snapshot:
+
+```python
+frames = browser_list_frames()
+browser_get_frame_html(frame_id="...")
+```
+
+Use this when:
+
+- a page embeds important content inside one iframe and the parent DOM is not enough
+- you need to confirm which frame URL or frame id owns a nested document
+- an element appears to live in a different target and you want the raw frame HTML before acting
+
+### Inspect or modify storage
+
+Prefer dedicated storage tools over ad hoc `browser_evaluate(...)` when the task is specifically about browser state:
+
+```python
+browser_get_storage(origin="https://app.example.com")
+browser_set_storage(
+    origin="https://app.example.com",
+    storage_type="localStorage",
+    key="workspace",
+    value="release-train",
+)
+browser_clear_storage(origin="https://app.example.com", storage_type="sessionStorage")
+```
+
+Use these when you need to verify login state, feature flags, workspace selection, or any other persisted client-side value without crafting custom JavaScript first.
 
 `browser_wait_for_element(text="...")` matches **visible page text**, not just interactive controls. Use it for:
 
@@ -304,11 +337,24 @@ browser_get_network_log(type_filter="XHR")
 browser_get_network_log(include_headers=True)
 browser_wait_for_request(url_substring="/api/submit", method="POST")
 browser_wait_for_response(url_substring="/api/submit", status=200)
+browser_inspect_network_entry(url_substring="/api/submit", method="POST", include_headers=True)
+browser_replay_request(request_id="...")
+browser_add_network_mock(url_substring="/api/submit", body='{"ok":true}')
+browser_list_network_mocks()
+browser_set_network_conditions(offline=True)
+browser_get_network_conditions()
 browser_export_debug_bundle()
 browser_get_focused_element()
 ```
 
 If an action "did nothing," check console errors first, then network errors, then re-read state.
+
+Network triage pattern:
+
+1. `browser_wait_for_request(...)` or `browser_wait_for_response(...)`
+2. `browser_inspect_network_entry(...)` to inspect bodies or headers
+3. `browser_replay_request(...)` if you need to reissue the exact call with narrow overrides
+4. `browser_add_network_mock(...)` or `browser_set_network_conditions(...)` only when you intentionally want to control the page's network behavior
 
 For a compact one-shot artifact to hand back to a parent agent or human, use:
 
@@ -448,11 +494,16 @@ browser_get_state(mode="min")
 browser_get_state(mode="full")
 browser_get_state(mode="focus", focus_ref="e42")
 browser_get_state(mode="min", since_hash="...")
+browser_list_frames()
+browser_get_frame_html(frame_id="...")
 browser_get_focused_element()
 browser_get_attribute(name="href", ref="e42")
 browser_get_html()
 browser_screenshot()
 browser_get_downloads()
+browser_get_storage(origin="...")
+browser_set_storage(origin="...", storage_type="localStorage", key="...", value="...")
+browser_clear_storage(origin="...", storage_type="sessionStorage")
 
 # Navigate and tabs
 browser_navigate(url="...")
@@ -497,6 +548,13 @@ browser_wait(seconds=1)
 browser_get_console_logs(level="error")
 browser_get_network_log(status_filter="errors")
 browser_get_network_log(type_filter="Fetch")
+browser_inspect_network_entry(url_substring="/api/...", method="POST")
+browser_replay_request(request_id="...")
+browser_add_network_mock(url_substring="/api/...", body="stubbed")
+browser_remove_network_mock(mock_id="...")
+browser_list_network_mocks()
+browser_set_network_conditions(offline=True)
+browser_get_network_conditions()
 browser_clear_logs(console=True, network=True)
 browser_start_trace()
 browser_stop_trace()

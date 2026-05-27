@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Frame inspection tools** — `browser_list_frames` surfaces frame ids, URLs, parent relationships, and cross-origin markers, and `browser_get_frame_html` returns raw HTML for a specific frame by `frame_id`.
+- **Storage inspection and mutation tools** — `browser_get_storage`, `browser_set_storage`, and `browser_clear_storage` now expose `localStorage` and `sessionStorage` directly over MCP by origin.
+- **Network inspection and control tools** — `browser_inspect_network_entry`, `browser_add_network_mock`, `browser_remove_network_mock`, `browser_list_network_mocks`, `browser_set_network_conditions`, `browser_get_network_conditions`, and `browser_replay_request` add request/response body inspection, narrow per-tab mocks, offline/throttling controls, and request replay to the public MCP surface.
+
+### Changed
+
+- **Tool surface expanded from 53 to 65** — the public MCP server now includes frame inspection, storage control, and per-tab network inspection/control primitives without introducing a stateful frame-selection tool.
+- **Network tooling moved into a dedicated MCP helper module** — the higher-level frame/storage/network helpers now live in `agentyc.mcp.network_tools`, keeping `agentyc.mcp.cdp_tools` focused on lower-level CDP capture and tab utilities.
+- **Repeated `browser_get_state` reads now reuse only explicitly clean, very fresh cached state** — the runtime reuses a prior snapshot only when it is still marked clean, younger than `0.25s`, and the request does not need a screenshot or focus override, which cuts repeated-read latency without treating stale DOM state as long-lived truth.
+- **Interaction highlights now default to dark orange** — the visible interaction/debug overlay now uses `rgb(194, 88, 24)` / `#c25818` instead of the previous blue theme.
+- **Benchmark baseline refreshed** — the current confirmed two-run headless medians are now runtime `import_ms=667.8`, `session_init_ms=1174.0`, `avg_auto_payload_reduction_pct=10.0`, `collaboration_latency_ms=1302.5`, plus stdio `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=26233.2`, `avg_ms=50.9`, `p95_ms=174.5`.
+
+### Tests
+
+- **New focused headless coverage** — `tests/ci/browser/test_network_frame_storage_tools.py` exercises frame listing/HTML reads, storage inspection/mutation, request inspection/replay, network mocks, and network conditions in headless Chrome.
+- **New state-cache safety coverage** — `test_browser_get_state_reuses_clean_cached_state_without_since_hash` and `test_browser_get_state_fetches_fresh_state_when_cache_is_dirty` verify that repeated state reads reuse only a clean cache and fall back to a fresh DOM read after mutating actions.
+
 ## [0.2.17] - 2026-05-25
 
 ### Added

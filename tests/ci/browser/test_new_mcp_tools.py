@@ -621,9 +621,7 @@ class TestLogNotifications:
 		captured: list[dict[str, Any]] = []
 
 		class _MockSession:
-			async def send_log_message(
-				self, level: str, data: str, logger: str | None = None, **kwargs: Any
-			) -> None:
+			async def send_log_message(self, level: str, data: str, logger: str | None = None, **kwargs: Any) -> None:
 				captured.append({'level': level, 'data': data, 'logger': logger})
 
 		ctx = RequestContext[Any, Any, Any](
@@ -651,9 +649,7 @@ class TestLogNotifications:
 		captured: list[dict[str, Any]] = []
 
 		class _MockSession:
-			async def send_log_message(
-				self, level: str, data: str, logger: str | None = None, **kwargs: Any
-			) -> None:
+			async def send_log_message(self, level: str, data: str, logger: str | None = None, **kwargs: Any) -> None:
 				captured.append({'level': level, 'data': data, 'logger': logger})
 
 		ctx = RequestContext[Any, Any, Any](
@@ -679,9 +675,7 @@ class TestLogNotifications:
 		captured: list[dict[str, Any]] = []
 
 		class _MockSession:
-			async def send_log_message(
-				self, level: str, data: str, logger: str | None = None, **kwargs: Any
-			) -> None:
+			async def send_log_message(self, level: str, data: str, logger: str | None = None, **kwargs: Any) -> None:
 				captured.append({'level': level, 'data': data, 'logger': logger})
 
 		ctx = RequestContext[Any, Any, Any](
@@ -726,9 +720,7 @@ class TestLogNotifications:
 		captured: list[dict[str, Any]] = []
 
 		class _MockSession:
-			async def send_log_message(
-				self, level: str, data: str, logger: str | None = None, **kwargs: Any
-			) -> None:
+			async def send_log_message(self, level: str, data: str, logger: str | None = None, **kwargs: Any) -> None:
 				captured.append({'level': level, 'data': data, 'logger': logger})
 
 		ctx = RequestContext[Any, Any, Any](
@@ -741,9 +733,7 @@ class TestLogNotifications:
 		try:
 			handler = server.server.request_handlers[types.CallToolRequest]
 			result = await handler(
-				types.CallToolRequest(
-					params=types.CallToolRequestParams(name='browser_list_sessions', arguments={})
-				)
+				types.CallToolRequest(params=types.CallToolRequestParams(name='browser_list_sessions', arguments={}))
 			)
 			tool_result = result.root
 			assert not tool_result.isError, f'Tool call failed: {tool_result}'

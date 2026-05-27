@@ -366,27 +366,13 @@ async def highlight_interaction_element(session: BrowserSession, node: EnhancedD
 			const rect = {json.dumps({'x': rect.x, 'y': rect.y, 'width': rect.width, 'height': rect.height})};
 			const color = {json.dumps(color)};
 			const duration = {duration_ms};
-			const shadowColor = color.replace('rgb(', 'rgba(').replace(')', ', 0.18)');
 
-			// Scale corner size based on element dimensions to ensure gaps between corners
-			const maxCornerSize = 20;
-			const minCornerSize = 8;
-			const cornerSize = Math.max(
-				minCornerSize,
-				Math.min(maxCornerSize, Math.min(rect.width, rect.height) * 0.35)
-			);
-			const borderWidth = 3;
-			const startOffset = 10; // Starting offset in pixels
-			const finalOffset = -3; // Final position slightly outside the element
-
-			// Get current scroll position
 			const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
 			const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
 
-			// Create container for all corners
-			const container = document.createElement('div');
-			container.setAttribute('data-agentyc-interaction-highlight', 'true');
-			container.style.cssText = `
+			const el = document.createElement('div');
+			el.setAttribute('data-agentyc-interaction-highlight', 'true');
+			el.style.cssText = `
 				position: absolute;
 				left: ${{rect.x + scrollX}}px;
 				top: ${{rect.y + scrollY}}px;
@@ -394,86 +380,16 @@ async def highlight_interaction_element(session: BrowserSession, node: EnhancedD
 				height: ${{rect.height}}px;
 				pointer-events: none;
 				z-index: 2147483647;
-				filter: drop-shadow(0 4px 10px ${{shadowColor}});
-			`;
-
-			const focusRing = document.createElement('div');
-			focusRing.style.cssText = `
-				position: absolute;
-				left: 0;
-				top: 0;
-				width: 100%;
-				height: 100%;
-				border-radius: 10px;
-				background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0));
-				box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
-				opacity: 0;
+				outline: 2px solid ${{color}};
+				outline-offset: -2px;
 				transition: opacity 0.15s ease-out;
 			`;
-			container.appendChild(focusRing);
 
-			// Create 4 corner brackets
-			const corners = [
-				{{ pos: 'top-left', startX: -startOffset, startY: -startOffset, finalX: finalOffset, finalY: finalOffset }},
-				{{ pos: 'top-right', startX: startOffset, startY: -startOffset, finalX: -finalOffset, finalY: finalOffset }},
-				{{ pos: 'bottom-left', startX: -startOffset, startY: startOffset, finalX: finalOffset, finalY: -finalOffset }},
-				{{ pos: 'bottom-right', startX: startOffset, startY: startOffset, finalX: -finalOffset, finalY: -finalOffset }}
-			];
+			document.body.appendChild(el);
 
-			corners.forEach(corner => {{
-				const bracket = document.createElement('div');
-				bracket.style.cssText = `
-					position: absolute;
-					width: ${{cornerSize}}px;
-					height: ${{cornerSize}}px;
-					pointer-events: none;
-					transition: all 0.15s ease-out;
-				`;
-
-				// Position corners
-				if (corner.pos === 'top-left') {{
-					bracket.style.top = '0';
-					bracket.style.left = '0';
-					bracket.style.borderTop = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.borderLeft = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.transform = `translate(${{corner.startX}}px, ${{corner.startY}}px)`;
-				}} else if (corner.pos === 'top-right') {{
-					bracket.style.top = '0';
-					bracket.style.right = '0';
-					bracket.style.borderTop = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.borderRight = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.transform = `translate(${{corner.startX}}px, ${{corner.startY}}px)`;
-				}} else if (corner.pos === 'bottom-left') {{
-					bracket.style.bottom = '0';
-					bracket.style.left = '0';
-					bracket.style.borderBottom = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.borderLeft = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.transform = `translate(${{corner.startX}}px, ${{corner.startY}}px)`;
-				}} else if (corner.pos === 'bottom-right') {{
-					bracket.style.bottom = '0';
-					bracket.style.right = '0';
-					bracket.style.borderBottom = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.borderRight = `${{borderWidth}}px solid ${{color}}`;
-					bracket.style.transform = `translate(${{corner.startX}}px, ${{corner.startY}}px)`;
-				}}
-
-				container.appendChild(bracket);
-
-				// Animate to final position slightly outside the element
-				setTimeout(() => {{
-					bracket.style.transform = `translate(${{corner.finalX}}px, ${{corner.finalY}}px)`;
-					focusRing.style.opacity = '1';
-				}}, 10);
-			}});
-
-			document.body.appendChild(container);
-
-			// Auto-remove after duration
 			setTimeout(() => {{
-				focusRing.style.opacity = '0';
-				container.style.opacity = '0';
-				container.style.transition = 'opacity 0.3s ease-out';
-				setTimeout(() => container.remove(), 300);
+				el.style.opacity = '0';
+				setTimeout(() => el.remove(), 150);
 			}}, duration);
 
 			return {{ created: true }};
@@ -505,75 +421,30 @@ async def highlight_coordinate_click(session: BrowserSession, x: int, y: int) ->
 			const y = {y};
 			const color = {json.dumps(color)};
 			const duration = {duration_ms};
-			const glowColor = color.replace('rgb(', 'rgba(').replace(')', ', 0.25)');
 
-			// Get current scroll position
 			const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
 			const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
 
-			// Create container
-			const container = document.createElement('div');
-			container.setAttribute('data-agentyc-coordinate-highlight', 'true');
-			container.style.cssText = `
+			const dot = document.createElement('div');
+			dot.setAttribute('data-agentyc-coordinate-highlight', 'true');
+			dot.style.cssText = `
 				position: absolute;
-				left: ${{x + scrollX}}px;
-				top: ${{y + scrollY}}px;
-				width: 0;
-				height: 0;
-				pointer-events: none;
-				z-index: 2147483647;
-			`;
-
-			// Create outer circle
-			const outerCircle = document.createElement('div');
-			outerCircle.style.cssText = `
-				position: absolute;
-				left: -18px;
-				top: -18px;
-				width: 36px;
-				height: 36px;
-				border: 3px solid ${{color}};
-				border-radius: 50%;
-				opacity: 0;
-				transform: scale(0.3);
-				transition: all 0.2s ease-out;
-				box-shadow: 0 0 0 6px ${{glowColor}};
-			`;
-			container.appendChild(outerCircle);
-
-			// Create center dot
-			const centerDot = document.createElement('div');
-			centerDot.style.cssText = `
-				position: absolute;
-				left: -5px;
-				top: -5px;
-				width: 10px;
-				height: 10px;
+				left: ${{x + scrollX - 4}}px;
+				top: ${{y + scrollY - 4}}px;
+				width: 8px;
+				height: 8px;
 				background: ${{color}};
 				border-radius: 50%;
-				opacity: 0;
-				transform: scale(0);
-				transition: all 0.15s ease-out;
-				box-shadow: 0 0 0 2px rgba(255,255,255,0.85);
+				pointer-events: none;
+				z-index: 2147483647;
+				transition: opacity 0.15s ease-out;
 			`;
-			container.appendChild(centerDot);
 
-			document.body.appendChild(container);
+			document.body.appendChild(dot);
 
-			// Animate in
 			setTimeout(() => {{
-				outerCircle.style.opacity = '0.8';
-				outerCircle.style.transform = 'scale(1)';
-				centerDot.style.opacity = '1';
-				centerDot.style.transform = 'scale(1)';
-			}}, 10);
-
-			// Animate out and remove
-			setTimeout(() => {{
-				outerCircle.style.opacity = '0';
-				outerCircle.style.transform = 'scale(1.5)';
-				centerDot.style.opacity = '0';
-				setTimeout(() => container.remove(), 300);
+				dot.style.opacity = '0';
+				setTimeout(() => dot.remove(), 150);
 			}}, duration);
 
 			return {{ created: true }};
@@ -678,14 +549,6 @@ async def add_highlights(session: BrowserSession, selector_map: dict[int, Enhanc
 				font-family: inherit;
 			`;
 
-			// Helper function to create text elements safely
-			function createTextElement(tag, text, styles) {{
-				const element = document.createElement(tag);
-				element.textContent = text;
-				if (styles) element.style.cssText = styles;
-				return element;
-			}}
-
 			// Add highlights for each element
 			interactiveElements.forEach((element, index) => {{
 				const highlight = document.createElement('div');
@@ -693,43 +556,19 @@ async def add_highlights(session: BrowserSession, selector_map: dict[int, Enhanc
 				highlight.setAttribute('data-element-id', element.backend_node_id);
 				highlight.style.cssText = `
 					position: absolute;
-					left: ${{element.x}}px;
-					top: ${{element.y}}px;
-					width: ${{element.width}}px;
-					height: ${{element.height}}px;
-					outline: 2px dashed #4a90e2;
-					outline-offset: -2px;
+					left: ${element.x}px;
+					top: ${element.y}px;
+					width: ${element.width}px;
+					height: ${element.height}px;
+					outline: 1px dashed #c25818;
+					outline-offset: -1px;
 					background: transparent;
 					pointer-events: none;
 					box-sizing: content-box;
-					transition: outline 0.2s ease;
 					margin: 0;
 					padding: 0;
 					border: none;
 				`;
-
-				// Enhanced label with backend node ID
-				const label = createTextElement('div', element.backend_node_id, `
-					position: absolute;
-					top: -20px;
-					left: 0;
-					background-color: #4a90e2;
-					color: white;
-					padding: 2px 6px;
-					font-size: 11px;
-					font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-					font-weight: bold;
-					border-radius: 3px;
-					white-space: nowrap;
-					z-index: ${{HIGHLIGHT_Z_INDEX + 1}};
-					box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-					border: none;
-					outline: none;
-					margin: 0;
-					line-height: 1.2;
-				`);
-
-				highlight.appendChild(label);
 				container.appendChild(highlight);
 			}});
 
