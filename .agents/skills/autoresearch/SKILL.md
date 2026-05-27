@@ -9,9 +9,9 @@ description: >
   targeted bug fixes, code review, or direct implementation work that does not require a repeated
   experiment loop.
 when_to_use: >
-  Especially useful for retrieval quality, token efficiency, indexing speed, workflow automation,
-  and any task where Contextro already has a benchmark or eval harness that can be rerun after
-  each experiment.
+  Especially useful for test reliability, browser action timing, DOM extraction quality,
+  network interception accuracy, and any task where agentyc already has a benchmark or eval
+  harness that can be rerun after each experiment.
 metadata:
   author: contextro
   version: "4.1.0"
@@ -34,33 +34,26 @@ results that beat the noise floor and preserve guardrails.
 - keep/discard decisions based on measured results
 - a durable lab notebook with results and insights
 
-## Contextro Defaults
+## Agentyc Defaults
 
 Primary benchmark surfaces:
 
-- `python scripts/benchmark_retrieval_quality.py --path src --query-limit 20`
-- `python scripts/benchmark_chunk_profiles.py --path src --query-limit 20`
-- `python scripts/benchmark_token_efficiency.py`
-- `python scripts/benchmark_disclosure.py`
-- `python scripts/benchmark_embeddings.py`
-- `python scripts/bench_final.py`
-
-Historical result sources:
-
-- `scripts/results.tsv`
-- `scripts/results_indexing_speed.tsv`
-- `scripts/token_benchmark_results.json`
-- `scripts/benchmark_results.json`
+- `./scripts/test.sh` — full test suite
+- `uv run pytest -vxs tests/ci` — CI tests with real browser
+- `./scripts/lint.sh` — linting and formatting
+- `uv run pyright` — type checking
+- `uv run ruff check --fix` — code quality
 
 Read-only by default:
 
-- benchmark scripts
-- tests
-- existing result logs
+- benchmark and test scripts
+- existing test files under `tests/ci/`
+- lint/type-check configs
 
 Primary modifiable surface:
 
-- `src/contextro_mcp/`
+- `agentyc/` — all runtime logic (browser, mcp, tools, dom, llm, filesystem)
+- `tests/ci/` — tests may be added or refined
 
 ## Method
 
