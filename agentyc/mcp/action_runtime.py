@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from agentyc.browser.views import BrowserStateSummary
 from agentyc.mcp.navigation_runtime import (
 	_element_triggers_form_navigation,
 )
@@ -525,7 +526,7 @@ async def _get_browser_state(
 
 	from agentyc.mcp.state import build_browser_state_payload, compute_browser_state_hash, make_element_ref
 
-	cached_state = getattr(self.browser_session, '_cached_browser_state_summary', None)
+	cached_state = cast(BrowserStateSummary | None, getattr(self.browser_session, '_cached_browser_state_summary', None))
 	can_use_cached_state = (
 		cached_state is not None
 		and cached_state.dom_state
@@ -534,7 +535,7 @@ async def _get_browser_state(
 	cache_age_s = max(0.0, time.monotonic() - getattr(self, '_browser_state_cache_timestamp', 0.0))
 	cache_is_fresh = cache_age_s <= _MAX_CLEAN_STATE_REUSE_S
 	cache_is_clean = bool(getattr(self, '_browser_state_cache_clean', False)) and cache_is_fresh
-	if since_hash is not None and can_use_cached_state and cache_is_clean:
+	if since_hash is not None and cached_state is not None and can_use_cached_state and cache_is_clean:
 		cached_hash = getattr(cached_state, 'state_hash', None)
 		if cached_hash is None:
 			cached_hash = compute_browser_state_hash(cached_state)
@@ -551,7 +552,14 @@ async def _get_browser_state(
 			self._cache_state_payload(result)
 			return result_json, None
 
-	if can_use_cached_state and cache_is_clean and not include_screenshot and focus_ref is None and since_hash is None:
+	if (
+		cached_state is not None
+		and can_use_cached_state
+		and cache_is_clean
+		and not include_screenshot
+		and focus_ref is None
+		and since_hash is None
+	):
 		result = build_browser_state_payload(
 			cached_state,
 			mode=mode,
