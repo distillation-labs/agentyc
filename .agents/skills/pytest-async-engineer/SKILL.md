@@ -12,7 +12,7 @@ when_to_use: >
   BrowserSession setup/teardown in tests, LLM mock fixtures, and deciding what belongs
   in tests/ci vs tests/.
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   category: testing
   tags: [pytest, pytest-asyncio, pytest-httpserver, async-testing, browser-testing, fixtures, ci, no-mocks]
 license: Proprietary
@@ -47,8 +47,7 @@ tests/
 - Move a test to `tests/ci/` once it passes reliably with no external dependencies.
 - Group browser interaction tests under `tests/ci/browser/`, MCP tests under `tests/ci/`, etc.
 - Each event or feature gets its own `test_action_EventName.py` file.
-- Split oversized test modules by feature, event, or behavior; extract shared fixtures and helpers instead of growing one monolithic async test file.
-- Treat 700-800 lines as the general upper bound for active test implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
+- Treat 300-500 lines as the strict upper bound for test files. Files above 500 lines must be split up — this is a strict rule, no exceptions. Extract shared fixtures and helpers into `conftest.py` or nearby helper modules.
 
 ## pytest-httpserver Patterns
 
@@ -79,6 +78,48 @@ httpserver.expect_request('/page-b').respond_with_data(PAGE_B_HTML, content_type
 ```python
 httpserver.expect_request('/api/data').respond_with_json({'status': 'ok'})
 ```
+
+## Network Interception Testing
+
+agentyc supports CDP Fetch domain network interception (see `agentyc/browser/session_network.py`).
+Test these features with real HTTPServer fixtures:
+
+```python
+@pytest.fixture
+async def browser_session_with_network():
+    profile = BrowserProfile(headless=True)
+    session = BrowserSession(browser_profile=profile)
+    await session.start()
+    # Navigate to a page first to establish a target
+    yield session
+    await session.stop()
+
+async def test_network_mock_fulfill(browser_session_with_network, httpserver: HTTPServer):
+    # Set up a real HTTP server to verify the mock intercepts before it
+    httpserver.expect_request('/api/data').respond_with_json({'real': True})
+    await browser_session_with_network.navigate(httpserver.url_for('/'))
+
+    from agentyc.browser.session_network import add_network_mock
+    result = await add_network_mock(
+        browser_session_with_network,
+        url_substring='/api/data',
+        action='fulfill',
+        status=200,
+        body='{"mocked": true}',
+        headers={'Content-Type': 'application/json'},
+    )
+    assert result['match_count'] == 0  # not yet matched
+
+    # Now navigate to /api/data — the mock should intercept
+    await browser_session_with_network.navigate(httpserver.url_for('/api/data'))
+    # Verify the mock matched (match_count incremented)
+```
+
+Key patterns:
+- Pair `add_network_mock()` / `remove_network_mock()` with real httpserver endpoints.
+- Use `set_network_conditions()` to test offline, latency, and bandwidth throttling.
+- Verify mock rules by inspecting `list_network_mocks()` and `get_network_conditions()`.
+- Test that Fetch interceptors clean up properly in fixture teardown.
 
 ## BrowserSession in Tests
 
