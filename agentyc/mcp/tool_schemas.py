@@ -21,6 +21,17 @@ def get_tool_schemas() -> list[types.Tool]:
 			},
 		),
 		types.Tool(
+			name='browser_set_intent',
+			description='Update the live HUD with a short human-readable intent summary. No raw chain-of-thought.',
+			inputSchema={
+				'type': 'object',
+				'properties': {
+					'intent': {'type': 'string', 'description': 'Short intent label, ideally a concise gerund phrase.'},
+				},
+				'required': ['intent'],
+			},
+		),
+		types.Tool(
 			name='browser_click',
 			description='Click an element (ref preferred) or viewport coordinates.',
 			inputSchema={
