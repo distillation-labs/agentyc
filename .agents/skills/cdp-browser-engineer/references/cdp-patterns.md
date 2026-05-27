@@ -21,3 +21,13 @@ Grounded in cdp-use typed client, BrowserSession, and the watchdog architecture.
 - mutating `BrowserSession` state directly from inside a watchdog (use events)
 - calling raw CDP highlight commands instead of going through `DomService`
 - registering the same event handler twice without a deregistration path
+
+## Fetch Domain Patterns
+
+- Register `Fetch.requestPaused` and `Fetch.authRequired` handlers before enabling Fetch.
+- Use `create_task_with_error_handling` inside event callbacks to avoid silent failures.
+- Strip forbidden headers (`cookie`, `host`, `origin`, `referer`, `sec-*`) from mock responses.
+- Enable Fetch per-target-session for network mocking; use root Fetch only for proxy auth.
+- After attaching to a new target, apply active interception via `configure_attached_network_session()`.
+- Match rules against target_id, URL, method, and resource_type before applying mock actions.
+- Use the Network domain (`Network.emulateNetworkConditions`) for throttling — it's separate from Fetch interception.
