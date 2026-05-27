@@ -18,9 +18,11 @@ from agentyc.browser import (
 	session_connection,
 	session_navigation,
 	session_network,
+	session_reconnect,
 	session_runtime,
 	session_shared_browser,
 	session_targets,
+	session_watchdogs,
 )
 from agentyc.browser._cdp_timeout import TimeoutWrappedCDPClient
 from agentyc.browser.events import (
@@ -648,7 +650,7 @@ class BrowserSession(BaseModel):
 		return await session_runtime.get_state_as_text(self)
 
 	async def attach_all_watchdogs(self) -> None:
-		await session_connection.attach_all_watchdogs(self)
+		await session_watchdogs.attach_all_watchdogs(self)
 
 	async def connect(self, cdp_url: str | None = None) -> Self:
 		return await session_connection.connect(self, cdp_url)
@@ -681,13 +683,13 @@ class BrowserSession(BaseModel):
 		return session_network.sanitize_replay_headers(headers)
 
 	async def reconnect(self) -> None:
-		await session_connection.reconnect(self)
+		await session_reconnect.reconnect(self)
 
 	async def _auto_reconnect(self, max_attempts: int = 3) -> None:
-		await session_connection._auto_reconnect(self, max_attempts)
+		await session_reconnect._auto_reconnect(self, max_attempts)
 
 	def _attach_ws_drop_callback(self) -> None:
-		session_connection._attach_ws_drop_callback(self)
+		session_reconnect._attach_ws_drop_callback(self)
 
 	@property
 	def runtime_metadata(self) -> RuntimeOwnershipMetadata:
