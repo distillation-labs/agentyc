@@ -13,11 +13,11 @@ body:
       value: |
         ---
         > [!IMPORTANT]
-        > 🙏 Please **go check *right now before filling this out* that that you are *actually* on the [⬆️ LATEST VERSION](https://github.com/agentyc/agentyc/releases)**.
+        > 🙏 Please **go check *right now before filling this out* that that you are *actually* on the [⬆️ LATEST VERSION](https://github.com/distillation-labs/agentyc/releases)**.
         > 🚀 We ship changes every hour and we might've already fixed your issue today!
-        > <a href="https://github.com/agentyc/agentyc/releases"><img src="https://github.com/user-attachments/assets/4cd34ee6-bafb-4f24-87e2-27a31dc5b9a4" width="500px"/></a>
+        > <a href="https://github.com/distillation-labs/agentyc/releases"><img src="https://github.com/user-attachments/assets/4cd34ee6-bafb-4f24-87e2-27a31dc5b9a4" width="500px"/></a>
         > If you are running an old version, the **first thing we will ask you to do is *upgrade to the latest version* and try again**:
-        > - 🆕 [`beta`](https://docs.agentyc.com/development/local-setup):   `uv pip install --upgrade git+https://github.com/agentyc/agentyc.git@main`
+        > - 🆕 [`beta`](https://docs.agentyc.com/development/local-setup):   `uv pip install --upgrade git+https://github.com/distillation-labs/agentyc.git@main`
         > - 📦 [`stable`](https://pypi.org/project/agentyc/#history): `uv pip install --upgrade agentyc`
 
   - type: input
@@ -27,7 +27,7 @@ body:
       description: |
         What version of `agentyc` are you using? (Run `uv pip show agentyc` or `git log -n 1`)
         **DO NOT JUST WRITE `latest release` or `main` or a very old version or we will close your issue!**
-      placeholder: "e.g. 0.4.45 or 62760baaefd"
+      placeholder: "e.g. 1.0.0 or 62760baaefd"
     validations:
       required: true
 
