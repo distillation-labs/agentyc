@@ -13,7 +13,7 @@ when_to_use: >
   typed schemas, return shaping, request context, visibility, validation mode, deployment, or
   server lifecycle.
 metadata:
-  version: "0.1.0"
+  version: "0.3.0"
   category: mcp-development
   tags: [fastmcp, server, tools, resources, prompts, validation, context, middleware, transport]
 license: Proprietary
@@ -31,7 +31,7 @@ output shape intentional.
 - Use typed Python signatures so FastMCP can build useful schemas.
 - Make annotations and metadata match the real behavior.
 - Reach for result objects only when you need explicit control.
-- Treat 700-800 lines as the general upper bound for active server and tool implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
+- Treat 300-500 lines as the strict upper bound for server and tool implementation files. Files above 500 lines must be split up — no exceptions.
 - Prefer thin server and tool entrypoints with shared logic extracted into validators, adapters, serializers, transport helpers, and domain modules instead of growing `server.py` or giant tool modules.
 
 ## Component Guidance
@@ -88,6 +88,48 @@ output shape intentional.
 - Use visibility controls with `enable()` / `disable()` instead of ad hoc flags.
 - Dynamic component sets should rely on list-changed notifications and providers.
 - Split transport adapters, middleware, tool implementations, and result-shaping helpers by concern rather than centralizing them in one oversized server module.
+
+## FastMCP v3.x (Current — 2026)
+
+FastMCP v3.0 (released early 2026) is the current major version. Key differences from v2:
+
+**Transport configuration** — `host`, `port`, `debug`, `log_level` are now `run()` kwargs, NOT `FastMCP()` constructor args:
+```python
+# v2 (deprecated)
+mcp = FastMCP("server", host="0.0.0.0", port=8080)
+
+# v3 (current)
+mcp = FastMCP("server")
+mcp.run(transport="http", host="0.0.0.0", port=8080)
+```
+
+**Decorators return functions** — `@mcp.tool`, `@mcp.resource`, `@mcp.prompt` return the original function, not a component object. Code that accesses `.name` or `.description` on the decorated result will break.
+
+**Async context state** — `ctx.get_state()` and `ctx.set_state()` are now async:
+```python
+# v3
+state = await ctx.get_state("key")
+await ctx.set_state("key", value)
+```
+
+**Prompt return types** — Prompt functions must return `Message` objects (from `fastmcp.prompts`) or plain strings. Dict coercion is removed.
+```python
+from fastmcp.prompts import Message
+
+@mcp.prompt(title="greet")
+async def greet(name: str) -> list[Message]:
+    return [Message.user(f"Hello, {name}!")]
+```
+
+**OpenAPI provider** — Use `OpenAPIProvider` instead of the removed `FastMCPOpenAPI`:
+```python
+from fastmcp.server.providers.openapi import OpenAPIProvider
+mcp = FastMCP("api-server", providers=[OpenAPIProvider(spec, client=client)])
+```
+
+**Renamed methods** — `get_tools()` → `list_tools()`, `get_resources()` → `list_resources()`, etc. These now return lists, not dicts.
+
+**Provider architecture** — v3 uses a provider/transform architecture for composability. Providers exist for filesystems, OpenAPI specs, proxies, and skills.
 
 ## Deployment And Server Behavior
 
