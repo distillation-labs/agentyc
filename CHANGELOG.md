@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.0.0] - 2026-05-27
+
+### Added
+
+- **Live activity HUD surfaces** — the browser demo-mode overlay now shows a compact current-step card plus recent sanitized activity, and the MCP CLI now supports an optional `--hud-overlay` desktop window that mirrors those events outside the browser.
+- **In-HUD reporting shortcuts** — the browser HUD now includes a square `REPORT` menu that copies sanitized context and opens the correct bug-report, feature-request, or private security reporting destination.
+- **`browser_set_intent`** — coding agents can now publish a short operator-facing intent label into the live HUD without exposing raw chain-of-thought.
+
+### Changed
+
+- **MCP tool lifecycle events now feed a shared HUD stream** — browser tool start/done/error phases, reconnect notices, and download notices are now emitted into a shared in-process activity stream used by the browser HUD and desktop overlay.
+- **Public tool surface expanded from 65 to 66** — the MCP server now includes `browser_set_intent` alongside the existing deterministic browser tool catalog.
+- **Public release metadata and docs aligned to 1.0.0** — package versioning, README/docs references, issue/security links, and the packaged skills guide now reflect the shipped HUD/operator UX.
+
+### Tests
+
+- **New HUD coverage** — `tests/ci/browser/test_hud.py` covers activity-stream routing, browser HUD script config injection, feedback/report destinations, noisy-tool filtering, and intent publication.
+
 ## [0.2.18] - 2026-05-27
 
 ### Added
