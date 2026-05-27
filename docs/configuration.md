@@ -46,6 +46,7 @@ agentyc --session-timeout-minutes 30  # auto-close after 30 min idle; 0 = never 
 | Option | Description |
 |--------|-------------|
 | `--session-timeout-minutes` | Idle timeout in minutes for the tracked browser session. `0` (default) disables automatic cleanup — sessions stay alive until the MCP server process exits. |
+| `--hud-overlay` | Show the optional transparent desktop HUD window for sanitized live activity |
 | `--cdp-url` | Attach to an existing browser instead of launching a local one |
 | `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
 | `--runtime-role` | Collaboration role string for this runtime |
@@ -73,6 +74,7 @@ agentyc browser --port 9222 --detach
 | Variable | Description |
 |----------|-------------|
 | `AGENTYC_HEADLESS` | Override `headless` in the default browser profile |
+| `AGENTYC_HUD_OVERLAY` | Override `hud_overlay` in the default browser profile |
 | `AGENTYC_ALLOWED_DOMAINS` | Comma-separated allowlist override |
 | `AGENTYC_DISABLE_EXTENSIONS` | Disable bundled browser extensions |
 | `AGENTYC_ACTION_TIMEOUT_S` | Per-action timeout parsed by `agentyc.tools.runtime` and enforced in `Tools.act()` |
@@ -121,6 +123,7 @@ When the MCP server launches a local browser, it sets these public defaults in `
 - `device_scale_factor=1.0`
 - `disable_security=False`
 - `headless=False` unless overridden by config or env
+- `hud_overlay=False` unless overridden by config, `AGENTYC_HUD_OVERLAY`, or `--hud-overlay`
 
 When attaching through `--cdp-url`, the server instead sets `keep_alive=True` and creates a collaboration target in the shared browser: a tab by default, or a separate window when `--shared-browser-mode window` is selected.
 
