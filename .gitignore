@@ -84,3 +84,5 @@ product_extraction.py
 plot.py
 
 .claude/
+# Playwright MCP page captures (may contain secrets)
+.playwright-mcp/
