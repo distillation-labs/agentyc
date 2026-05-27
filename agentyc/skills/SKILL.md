@@ -30,6 +30,8 @@ When a human is waiting on the run, narrate intent before a likely pause:
 
 Keep those lines short and concrete. They are progress narration, not chain-of-thought.
 
+If the live HUD is enabled, prefer `browser_set_intent(intent="...")` for major step changes so the operator sees a stable current-status label without exposing raw reasoning.
+
 ---
 
 ## Escalation Ladder When Something Is Missing
@@ -221,6 +223,13 @@ Dialog already auto-handled by runtime: [confirm] Delete this branch? (accepted 
 ```
 
 Treat that as a confirmation of what happened, not as a failure that needs a retry.
+
+### Live HUD and reporting
+
+- `BrowserProfile(demo_mode=True)` enables the in-browser HUD.
+- `agentyc mcp --hud-overlay` enables the transparent desktop HUD.
+- Use `browser_set_intent` for short operator-facing status updates such as `Reviewing failed checkout step`.
+- The browser HUD's `REPORT` menu copies sanitized context and opens the repo's bug, feature, or private security destination. Do not paste secrets, cookies, raw headers, or full auth URLs into those reports.
 
 ### Extract structured data
 
