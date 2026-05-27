@@ -556,10 +556,10 @@ async def add_highlights(session: BrowserSession, selector_map: dict[int, Enhanc
 				highlight.setAttribute('data-element-id', element.backend_node_id);
 				highlight.style.cssText = `
 					position: absolute;
-					left: ${element.x}px;
-					top: ${element.y}px;
-					width: ${element.width}px;
-					height: ${element.height}px;
+					left: ${{element.x}}px;
+					top: ${{element.y}}px;
+					width: ${{element.width}}px;
+					height: ${{element.height}}px;
 					outline: 1px dashed #c25818;
 					outline-offset: -1px;
 					background: transparent;
