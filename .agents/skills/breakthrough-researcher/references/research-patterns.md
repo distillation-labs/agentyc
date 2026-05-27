@@ -62,9 +62,9 @@ This reference captures the mechanisms that recur across leading AI research and
 - Keep a trajectory that can be replayed or inspected after failure.
 - Preserve state selectively in tool-calling scenarios instead of replaying everything.
 
-## What This Means For Contextro
+## What This Means For Agentyc
 
-- Research should start from the current benchmark and architecture, not from hypothetical rewrites.
-- Good proposals include a transfer mechanism and a non-transfer rationale.
-- High-ROI directions usually improve retrieval quality, token efficiency, compaction recovery, or workflow control rather than adding arbitrary complexity.
-- Best-in-class comparison should include coding-agent product patterns from Cursor and Windsurf, plus efficiency-oriented model-system patterns from Mistral, when they transfer to Contextro.
+- Research should start from the current test suite and architecture, not from hypothetical rewrites.
+- Good proposals include a CDP mechanism explanation and a non-transfer rationale.
+- High-ROI directions usually improve browser action reliability, session lifecycle correctness, network interception accuracy, DOM extraction quality, or MCP tool responsiveness.
+- Best-in-class comparison should include coding-agent product patterns from Cursor and Windsurf, plus browser automation patterns from Playwright and Puppeteer, when they transfer to agentyc's CDP-first architecture.
