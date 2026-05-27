@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import urlparse, urlunparse
 
@@ -15,14 +14,14 @@ from agentyc.browser.events import (
 	BrowserErrorEvent,
 	BrowserLaunchEvent,
 	BrowserLaunchResult,
-	BrowserReconnectedEvent,
-	BrowserReconnectingEvent,
 	BrowserStartEvent,
 	BrowserStopEvent,
 	BrowserStoppedEvent,
 	TabCreatedEvent,
 )
+from agentyc.browser.hud_events import publish_browser_event
 from agentyc.browser.session_network import configure_fetch_interception
+from agentyc.browser.session_watchdogs import attach_all_watchdogs
 from agentyc.utils import get_agentyc_version, is_new_tab_page
 
 if TYPE_CHECKING:
@@ -30,104 +29,6 @@ if TYPE_CHECKING:
 
 
 SessionT = TypeVar('SessionT', bound='BrowserSession')
-
-
-async def attach_all_watchdogs(session: BrowserSession) -> None:
-	"""Initialize and attach all watchdogs with explicit handler registration."""
-	if session._watchdogs_attached:
-		session.logger.debug('Watchdogs already attached, skipping duplicate attachment')
-		return
-
-	from agentyc.browser.watchdogs.aboutblank_watchdog import AboutBlankWatchdog
-	from agentyc.browser.watchdogs.captcha_watchdog import CaptchaWatchdog
-	from agentyc.browser.watchdogs.crash_watchdog import CrashWatchdog
-	from agentyc.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
-	from agentyc.browser.watchdogs.dom_watchdog import DOMWatchdog
-	from agentyc.browser.watchdogs.downloads_watchdog import DownloadsWatchdog
-	from agentyc.browser.watchdogs.har_recording_watchdog import HarRecordingWatchdog
-	from agentyc.browser.watchdogs.local_browser_watchdog import LocalBrowserWatchdog
-	from agentyc.browser.watchdogs.permissions_watchdog import PermissionsWatchdog
-	from agentyc.browser.watchdogs.popups_watchdog import PopupsWatchdog
-	from agentyc.browser.watchdogs.recording_watchdog import RecordingWatchdog
-	from agentyc.browser.watchdogs.screenshot_watchdog import ScreenshotWatchdog
-	from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
-	from agentyc.browser.watchdogs.storage_state_watchdog import StorageStateWatchdog
-
-	CrashWatchdog.model_rebuild()
-	session._crash_watchdog = CrashWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._crash_watchdog.attach_to_session()
-
-	DownloadsWatchdog.model_rebuild()
-	session._downloads_watchdog = DownloadsWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._downloads_watchdog.attach_to_session()
-	if session.browser_profile.auto_download_pdfs:
-		session.logger.debug('📄 PDF auto-download enabled for this session')
-
-	should_enable_storage_state = (
-		session.browser_profile.storage_state is not None or session.browser_profile.user_data_dir is not None
-	)
-	if should_enable_storage_state:
-		StorageStateWatchdog.model_rebuild()
-		session._storage_state_watchdog = StorageStateWatchdog(
-			event_bus=session.event_bus,
-			browser_session=session,
-			auto_save_interval=60.0,
-			save_on_change=False,
-		)
-		session._storage_state_watchdog.attach_to_session()
-		session.logger.debug(
-			f'🍪 StorageStateWatchdog enabled (storage_state: {bool(session.browser_profile.storage_state)}, user_data_dir: {bool(session.browser_profile.user_data_dir)})'
-		)
-	else:
-		session.logger.debug('🍪 StorageStateWatchdog disabled (no storage_state or user_data_dir configured)')
-
-	LocalBrowserWatchdog.model_rebuild()
-	session._local_browser_watchdog = LocalBrowserWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._local_browser_watchdog.attach_to_session()
-
-	SecurityWatchdog.model_rebuild()
-	session._security_watchdog = SecurityWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._security_watchdog.attach_to_session()
-
-	AboutBlankWatchdog.model_rebuild()
-	session._aboutblank_watchdog = AboutBlankWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._aboutblank_watchdog.attach_to_session()
-
-	PopupsWatchdog.model_rebuild()
-	session._popups_watchdog = PopupsWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._popups_watchdog.attach_to_session()
-
-	PermissionsWatchdog.model_rebuild()
-	session._permissions_watchdog = PermissionsWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._permissions_watchdog.attach_to_session()
-
-	DefaultActionWatchdog.model_rebuild()
-	session._default_action_watchdog = DefaultActionWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._default_action_watchdog.attach_to_session()
-
-	ScreenshotWatchdog.model_rebuild()
-	session._screenshot_watchdog = ScreenshotWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._screenshot_watchdog.attach_to_session()
-
-	DOMWatchdog.model_rebuild()
-	session._dom_watchdog = DOMWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._dom_watchdog.attach_to_session()
-
-	RecordingWatchdog.model_rebuild()
-	session._recording_watchdog = RecordingWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._recording_watchdog.attach_to_session()
-
-	if session.browser_profile.record_har_path:
-		HarRecordingWatchdog.model_rebuild()
-		session._har_recording_watchdog = HarRecordingWatchdog(event_bus=session.event_bus, browser_session=session)
-		session._har_recording_watchdog.attach_to_session()
-
-	if session.browser_profile.captcha_solver:
-		CaptchaWatchdog.model_rebuild()
-		session._captcha_watchdog = CaptchaWatchdog(event_bus=session.event_bus, browser_session=session)
-		session._captcha_watchdog.attach_to_session()
-
-	session._watchdogs_attached = True
 
 
 async def on_BrowserStartEvent(session: BrowserSession, event: BrowserStartEvent) -> dict[str, str]:
@@ -180,6 +81,7 @@ async def on_BrowserStartEvent(session: BrowserSession, event: BrowserStartEvent
 							await demo.ensure_ready()
 					except Exception as exc:
 						session.logger.warning(f'[DemoMode] Failed to inject demo overlay: {exc}')
+				publish_browser_event(session_id=session.id, label='Browser connected')
 			else:
 				session.logger.debug('Already connected to CDP, skipping reconnection')
 				if session.browser_profile.demo_mode:
@@ -189,6 +91,7 @@ async def on_BrowserStartEvent(session: BrowserSession, event: BrowserStartEvent
 							await demo.ensure_ready()
 					except Exception as exc:
 						session.logger.warning(f'[DemoMode] Failed to inject demo overlay: {exc}')
+				publish_browser_event(session_id=session.id, label='Browser ready')
 
 		return {'cdp_url': session.cdp_url}
 	except Exception as e:
@@ -387,6 +290,8 @@ async def connect(session: SessionT, cdp_url: str | None = None) -> SessionT:
 		page_targets = await _bootstrap_page_targets(session)
 		await _setup_proxy_auth(session)
 		session._intentional_stop = False
+		from agentyc.browser.session_reconnect import _attach_ws_drop_callback
+
 		_attach_ws_drop_callback(session)
 
 		if session.agent_focus_target_id:
@@ -422,145 +327,3 @@ async def _setup_proxy_auth(session: BrowserSession) -> None:
 		await configure_fetch_interception(session)
 	except Exception as e:
 		session.logger.debug(f'Skipping proxy auth setup: {type(e).__name__}: {e}')
-
-
-async def reconnect(session: BrowserSession) -> None:
-	"""Re-establish the CDP WebSocket connection to an already-running browser."""
-	assert session.cdp_url, 'Cannot reconnect without a CDP URL'
-	old_focus_target_id = session.agent_focus_target_id
-
-	if session._cdp_client_root:
-		try:
-			await session._cdp_client_root.stop()
-		except Exception as e:
-			session.logger.debug(f'Error stopping old CDP client during reconnect: {e}')
-		session._cdp_client_root = None
-
-	if session.session_manager:
-		try:
-			await session.session_manager.clear()
-		except Exception as e:
-			session.logger.debug(f'Error clearing SessionManager during reconnect: {e}')
-		session.session_manager = None
-
-	session.agent_focus_target_id = None
-	session._cdp_client_root = await _create_root_cdp_client(session)
-	await _initialize_session_manager(session)
-
-	page_targets = session.session_manager.get_all_page_targets()
-	if session.is_shared_browser_runtime:
-		session._assign_shared_browser_ownership(page_targets)
-	else:
-		for target in page_targets:
-			session.session_manager.set_target_ownership(target.target_id, session.runtime_metadata, source='current_runtime')
-
-	owned_page_targets = session.get_owned_page_targets() if session.is_shared_browser_runtime else page_targets
-
-	restored = False
-	if old_focus_target_id:
-		for target in owned_page_targets:
-			if target.target_id == old_focus_target_id:
-				await session.get_or_create_cdp_session(old_focus_target_id, focus=True)
-				await session._apply_runtime_markers_to_target(old_focus_target_id)
-				await session._cdp_get_window_context(old_focus_target_id)
-				restored = True
-				session.logger.debug(f'🔄 Restored agent focus to previous target {old_focus_target_id[:8]}...')
-				break
-
-	if not restored:
-		if owned_page_targets:
-			fallback_id = owned_page_targets[0].target_id
-			await session.get_or_create_cdp_session(fallback_id, focus=True)
-			await session._apply_runtime_markers_to_target(fallback_id)
-			await session._cdp_get_window_context(fallback_id)
-			session.logger.debug(f'🔄 Agent focus set to fallback target {fallback_id[:8]}...')
-		else:
-			target_id = await session._cdp_create_new_page(
-				'about:blank',
-				background=session.browser_profile.shared_browser_focus_policy == 'preserve',
-			)
-			await session.get_or_create_cdp_session(target_id, focus=True)
-			await session._apply_runtime_markers_to_target(target_id)
-			await session._cdp_get_window_context(target_id)
-			session.logger.debug(f'🔄 Created new blank page during reconnect: {target_id[:8]}...')
-
-	await _setup_proxy_auth(session)
-	_attach_ws_drop_callback(session)
-
-
-async def _auto_reconnect(session: BrowserSession, max_attempts: int = 3) -> None:
-	"""Attempt to reconnect with exponential backoff."""
-	async with session._reconnect_lock:
-		if session._reconnecting:
-			return
-		session._reconnecting = True
-		session._reconnect_event.clear()
-
-	start_time = time.time()
-	delays = [1.0, 2.0, 4.0]
-	try:
-		for attempt in range(1, max_attempts + 1):
-			session.event_bus.dispatch(
-				BrowserReconnectingEvent(
-					cdp_url=session.cdp_url or '',
-					attempt=attempt,
-					max_attempts=max_attempts,
-				)
-			)
-			session.logger.warning(f'🔄 WebSocket reconnection attempt {attempt}/{max_attempts}...')
-			try:
-				await asyncio.wait_for(reconnect(session), timeout=15.0)
-				downtime = time.time() - start_time
-				session.event_bus.dispatch(
-					BrowserReconnectedEvent(
-						cdp_url=session.cdp_url or '',
-						attempt=attempt,
-						downtime_seconds=downtime,
-					)
-				)
-				session.logger.info(f'🔄 WebSocket reconnected after {downtime:.1f}s (attempt {attempt})')
-				return
-			except Exception as e:
-				session.logger.warning(f'🔄 Reconnection attempt {attempt} failed: {type(e).__name__}: {e}')
-				if attempt < max_attempts:
-					delay = delays[attempt - 1] if attempt - 1 < len(delays) else delays[-1]
-					await asyncio.sleep(delay)
-
-		session.logger.error(f'🔄 All {max_attempts} reconnection attempts failed')
-		session.event_bus.dispatch(
-			BrowserErrorEvent(
-				error_type='ReconnectionFailed',
-				message=f'Failed to reconnect after {max_attempts} attempts ({time.time() - start_time:.1f}s)',
-				details={'cdp_url': session.cdp_url or '', 'max_attempts': max_attempts},
-			)
-		)
-	finally:
-		session._reconnecting = False
-		session._reconnect_event.set()
-
-
-def _attach_ws_drop_callback(session: BrowserSession) -> None:
-	"""Attach a done callback to the CDPClient's message handler task to detect WS drops."""
-	if not session._cdp_client_root or not hasattr(session._cdp_client_root, '_message_handler_task'):
-		return
-
-	task = session._cdp_client_root._message_handler_task
-	if task is None or task.done():
-		return
-
-	def _on_message_handler_done(fut: asyncio.Future) -> None:
-		if session._intentional_stop or session._reconnecting or not session.cdp_url:
-			return
-
-		exc = fut.exception() if not fut.cancelled() else None
-		session.logger.warning(
-			f'🔌 CDP WebSocket message handler exited unexpectedly'
-			f'{f": {type(exc).__name__}: {exc}" if exc else " (connection closed)"}'
-		)
-		try:
-			loop = asyncio.get_running_loop()
-			session._reconnect_task = loop.create_task(_auto_reconnect(session))
-		except RuntimeError:
-			session.logger.error('🔌 No event loop available for auto-reconnect')
-
-	task.add_done_callback(_on_message_handler_done)
