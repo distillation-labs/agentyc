@@ -207,6 +207,7 @@ class FlatEnvConfig(BaseSettings):
 	# MCP-specific env vars
 	AGENTYC_CONFIG_PATH: str | None = Field(default=None)
 	AGENTYC_HEADLESS: bool | None = Field(default=None)
+	AGENTYC_HUD_OVERLAY: bool | None = Field(default=None)
 	AGENTYC_ALLOWED_DOMAINS: str | None = Field(default=None)
 	AGENTYC_LLM_MODEL: str | None = Field(default=None)
 
@@ -448,6 +449,9 @@ class Config:
 		# Apply MCP-specific env var overrides
 		if env_config.AGENTYC_HEADLESS is not None:
 			config['browser_profile']['headless'] = env_config.AGENTYC_HEADLESS
+
+		if env_config.AGENTYC_HUD_OVERLAY is not None:
+			config['browser_profile']['hud_overlay'] = env_config.AGENTYC_HUD_OVERLAY
 
 		if env_config.AGENTYC_ALLOWED_DOMAINS:
 			domains = [d.strip() for d in env_config.AGENTYC_ALLOWED_DOMAINS.split(',') if d.strip()]
