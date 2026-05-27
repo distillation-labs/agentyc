@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.18] - 2026-05-27
 
 ### Added
 
@@ -13,7 +13,7 @@
 - **Tool surface expanded from 53 to 65** — the public MCP server now includes frame inspection, storage control, and per-tab network inspection/control primitives without introducing a stateful frame-selection tool.
 - **Network tooling moved into a dedicated MCP helper module** — the higher-level frame/storage/network helpers now live in `agentyc.mcp.network_tools`, keeping `agentyc.mcp.cdp_tools` focused on lower-level CDP capture and tab utilities.
 - **Repeated `browser_get_state` reads now reuse only explicitly clean, very fresh cached state** — the runtime reuses a prior snapshot only when it is still marked clean, younger than `0.25s`, and the request does not need a screenshot or focus override, which cuts repeated-read latency without treating stale DOM state as long-lived truth.
-- **Interaction highlights now default to dark orange** — the visible interaction/debug overlay now uses `rgb(194, 88, 24)` / `#c25818` instead of the previous blue theme.
+- **Interaction highlights stripped to minimal** — click/scroll highlights are now a thin 2px solid outline (no corner brackets, no labels, no animations, no drop-shadows) and coordinate-click highlights are a tiny 8px dot (no outer circle, no glow). Default highlight duration reduced from 1.0s to 0.3s. The dark orange color (`rgb(194, 88, 24)` / `#c25818`) is retained. Debug DOM highlights (`dom_highlight_elements`) dropped from 2px dashed outline + labels to a plain 1px dashed outline.
 - **Benchmark baseline refreshed** — the current confirmed two-run headless medians are now runtime `import_ms=667.8`, `session_init_ms=1174.0`, `avg_auto_payload_reduction_pct=10.0`, `collaboration_latency_ms=1302.5`, plus stdio `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=26233.2`, `avg_ms=50.9`, `p95_ms=174.5`.
 
 ### Tests
