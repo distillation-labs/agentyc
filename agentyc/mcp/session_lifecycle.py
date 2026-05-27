@@ -76,24 +76,139 @@ async def _focus_or_create_attach_target(self) -> None:
 	await self.browser_session.event_bus.dispatch(AgentFocusChangedEvent(target_id=new_target_id, url='about:blank'))
 
 
+def _runtime_profile_defaults(self) -> dict[str, Any]:
+	return {
+		'runtime_label': self._runtime_label,
+		'runtime_role': self._runtime_role,
+		'parent_runtime_id': self._parent_runtime_id,
+		'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
+		'device_scale_factor': 1.0,
+		'disable_security': False,
+	}
+
+
+def _apply_profile_overrides(
+	base_profile_data: dict[str, Any],
+	*,
+	profile_config: dict[str, Any],
+	allowed_domains: list[str] | None,
+	kwargs: dict[str, Any],
+) -> dict[str, Any]:
+	profile_data = {**base_profile_data, **profile_config}
+	if allowed_domains is not None:
+		profile_data['allowed_domains'] = allowed_domains
+	profile_data.update(kwargs)
+	return profile_data
+
+
+def _build_attached_profile_data(
+	self,
+	*,
+	cdp_url: str,
+	profile_config: dict[str, Any],
+	allowed_domains: list[str] | None,
+	kwargs: dict[str, Any],
+) -> dict[str, Any]:
+	base_profile_data = {
+		'cdp_url': cdp_url,
+		'keep_alive': True,
+		'shared_browser_mode': self._shared_browser_mode,
+		'shared_browser_window_bounds': self._shared_browser_window_bounds,
+		'shared_browser_focus_policy': self._shared_browser_focus_policy,
+		**_runtime_profile_defaults(self),
+	}
+	return _apply_profile_overrides(
+		base_profile_data,
+		profile_config=profile_config,
+		allowed_domains=allowed_domains,
+		kwargs=kwargs,
+	)
+
+
+def _build_local_profile_data(
+	self,
+	*,
+	profile_config: dict[str, Any],
+	allowed_domains: list[str] | None,
+	kwargs: dict[str, Any],
+) -> dict[str, Any]:
+	from agentyc.config import CONFIG
+
+	base_profile_data = {
+		'keep_alive': False,
+		'user_data_dir': str(CONFIG.AGENTYC_DEFAULT_USER_DATA_DIR),
+		'headless': False,
+		**_runtime_profile_defaults(self),
+	}
+	return _apply_profile_overrides(
+		base_profile_data,
+		profile_config=profile_config,
+		allowed_domains=allowed_domains,
+		kwargs=kwargs,
+	)
+
+
+async def _start_browser_session_with_profile_data(self, profile_data: dict[str, Any]) -> None:
+	from agentyc.browser import BrowserProfile, BrowserSession
+
+	profile = BrowserProfile(**profile_data)
+	self.browser_session = BrowserSession(browser_profile=profile)
+	await self.browser_session.start()
+
+
+def _register_reusable_local_browser(self, register_local_shared_browser) -> None:
+	assert self.browser_session is not None
+	cdp_url = self.browser_session.browser_profile.cdp_url
+	if not cdp_url:
+		return
+	local_watchdog = getattr(self.browser_session, '_local_browser_watchdog', None)
+	if local_watchdog is not None:
+		local_watchdog._owns_browser_resources = False
+	self._cdp_url = cdp_url
+	browser_pid = getattr(local_watchdog, 'browser_pid', None)
+	register_local_shared_browser(
+		cdp_url=cdp_url,
+		browser_pid=browser_pid,
+		headless=self.browser_session.browser_profile.headless,
+		user_data_dir=str(self.browser_session.browser_profile.user_data_dir)
+		if self.browser_session.browser_profile.user_data_dir
+		else None,
+	)
+
+
+async def _initialize_browser_runtime_dependencies(self, *, profile_config: dict[str, Any]) -> None:
+	assert self.browser_session is not None
+	from agentyc.tools.service import Tools
+
+	self._track_session(self.browser_session)
+	self.tools = Tools()
+	self.tools.set_coordinate_clicking(True)
+	self.file_system = None
+	file_system_path = profile_config.get('file_system_path', '~/.agentyc-mcp')
+	self._file_system_base_dir = Path(file_system_path).expanduser()
+
+	try:
+		await self._register_cdp_event_listeners()
+	except Exception as _e:
+		logger.debug(f'CDP event listener registration failed (non-critical): {_e}')
+
+
 async def _init_browser_session(self, allowed_domains: list[str] | None = None, **kwargs):
 	"""Initialize browser session using config."""
 	if self.browser_session:
 		return
 
-	from agentyc.mcp.server import _ensure_all_loggers_use_stderr
+	from agentyc.mcp.server_bootstrap import _ensure_all_loggers_use_stderr
 
 	_ensure_all_loggers_use_stderr()
 	logger.debug('Initializing browser session...')
 
-	from agentyc.browser import BrowserProfile, BrowserSession
 	from agentyc.config import get_default_profile
 	from agentyc.mcp.shared_browser_registry import (
 		get_reusable_local_browser_cdp_url,
 		register_local_shared_browser,
 		reuse_local_browser_enabled,
 	)
-	from agentyc.tools.service import Tools
 
 	profile_config = get_default_profile(self.config)
 	provided_cdp_url = kwargs.pop('cdp_url', None)
@@ -112,91 +227,32 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 
 	try:
 		if cdp_url:
-			profile_data: dict[str, Any] = {
-				'cdp_url': cdp_url,
-				'keep_alive': True,
-				'runtime_label': self._runtime_label,
-				'runtime_role': self._runtime_role,
-				'parent_runtime_id': self._parent_runtime_id,
-				'shared_browser_mode': self._shared_browser_mode,
-				'shared_browser_window_bounds': self._shared_browser_window_bounds,
-				'shared_browser_focus_policy': self._shared_browser_focus_policy,
-				'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
-				'device_scale_factor': 1.0,
-				'disable_security': False,
-				**profile_config,
-			}
-			if allowed_domains is not None:
-				profile_data['allowed_domains'] = allowed_domains
-			for key, value in kwargs.items():
-				profile_data[key] = value
-			profile = BrowserProfile(**profile_data)
-			self.browser_session = BrowserSession(browser_profile=profile)
-			await self.browser_session.start()
+			profile_data = _build_attached_profile_data(
+				self,
+				cdp_url=cdp_url,
+				profile_config=profile_config,
+				allowed_domains=allowed_domains,
+				kwargs=kwargs,
+			)
+			await _start_browser_session_with_profile_data(self, profile_data)
+			assert self.browser_session is not None
 			self._cdp_url = self.browser_session.browser_profile.cdp_url
 			# Shared-browser runtimes intentionally stay in the existing browser profile so
 			# subagents can share auth/cookies/storage. On first attach, claim an existing
 			# blank tab when possible instead of leaving it idle and opening a second tab.
 			await _focus_or_create_attach_target(self)
 		else:
-			from agentyc.config import CONFIG
+			profile_data = _build_local_profile_data(
+				self,
+				profile_config=profile_config,
+				allowed_domains=allowed_domains,
+				kwargs=kwargs,
+			)
+			await _start_browser_session_with_profile_data(self, profile_data)
+			if should_reuse_local_browser and not is_attaching_to_existing_browser:
+				_register_reusable_local_browser(self, register_local_shared_browser)
 
-			profile_data = {
-				'downloads_path': str(Path.home() / 'Downloads' / 'agentyc-mcp'),
-				'keep_alive': False,
-				'runtime_label': self._runtime_label,
-				'runtime_role': self._runtime_role,
-				'parent_runtime_id': self._parent_runtime_id,
-				'user_data_dir': str(CONFIG.AGENTYC_DEFAULT_USER_DATA_DIR),
-				'device_scale_factor': 1.0,
-				'disable_security': False,
-				'headless': False,
-				**profile_config,
-			}
-			if allowed_domains is not None:
-				profile_data['allowed_domains'] = allowed_domains
-			for key, value in kwargs.items():
-				profile_data[key] = value
-			if should_reuse_local_browser and is_attaching_to_existing_browser:
-				profile_data['keep_alive'] = True
-				profile_data['shared_browser_mode'] = self._shared_browser_mode
-				profile_data['shared_browser_window_bounds'] = self._shared_browser_window_bounds
-				profile_data['shared_browser_focus_policy'] = self._shared_browser_focus_policy
-			profile = BrowserProfile(**profile_data)
-			self.browser_session = BrowserSession(browser_profile=profile)
-			await self.browser_session.start()
-			if (
-				should_reuse_local_browser
-				and not is_attaching_to_existing_browser
-				and self.browser_session.browser_profile.cdp_url
-			):
-				local_watchdog = getattr(self.browser_session, '_local_browser_watchdog', None)
-				if local_watchdog is not None:
-					local_watchdog._owns_browser_resources = False
-				self._cdp_url = self.browser_session.browser_profile.cdp_url
-				browser_pid = getattr(local_watchdog, 'browser_pid', None)
-				register_local_shared_browser(
-					cdp_url=self.browser_session.browser_profile.cdp_url,
-					browser_pid=browser_pid,
-					headless=self.browser_session.browser_profile.headless,
-					user_data_dir=str(self.browser_session.browser_profile.user_data_dir)
-					if self.browser_session.browser_profile.user_data_dir
-					else None,
-				)
-			elif should_reuse_local_browser and is_attaching_to_existing_browser and self.browser_session.browser_profile.cdp_url:
-				self._cdp_url = self.browser_session.browser_profile.cdp_url
-
-		self._track_session(self.browser_session)
-		self.tools = Tools()
-		self.tools.set_coordinate_clicking(True)
-		self.file_system = None
-		file_system_path = profile_config.get('file_system_path', '~/.agentyc-mcp')
-		self._file_system_base_dir = Path(file_system_path).expanduser()
-
-		try:
-			await self._register_cdp_event_listeners()
-		except Exception as _e:
-			logger.debug(f'CDP event listener registration failed (non-critical): {_e}')
+		await _initialize_browser_runtime_dependencies(self, profile_config=profile_config)
 	except Exception:
 		await self._reset_broken_browser_runtime()
 		raise
