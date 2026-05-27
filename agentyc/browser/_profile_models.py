@@ -247,6 +247,10 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 		default=False,
 		description='Enable demo mode side panel that streams runtime logs directly inside the browser window (requires headless=False).',
 	)
+	hud_overlay: bool = Field(
+		default=False,
+		description='Enable a small transparent desktop HUD window that mirrors sanitized runtime activity outside the browser.',
+	)
 	cookie_whitelist_domains: list[str] = Field(
 		default_factory=lambda: ['nature.com', 'qatarairways.com'],
 		description='List of domains to whitelist in the "I still don\'t care about cookies" extension, preventing automatic cookie banner handling on these sites.',
