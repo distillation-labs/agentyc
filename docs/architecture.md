@@ -21,13 +21,20 @@ agentyc.mcp.server.AgentycServer
   |      |
   |      +--> agentyc.mcp.action_runtime
   |      +--> agentyc.mcp.cdp_tools
+  |      +--> agentyc.mcp.intent_tools
   |      +--> agentyc.mcp.session_lifecycle
+  |      +--> agentyc.mcp.tool_feedback
   |
   +--> agentyc.tools.service.Tools
   |      |
   |      +--> agentyc.tools.extraction.router
   |
   +--> agentyc.mcp.state
+  |
+  +--> agentyc.browser.hud_stream
+  |      |
+  |      +--> agentyc.browser.demo_mode
+  |      +--> agentyc.browser.hud_overlay
   |
   +--> agentyc.browser.session.BrowserSession
          |
@@ -71,6 +78,17 @@ Responsibilities:
 
 The server advertises no MCP resources and no MCP prompts.
 
+## HUD Event Layer
+
+`agentyc.browser.hud_stream` is the shared in-process event stream for operator-visible activity.
+
+- `agentyc.mcp.tool_feedback` publishes browser tool start/done/error events into the stream.
+- `agentyc.mcp.intent_tools` publishes explicit short-form intent labels from `browser_set_intent`.
+- `agentyc.browser.demo_mode` subscribes to that stream and forwards sanitized entries into the browser page via the `agentyc-log` event contract.
+- `agentyc.browser.hud_overlay` mirrors the same sanitized stream into the optional transparent desktop HUD window.
+
+This layer is intentionally label-only. It is designed for operator visibility, not raw reasoning traces.
+
 ### Internal MCP Sub-Modules
 
 `AgentycServer`'s method body is organized across five internal modules. These are not part of the public contract but are useful for navigating the source:
@@ -79,6 +97,8 @@ The server advertises no MCP resources and no MCP prompts.
 |--------|---------------|
 | `agentyc.mcp.tool_schemas` | Returns the full `list[types.Tool]` catalog passed to MCP |
 | `agentyc.mcp.tool_dispatch` | Routes each tool name to its handler via `_execute_tool` |
+| `agentyc.mcp.tool_feedback` | Formats MCP tool log metadata and publishes browser-tool HUD events |
+| `agentyc.mcp.intent_tools` | Implements `browser_set_intent` for user-visible operator status updates |
 | `agentyc.mcp.action_runtime` | Browser action implementations (navigate, click, type, extract, scroll, etc.) |
 | `agentyc.mcp.cdp_tools` | CDP-specific tool implementations (tabs, cookies, console logs, network log, hover, drag, etc.) |
 | `agentyc.mcp.session_lifecycle` | Session tracking, idle cleanup, and browser initialization via `_init_browser_session` |
