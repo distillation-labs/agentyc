@@ -33,8 +33,7 @@ and don't invent ones that don't exist on that provider.
 - Use `output_format: type[T] | None` to gate structured parsing — never parse JSON manually in the provider.
 - Place provider modules under `agentyc/llm/<provider-name>/` following the existing pattern.
 - Run `uv run pyright` after adding a new provider — the Protocol check is type-enforced.
-- As provider integrations grow, split them into focused modules such as `chat.py`, serializers/parsers, views, and shared helpers instead of keeping every concern in one expanding provider file.
-- Treat 700-800 lines as the general upper bound for active implementation files, scrutinize files above 800 lines for refactor, and treat files above 1000 lines as priority modular-refactor candidates.
+- Keep files between 300-500 lines max. Files above 500 lines must be split up — this is a strict rule, no exceptions. Split into focused modules like `chat.py`, serializers/parsers, views, and shared helpers.
 
 ## BaseChatModel Protocol
 
