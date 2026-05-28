@@ -39,7 +39,7 @@ def get_recent_events_str(watchdog, limit: int = 10) -> str | None:
 	return json.dumps([])
 
 
-async def get_pending_network_requests(watchdog) -> list['NetworkRequest']:
+async def get_pending_network_requests(watchdog) -> list[NetworkRequest]:
 	"""Get list of currently pending network requests."""
 	from agentyc.browser.views import NetworkRequest
 

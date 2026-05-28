@@ -2,7 +2,7 @@
 name = "agentyc"
 description = "Deterministic MCP-first browser automation runtime for coding agents"
 authors = [{ name = "Japneet Kalkat" }]
-version = "1.0.0"
+version = "0.3.0"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
 keywords = ["mcp", "model-context-protocol", "browser-automation", "cdp", "chromium", "coding-agents"]

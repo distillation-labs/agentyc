@@ -27,7 +27,7 @@ body:
       description: |
         What version of `agentyc` are you using? (Run `uv pip show agentyc` or `git log -n 1`)
         **DO NOT JUST WRITE `latest release` or `main` or a very old version or we will close your issue!**
-      placeholder: "e.g. 1.0.0 or 62760baaefd"
+      placeholder: "e.g. 0.3.0 or 62760baaefd"
     validations:
       required: true
 

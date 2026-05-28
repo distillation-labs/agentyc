@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 	from agentyc.browser.watchdogs.default_action_dropdowns import DefaultActionDropdownMixin
 
 
-async def select_dropdown_option(watchdog: 'DefaultActionDropdownMixin', event: SelectDropdownOptionEvent) -> dict[str, str]:
+async def select_dropdown_option(watchdog: DefaultActionDropdownMixin, event: SelectDropdownOptionEvent) -> dict[str, str]:
 	try:
 		element_node = event.node
 		index_for_logging = element_node.backend_node_id or 'unknown'

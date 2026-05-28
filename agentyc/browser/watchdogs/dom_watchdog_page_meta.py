@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 	from agentyc.dom.views import EnhancedDOMTreeNode
 
 
-def detect_pagination_buttons(watchdog, selector_map: dict[int, 'EnhancedDOMTreeNode']) -> list['PaginationButton']:
+def detect_pagination_buttons(watchdog, selector_map: dict[int, EnhancedDOMTreeNode]) -> list[PaginationButton]:
 	"""Detect pagination buttons from the DOM selector map."""
 	from agentyc.browser.views import PaginationButton
 
@@ -40,7 +40,7 @@ def detect_pagination_buttons(watchdog, selector_map: dict[int, 'EnhancedDOMTree
 	return pagination_buttons_data
 
 
-async def get_page_info(watchdog) -> 'PageInfo':
+async def get_page_info(watchdog) -> PageInfo:
 	"""Get comprehensive page information using a single CDP call."""
 	from agentyc.browser.views import PageInfo
 

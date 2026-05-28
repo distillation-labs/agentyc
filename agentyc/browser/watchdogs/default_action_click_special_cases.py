@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 async def execute_click_with_download_detection(
-	watchdog: 'DefaultActionClickEngineMixin',
+	watchdog: DefaultActionClickEngineMixin,
 	click_coro,
 	download_complete_timeout: float = 30.0,
 ) -> dict | None:
@@ -162,7 +162,7 @@ def is_print_related_element(element_node: EnhancedDOMTreeNode) -> bool:
 	return bool(onclick and 'print' in onclick)
 
 
-async def handle_print_button_click(watchdog: 'DefaultActionClickEngineMixin', element_node: EnhancedDOMTreeNode) -> dict | None:
+async def handle_print_button_click(watchdog: DefaultActionClickEngineMixin, element_node: EnhancedDOMTreeNode) -> dict | None:
 	try:
 		import base64
 		import os

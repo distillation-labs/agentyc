@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 	from agentyc.browser.watchdogs.har_recording_watchdog import HarRecordingWatchdog
 
 
-async def write_har(watchdog: 'HarRecordingWatchdog') -> None:
+async def write_har(watchdog: HarRecordingWatchdog) -> None:
 	entries = [entry for entry in watchdog._entries.values() if include_entry(watchdog, entry)]
 
 	har_entries = []
@@ -193,13 +193,13 @@ def format_page_started_datetime(timestamp: float | None) -> str:
 		return ''
 
 
-def page_ref_for_entry(watchdog: 'HarRecordingWatchdog', entry: _HarEntryBuilder) -> str | None:
+def page_ref_for_entry(watchdog: HarRecordingWatchdog, entry: _HarEntryBuilder) -> str | None:
 	if entry.frame_id and entry.frame_id in watchdog._top_level_pages:
 		return f'page@{entry.frame_id}'
 	return None
 
 
-def include_entry(watchdog: 'HarRecordingWatchdog', entry: _HarEntryBuilder) -> bool:
+def include_entry(watchdog: HarRecordingWatchdog, entry: _HarEntryBuilder) -> bool:
 	if not _is_https(entry.url):
 		return False
 	if entry.url and '/favicon.ico' in entry.url.lower():

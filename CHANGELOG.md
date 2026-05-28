@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0] - 2026-05-27
+## [0.3.0] - 2026-05-28
 
 ### Added
 
@@ -12,11 +12,13 @@
 
 - **MCP tool lifecycle events now feed a shared HUD stream** — browser tool start/done/error phases, reconnect notices, and download notices are now emitted into a shared in-process activity stream used by the browser HUD and desktop overlay.
 - **Public tool surface expanded from 65 to 66** — the MCP server now includes `browser_set_intent` alongside the existing deterministic browser tool catalog.
-- **Public release metadata and docs aligned to 1.0.0** — package versioning, README/docs references, issue/security links, and the packaged skills guide now reflect the shipped HUD/operator UX.
+- **Public release metadata and docs aligned to 0.3.0** — package versioning, README/docs references, issue/security links, and the packaged skills guide now reflect the shipped HUD/operator UX.
+- **Cold MCP server imports are leaner** — `agentyc.mcp.server` now lazy-binds the large server method table and defers tool-schema/error-helper imports until runtime, which keeps the release-gate import benchmark within the trusted-publishing budget without changing the public tool surface.
 
 ### Tests
 
 - **New HUD coverage** — `tests/ci/browser/test_hud.py` covers activity-stream routing, browser HUD script config injection, feedback/report destinations, noisy-tool filtering, and intent publication.
+- **Release-gate validation rerun** — the local release checks were rerun after the import-path change so the trusted-publishing workflow can publish the package cleanly.
 
 ## [0.2.18] - 2026-05-27
 

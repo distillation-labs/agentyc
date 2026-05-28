@@ -45,17 +45,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from agentyc.mcp.server_methods import SERVER_METHODS
-from agentyc.mcp.tool_feedback import _extract_tool_error_message
-
 # Try to import MCP SDK
 try:
 	import mcp.server.stdio
 	import mcp.types as types
 	from mcp.server import NotificationOptions, Server
 	from mcp.server.models import InitializationOptions
-
-	from agentyc.mcp.tool_schemas import get_tool_schemas
 
 	MCP_AVAILABLE = True
 
@@ -74,6 +69,7 @@ except ImportError:
 class AgentycServer:
 	"""MCP Server for agentyc capabilities."""
 
+	_methods_bound = False
 	_execute_tool: Callable[[str, dict[str, Any]], Awaitable[Any]]
 	_set_intent: Callable[[str], Awaitable[str]]
 	_start_cleanup_task: Callable[[], Awaitable[None]]
@@ -110,6 +106,16 @@ class AgentycServer:
 	_get_network_conditions: Callable[[], Awaitable[str]]
 	_replay_request: Callable[..., Awaitable[str]]
 
+	@classmethod
+	def _bind_server_methods(cls) -> None:
+		if cls._methods_bound:
+			return
+		from agentyc.mcp.server_methods import SERVER_METHODS
+
+		for method_name, method in SERVER_METHODS.items():
+			setattr(cls, method_name, method)
+		cls._methods_bound = True
+
 	def __init__(
 		self,
 		session_timeout_minutes: int = 0,
@@ -123,6 +129,8 @@ class AgentycServer:
 		shared_browser_window_bounds: dict[str, Any] | None = None,
 		shared_browser_focus_policy: str = 'preserve',
 	):
+		type(self)._bind_server_methods()
+
 		# Ensure all logging goes to stderr (in case new loggers were created)
 		_ensure_all_loggers_use_stderr()
 
@@ -194,6 +202,8 @@ class AgentycServer:
 		@self.server.list_tools()
 		async def handle_list_tools() -> list[types.Tool]:
 			"""List all available agentyc tools."""
+			from agentyc.mcp.tool_schemas import get_tool_schemas
+
 			return get_tool_schemas()
 
 		@self.server.list_resources()
@@ -217,6 +227,7 @@ class AgentycServer:
 			start_time = time.time()
 			error_msg = None
 			args = arguments or {}
+			from agentyc.mcp.tool_feedback import _extract_tool_error_message
 
 			self._publish_hud_event('tool_start', name, args)
 			# Send starting notification
@@ -337,9 +348,7 @@ class AgentycServer:
 			await self._shutdown()
 
 
-for _method_name, _method in SERVER_METHODS.items():
-	setattr(AgentycServer, _method_name, _method)
-from agentyc.mcp.server_main import main
-
 if __name__ == '__main__':
+	from agentyc.mcp.server_main import main
+
 	asyncio.run(main())

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 async def dispatch_key_event(
-	watchdog: 'DefaultActionNavigationMixin', cdp_session, event_type: str, key: str, modifiers: int = 0
+	watchdog: DefaultActionNavigationMixin, cdp_session, event_type: str, key: str, modifiers: int = 0
 ) -> None:
 	code, vk_code = get_key_info(key)
 	params: DispatchKeyEventParameters = {
@@ -30,7 +30,7 @@ async def dispatch_key_event(
 	await cdp_session.cdp_client.send.Input.dispatchKeyEvent(params=params, session_id=cdp_session.session_id)
 
 
-async def send_keys_event(watchdog: 'DefaultActionNavigationMixin', event: 'SendKeysEvent') -> None:
+async def send_keys_event(watchdog: DefaultActionNavigationMixin, event: SendKeysEvent) -> None:
 	cdp_session = await watchdog.browser_session.get_or_create_cdp_session(focus=True)
 	key_aliases = {
 		'ctrl': 'Control',

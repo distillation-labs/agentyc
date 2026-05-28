@@ -17,7 +17,7 @@ _POST_MOUSE_DOWN_SETTLE_S = 0.03
 
 
 async def check_element_occlusion(
-	watchdog: 'DefaultActionClickEngineMixin', backend_node_id: int, x: float, y: float, cdp_session
+	watchdog: DefaultActionClickEngineMixin, backend_node_id: int, x: float, y: float, cdp_session
 ) -> bool:
 	try:
 		session_id = cdp_session.session_id
@@ -121,7 +121,7 @@ async def check_element_occlusion(
 
 
 async def move_mouse_before_click(
-	watchdog: 'DefaultActionClickEngineMixin', cdp_session, session_id: str, x: float, y: float
+	watchdog: DefaultActionClickEngineMixin, cdp_session, session_id: str, x: float, y: float
 ) -> None:
 	try:
 		await asyncio.wait_for(
@@ -142,7 +142,7 @@ async def move_mouse_before_click(
 		watchdog.logger.debug(f'⚠️ Mouse move before click failed (non-critical): {type(error).__name__}: {error}')
 
 
-async def click_element_node_impl(watchdog: 'DefaultActionClickEngineMixin', element_node) -> dict | None:
+async def click_element_node_impl(watchdog: DefaultActionClickEngineMixin, element_node) -> dict | None:
 	try:
 		tag_name = element_node.tag_name.lower() if element_node.tag_name else ''
 		element_type = element_node.attributes.get('type', '').lower() if element_node.attributes else ''
@@ -418,7 +418,7 @@ async def click_element_node_impl(watchdog: 'DefaultActionClickEngineMixin', ele
 
 
 async def click_on_coordinate(
-	watchdog: 'DefaultActionClickEngineMixin', coordinate_x: int, coordinate_y: int, force: bool = False
+	watchdog: DefaultActionClickEngineMixin, coordinate_x: int, coordinate_y: int, force: bool = False
 ) -> dict | None:
 	try:
 		cdp_session = await watchdog.browser_session.get_or_create_cdp_session()
