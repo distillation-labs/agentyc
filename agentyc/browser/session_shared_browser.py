@@ -10,11 +10,11 @@ from cdp_use.cdp.target import TargetID
 from cdp_use.cdp.target.commands import CreateTargetParameters
 
 from agentyc.browser.collaboration import (
-	apply_title_prefix,
 	build_runtime_marker_script,
 	build_runtime_metadata_probe_script,
 )
 from agentyc.browser.page import Page
+from agentyc.browser.session_leaf_helpers import _tab_display_title
 from agentyc.browser.session_manager_support import apply_target_info as apply_target_info_helper
 from agentyc.browser.session_manager_support import runtime_metadata_from_title
 from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
@@ -25,19 +25,6 @@ from agentyc.utils import _log_pretty_url, is_new_tab_page
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
-
-
-def _tab_display_title(session: BrowserSession, target: Target) -> str:
-	display_title = target.display_title or target.title
-	if (
-		target.ownership
-		and target.ownership.runtime
-		and target.ownership.runtime.runtime_id == session.runtime_metadata.runtime_id
-	):
-		return apply_title_prefix(display_title, session.runtime_metadata)
-	if target.ownership and target.ownership.runtime and target.ownership.title_prefix_applied:
-		return apply_title_prefix(display_title, target.ownership.runtime)
-	return display_title
 
 
 def _assign_shared_browser_ownership(session: BrowserSession, page_targets: list[Target]) -> None:
