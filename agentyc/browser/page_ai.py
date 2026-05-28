@@ -36,7 +36,7 @@ class PageAIMixin:
 		"""Get the DOM service for this target."""
 		return DomService(self._browser_session)
 
-	async def get_element_by_prompt(self, prompt: str, llm: 'BaseChatModel | None' = None) -> 'Element | None':
+	async def get_element_by_prompt(self, prompt: str, llm: BaseChatModel | None = None) -> Element | None:
 		"""Get an element by a prompt."""
 		await self._ensure_session()
 		llm = llm or self._llm
@@ -114,7 +114,7 @@ Before you return the element index, reason about the state and elements for a s
 
 		return Element_(self._browser_session, element.backend_node_id, self._session_id)
 
-	async def must_get_element_by_prompt(self, prompt: str, llm: 'BaseChatModel | None' = None) -> 'Element':
+	async def must_get_element_by_prompt(self, prompt: str, llm: BaseChatModel | None = None) -> Element:
 		"""Get an element by a prompt.
 
 		@dev LLM can still return None, this just raises an error if the element is not found.
@@ -125,7 +125,7 @@ Before you return the element index, reason about the state and elements for a s
 
 		return element
 
-	async def extract_content(self, prompt: str, structured_output: type[T], llm: 'BaseChatModel | None' = None) -> T:
+	async def extract_content(self, prompt: str, structured_output: type[T], llm: BaseChatModel | None = None) -> T:
 		"""Extract structured content from the current page using LLM."""
 		llm = llm or self._llm
 

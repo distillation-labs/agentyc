@@ -118,10 +118,10 @@ class SessionRuntimeMixin:
 
 	# region - ========== CDP-based replacements for browser_context operations ==========
 
-	def get_focused_target(self) -> 'Target | None':
+	def get_focused_target(self) -> Target | None:
 		return session_runtime.get_focused_target(self._session())
 
-	def get_page_targets(self) -> list['Target']:
+	def get_page_targets(self) -> list[Target]:
 		return session_runtime.get_page_targets(self._session())
 
 	async def get_browser_state_summary(

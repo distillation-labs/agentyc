@@ -31,22 +31,22 @@ class SessionTargetsMixin:
 		assert session._cdp_client_root is not None, 'CDP client not initialized - browser may not be connected yet'
 		return session._cdp_client_root
 
-	async def new_page(self, url: str | None = None) -> 'Page':
+	async def new_page(self, url: str | None = None) -> Page:
 		return await session_shared_browser.new_page(self._session(), url)
 
-	async def get_current_page(self) -> 'Page | None':
+	async def get_current_page(self) -> Page | None:
 		return await session_shared_browser.get_current_page(self._session())
 
-	async def must_get_current_page(self) -> 'Page':
+	async def must_get_current_page(self) -> Page:
 		return await session_shared_browser.must_get_current_page(self._session())
 
-	async def get_pages(self) -> list['Page']:
+	async def get_pages(self) -> list[Page]:
 		return await session_shared_browser.get_pages(self._session())
 
 	async def close_page(self, page: Page | str) -> None:
 		await session_shared_browser.close_page(self._session(), page)
 
-	async def cookies(self) -> list['Cookie']:
+	async def cookies(self) -> list[Cookie]:
 		"""Get cookies, optionally filtered by URLs."""
 
 		result = await self.cdp_client.send.Storage.getCookies()

@@ -72,11 +72,7 @@ def normalize_action_function_signature(
 
 				types_compatible = (
 					param_type == expected_type
-					or (
-						inspect.isclass(param_type)
-						and inspect.isclass(expected_type)
-						and issubclass(param_type, expected_type)
-					)
+					or (inspect.isclass(param_type) and inspect.isclass(expected_type) and issubclass(param_type, expected_type))
 					or (expected_type is list and (param_type is list or get_origin(param_type) is list))
 				)
 
@@ -154,7 +150,9 @@ def normalize_action_function_signature(
 	new_params = [Parameter('params', Parameter.KEYWORD_ONLY, default=None, annotation=Optional[param_model])]
 	for special_param in special_params:
 		new_params.append(
-			Parameter(special_param.name, Parameter.KEYWORD_ONLY, default=special_param.default, annotation=special_param.annotation)
+			Parameter(
+				special_param.name, Parameter.KEYWORD_ONLY, default=special_param.default, annotation=special_param.annotation
+			)
 		)
 	new_params.append(Parameter('kwargs', Parameter.VAR_KEYWORD))
 	normalized_wrapper.__signature__ = sig.replace(parameters=new_params)  # type: ignore[attr-defined]

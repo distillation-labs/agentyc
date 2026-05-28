@@ -5,6 +5,8 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+	from cdp_use.cdp.dom.commands import GetAttributesParameters, GetBoxModelParameters
+	from cdp_use.cdp.page.commands import CaptureScreenshotParameters
 	from cdp_use.cdp.page.types import Viewport
 	from cdp_use.cdp.runtime.commands import CallFunctionOnParameters
 
@@ -14,7 +16,7 @@ if TYPE_CHECKING:
 async def get_attribute(element: 'Element', name: str) -> str | None:
 	"""Get an attribute value."""
 	node_id = await element._get_node_id()
-	params = {'nodeId': node_id}
+	params: 'GetAttributesParameters' = {'nodeId': node_id}
 	result = await element._client.send.DOM.getAttributes(params, session_id=element._session_id)
 	attributes = result['attributes']
 	for i in range(0, len(attributes), 2):
@@ -27,7 +29,7 @@ async def get_bounding_box(element: 'Element') -> 'BoundingBox | None':
 	"""Get the bounding box of the element."""
 	try:
 		node_id = await element._get_node_id()
-		params = {'nodeId': node_id}
+		params: 'GetBoxModelParameters' = {'nodeId': node_id}
 		result = await element._client.send.DOM.getBoxModel(params, session_id=element._session_id)
 		if 'model' not in result:
 			return None
@@ -63,7 +65,7 @@ async def screenshot_element(element: 'Element', format: str = 'png', quality: i
 		'height': box['height'],
 		'scale': 1.0,
 	}
-	params = {'format': format, 'clip': viewport}
+	params: 'CaptureScreenshotParameters' = {'format': format, 'clip': viewport}
 	if quality is not None and format.lower() == 'jpeg':
 		params['quality'] = quality
 

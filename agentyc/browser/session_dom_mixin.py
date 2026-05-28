@@ -50,10 +50,10 @@ class SessionDOMMixin:
 
 	def find_file_input_near_element(
 		self,
-		node: 'EnhancedDOMTreeNode',
+		node: EnhancedDOMTreeNode,
 		max_height: int = 3,
 		max_descendant_depth: int = 3,
-	) -> 'EnhancedDOMTreeNode | None':
+	) -> EnhancedDOMTreeNode | None:
 		return session_dom_find_file_input_near_element(self._session(), node, max_height, max_descendant_depth)
 
 	async def get_selector_map(self) -> dict[int, EnhancedDOMTreeNode]:
@@ -72,13 +72,13 @@ class SessionDOMMixin:
 	async def get_element_coordinates(self, backend_node_id: int, cdp_session: CDPSession) -> DOMRect | None:
 		return await session_dom_get_element_coordinates(self._session(), backend_node_id, cdp_session)
 
-	async def highlight_interaction_element(self, node: 'EnhancedDOMTreeNode') -> None:
+	async def highlight_interaction_element(self, node: EnhancedDOMTreeNode) -> None:
 		await session_dom_highlight_interaction_element(self._session(), node)
 
 	async def highlight_coordinate_click(self, x: int, y: int) -> None:
 		await session_dom_highlight_coordinate_click(self._session(), x, y)
 
-	async def add_highlights(self, selector_map: dict[int, 'EnhancedDOMTreeNode']) -> None:
+	async def add_highlights(self, selector_map: dict[int, EnhancedDOMTreeNode]) -> None:
 		await session_dom_add_highlights(self._session(), selector_map)
 
 	async def screenshot_element(

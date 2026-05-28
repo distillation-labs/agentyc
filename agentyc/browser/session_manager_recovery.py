@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 	from agentyc.browser.session_manager import SessionManager
 
 
-async def ensure_valid_focus(manager: 'SessionManager', timeout: float = 3.0) -> bool:
+async def ensure_valid_focus(manager: SessionManager, timeout: float = 3.0) -> bool:
 	"""Ensure agent focus points to a valid, attached CDP session."""
 	if not manager.browser_session.agent_focus_target_id:
 		if manager._recovery_in_progress and manager._recovery_complete_event:
@@ -59,9 +59,7 @@ async def ensure_valid_focus(manager: 'SessionManager', timeout: float = 3.0) ->
 				)
 				return True
 
-			manager.logger.error(
-				f'[SessionManager] ❌ Recovery completed but focus still invalid after {elapsed * 1000:.0f}ms'
-			)
+			manager.logger.error(f'[SessionManager] ❌ Recovery completed but focus still invalid after {elapsed * 1000:.0f}ms')
 			return await recover_focus_on_demand(manager, timeout=timeout)
 		except TimeoutError:
 			manager.logger.error(
@@ -75,7 +73,7 @@ async def ensure_valid_focus(manager: 'SessionManager', timeout: float = 3.0) ->
 	return False
 
 
-async def recover_focus_on_demand(manager: 'SessionManager', timeout: float = 3.0) -> bool:
+async def recover_focus_on_demand(manager: SessionManager, timeout: float = 3.0) -> bool:
 	"""Recover focus only when a caller explicitly needs a usable page."""
 	async with manager._recovery_lock:
 		focus_id = manager.browser_session.agent_focus_target_id
@@ -134,7 +132,7 @@ async def recover_focus_on_demand(manager: 'SessionManager', timeout: float = 3.
 		return False
 
 
-async def recover_agent_focus(manager: 'SessionManager', crashed_target_id: TargetID) -> None:
+async def recover_agent_focus(manager: SessionManager, crashed_target_id: TargetID) -> None:
 	"""Auto-recover agent focus when the focused target crashes or detaches."""
 	try:
 		async with manager._recovery_lock:
@@ -185,7 +183,9 @@ async def recover_agent_focus(manager: 'SessionManager', crashed_target_id: Targ
 			is_existing_tab = True
 			manager.logger.info(f'[SessionManager] Switching agent_focus to existing tab {new_target_id[:8]}...')
 		else:
-			manager.logger.info('[SessionManager] No tabs remain after detach; leaving focus empty until a future action needs a page')
+			manager.logger.info(
+				'[SessionManager] No tabs remain after detach; leaving focus empty until a future action needs a page'
+			)
 			return
 
 		new_session = None

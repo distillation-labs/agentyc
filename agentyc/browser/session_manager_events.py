@@ -14,15 +14,13 @@ if TYPE_CHECKING:
 	from agentyc.browser.session_manager import SessionManager
 
 
-async def start_monitoring(manager: 'SessionManager') -> None:
+async def start_monitoring(manager: SessionManager) -> None:
 	"""Start monitoring Target attach/detach events."""
 	if not manager.browser_session._cdp_client_root:
 		raise RuntimeError('CDP client not initialized')
 
 	cdp_client = manager.browser_session._cdp_client_root
-	await cdp_client.send.Target.setDiscoverTargets(
-		params={'discover': True, 'filter': [{'type': 'page'}, {'type': 'iframe'}]}
-	)
+	await cdp_client.send.Target.setDiscoverTargets(params={'discover': True, 'filter': [{'type': 'page'}, {'type': 'iframe'}]})
 
 	def on_attached(event: AttachedToTargetEvent, session_id: SessionID | None = None):
 		create_task_with_error_handling(
@@ -56,7 +54,7 @@ async def start_monitoring(manager: 'SessionManager') -> None:
 	await manager._initialize_existing_targets()
 
 
-async def handle_target_attached(manager: 'SessionManager', event: AttachedToTargetEvent) -> None:
+async def handle_target_attached(manager: SessionManager, event: AttachedToTargetEvent) -> None:
 	"""Handle Target.attachedToTarget event."""
 	target_id = event['targetInfo']['targetId']
 	session_id = event['sessionId']
@@ -135,7 +133,7 @@ async def handle_target_attached(manager: 'SessionManager', event: AttachedToTar
 			manager.logger.warning(f'[SessionManager] Failed to resume execution: {e}')
 
 
-async def handle_target_info_changed(manager: 'SessionManager', event: dict) -> None:
+async def handle_target_info_changed(manager: SessionManager, event: dict) -> None:
 	"""Handle Target.targetInfoChanged events."""
 	target_info = event.get('targetInfo', {})
 	target_id = target_info.get('targetId')
@@ -148,7 +146,7 @@ async def handle_target_info_changed(manager: 'SessionManager', event: dict) -> 
 			manager._apply_target_info(target, cast(Mapping[str, Any], target_info))
 
 
-async def handle_target_detached(manager: 'SessionManager', event: DetachedFromTargetEvent) -> None:
+async def handle_target_detached(manager: SessionManager, event: DetachedFromTargetEvent) -> None:
 	"""Handle Target.detachedFromTarget events."""
 	session_id = event['sessionId']
 	target_id = event.get('targetId')

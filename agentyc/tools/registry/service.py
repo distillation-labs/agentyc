@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Callable
+from types import UnionType
 from typing import Any, Generic, TypeVar, Union
 
 from pydantic import BaseModel, Field, RootModel, create_model
@@ -205,7 +206,6 @@ class Registry(Generic[Context]):
 		Each action model contains only the specific action being used,
 		rather than all actions with most set to None.
 		"""
-		from typing import Union
 
 		# Filter actions based on page_url if provided:
 		#   if page_url is None, only include actions with no filters

@@ -1,16 +1,26 @@
 """DOM watchdog for browser DOM tree management using CDP."""
 
 import asyncio
-import time
 from typing import TYPE_CHECKING
 
 from agentyc.browser.events import (
 	BrowserErrorEvent,
 	BrowserStateRequestEvent,
-	ScreenshotEvent,
 	TabCreatedEvent,
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.browser.watchdogs.dom_watchdog_dom_ops import (
+	build_dom_tree_without_highlights,
+	capture_clean_screenshot,
+)
+from agentyc.browser.watchdogs.dom_watchdog_network import (
+	get_pending_network_requests,
+	get_recent_events_str,
+)
+from agentyc.browser.watchdogs.dom_watchdog_page_meta import (
+	detect_pagination_buttons,
+	get_page_info,
+)
 from agentyc.dom.service import DomService
 from agentyc.dom.views import (
 	EnhancedDOMTreeNode,
@@ -50,192 +60,10 @@ class DOMWatchdog(BaseWatchdog):
 		return None
 
 	def _get_recent_events_str(self, limit: int = 10) -> str | None:
-		"""Get the most recent events from the event bus as JSON.
-
-		Args:
-			limit: Maximum number of recent events to include
-
-		Returns:
-			JSON string of recent events or None if not available
-		"""
-		import json
-
-		try:
-			# Get all events from history, sorted by creation time (most recent first)
-			all_events = sorted(
-				self.browser_session.event_bus.event_history.values(), key=lambda e: e.event_created_at.timestamp(), reverse=True
-			)
-
-			# Take the most recent events and create JSON-serializable data
-			recent_events_data = []
-			for event in all_events[:limit]:
-				event_data = {
-					'event_type': event.event_type,
-					'timestamp': event.event_created_at.isoformat(),
-				}
-				# Add specific fields for certain event types
-				if hasattr(event, 'url'):
-					event_data['url'] = getattr(event, 'url')
-				if hasattr(event, 'error_message'):
-					event_data['error_message'] = getattr(event, 'error_message')
-				if hasattr(event, 'target_id'):
-					event_data['target_id'] = getattr(event, 'target_id')
-				recent_events_data.append(event_data)
-
-			return json.dumps(recent_events_data)  # Return empty array if no events
-		except Exception as e:
-			self.logger.debug(f'Failed to get recent events: {e}')
-
-		return json.dumps([])  # Return empty JSON array on error
+		return get_recent_events_str(self, limit=limit)
 
 	async def _get_pending_network_requests(self) -> list['NetworkRequest']:
-		"""Get list of currently pending network requests.
-
-		Uses document.readyState and performance API to detect pending requests.
-		Filters out ads, tracking, and other noise.
-
-		Returns:
-			List of NetworkRequest objects representing currently loading resources
-		"""
-		from agentyc.browser.views import NetworkRequest
-
-		try:
-			cdp_session = await self.browser_session.get_or_create_cdp_session(focus=False)
-
-			# Use performance API to get pending requests
-			js_code = """
-(function() {
-	const now = performance.now();
-	const resources = performance.getEntriesByType('resource');
-	const pending = [];
-
-	// Check document readyState
-	const docLoading = document.readyState !== 'complete';
-
-	// Common ad/tracking domains and patterns to filter out
-	const adDomains = [
-		// Standard ad/tracking networks
-		'doubleclick.net', 'googlesyndication.com', 'googletagmanager.com',
-		'facebook.net', 'analytics', 'ads', 'tracking', 'pixel',
-		'hotjar.com', 'clarity.ms', 'mixpanel.com', 'segment.com',
-		// Analytics platforms
-		'demdex.net', 'omtrdc.net', 'adobedtm.com', 'ensighten.com',
-		'newrelic.com', 'nr-data.net', 'google-analytics.com',
-		// Social media trackers
-		'connect.facebook.net', 'platform.twitter.com', 'platform.linkedin.com',
-		// CDN/image hosts (usually not critical for functionality)
-		'.cloudfront.net/image/', '.akamaized.net/image/',
-		// Common tracking paths
-		'/tracker/', '/collector/', '/beacon/', '/telemetry/', '/log/',
-		'/events/', '/eventBatch', '/track.', '/metrics/'
-	];
-
-	// Get resources that are still loading (responseEnd is 0)
-	let totalResourcesChecked = 0;
-	let filteredByResponseEnd = 0;
-	const allDomains = new Set();
-
-	for (const entry of resources) {
-		totalResourcesChecked++;
-
-		// Track all domains from recent resources (for logging)
-		try {
-			const hostname = new URL(entry.name).hostname;
-			if (hostname) allDomains.add(hostname);
-		} catch (e) {}
-
-		if (entry.responseEnd === 0) {
-			filteredByResponseEnd++;
-			const url = entry.name;
-
-			// Filter out ads and tracking
-			const isAd = adDomains.some(domain => url.includes(domain));
-			if (isAd) continue;
-
-			// Filter out data: URLs and very long URLs (often inline resources)
-			if (url.startsWith('data:') || url.length > 500) continue;
-
-			const loadingDuration = now - entry.startTime;
-
-			// Skip requests that have been loading for >10 seconds (likely stuck/polling)
-			if (loadingDuration > 10000) continue;
-
-			const resourceType = entry.initiatorType || 'unknown';
-
-			// Filter out non-critical resources (images, fonts, icons) if loading >3 seconds
-			const nonCriticalTypes = ['img', 'image', 'icon', 'font'];
-			if (nonCriticalTypes.includes(resourceType) && loadingDuration > 3000) continue;
-
-			// Filter out image URLs even if type is unknown
-			const isImageUrl = /\\.(jpg|jpeg|png|gif|webp|svg|ico)(\\?|$)/i.test(url);
-			if (isImageUrl && loadingDuration > 3000) continue;
-
-			pending.push({
-				url: url,
-				method: 'GET',
-				loading_duration_ms: Math.round(loadingDuration),
-				resource_type: resourceType
-			});
-		}
-	}
-
-	return {
-		pending_requests: pending,
-		document_loading: docLoading,
-		document_ready_state: document.readyState,
-		debug: {
-			total_resources: totalResourcesChecked,
-			with_response_end_zero: filteredByResponseEnd,
-			after_all_filters: pending.length,
-			all_domains: Array.from(allDomains)
-		}
-	};
-})()
-"""
-
-			result = await cdp_session.cdp_client.send.Runtime.evaluate(
-				params={'expression': js_code, 'returnByValue': True}, session_id=cdp_session.session_id
-			)
-
-			if result.get('result', {}).get('type') == 'object':
-				data = result['result'].get('value', {})
-				pending = data.get('pending_requests', [])
-				doc_state = data.get('document_ready_state', 'unknown')
-				doc_loading = data.get('document_loading', False)
-				debug_info = data.get('debug', {})
-
-				# Get all domains that had recent activity (from JS)
-				all_domains = debug_info.get('all_domains', [])
-				all_domains_str = ', '.join(sorted(all_domains)[:5]) if all_domains else 'none'
-				if len(all_domains) > 5:
-					all_domains_str += f' +{len(all_domains) - 5} more'
-
-				# Debug logging
-				self.logger.debug(
-					f'🔍 Network check: document.readyState={doc_state}, loading={doc_loading}, '
-					f'total_resources={debug_info.get("total_resources", 0)}, '
-					f'responseEnd=0: {debug_info.get("with_response_end_zero", 0)}, '
-					f'after_filters={len(pending)}, domains=[{all_domains_str}]'
-				)
-
-				# Convert to NetworkRequest objects
-				network_requests = []
-				for req in pending[:20]:  # Limit to 20 to avoid overwhelming the context
-					network_requests.append(
-						NetworkRequest(
-							url=req['url'],
-							method=req.get('method', 'GET'),
-							loading_duration_ms=req.get('loading_duration_ms', 0.0),
-							resource_type=req.get('resource_type'),
-						)
-					)
-
-				return network_requests
-
-		except Exception as e:
-			self.logger.debug(f'Failed to get pending network requests: {e}')
-
-		return []
+		return await get_pending_network_requests(self)
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='browser_state_request_event')
 	async def on_BrowserStateRequestEvent(self, event: BrowserStateRequestEvent) -> 'BrowserStateSummary':
@@ -540,284 +368,18 @@ class DOMWatchdog(BaseWatchdog):
 	@time_execution_async('build_dom_tree_without_highlights')
 	@observe_debug(ignore_input=True, ignore_output=True, name='build_dom_tree_without_highlights')
 	async def _build_dom_tree_without_highlights(self, previous_state: SerializedDOMState | None = None) -> SerializedDOMState:
-		"""Build DOM tree without injecting JavaScript highlights (for parallel execution)."""
-		try:
-			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: STARTING DOM tree build')
-
-			# Create or reuse DOM service
-			if self._dom_service is None:
-				self._dom_service = DomService(
-					browser_session=self.browser_session,
-					logger=self.logger,
-					cross_origin_iframes=self.browser_session.browser_profile.cross_origin_iframes,
-					paint_order_filtering=self.browser_session.browser_profile.paint_order_filtering,
-					max_iframes=self.browser_session.browser_profile.max_iframes,
-					max_iframe_depth=self.browser_session.browser_profile.max_iframe_depth,
-				)
-
-			# Get serialized DOM tree using the service
-			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: Calling DomService.get_serialized_dom_tree...')
-			start = time.time()
-			self.current_dom_state, self.enhanced_dom_tree, timing_info = await self._dom_service.get_serialized_dom_tree(
-				previous_cached_state=previous_state,
-			)
-			end = time.time()
-			total_time_ms = (end - start) * 1000
-			self.logger.debug(
-				'🔍 DOMWatchdog._build_dom_tree_without_highlights: ✅ DomService.get_serialized_dom_tree completed'
-			)
-
-			# Build hierarchical timing breakdown as single multi-line string
-			timing_lines = [f'⏱️ Total DOM tree time: {total_time_ms:.2f}ms', '📊 Timing breakdown:']
-
-			# get_all_trees breakdown
-			get_all_trees_ms = timing_info.get('get_all_trees_total_ms', 0)
-			if get_all_trees_ms > 0:
-				timing_lines.append(f'  ├─ get_all_trees: {get_all_trees_ms:.2f}ms')
-				iframe_scroll_ms = timing_info.get('iframe_scroll_detection_ms', 0)
-				cdp_parallel_ms = timing_info.get('cdp_parallel_calls_ms', 0)
-				snapshot_proc_ms = timing_info.get('snapshot_processing_ms', 0)
-				if iframe_scroll_ms > 0.01:
-					timing_lines.append(f'  │  ├─ iframe_scroll_detection: {iframe_scroll_ms:.2f}ms')
-				if cdp_parallel_ms > 0.01:
-					timing_lines.append(f'  │  ├─ cdp_parallel_calls: {cdp_parallel_ms:.2f}ms')
-				if snapshot_proc_ms > 0.01:
-					timing_lines.append(f'  │  └─ snapshot_processing: {snapshot_proc_ms:.2f}ms')
-
-			# build_ax_lookup
-			build_ax_ms = timing_info.get('build_ax_lookup_ms', 0)
-			if build_ax_ms > 0.01:
-				timing_lines.append(f'  ├─ build_ax_lookup: {build_ax_ms:.2f}ms')
-
-			# build_snapshot_lookup
-			build_snapshot_ms = timing_info.get('build_snapshot_lookup_ms', 0)
-			if build_snapshot_ms > 0.01:
-				timing_lines.append(f'  ├─ build_snapshot_lookup: {build_snapshot_ms:.2f}ms')
-
-			# construct_enhanced_tree
-			construct_tree_ms = timing_info.get('construct_enhanced_tree_ms', 0)
-			if construct_tree_ms > 0.01:
-				timing_lines.append(f'  ├─ construct_enhanced_tree: {construct_tree_ms:.2f}ms')
-
-			# serialize_accessible_elements breakdown
-			serialize_total_ms = timing_info.get('serialize_accessible_elements_total_ms', 0)
-			if serialize_total_ms > 0.01:
-				timing_lines.append(f'  ├─ serialize_accessible_elements: {serialize_total_ms:.2f}ms')
-				create_simp_ms = timing_info.get('create_simplified_tree_ms', 0)
-				paint_order_ms = timing_info.get('calculate_paint_order_ms', 0)
-				optimize_ms = timing_info.get('optimize_tree_ms', 0)
-				bbox_ms = timing_info.get('bbox_filtering_ms', 0)
-				assign_idx_ms = timing_info.get('assign_interactive_indices_ms', 0)
-				clickable_ms = timing_info.get('clickable_detection_time_ms', 0)
-
-				if create_simp_ms > 0.01:
-					timing_lines.append(f'  │  ├─ create_simplified_tree: {create_simp_ms:.2f}ms')
-					if clickable_ms > 0.01:
-						timing_lines.append(f'  │  │  └─ clickable_detection: {clickable_ms:.2f}ms')
-				if paint_order_ms > 0.01:
-					timing_lines.append(f'  │  ├─ calculate_paint_order: {paint_order_ms:.2f}ms')
-				if optimize_ms > 0.01:
-					timing_lines.append(f'  │  ├─ optimize_tree: {optimize_ms:.2f}ms')
-				if bbox_ms > 0.01:
-					timing_lines.append(f'  │  ├─ bbox_filtering: {bbox_ms:.2f}ms')
-				if assign_idx_ms > 0.01:
-					timing_lines.append(f'  │  └─ assign_interactive_indices: {assign_idx_ms:.2f}ms')
-
-			# Overheads
-			get_dom_overhead_ms = timing_info.get('get_dom_tree_overhead_ms', 0)
-			serialize_overhead_ms = timing_info.get('serialization_overhead_ms', 0)
-			get_serialized_overhead_ms = timing_info.get('get_serialized_dom_tree_overhead_ms', 0)
-
-			if get_dom_overhead_ms > 0.1:
-				timing_lines.append(f'  ├─ get_dom_tree_overhead: {get_dom_overhead_ms:.2f}ms')
-			if serialize_overhead_ms > 0.1:
-				timing_lines.append(f'  ├─ serialization_overhead: {serialize_overhead_ms:.2f}ms')
-			if get_serialized_overhead_ms > 0.1:
-				timing_lines.append(f'  └─ get_serialized_dom_tree_overhead: {get_serialized_overhead_ms:.2f}ms')
-
-			# Calculate total tracked time for validation
-			main_operations_ms = (
-				get_all_trees_ms
-				+ build_ax_ms
-				+ build_snapshot_ms
-				+ construct_tree_ms
-				+ serialize_total_ms
-				+ get_dom_overhead_ms
-				+ serialize_overhead_ms
-				+ get_serialized_overhead_ms
-			)
-			untracked_time_ms = total_time_ms - main_operations_ms
-
-			if untracked_time_ms > 1.0:  # Only log if significant
-				timing_lines.append(f'  ⚠️  untracked_time: {untracked_time_ms:.2f}ms')
-
-			# Single log call with all timing info
-			self.logger.debug('\n'.join(timing_lines))
-
-			# Update selector map for other watchdogs
-			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: Updating selector maps...')
-			self.selector_map = self.current_dom_state.selector_map
-			# Update BrowserSession's cached selector map
-			if self.browser_session:
-				self.browser_session.update_cached_selector_map(self.selector_map)
-			self.logger.debug(
-				f'🔍 DOMWatchdog._build_dom_tree_without_highlights: ✅ Selector maps updated, {len(self.selector_map)} elements'
-			)
-
-			# Skip JavaScript highlighting injection - Python highlighting will be applied later
-			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: ✅ COMPLETED DOM tree build (no JS highlights)')
-			return self.current_dom_state
-
-		except Exception as e:
-			self.logger.error(f'Failed to build DOM tree without highlights: {e}')
-			self.event_bus.dispatch(
-				BrowserErrorEvent(
-					error_type='DOMBuildFailed',
-					message=str(e),
-				)
-			)
-			raise
+		return await build_dom_tree_without_highlights(self, previous_state)
 
 	@time_execution_async('capture_clean_screenshot')
 	@observe_debug(ignore_input=True, ignore_output=True, name='capture_clean_screenshot')
 	async def _capture_clean_screenshot(self) -> str:
-		"""Capture a clean screenshot without JavaScript highlights."""
-		try:
-			self.logger.debug('🔍 DOMWatchdog._capture_clean_screenshot: Capturing clean screenshot...')
-
-			await self.browser_session.get_or_create_cdp_session(target_id=self.browser_session.agent_focus_target_id, focus=True)
-
-			# Check if handler is registered
-			handlers = self.event_bus.handlers.get('ScreenshotEvent', [])
-			handler_names = [getattr(h, '__name__', str(h)) for h in handlers]
-			self.logger.debug(f'📸 ScreenshotEvent handlers registered: {len(handlers)} - {handler_names}')
-
-			screenshot_event = self.event_bus.dispatch(ScreenshotEvent(full_page=False))
-			self.logger.debug('📸 Dispatched ScreenshotEvent, waiting for event to complete...')
-
-			# Wait for the event itself to complete (this waits for all handlers)
-			await screenshot_event
-
-			# Get the single handler result
-			screenshot_b64 = await screenshot_event.event_result(raise_if_any=True, raise_if_none=True)
-			if screenshot_b64 is None:
-				raise RuntimeError('Screenshot handler returned None')
-			self.logger.debug('🔍 DOMWatchdog._capture_clean_screenshot: ✅ Clean screenshot captured successfully')
-			return str(screenshot_b64)
-
-		except TimeoutError:
-			self.logger.warning('📸 Clean screenshot timed out after 6 seconds - no handler registered or slow page?')
-			raise
-		except Exception as e:
-			self.logger.warning(f'📸 Clean screenshot failed: {type(e).__name__}: {e}')
-			raise
+		return await capture_clean_screenshot(self)
 
 	def _detect_pagination_buttons(self, selector_map: dict[int, EnhancedDOMTreeNode]) -> list['PaginationButton']:
-		"""Detect pagination buttons from the DOM selector map.
-
-		Args:
-			selector_map: Dictionary mapping element indices to DOM tree nodes
-
-		Returns:
-			List of PaginationButton instances found in the DOM
-		"""
-		from agentyc.browser.views import PaginationButton
-
-		pagination_buttons_data = []
-		try:
-			self.logger.debug('🔍 DOMWatchdog._detect_pagination_buttons: Detecting pagination buttons...')
-			pagination_buttons_raw = DomService.detect_pagination_buttons(selector_map)
-			# Convert to PaginationButton instances
-			pagination_buttons_data = [
-				PaginationButton(
-					button_type=btn['button_type'],  # type: ignore
-					backend_node_id=btn['backend_node_id'],  # type: ignore
-					text=btn['text'],  # type: ignore
-					selector=btn['selector'],  # type: ignore
-					is_disabled=btn['is_disabled'],  # type: ignore
-				)
-				for btn in pagination_buttons_raw
-			]
-			if pagination_buttons_data:
-				self.logger.debug(
-					f'🔍 DOMWatchdog._detect_pagination_buttons: Found {len(pagination_buttons_data)} pagination buttons'
-				)
-		except Exception as e:
-			self.logger.warning(f'🔍 DOMWatchdog._detect_pagination_buttons: Pagination detection failed: {e}')
-
-		return pagination_buttons_data
+		return detect_pagination_buttons(self, selector_map)
 
 	async def _get_page_info(self) -> 'PageInfo':
-		"""Get comprehensive page information using a single CDP call.
-
-		TODO: should we make this an event as well?
-
-		Returns:
-			PageInfo with all viewport, page dimensions, and scroll information
-		"""
-
-		from agentyc.browser.views import PageInfo
-
-		cdp_session = await self.browser_session.get_or_create_cdp_session(
-			target_id=self.browser_session.agent_focus_target_id, focus=False
-		)
-
-		metrics_timeout = 0.25 if self.browser_session.is_shared_browser_runtime else 10.0
-		metrics = await asyncio.wait_for(
-			cdp_session.cdp_client.send.Page.getLayoutMetrics(session_id=cdp_session.session_id),
-			timeout=metrics_timeout,
-		)
-
-		# Extract different viewport types
-		layout_viewport = metrics.get('layoutViewport', {})
-		visual_viewport = metrics.get('visualViewport', {})
-		css_visual_viewport = metrics.get('cssVisualViewport', {})
-		css_layout_viewport = metrics.get('cssLayoutViewport', {})
-		content_size = metrics.get('contentSize', {})
-
-		# Calculate device pixel ratio to convert between device pixels and CSS pixels
-		# This matches the approach in dom/service.py _get_viewport_ratio method
-		css_width = css_visual_viewport.get('clientWidth', css_layout_viewport.get('clientWidth', 1280.0))
-		device_width = visual_viewport.get('clientWidth', css_width)
-		device_pixel_ratio = device_width / css_width if css_width > 0 else 1.0
-
-		# For viewport dimensions, use CSS pixels (what JavaScript sees)
-		# Prioritize CSS layout viewport, then fall back to layout viewport
-		viewport_width = int(css_layout_viewport.get('clientWidth') or layout_viewport.get('clientWidth', 1280))
-		viewport_height = int(css_layout_viewport.get('clientHeight') or layout_viewport.get('clientHeight', 720))
-
-		# For total page dimensions, content size is typically in device pixels, so convert to CSS pixels
-		# by dividing by device pixel ratio
-		raw_page_width = content_size.get('width', viewport_width * device_pixel_ratio)
-		raw_page_height = content_size.get('height', viewport_height * device_pixel_ratio)
-		page_width = int(raw_page_width / device_pixel_ratio)
-		page_height = int(raw_page_height / device_pixel_ratio)
-
-		# For scroll position, use CSS visual viewport if available, otherwise CSS layout viewport
-		# These should already be in CSS pixels
-		scroll_x = int(css_visual_viewport.get('pageX') or css_layout_viewport.get('pageX', 0))
-		scroll_y = int(css_visual_viewport.get('pageY') or css_layout_viewport.get('pageY', 0))
-
-		# Calculate scroll information - pixels that are above/below/left/right of current viewport
-		pixels_above = scroll_y
-		pixels_below = max(0, page_height - viewport_height - scroll_y)
-		pixels_left = scroll_x
-		pixels_right = max(0, page_width - viewport_width - scroll_x)
-
-		page_info = PageInfo(
-			viewport_width=viewport_width,
-			viewport_height=viewport_height,
-			page_width=page_width,
-			page_height=page_height,
-			scroll_x=scroll_x,
-			scroll_y=scroll_y,
-			pixels_above=pixels_above,
-			pixels_below=pixels_below,
-			pixels_left=pixels_left,
-			pixels_right=pixels_right,
-		)
-
-		return page_info
+		return await get_page_info(self)
 
 	# ========== Public Helper Methods ==========
 

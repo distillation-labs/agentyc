@@ -7,7 +7,6 @@ from pydantic import BaseModel
 
 from agentyc.utils import is_new_tab_page, match_url_with_domain_pattern
 
-
 logger = logging.getLogger('agentyc.tools.registry.service')
 
 

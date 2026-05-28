@@ -91,7 +91,7 @@ class NavigateToUrlEvent(BaseEvent[None]):
 class ClickElementEvent(ElementSelectedEvent[dict[str, Any] | None]):
 	"""Click an element."""
 
-	node: 'EnhancedDOMTreeNode'
+	node: EnhancedDOMTreeNode
 	button: Literal['left', 'right', 'middle'] = 'left'
 	# click_count: int = 1           # TODO
 	# expect_download: bool = False  # moved to downloads_watchdog.py
@@ -113,7 +113,7 @@ class ClickCoordinateEvent(BaseEvent[dict]):
 class TypeTextEvent(ElementSelectedEvent[dict | None]):
 	"""Type text into an element."""
 
-	node: 'EnhancedDOMTreeNode'
+	node: EnhancedDOMTreeNode
 	text: str
 	clear: bool = True
 	is_sensitive: bool = False  # Flag to indicate if text contains sensitive data
@@ -127,7 +127,7 @@ class ScrollEvent(ElementSelectedEvent[None]):
 
 	direction: Literal['up', 'down', 'left', 'right']
 	amount: int  # pixels
-	node: 'EnhancedDOMTreeNode | None' = None  # None means scroll page
+	node: EnhancedDOMTreeNode | None = None  # None means scroll page
 
 	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_ScrollEvent', 8.0))  # seconds
 
@@ -215,7 +215,7 @@ class SendKeysEvent(BaseEvent[None]):
 class UploadFileEvent(ElementSelectedEvent[None]):
 	"""Upload a file to an element."""
 
-	node: 'EnhancedDOMTreeNode'
+	node: EnhancedDOMTreeNode
 	file_path: str
 
 	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_UploadFileEvent', 30.0))  # seconds
@@ -226,7 +226,7 @@ class GetDropdownOptionsEvent(ElementSelectedEvent[dict[str, str]]):
 
 	Returns a dict containing dropdown type, options list, and element metadata."""
 
-	node: 'EnhancedDOMTreeNode'
+	node: EnhancedDOMTreeNode
 
 	event_timeout: float | None = Field(
 		default_factory=lambda: _get_timeout('TIMEOUT_GetDropdownOptionsEvent', 15.0)
@@ -238,7 +238,7 @@ class SelectDropdownOptionEvent(ElementSelectedEvent[dict[str, str]]):
 
 	Returns a dict containing success status and selection details."""
 
-	node: 'EnhancedDOMTreeNode'
+	node: EnhancedDOMTreeNode
 	text: str  # The option text to select
 
 	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_SelectDropdownOptionEvent', 8.0))  # seconds
