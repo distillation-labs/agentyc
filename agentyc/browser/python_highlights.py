@@ -4,11 +4,9 @@ This module replaces JavaScript-based highlighting with fast Python image proces
 to draw bounding boxes around interactive elements directly on screenshots.
 """
 
-import asyncio
 import base64
 import io
 import logging
-import os
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -467,82 +465,7 @@ async def create_highlighted_screenshot(
 		return screenshot_b64
 
 
-async def get_viewport_info_from_cdp(cdp_session) -> tuple[float, int, int]:
-	"""Get viewport information from CDP session.
-
-	Returns:
-	    Tuple of (device_pixel_ratio, scroll_x, scroll_y)
-	"""
-	try:
-		# Get layout metrics which includes viewport info and device pixel ratio
-		metrics = await cdp_session.cdp_client.send.Page.getLayoutMetrics(session_id=cdp_session.session_id)
-
-		# Extract viewport information
-		visual_viewport = metrics.get('visualViewport', {})
-		css_visual_viewport = metrics.get('cssVisualViewport', {})
-		css_layout_viewport = metrics.get('cssLayoutViewport', {})
-
-		# Calculate device pixel ratio
-		css_width = css_visual_viewport.get('clientWidth', css_layout_viewport.get('clientWidth', 1280.0))
-		device_width = visual_viewport.get('clientWidth', css_width)
-		device_pixel_ratio = device_width / css_width if css_width > 0 else 1.0
-
-		# Get scroll position in CSS pixels
-		scroll_x = int(css_visual_viewport.get('pageX', 0))
-		scroll_y = int(css_visual_viewport.get('pageY', 0))
-
-		return float(device_pixel_ratio), scroll_x, scroll_y
-
-	except Exception as e:
-		logger.debug(f'Failed to get viewport info from CDP: {e}')
-		return 1.0, 0, 0
-
-
-@time_execution_async('create_highlighted_screenshot_async')
-async def create_highlighted_screenshot_async(
-	screenshot_b64: str, selector_map: DOMSelectorMap, cdp_session=None, filter_highlight_ids: bool = True
-) -> str:
-	"""Async wrapper for creating highlighted screenshots.
-
-	Args:
-	    screenshot_b64: Base64 encoded screenshot
-	    selector_map: Map of interactive elements
-	    cdp_session: CDP session for getting viewport info
-	    filter_highlight_ids: Whether to filter element IDs based on meaningful text
-
-	Returns:
-	    Base64 encoded highlighted screenshot
-	"""
-	# Get viewport information if CDP session is available
-	device_pixel_ratio = 1.0
-	viewport_offset_x = 0
-	viewport_offset_y = 0
-
-	if cdp_session:
-		try:
-			device_pixel_ratio, viewport_offset_x, viewport_offset_y = await get_viewport_info_from_cdp(cdp_session)
-		except Exception as e:
-			logger.debug(f'Failed to get viewport info from CDP: {e}')
-
-	# Create highlighted screenshot with async processing
-	final_screenshot = await create_highlighted_screenshot(
-		screenshot_b64, selector_map, device_pixel_ratio, viewport_offset_x, viewport_offset_y, filter_highlight_ids
-	)
-
-	filename = os.getenv('AGENTYC_SCREENSHOT_FILE')
-	if filename:
-
-		def _write_screenshot():
-			try:
-				with open(filename, 'wb') as f:
-					f.write(base64.b64decode(final_screenshot))
-				logger.debug('Saved screenshot to ' + str(filename))
-			except Exception as e:
-				logger.warning(f'Failed to save screenshot to {filename}: {e}')
-
-		await asyncio.to_thread(_write_screenshot)
-	return final_screenshot
-
+from .python_highlights_async import create_highlighted_screenshot_async
 
 # Export the cleanup function for external use in long-running applications
 __all__ = ['create_highlighted_screenshot', 'create_highlighted_screenshot_async', 'cleanup_font_cache']
