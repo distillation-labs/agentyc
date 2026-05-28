@@ -23,6 +23,7 @@ from agentyc.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
+from agentyc.browser.watchdogs.download_helpers import _track_download
 from agentyc.utils import create_task_with_error_handling
 
 
@@ -254,7 +255,7 @@ class DownloadsCoreMixin:
 				if self.browser_session.is_local:
 					if file_path:
 						self.logger.debug(f'[DownloadsWatchdog] Download completed: {file_path}')
-						self._track_download(file_path, guid=guid)
+						_track_download(self, file_path, guid=guid)
 						try:
 							if guid in self._cdp_downloads_info:
 								self._cdp_downloads_info[guid]['handled'] = True
@@ -275,7 +276,7 @@ class DownloadsCoreMixin:
 										if file_path_obj.stat().st_size > 4:
 											self._initial_downloads_snapshot.add(file_path_obj.name)
 											self.logger.debug(f'[DownloadsWatchdog] Detected new download: {file_path_obj.name}')
-											self._track_download(str(file_path_obj))
+											_track_download(self, str(file_path_obj))
 											try:
 												if guid in self._cdp_downloads_info:
 													self._cdp_downloads_info[guid]['handled'] = True
@@ -335,42 +336,6 @@ class DownloadsCoreMixin:
 			self.logger.warning(f'[DownloadsWatchdog] Failed to set up CDP download listener for target {target_id}: {error}')
 
 		await self._setup_network_monitoring(target_id)
-
-	def _track_download(self, file_path: str, guid: str | None = None) -> None:
-		try:
-			path = Path(file_path)
-			if path.exists():
-				file_size = path.stat().st_size
-				self.logger.debug(f'[DownloadsWatchdog] Tracked download: {path.name} ({file_size} bytes)')
-				file_ext = path.suffix.lower().lstrip('.')
-				complete_info = {
-					'guid': guid,
-					'url': str(path),
-					'path': str(path),
-					'file_name': path.name,
-					'file_size': file_size,
-					'file_type': file_ext if file_ext else None,
-					'auto_download': False,
-				}
-				for callback in self._download_complete_callbacks:
-					try:
-						callback(complete_info)
-					except Exception as error:
-						self.logger.debug(f'[DownloadsWatchdog] Error in download complete callback: {error}')
-
-				self.event_bus.dispatch(
-					FileDownloadedEvent(
-						guid=guid,
-						url=str(path),
-						path=str(path),
-						file_name=path.name,
-						file_size=file_size,
-					)
-				)
-			else:
-				self.logger.warning(f'[DownloadsWatchdog] Downloaded file not found: {file_path}')
-		except Exception as error:
-			self.logger.error(f'[DownloadsWatchdog] Error tracking download: {error}')
 
 	async def _handle_cdp_download(
 		self, event: DownloadWillBeginEvent, target_id: TargetID, session_id: SessionID | None
