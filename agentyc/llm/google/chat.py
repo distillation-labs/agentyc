@@ -9,7 +9,6 @@ from typing import Any, Literal, TypeVar, overload
 from google import genai
 from google.auth.credentials import Credentials
 from google.genai import types
-from google.genai.types import MediaModality
 from pydantic import BaseModel
 
 from agentyc.llm.base import BaseChatModel
@@ -17,29 +16,14 @@ from agentyc.llm.exceptions import ModelProviderError
 from agentyc.llm.google.serializer import GoogleMessageSerializer
 from agentyc.llm.messages import BaseMessage
 from agentyc.llm.schema import SchemaOptimizer
-from agentyc.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from agentyc.llm.views import ChatInvokeCompletion
 
 T = TypeVar('T', bound=BaseModel)
 
 
-VerifiedGeminiModels = Literal[
-	'gemini-2.0-flash',
-	'gemini-2.0-flash-exp',
-	'gemini-2.0-flash-lite-preview-02-05',
-	'Gemini-2.0-exp',
-	'gemini-2.5-flash',
-	'gemini-2.5-flash-lite',
-	'gemini-flash-latest',
-	'gemini-flash-lite-latest',
-	'gemini-2.5-pro',
-	'gemini-3-pro-preview',
-	'gemini-3-flash-preview',
-	'gemma-3-27b-it',
-	'gemma-3-4b',
-	'gemma-3-12b',
-	'gemma-3n-e2b',
-	'gemma-3n-e4b',
-]
+from agentyc.llm.google.models import VerifiedGeminiModels
+from agentyc.llm.google.response_helpers import get_stop_reason, get_usage
+from agentyc.llm.google.schema import fix_gemini_schema
 
 
 @dataclass
@@ -156,36 +140,6 @@ class ChatGoogle(BaseChatModel):
 	@property
 	def name(self) -> str:
 		return str(self.model)
-
-	def _get_stop_reason(self, response: types.GenerateContentResponse) -> str | None:
-		"""Extract stop_reason from Google response."""
-		if hasattr(response, 'candidates') and response.candidates:
-			return str(response.candidates[0].finish_reason) if hasattr(response.candidates[0], 'finish_reason') else None
-		return None
-
-	def _get_usage(self, response: types.GenerateContentResponse) -> ChatInvokeUsage | None:
-		usage: ChatInvokeUsage | None = None
-
-		if response.usage_metadata is not None:
-			image_tokens = 0
-			if response.usage_metadata.prompt_tokens_details is not None:
-				image_tokens = sum(
-					detail.token_count or 0
-					for detail in response.usage_metadata.prompt_tokens_details
-					if detail.modality == MediaModality.IMAGE
-				)
-
-			usage = ChatInvokeUsage(
-				prompt_tokens=response.usage_metadata.prompt_token_count or 0,
-				completion_tokens=(response.usage_metadata.candidates_token_count or 0)
-				+ (response.usage_metadata.thoughts_token_count or 0),
-				total_tokens=response.usage_metadata.total_token_count or 0,
-				prompt_cached_tokens=response.usage_metadata.cached_content_token_count,
-				prompt_cache_creation_tokens=None,
-				prompt_image_tokens=image_tokens,
-			)
-
-		return usage
 
 	@overload
 	async def ainvoke(
@@ -314,12 +268,12 @@ class ChatGoogle(BaseChatModel):
 					if not text:
 						self.logger.warning('⚠️ Empty text response received')
 
-					usage = self._get_usage(response)
+					usage = get_usage(response)
 
 					return ChatInvokeCompletion(
 						completion=text,
 						usage=usage,
-						stop_reason=self._get_stop_reason(response),
+						stop_reason=get_stop_reason(response),
 					)
 
 				else:
@@ -331,7 +285,7 @@ class ChatGoogle(BaseChatModel):
 						# Convert Pydantic model to Gemini-compatible schema
 						optimized_schema = SchemaOptimizer.create_gemini_optimized_schema(output_format)
 
-						gemini_schema = self._fix_gemini_schema(optimized_schema)
+						gemini_schema = fix_gemini_schema(optimized_schema)
 						config['response_schema'] = gemini_schema
 
 						response = await self.get_client().aio.models.generate_content(
@@ -343,7 +297,7 @@ class ChatGoogle(BaseChatModel):
 						elapsed = time.time() - start_time
 						self.logger.debug(f'✅ Got structured response in {elapsed:.2f}s')
 
-						usage = self._get_usage(response)
+						usage = get_usage(response)
 
 						# Handle case where response.parsed might be None
 						if response.parsed is None:
@@ -365,7 +319,7 @@ class ChatGoogle(BaseChatModel):
 									return ChatInvokeCompletion(
 										completion=output_format.model_validate(parsed_data),
 										usage=usage,
-										stop_reason=self._get_stop_reason(response),
+										stop_reason=get_stop_reason(response),
 									)
 								except (json.JSONDecodeError, ValueError) as e:
 									self.logger.error(f'❌ Failed to parse JSON response: {str(e)}')
@@ -388,14 +342,14 @@ class ChatGoogle(BaseChatModel):
 							return ChatInvokeCompletion(
 								completion=response.parsed,
 								usage=usage,
-								stop_reason=self._get_stop_reason(response),
+								stop_reason=get_stop_reason(response),
 							)
 						else:
 							# If it's not the expected type, try to validate it
 							return ChatInvokeCompletion(
 								completion=output_format.model_validate(response.parsed),
 								usage=usage,
-								stop_reason=self._get_stop_reason(response),
+								stop_reason=get_stop_reason(response),
 							)
 					else:
 						# Fallback: Request JSON in the prompt for models without native JSON mode
@@ -427,7 +381,7 @@ class ChatGoogle(BaseChatModel):
 						elapsed = time.time() - start_time
 						self.logger.debug(f'✅ Got fallback response in {elapsed:.2f}s')
 
-						usage = self._get_usage(response)
+						usage = get_usage(response)
 
 						# Try to extract JSON from the text response
 						if response.text:
@@ -446,7 +400,7 @@ class ChatGoogle(BaseChatModel):
 								return ChatInvokeCompletion(
 									completion=output_format.model_validate(parsed_data),
 									usage=usage,
-									stop_reason=self._get_stop_reason(response),
+									stop_reason=get_stop_reason(response),
 								)
 							except (json.JSONDecodeError, ValueError) as e:
 								self.logger.error(f'❌ Failed to parse fallback JSON: {str(e)}')
@@ -527,79 +481,3 @@ class ChatGoogle(BaseChatModel):
 				) from e
 
 		raise RuntimeError('Retry loop completed without return or exception')
-
-	def _fix_gemini_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
-		"""
-		Convert a Pydantic model to a Gemini-compatible schema.
-
-		This function removes unsupported properties like 'additionalProperties' and resolves
-		$ref references that Gemini doesn't support.
-		"""
-
-		# Handle $defs and $ref resolution
-		if '$defs' in schema:
-			defs = schema.pop('$defs')
-
-			def resolve_refs(obj: Any) -> Any:
-				if isinstance(obj, dict):
-					if '$ref' in obj:
-						ref = obj.pop('$ref')
-						ref_name = ref.split('/')[-1]
-						if ref_name in defs:
-							# Replace the reference with the actual definition
-							resolved = defs[ref_name].copy()
-							# Merge any additional properties from the reference
-							for key, value in obj.items():
-								if key != '$ref':
-									resolved[key] = value
-							return resolve_refs(resolved)
-						return obj
-					else:
-						# Recursively process all dictionary values
-						return {k: resolve_refs(v) for k, v in obj.items()}
-				elif isinstance(obj, list):
-					return [resolve_refs(item) for item in obj]
-				return obj
-
-			schema = resolve_refs(schema)
-
-		# Remove unsupported properties
-		def clean_schema(obj: Any, parent_key: str | None = None) -> Any:
-			if isinstance(obj, dict):
-				# Remove unsupported properties
-				cleaned = {}
-				for key, value in obj.items():
-					# Only strip 'title' when it's a JSON Schema metadata field (not inside 'properties')
-					# 'title' as a metadata field appears at schema level, not as a property name
-					is_metadata_title = key == 'title' and parent_key != 'properties'
-					if key not in ['additionalProperties', 'default'] and not is_metadata_title:
-						cleaned_value = clean_schema(value, parent_key=key)
-						# Handle empty object properties - Gemini doesn't allow empty OBJECT types
-						if (
-							key == 'properties'
-							and isinstance(cleaned_value, dict)
-							and len(cleaned_value) == 0
-							and isinstance(obj.get('type', ''), str)
-							and obj.get('type', '').upper() == 'OBJECT'
-						):
-							# Convert empty object to have at least one property
-							cleaned['properties'] = {'_placeholder': {'type': 'string'}}
-						else:
-							cleaned[key] = cleaned_value
-
-				# If this is an object type with empty properties, add a placeholder
-				if (
-					isinstance(cleaned.get('type', ''), str)
-					and cleaned.get('type', '').upper() == 'OBJECT'
-					and 'properties' in cleaned
-					and isinstance(cleaned['properties'], dict)
-					and len(cleaned['properties']) == 0
-				):
-					cleaned['properties'] = {'_placeholder': {'type': 'string'}}
-
-				return cleaned
-			elif isinstance(obj, list):
-				return [clean_schema(item, parent_key=parent_key) for item in obj]
-			return obj
-
-		return clean_schema(schema)
