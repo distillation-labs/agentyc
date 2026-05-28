@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from cdp_use.cdp.target import TargetID
 
@@ -18,6 +17,7 @@ from agentyc.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
+from agentyc.browser.session_leaf_helpers import _urls_match_for_navigation_ready
 from agentyc.utils import create_task_with_error_handling, is_new_tab_page
 
 if TYPE_CHECKING:
@@ -317,22 +317,6 @@ async def _navigate_and_wait_once(
 				f'(current_url={current_url}, readyState={ready_state or "unknown"})'
 			)
 	raise RuntimeError(f'Navigation timed out after {timeout}s waiting for {wait_until} on {url}')
-
-
-def _urls_match_for_navigation_ready(current_url: str, target_url: str) -> bool:
-	current = urlsplit(current_url)
-	target = urlsplit(target_url)
-	return (
-		current.scheme,
-		current.netloc,
-		current.path.rstrip('/'),
-		current.query,
-	) == (
-		target.scheme,
-		target.netloc,
-		target.path.rstrip('/'),
-		target.query,
-	)
 
 
 async def _navigation_ready_via_dom(session: BrowserSession, *, cdp_session: Any, url: str, wait_until: str) -> bool:
