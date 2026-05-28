@@ -13,6 +13,9 @@ import psutil
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from agentyc.mcp.config_helpers import get_default_llm as _get_default_llm
+from agentyc.mcp.config_helpers import get_default_profile as _get_default_profile
+
 logger = logging.getLogger(__name__)
 
 
@@ -486,11 +489,12 @@ class Config:
 		return config
 
 
-# Create singleton instance
 CONFIG = Config()
 
 
-# Helper functions for MCP components
 def load_agentyc_config() -> dict[str, Any]:
-	"""Load agentyc configuration for MCP components."""
 	return CONFIG.load_config()
+
+
+get_default_profile = _get_default_profile
+get_default_llm = _get_default_llm
