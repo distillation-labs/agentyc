@@ -20,6 +20,7 @@ from agentyc.browser.events import (
 	BrowserStopEvent,
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
+from agentyc.browser.watchdogs.local_browser_utils import _cleanup_temp_dir, _find_free_port
 from agentyc.mcp.shared_browser_registry import clear_registered_local_shared_browser
 from agentyc.observability import observe_debug
 
@@ -81,7 +82,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 
 		# Clean up temp directories if any were created
 		for temp_dir in self._temp_dirs_to_cleanup:
-			self._cleanup_temp_dir(temp_dir)
+			_cleanup_temp_dir(self.logger, temp_dir)
 		self._temp_dirs_to_cleanup.clear()
 
 		# Restore original user_data_dir if it was modified
@@ -120,7 +121,7 @@ class LocalBrowserWatchdog(BaseWatchdog):
 				launch_args = profile.get_args()
 
 				# Add debugging port
-				debug_port = self._find_free_port()
+				debug_port = _find_free_port()
 				launch_args.extend(
 					[
 						f'--remote-debugging-port={debug_port}',
@@ -405,17 +406,6 @@ class LocalBrowserWatchdog(BaseWatchdog):
 			raise RuntimeError(f'Error getting browser path: {e}')
 
 	@staticmethod
-	def _find_free_port() -> int:
-		"""Find a free port for the debugging interface."""
-		import socket
-
-		with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-			s.bind(('127.0.0.1', 0))
-			s.listen(1)
-			port = s.getsockname()[1]
-		return port
-
-	@staticmethod
 	async def _wait_for_cdp_url(port: int, timeout: float = 55) -> str:
 		"""Wait for the browser to start and return the CDP URL."""
 		import aiohttp
@@ -470,23 +460,6 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		except Exception:
 			# Ignore any other errors during cleanup
 			pass
-
-	def _cleanup_temp_dir(self, temp_dir: Path | str) -> None:
-		"""Clean up temporary directory.
-
-		Args:
-			temp_dir: Path to temporary directory to remove
-		"""
-		if not temp_dir:
-			return
-
-		try:
-			temp_path = Path(temp_dir)
-			# Only remove if it's actually a temp directory we created
-			if 'agentyc-tmp-' in str(temp_path):
-				shutil.rmtree(temp_path, ignore_errors=True)
-		except Exception as e:
-			self.logger.debug(f'Failed to cleanup temp dir {temp_dir}: {e}')
 
 	@property
 	def browser_pid(self) -> int | None:
