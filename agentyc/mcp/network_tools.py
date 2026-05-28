@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from agentyc.mcp.debug_tools import _DEFAULT_BODY_PREVIEW_BYTES, _build_inspected_network_entry, _network_entry_matches
+from agentyc.mcp.network_replay import _build_replay_request_expression
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
@@ -166,36 +167,6 @@ async def _run_browser_session_json(
 	except Exception as exc:
 		return self._format_action_error(str(exc), default_code=default_code)
 	return json.dumps(payload)
-
-
-def _build_replay_request_expression(
-	*,
-	request_url: str,
-	request_method: str,
-	request_headers: dict[str, str],
-	request_body: str,
-) -> str:
-	request_init_parts = [
-		f'method: {json.dumps(request_method)}',
-		f'headers: {json.dumps(request_headers)}',
-	]
-	if request_method not in {'GET', 'HEAD'} or request_body:
-		request_init_parts.append(f'body: {json.dumps(request_body)}')
-	request_init = ', '.join(request_init_parts)
-	return (
-		'(async function(){'
-		'try {'
-		f'const response = await fetch({json.dumps(request_url)}, {{{request_init}}});'
-		'const text = await response.text();'
-		'return JSON.stringify({status: response.status, ok: response.ok, body: text});'
-		'} catch (error) {'
-		'return JSON.stringify({'
-		'ok: false,'
-		'error: error && error.message ? error.message : String(error)'
-		'});'
-		'}'
-		'})()'
-	)
 
 
 async def _inspect_network_entry(
