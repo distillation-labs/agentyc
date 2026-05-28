@@ -8,17 +8,27 @@ Automatically tracks token usage when LLMs are registered and invoked.
 import logging
 import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
-import anyio
-import httpx
 from dotenv import load_dotenv
 
 from agentyc.llm.base import BaseChatModel
 from agentyc.llm.views import ChatInvokeUsage
 from agentyc.tokens.custom_pricing import CUSTOM_MODEL_PRICING
 from agentyc.tokens.mappings import MODEL_TO_LITELLM
+from agentyc.tokens.pricing_cache import (
+	_fetch_and_cache_pricing_data,
+	_get_cache_status,
+	_load_from_cache,
+	_load_pricing_data,
+	_find_valid_cache,
+	_cache_source_matches,
+	clean_old_caches,
+	ensure_pricing_loaded,
+	initialize,
+	refresh_pricing_data,
+	xdg_cache_home,
+)
 from agentyc.tokens.views import (
 	CachedPricingData,
 	ModelPricing,
@@ -36,13 +46,6 @@ from agentyc.config import CONFIG
 
 logger = logging.getLogger(__name__)
 cost_logger = logging.getLogger('cost')
-
-
-def xdg_cache_home() -> Path:
-	default = Path.home() / '.cache'
-	if CONFIG.XDG_CACHE_HOME and (path := Path(CONFIG.XDG_CACHE_HOME)).is_absolute():
-		return path
-	return default
 
 
 class TokenCost:
@@ -63,113 +66,32 @@ class TokenCost:
 		self._cache_dir = xdg_cache_home() / self.CACHE_DIR_NAME
 
 	async def initialize(self) -> None:
-		"""Initialize the service by loading pricing data"""
-		if not self._initialized:
-			if self.include_cost:
-				await self._load_pricing_data()
-			self._initialized = True
+		"""Initialize the service by loading pricing data."""
+		await initialize(self)
 
 	async def _load_pricing_data(self) -> None:
-		"""Load pricing data from cache or fetch from GitHub"""
-		# Try to find a valid cache file
-		cache_file = await self._find_valid_cache()
-
-		if cache_file:
-			await self._load_from_cache(cache_file)
-		else:
-			await self._fetch_and_cache_pricing_data()
-
-	async def _find_valid_cache(self) -> Path | None:
-		"""Find the most recent valid cache file"""
-		try:
-			# Ensure cache directory exists
-			self._cache_dir.mkdir(parents=True, exist_ok=True)
-
-			# List all JSON files in the cache directory
-			cache_files = list(self._cache_dir.glob('*.json'))
-
-			if not cache_files:
-				return None
-
-			# Sort by modification time (most recent first)
-			cache_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-
-			# Check each file until we find a valid one
-			for cache_file in cache_files:
-				is_valid, should_delete = await self._get_cache_status(cache_file)
-				if is_valid:
-					return cache_file
-				if should_delete:
-					# Clean up old cache files
-					try:
-						os.remove(cache_file)
-					except Exception:
-						pass
-
-			return None
-		except Exception:
-			return None
-
-	async def _get_cache_status(self, cache_file: Path) -> tuple[bool, bool]:
-		"""Return whether a cache file is usable and whether it should be deleted."""
-		try:
-			if not cache_file.exists():
-				return False, False
-
-			# Read the cached data
-			cached = CachedPricingData.model_validate_json(await anyio.Path(cache_file).read_text())
-
-			# Check if cache is still valid
-			if datetime.now() - cached.timestamp >= self.CACHE_DURATION:
-				return False, True
-
-			# Keep caches from other sources so different pricing URLs don't delete each other.
-			return self._cache_source_matches(cached), False
-		except Exception:
-			return False, True
+		"""Load pricing data from cache or fetch from GitHub."""
+		await _load_pricing_data(self)
 
 	def _cache_source_matches(self, cached: CachedPricingData) -> bool:
 		"""Only use cached pricing files from the same source URL."""
-		if cached.source_url is None:
-			return self.pricing_url == self.DEFAULT_PRICING_URL
+		return _cache_source_matches(self, cached)
 
-		return cached.source_url == self.pricing_url
+	async def _find_valid_cache(self):
+		"""Find the most recent valid cache file."""
+		return await _find_valid_cache(self)
 
-	async def _load_from_cache(self, cache_file: Path) -> None:
-		"""Load pricing data from a specific cache file"""
-		try:
-			content = await anyio.Path(cache_file).read_text()
-			cached = CachedPricingData.model_validate_json(content)
-			self._pricing_data = cached.data
-		except Exception as e:
-			logger.debug(f'Error loading cached pricing data from {cache_file}: {e}')
-			# Fall back to fetching
-			await self._fetch_and_cache_pricing_data()
+	async def _get_cache_status(self, cache_file):
+		"""Return whether a cache file is usable and whether it should be deleted."""
+		return await _get_cache_status(self, cache_file)
+
+	async def _load_from_cache(self, cache_file) -> None:
+		"""Load pricing data from a specific cache file."""
+		await _load_from_cache(self, cache_file)
 
 	async def _fetch_and_cache_pricing_data(self) -> None:
-		"""Fetch pricing data from LiteLLM GitHub and cache it with timestamp"""
-		try:
-			async with httpx.AsyncClient() as client:
-				response = await client.get(self.pricing_url, timeout=30)
-				response.raise_for_status()
-
-				self._pricing_data = response.json()
-
-			# Create cache object with timestamp
-			cached = CachedPricingData(timestamp=datetime.now(), source_url=self.pricing_url, data=self._pricing_data or {})
-
-			# Ensure cache directory exists
-			self._cache_dir.mkdir(parents=True, exist_ok=True)
-
-			# Create cache file with timestamp in filename
-			timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-			cache_file = self._cache_dir / f'pricing_{timestamp_str}.json'
-
-			await anyio.Path(cache_file).write_text(cached.model_dump_json(indent=2))
-		except Exception as e:
-			logger.debug(f'Error fetching pricing data: {e}')
-			# Fall back to empty pricing data
-			self._pricing_data = {}
+		"""Fetch pricing data from LiteLLM GitHub and cache it with timestamp."""
+		await _fetch_and_cache_pricing_data(self)
 
 	async def get_model_pricing(self, model_name: str) -> ModelPricing | None:
 		"""Get pricing information for a specific model"""
@@ -560,46 +482,19 @@ class TokenCost:
 		self.usage_history = []
 
 	async def refresh_pricing_data(self) -> None:
-		"""Force refresh of pricing data from GitHub"""
-		if self.include_cost:
-			await self._fetch_and_cache_pricing_data()
+		"""Force refresh of pricing data from GitHub."""
+		await refresh_pricing_data(self)
 
 	async def clean_old_caches(self, keep_count: int = 3) -> None:
-		"""Clean up old cache files, keeping only the most recent ones from this source URL"""
-		try:
-			# List all JSON files in the cache directory
-			cache_files = list(self._cache_dir.glob('*.json'))
-
-			if not cache_files:
-				return
-
-			# Only consider cache files from the same source URL
-			own_files: list[Path] = []
-			for cache_file in cache_files:
-				try:
-					cached = CachedPricingData.model_validate_json(cache_file.read_text())
-					if self._cache_source_matches(cached):
-						own_files.append(cache_file)
-				except Exception:
-					pass
-
-			if len(own_files) <= keep_count:
-				return
-
-			# Sort by modification time (oldest first)
-			own_files.sort(key=lambda f: f.stat().st_mtime)
-
-			# Remove all but the most recent files
-			for cache_file in own_files[:-keep_count]:
-				try:
-					os.remove(cache_file)
-				except Exception:
-					pass
-		except Exception as e:
-			logger.debug(f'Error cleaning old cache files: {e}')
+		"""Clean up old cache files, keeping only the most recent ones from this source URL."""
+		await clean_old_caches(self, keep_count)
 
 	async def ensure_pricing_loaded(self) -> None:
 		"""Ensure pricing data is loaded in the background. Call this after creating the service."""
-		if not self._initialized and self.include_cost:
-			# This will run in the background and won't block
-			await self.initialize()
+		await ensure_pricing_loaded(self)
+
+	def _now(self) -> datetime:
+		return datetime.now()
+
+	def _cache_expired(self, cached: CachedPricingData) -> bool:
+		return self._now() - cached.timestamp >= self.CACHE_DURATION
