@@ -12,35 +12,12 @@ from typing import TYPE_CHECKING, Any, cast
 from cdp_use.cdp.fetch import AuthRequiredEvent, RequestPausedEvent
 from cdp_use.cdp.target import SessionID, TargetID
 
+from agentyc.browser.session_leaf_helpers import _sanitize_replay_headers
 from agentyc.browser.session_models import CDPSession
 from agentyc.utils import create_task_with_error_handling
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
-
-
-_FORBIDDEN_FETCH_HEADERS = {
-	'accept-charset',
-	'accept-encoding',
-	'access-control-request-headers',
-	'access-control-request-method',
-	'connection',
-	'content-length',
-	'cookie',
-	'cookie2',
-	'date',
-	'dnt',
-	'expect',
-	'host',
-	'keep-alive',
-	'origin',
-	'referer',
-	'te',
-	'trailer',
-	'transfer-encoding',
-	'upgrade',
-	'via',
-}
 
 
 def _normalize_method(method: str | None) -> str | None:
@@ -187,21 +164,6 @@ def _should_handle_target(session: BrowserSession, target_id: TargetID | None) -
 	if not session.is_shared_browser_runtime:
 		return True
 	return session.is_target_owned_by_current_runtime(target_id)
-
-
-def _sanitize_replay_headers(headers: dict[str, Any] | None) -> dict[str, str]:
-	if not headers:
-		return {}
-	sanitized: dict[str, str] = {}
-	for key, value in headers.items():
-		key_text = str(key).strip()
-		if not key_text:
-			continue
-		key_lower = key_text.lower()
-		if key_lower in _FORBIDDEN_FETCH_HEADERS or key_lower.startswith('sec-'):
-			continue
-		sanitized[key_text] = str(value)
-	return sanitized
 
 
 async def _continue_request(session: BrowserSession, *, request_id: str, session_id: SessionID | None) -> None:
