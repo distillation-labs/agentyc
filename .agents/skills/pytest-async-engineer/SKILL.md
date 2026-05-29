@@ -170,6 +170,30 @@ def mock_llm_click():
 - For URL assertions, use `browser_session.active_target.url`.
 - Avoid `time.sleep` — use `asyncio.wait_for` with a short timeout.
 
+## Examples
+
+Example 1: Button click test
+User says: "Write a browser test for this page with one button and a local API."
+Actions:
+- serve the page and API with `pytest-httpserver`
+- use a real `BrowserSession` fixture
+- assert on public outputs after the interaction
+Result: the test is realistic, deterministic, and CI-friendly
+
+Example 2: Fixing a flaky async test
+User says: "This test only passes sometimes on CI."
+Actions:
+- remove real URLs and shared browser state
+- replace sync sleeps with bounded async waiting
+- confirm teardown always stops the session
+Result: flakiness is reduced without hiding the real behavior
+
+## Troubleshooting
+
+- If a test is flaky, first remove timing assumptions and shared state.
+- If it touches the network, replace external URLs with local httpserver fixtures.
+- If browser processes leak, audit fixture teardown for `await session.stop()`.
+
 ## Output Format
 
 Return:
@@ -193,3 +217,4 @@ Return:
 
 - `references/pytest-patterns.md`
 - `references/eval-rubric.md`
+- `evals/cases.yaml`
