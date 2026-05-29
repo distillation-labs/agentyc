@@ -206,6 +206,30 @@ Key considerations:
 - Both are session-scoped — pass `session_id` for target-specific control.
 - `connectionType` values: `'none'`, `'cellular2g'`, `'cellular3g'`, `'cellular4g'`, `'bluetooth'`, `'ethernet'`, `'wifi'`, `'wimax'`, `'other'`.
 
+## Examples
+
+Example 1: New watchdog
+User says: "Add a watchdog that reacts to navigation completion."
+Actions:
+- extend `BaseWatchdog`
+- declare `LISTENS_TO` and `EMITS`
+- implement `on_NavigationCompleteEvent`
+Result: the new behavior is event-driven and scoped correctly
+
+Example 2: Target-scoped interception
+User says: "Mock this network response only for the active tab."
+Actions:
+- register Fetch callbacks
+- enable Fetch for the target session
+- fulfill or fail matching requests with explicit session scoping
+Result: interception is deterministic and does not leak across targets
+
+## Troubleshooting
+
+- If a command appears to do nothing, verify whether it should be root-scoped or target-scoped.
+- If interception is flaky, confirm callbacks were registered before enabling Fetch.
+- If browser state is drifting, move shared mutable state back onto `BrowserSession`.
+
 ## Output Format
 
 Return:
@@ -230,3 +254,4 @@ Return:
 
 - `references/cdp-patterns.md`
 - `references/eval-rubric.md`
+- `evals/cases.yaml`
