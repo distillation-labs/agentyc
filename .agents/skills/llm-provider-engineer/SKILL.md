@@ -134,6 +134,30 @@ single provider implementation file.
 - `cached_tokens` lives in `usage.prompt_tokens_details.cached_tokens` — not at the top level.
 - Use `response_format={"type": "json_schema", ...}` for structured output on supported models.
 
+## Examples
+
+Example 1: Adding a provider
+User says: "Add a new provider under `agentyc/llm/`."
+Actions:
+- implement `BaseChatModel`
+- map response fields into `ChatInvokeCompletion`
+- verify token accounting and structured output behavior
+Result: the provider matches the shared contract instead of leaking SDK specifics
+
+Example 2: Token-accounting bug
+User says: "Why are cached tokens missing for OpenAI?"
+Actions:
+- inspect the provider-specific usage payload
+- map nested fields into `ChatInvokeUsage`
+- keep unsupported fields as `None`
+Result: usage accounting is consistent across providers
+
+## Troubleshooting
+
+- If a provider returns raw SDK objects, normalize them before they cross the provider boundary.
+- If structured output parsing is brittle, move back to `output_format` as the single contract.
+- If token accounting is missing, audit the provider response shape before adding new fields to shared models.
+
 ## Output Format
 
 Return:
@@ -158,3 +182,4 @@ Return:
 
 - `references/llm-patterns.md`
 - `references/eval-rubric.md`
+- `evals/cases.yaml`
