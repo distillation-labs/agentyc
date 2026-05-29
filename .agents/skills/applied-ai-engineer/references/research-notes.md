@@ -19,3 +19,20 @@ The strongest systems usually combine:
 - deterministic checks where possible
 - model-graded checks where necessary
 - explicit rollout/rollback criteria
+
+## Research Discipline
+
+- define the exact research question before collecting ideas
+- ground recommendations in repository evidence before outside comparison
+- label findings as facts, inferences, or hypotheses
+- include rejected or deprioritized alternatives
+- translate outside systems into mechanisms, not brand-name cargo cults
+
+## Experiment Discipline
+
+- verify the benchmark or eval still runs before changing code
+- record the current baseline and expected noise characteristics
+- rank a hypothesis backlog before starting the loop
+- change one variable at a time by default
+- keep only changes that beat the noise floor and preserve guardrails
+- stop when the target is met, the bottleneck is disproven, or an external blocker is real
