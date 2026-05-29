@@ -21,6 +21,7 @@ async def main(
 	shared_browser_mode: str = 'tab',
 	shared_browser_window_bounds: dict[str, Any] | None = None,
 	shared_browser_focus_policy: str = 'preserve',
+	reuse_local_browser: bool | None = None,
 ) -> None:
 	from agentyc.mcp.server import MCP_AVAILABLE, AgentycServer
 
@@ -38,6 +39,7 @@ async def main(
 		shared_browser_mode=shared_browser_mode,
 		shared_browser_window_bounds=shared_browser_window_bounds,
 		shared_browser_focus_policy=shared_browser_focus_policy,
+		reuse_local_browser=reuse_local_browser,
 	)
 	from agentyc.telemetry import MCPServerTelemetryEvent
 	from agentyc.utils import get_agentyc_version
