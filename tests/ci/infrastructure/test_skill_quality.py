@@ -2,7 +2,6 @@ from pathlib import Path
 
 from agentyc.skill_quality import collect_skill_dirs, evaluate_skill_dir, evaluate_skill_tree, validate_skill_dir
 
-
 SKILLS_ROOT = Path('.agents/skills')
 
 
@@ -59,7 +58,9 @@ def test_evaluate_skill_dir_flags_insufficient_trigger_coverage(tmp_path: Path):
 		'## References\n\n'
 		'- `references/eval-rubric.md`\n'
 	)
-	(skill_dir / 'references' / 'eval-rubric.md').write_text('## Pass when the skill:\n- works\n\n## Fail when the skill:\n- breaks\n')
+	(skill_dir / 'references' / 'eval-rubric.md').write_text(
+		'## Pass when the skill:\n- works\n\n## Fail when the skill:\n- breaks\n'
+	)
 	(skill_dir / 'evals' / 'cases.yaml').write_text(
 		'version: 1\n'
 		'skill: thin-skill\n'
