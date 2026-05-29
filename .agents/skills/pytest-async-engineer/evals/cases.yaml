@@ -1,0 +1,50 @@
+version: 1
+skill: pytest-async-engineer
+suites:
+  - name: triggering
+    objective: Load for agentyc browser/integration test design, async fixtures, and CI placement.
+    pass_thresholds:
+      relevant_trigger_rate: ">=90%"
+      unrelated_non_trigger_rate: "100%"
+    cases:
+      - id: trig-01
+        prompt: Write a pytest-httpserver-backed browser test for this navigation flow.
+        expect_trigger: true
+      - id: trig-02
+        prompt: Where should this async BrowserSession test live and how should the fixture tear down?
+        expect_trigger: true
+      - id: trig-03
+        prompt: How do we test Fetch-domain network mocks with real endpoints?
+        expect_trigger: true
+      - id: nontrig-01
+        prompt: Which CDP command should fulfill an intercepted request?
+        expect_trigger: false
+      - id: nontrig-02
+        prompt: Design a new MCP tool schema.
+        expect_trigger: false
+  - name: functional
+    objective: Keep tests realistic, deterministic, and aligned with repo constraints.
+    cases:
+      - id: func-01
+        prompt: Add a browser test for a page with a button and local API response.
+        success_criteria:
+          - Uses pytest-httpserver for all served content.
+          - Uses a real BrowserSession fixture with headless=True.
+          - Avoids remote URLs and browser-object mocks.
+      - id: func-02
+        prompt: Fix a flaky async test that uses time.sleep and shares browser state across tests.
+        success_criteria:
+          - Replaces sync sleep with bounded async waiting.
+          - Uses fresh session state per test unless reuse is the subject under test.
+          - Preserves teardown with await session.stop().
+  - name: performance-and-robustness
+    objective: Beat the no-skill baseline on determinism and leak prevention.
+    baseline_without_skill:
+      symptoms:
+        - Remote URLs in tests.
+        - Browser mocks instead of real sessions.
+        - Session teardown omitted or inconsistent.
+    expectations_with_skill:
+      - CI-worthy tests stay isolated and deterministic.
+      - Public API assertions are preferred over private-state assertions.
+      - Network interception tests verify cleanup, not just the happy path.
