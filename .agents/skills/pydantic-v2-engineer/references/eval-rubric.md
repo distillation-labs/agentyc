@@ -1,24 +1,20 @@
 # Eval Rubric — Pydantic v2 Engineer
 
-## Triggering (routing)
-- Skill loads for Pydantic v2 model design, ConfigDict choices, validators, views/service split, and schema generation.
-- Skill does not load for CDP protocol work, async task management, or generic Python refactors.
+## Pass when the skill:
 
-## Model Design
-- `ConfigDict` is always specified with at least `extra=` and relevant options.
-- `X | None` is used instead of `Optional[X]`.
-- `list[X]` / `dict[K, V]` used instead of `List[X]` / `Dict[K, V]`.
-- `PrivateAttr` is recommended for mutable runtime state.
-- `Field(default_factory=uuid7str)` is recommended for ID fields.
+- loads for Pydantic v2 model design, ConfigDict choices, validators, views/service split, and schema generation
+- does not load for CDP protocol work, async task management, or generic Python refactors
+- specifies `ConfigDict` intentionally
+- prefers `X | None`, `list[X]`, and `dict[K, V]` over legacy typing syntax
+- recommends `PrivateAttr` for mutable runtime state
+- recommends `Field(default_factory=uuid7str)` for ID fields where applicable
+- prefers `AfterValidator` for field-level constraints and `@model_validator(mode='after')` for cross-field rules
+- keeps models in `views.py` and service logic in `service.py`
 
-## Validator Strategy
-- `AfterValidator` is preferred for field-level constraints.
-- `@model_validator(mode='after')` is used for cross-field constraints.
-- `@field_validator` is only recommended when the others can't express the constraint.
+## Fail when the skill:
 
-## File Organization
-- Data models go in `views.py`, service logic in `service.py`.
-
-## Output Quality
-- Response includes ConfigDict choice with rationale.
-- Anti-patterns (Optional, Dict, validate_assignment issues) are flagged.
+- relies on implicit model defaults for important behavior
+- mixes service logic into data models by default
+- uses `Optional`, `List`, or `Dict` style guidance as the default recommendation
+- recommends `validate_assignment=True` on service models that depend on private runtime state
+- leaves schema and validation choices unexplained
