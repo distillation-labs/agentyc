@@ -195,7 +195,7 @@ In addition, the server emits MCP log messages for tool start/completion/error p
 
 ## Shared Browser Behavior
 
-The CLI supports a shared-browser mode through `agentyc browser` plus `agentyc mcp --cdp-url ...`.
+The CLI supports a shared-browser mode through `agentyc browser` plus `agentyc mcp --cdp-url ...`, and now also supports automatic reuse of the latest locally launched Agentyc browser via `agentyc mcp --reuse-local-browser` or `AGENTYC_REUSE_LOCAL_BROWSER=1`.
 
 - Attaching through `--cdp-url` creates a shared-browser tab by default, or a separate runtime window when `--shared-browser-mode window` is used.
 - The attached server keeps that browser alive with `keep_alive=True` for the session.
@@ -204,6 +204,7 @@ The CLI supports a shared-browser mode through `agentyc browser` plus `agentyc m
 - Chrome tab ownership cues are not a reliable public contract.
 - Separate windows and explicit focus changes are still the most dependable operator model.
 - Attached subagents stay in the shared browser profile and automatically receive a dedicated owned tab, so auth/cookies/local storage remain available across runtimes.
+- Shared-browser reuse is about reusing the same browser process/profile; each runtime still claims its own collaboration tab or window rather than co-owning one tab.
 - `browser_new_tab` is the recommended way for a subagent to open an additional tab after startup without disturbing other runtimes.
 - Shared-browser state now groups tabs by owning runtime in a `tab_groups` payload so operators can see which agent owns how many tabs at a glance. The flat `tabs` list is still present for compatibility.
 
