@@ -8,7 +8,7 @@ All skill definitions live here. The platform-specific directories are derived c
 .agents/skills/<skill-name>/
 ├── SKILL.md          # Canonical skill definition
 ├── references/       # Reference docs used in skill instructions
-└── evals/            # Eval cases for skill quality testing
+└── evals/            # Triggering, functional, and performance eval cases
 ```
 
 `dev-contextro-mcp` is the only skill distributed by the `@contextro/skills` package.
@@ -35,7 +35,7 @@ In-repo derived copies may contain only `SKILL.md` for compatibility. The publis
 
 ```bash
 for platform in .claude/skills .github/skills .opencode/skills .kiro/skills; do
-  cp .agents/skills/<name>/SKILL.md $platform/<name>/SKILL.md
+  [ -d "$platform/<name>" ] && cp .agents/skills/<name>/SKILL.md $platform/<name>/SKILL.md
 done
 ```
 
@@ -43,26 +43,58 @@ Or to sync all skills at once:
 
 ```bash
 for platform in .claude/skills .github/skills .opencode/skills .kiro/skills; do
+  [ -d "$platform" ] || continue
   for skill in .agents/skills/*/; do
     name=$(basename "$skill")
-    cp "$skill/SKILL.md" "$platform/$name/SKILL.md"
+    [ -d "$platform/$name" ] && cp "$skill/SKILL.md" "$platform/$name/SKILL.md"
   done
 done
 ```
+
+## Evaluation Standard
+
+Every active skill must ship two things:
+
+- `references/eval-rubric.md` for qualitative pass/fail review
+- `evals/cases.yaml` for concrete test prompts and success criteria
+
+Production commands:
+
+```bash
+uv run python scripts/validate_skills.py
+uv run python scripts/run_skill_evals.py
+uv run pytest tests/ci/infrastructure/test_skill_quality.py
+```
+
+`validate_skills.py` enforces structural compliance with `skills-guide.md`.
+`run_skill_evals.py` evaluates battle-readiness coverage from the manifests and reports pass/fail per skill.
+
+Each `evals/cases.yaml` must cover the three evaluation tracks from `skills-guide.md`:
+
+- triggering: obvious triggers, paraphrases, and unrelated prompts
+- functional execution: real-world prompts with expected workflow or output behavior
+- performance and robustness: expected improvement over a no-skill baseline, plus stressors
+
+Use real prompts, repo-specific tool expectations, and measurable pass thresholds. Prefer battle-test
+scenarios that reflect the actual repo surface over generic toy prompts.
+
+## Consolidation Decisions
+
+- `breakthrough-researcher` and `autoresearch` were combined into `breakthrough-autoresearch`
+- `applied-ai-engineer` now focuses on productionization, harnessing, guardrails, and rollout
+- `mcp-protocol-architect` was merged into `fastmcp-server-engineer`
 
 ## Skills
 
 | Skill | Purpose |
 |---|---|
-| `applied-ai-engineer` | Turn research ideas into benchmarked, observable, production-ready systems |
+| `applied-ai-engineer` | Turn a chosen AI direction into a benchmarked, observable, production-ready system |
 | `async-python-engineer` | Async Python patterns for agentyc: asyncio tasks, bubus EventBus, concurrency |
-| `autoresearch` | Autonomous metric-driven experiment loops until a breakthrough target is met |
-| `breakthrough-researcher` | Deep technical research, hypothesis generation, ranked experiment backlog |
+| `breakthrough-autoresearch` | Deep research plus ruthless metric-driven experiment loops until a target is met or disproven |
 | `cdp-browser-engineer` | CDP browser automation: cdp-use typed client, BrowserSession, watchdogs, DOM |
 | `dev-contextro-mcp` | Use Contextro MCP for codebase discovery, search, call graphs, git history, memory |
 | `docs-maintainer` | Changelogs, README updates, release notes, publication manifests, doc sync |
-| `fastmcp-server-engineer` | Build or refactor FastMCP servers, tools, resources, middleware, and validation |
+| `fastmcp-server-engineer` | Design and implement FastMCP server surfaces, including protocol primitives, lifecycle, and transport |
 | `llm-provider-engineer` | LLM provider integrations: BaseChatModel Protocol, token tracking, structured output |
-| `mcp-protocol-architect` | Design MCP servers around correct protocol primitives and transport choices |
 | `pydantic-v2-engineer` | Pydantic v2 model design for agentyc: ConfigDict, validators, views/services split |
 | `pytest-async-engineer` | Testing patterns for agentyc: pytest-asyncio, pytest-httpserver, BrowserSession lifecycle |
