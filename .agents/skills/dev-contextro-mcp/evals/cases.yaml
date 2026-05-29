@@ -1,0 +1,50 @@
+version: 1
+skill: dev-contextro-mcp
+suites:
+  - name: triggering
+    objective: Load for unfamiliar or multi-file code discovery, symbol work, impact analysis, history, and memory recovery.
+    pass_thresholds:
+      relevant_trigger_rate: ">=90%"
+      unrelated_non_trigger_rate: "100%"
+    cases:
+      - id: trig-01
+        prompt: Find where BrowserSession is defined and explain how it coordinates targets.
+        expect_trigger: true
+      - id: trig-02
+        prompt: What breaks if we rename add_network_mock?
+        expect_trigger: true
+      - id: trig-03
+        prompt: Search recent commits related to network mocking regressions.
+        expect_trigger: true
+      - id: nontrig-01
+        prompt: Read pyproject.toml and tell me the Ruff version.
+        expect_trigger: false
+      - id: nontrig-02
+        prompt: Write a new MCP tool from scratch.
+        expect_trigger: false
+  - name: functional
+    objective: Route to the right Contextro tools before expensive file reads or shell history scans.
+    cases:
+      - id: func-01
+        prompt: We need a safe refactor plan for renaming BrowserSession.active_target.
+        success_criteria:
+          - Uses impact before rename guidance.
+          - Explains the symbol or callers before edits.
+          - Verifies cleanup with exact-name search.
+      - id: func-02
+        prompt: Recover what we were doing after compaction.
+        success_criteria:
+          - Calls session_snapshot first.
+          - Uses recall or retrieve when archive refs exist.
+          - Avoids broad file reads as the first step.
+  - name: performance-and-robustness
+    objective: Reduce token-heavy exploration and redundant indexing.
+    baseline_without_skill:
+      symptoms:
+        - Starts with many raw file reads.
+        - Uses git log in shell for questions Contextro can answer.
+        - Re-indexes the same repo repeatedly.
+    expectations_with_skill:
+      - Fewer file reads than the no-skill baseline.
+      - No repeated index calls in one repo session.
+      - Uses compact outputs before escalating to full file bodies.
