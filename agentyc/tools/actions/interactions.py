@@ -60,14 +60,8 @@ def _might_open_new_tab(node: EnhancedDOMTreeNode) -> bool:
 	tag_name = (node.tag_name or '').lower()
 	onclick = str(attrs.get('onclick', '')).lower()
 	role = str(attrs.get('role', '')).lower()
-	return bool(_should_wait_for_new_tab_target(node) or attrs.get('href') or tag_name == 'a' or role == 'link')
-
-
-def _should_wait_for_new_tab_target(node: EnhancedDOMTreeNode) -> bool:
-	attrs = node.attributes or {}
-	onclick = str(attrs.get('onclick', '')).lower()
 	return bool(
-		attrs.get('target') == '_blank' or 'window.open' in onclick
+		attrs.get('target') == '_blank' or attrs.get('href') or tag_name == 'a' or role == 'link' or 'window.open' in onclick
 	)
 
 
@@ -212,7 +206,6 @@ def register_interaction_actions(tools: Any) -> None:
 				return ActionResult(extracted_content=msg)
 
 			element_desc = get_click_description(node)
-			wait_for_new_tab_target = _should_wait_for_new_tab_target(node)
 			page_target_ids_before = _snapshot_page_target_ids(browser_session) if _might_open_new_tab(node) else None
 			create_task_with_error_handling(
 				browser_session.highlight_interaction_element(node),
@@ -243,7 +236,7 @@ def register_interaction_actions(tools: Any) -> None:
 				memory += await _detect_new_tab_opened(
 					browser_session,
 					page_target_ids_before,
-					wait_for_target=wait_for_new_tab_target,
+					wait_for_target=True,
 				)
 			logger.info(f'🖱️ {memory}')
 			return ActionResult(

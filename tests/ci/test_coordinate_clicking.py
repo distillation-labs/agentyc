@@ -13,7 +13,6 @@ from agentyc.actions import ActionResult
 from agentyc.browser.events import SwitchTabEvent
 from agentyc.dom.views import NodeType
 from agentyc.tools.service import Tools
-from agentyc.tools.actions import interactions
 from agentyc.tools.views import ClickElementAction, ClickElementActionIndexOnly
 
 
@@ -248,56 +247,6 @@ class TestClickNewTabDetection:
 		assert result.error is None
 		assert result.extracted_content.endswith('. Automatically switched to new tab (tab_id: -new).')
 		browser_session.get_tabs.assert_not_awaited()
-
-	async def test_click_regular_link_checks_new_tab_without_wait(self, monkeypatch):
-		tools = Tools()
-		node = _FakeNode(4, 'Docs', tag='a', attrs={'href': 'https://example.com/docs'})
-		detect_new_tab = AsyncMock(return_value='')
-		monkeypatch.setattr(interactions, '_detect_new_tab_opened', detect_new_tab)
-
-		browser_session = SimpleNamespace(
-			get_element_by_index=AsyncMock(return_value=node),
-			highlight_interaction_element=AsyncMock(),
-			event_bus=SimpleNamespace(dispatch=Mock(return_value=_CompletedEvent({'click_x': 1, 'click_y': 1}))),
-			session_manager=SimpleNamespace(get_all_page_targets=lambda: [SimpleNamespace(target_id='target-existing')]),
-			cdp_client=Mock(),
-			agent_focus_target_id='target-existing',
-		)
-
-		result = await tools.click(index=4, browser_session=browser_session)
-
-		assert isinstance(result, ActionResult)
-		assert result.error is None
-		detect_new_tab.assert_awaited_once_with(
-			browser_session,
-			{'target-existing'},
-			wait_for_target=False,
-		)
-
-	async def test_click_explicit_new_tab_signal_keeps_wait(self, monkeypatch):
-		tools = Tools()
-		node = _FakeNode(4, 'Docs', tag='a', attrs={'href': 'https://example.com/docs', 'target': '_blank'})
-		detect_new_tab = AsyncMock(return_value='')
-		monkeypatch.setattr(interactions, '_detect_new_tab_opened', detect_new_tab)
-
-		browser_session = SimpleNamespace(
-			get_element_by_index=AsyncMock(return_value=node),
-			highlight_interaction_element=AsyncMock(),
-			event_bus=SimpleNamespace(dispatch=Mock(return_value=_CompletedEvent({'click_x': 1, 'click_y': 1}))),
-			session_manager=SimpleNamespace(get_all_page_targets=lambda: [SimpleNamespace(target_id='target-existing')]),
-			cdp_client=Mock(),
-			agent_focus_target_id='target-existing',
-		)
-
-		result = await tools.click(index=4, browser_session=browser_session)
-
-		assert isinstance(result, ActionResult)
-		assert result.error is None
-		detect_new_tab.assert_awaited_once_with(
-			browser_session,
-			{'target-existing'},
-			wait_for_target=True,
-		)
 
 
 def _append_new_target_and_return(page_targets: list[SimpleNamespace], target_id: str):
