@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1] - 2026-05-29
+
+### Added
+
+- **Public local-browser reuse path** — `agentyc mcp --reuse-local-browser` and `AGENTYC_REUSE_LOCAL_BROWSER=1` let agents in other projects attach to the latest locally launched Agentyc browser without manually copying a CDP URL, and `agentyc browser --detach` now registers that browser for later reuse.
+- **Canonical browser-automation skill and guide validation tooling** — `.agents/skills/agentyc-browser-automation/` now carries the shared-browser/browser-tool playbook with an eval rubric and cases, and the repo now includes skill validation/eval helpers plus a distributed-guide drift test.
+
+### Changed
+
+- **Packaged skills guide refreshed** — `agentyc init` now emits guidance that explicitly covers shared-browser reuse, same-browser-process/profile versus same-tab safety, tool-selection rules, cookies and storage workflows, richer interaction recipes, JS evaluation, and a fuller quick-reference tool list across the 66-tool browser MCP surface.
+- **Cold frame enumeration path is leaner** — `browser_list_frames` now skips stale unattached page targets before attempting a CDP session attach, which materially removes the old cold frame-path stall and improves the confirmed two-run headless stdio median to `24140.0 ms` total with `43.3 ms` average / `161.6 ms` p95 tool latency.
+- **Release benchmark baseline refreshed** — the current confirmed two-run headless medians are runtime `import_ms=194.4`, `session_init_ms=1027.4`, `avg_auto_payload_reduction_pct=10.2`, and `collaboration_latency_ms=1283.1`, with recall/action metrics remaining `1.0`.
+
+### Tests
+
+- **New shared-browser and frame-path coverage** — `tests/ci/test_mcp_cli.py`, `tests/ci/test_mcp_runtime_optimizations.py`, and `tests/ci/browser/test_frame_target_filtering.py`.
+- **New distributed-guide and skill-quality coverage** — `tests/ci/infrastructure/test_distributed_skill_guide.py`, `tests/ci/infrastructure/test_skill_quality.py`, `scripts/validate_skills.py`, and `scripts/run_skill_evals.py`.
+
 ## [0.3.0] - 2026-05-28
 
 ### Added
