@@ -106,10 +106,9 @@ async def _navigate(self, url: str, new_tab: bool = False) -> str:
 		return f'Opened new tab with URL: {url}'
 	if self._cdp_client_for_runtime:
 		try:
-			from agentyc.mcp.cdp_debug_session_tools import _ensure_runtime_event_domains_enabled
-
 			_cdp_s = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
-			await _ensure_runtime_event_domains_enabled(self, _cdp_s.session_id)
+			await self._cdp_client_for_runtime.send.Runtime.enable(session_id=_cdp_s.session_id)
+			await self._cdp_client_for_runtime.send.Network.enable(session_id=_cdp_s.session_id)
 		except Exception:
 			pass
 	from agentyc.mcp.state import truncate_text

@@ -14,32 +14,6 @@ from agentyc.mcp.debug_tools import _serialize_network_entry
 _MAX_CAPTURED_BODY_BYTES = 64 * 1024
 
 
-async def _ensure_runtime_event_domains_enabled(self, session_id: str | None) -> None:
-	"""Enable Runtime/Network once per attached CDP session for MCP event capture."""
-	if not session_id or not self._cdp_client_for_runtime:
-		return
-	enabled_session_ids = getattr(self, '_runtime_enabled_session_ids', None)
-	if enabled_session_ids is None:
-		enabled_session_ids = set()
-		self._runtime_enabled_session_ids = enabled_session_ids
-	if session_id in enabled_session_ids:
-		return
-	runtime_enabled = False
-	network_enabled = False
-	try:
-		await self._cdp_client_for_runtime.send.Runtime.enable(session_id=session_id)
-		runtime_enabled = True
-	except Exception:
-		pass
-	try:
-		await self._cdp_client_for_runtime.send.Network.enable(session_id=session_id)
-		network_enabled = True
-	except Exception:
-		pass
-	if runtime_enabled or network_enabled:
-		enabled_session_ids.add(session_id)
-
-
 async def _register_cdp_event_listeners(self) -> None:
 	"""Register native CDP event listeners for console and network capture."""
 	if self._cdp_events_registered or not self.browser_session:
@@ -51,10 +25,18 @@ async def _register_cdp_event_listeners(self) -> None:
 	all_sids: list[str] = list(sm.get_all_sessions().keys()) if sm else [our_session_id]
 	if not all_sids:
 		all_sids = [our_session_id]
-	self._runtime_enabled_session_ids = set()
-	self._cdp_client_for_runtime = cdp_session.cdp_client
 	for _sid in all_sids:
-		await _ensure_runtime_event_domains_enabled(self, _sid)
+		try:
+			await cdp_session.cdp_client.send.Runtime.enable(session_id=_sid)
+		except Exception:
+			pass
+		try:
+			# Network domain events require explicit enablement per CDP session.
+			await cdp_session.cdp_client.send.Network.enable(session_id=_sid)
+		except Exception:
+			pass
+
+	self._cdp_client_for_runtime = cdp_session.cdp_client
 
 	def _arg_to_str(arg: Any) -> str:
 		if isinstance(arg, dict):

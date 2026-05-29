@@ -48,10 +48,9 @@ async def _switch_tab(self, tab_id: str) -> str:
 		)
 	if self._cdp_client_for_runtime:
 		try:
-			from agentyc.mcp.cdp_debug_session_tools import _ensure_runtime_event_domains_enabled
-
 			focused_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
-			await _ensure_runtime_event_domains_enabled(self, focused_session.session_id)
+			await self._cdp_client_for_runtime.send.Runtime.enable(session_id=focused_session.session_id)
+			await self._cdp_client_for_runtime.send.Network.enable(session_id=focused_session.session_id)
 		except Exception:
 			pass
 	current_url = await self.browser_session.get_current_page_url()
@@ -78,10 +77,9 @@ async def _new_tab(self, url: str = 'about:blank') -> str:
 
 		if self._cdp_client_for_runtime:
 			try:
-				from agentyc.mcp.cdp_debug_session_tools import _ensure_runtime_event_domains_enabled
-
 				focused_session = await self.browser_session.get_or_create_cdp_session(target_id=None, focus=False)
-				await _ensure_runtime_event_domains_enabled(self, focused_session.session_id)
+				await self._cdp_client_for_runtime.send.Runtime.enable(session_id=focused_session.session_id)
+				await self._cdp_client_for_runtime.send.Network.enable(session_id=focused_session.session_id)
 			except Exception:
 				pass
 
