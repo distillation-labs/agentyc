@@ -11,9 +11,10 @@ All skill definitions live here. The platform-specific directories are derived c
 └── evals/            # Triggering, functional, and performance eval cases
 ```
 
-`dev-contextro-mcp` is the only skill distributed by the `@contextro/skills` package.
+`dev-contextro-mcp` is distributed by the `@contextro/skills` package.
+`agentyc-browser-automation` is the canonical source for the browser-automation guide shipped by `agentyc init`,
+which is flattened into `agentyc/skills/SKILL.md` for end-user distribution.
 The other skills in this directory are internal development skills and are not shipped to end users.
-The distributable bundle lives in `packages/skills/skills/dev-contextro-mcp/` and is kept in sync with this development copy.
 
 ## Platform copies (SKILL.md only)
 
@@ -90,6 +91,7 @@ scenarios that reflect the actual repo surface over generic toy prompts.
 |---|---|
 | `applied-ai-engineer` | Turn a chosen AI direction into a benchmarked, observable, production-ready system |
 | `async-python-engineer` | Async Python patterns for agentyc: asyncio tasks, bubus EventBus, concurrency |
+| `agentyc-browser-automation` | End-to-end guidance for coding agents using Agentyc MCP browser tools effectively |
 | `breakthrough-autoresearch` | Deep research plus ruthless metric-driven experiment loops until a target is met or disproven |
 | `cdp-browser-engineer` | CDP browser automation: cdp-use typed client, BrowserSession, watchdogs, DOM |
 | `dev-contextro-mcp` | Use Contextro MCP for codebase discovery, search, call graphs, git history, memory |
