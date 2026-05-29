@@ -244,7 +244,7 @@ async def _list_frames(self) -> str:
 	if error:
 		return error
 	assert browser_session is not None
-	all_frames, _ = await browser_session.get_all_frames()
+	all_frames, _ = await browser_session.get_all_frames(include_backend_node_ids=False)
 	return json.dumps([_build_frame_entry(frame_id, frame_info) for frame_id, frame_info in all_frames.items()])
 
 
@@ -254,11 +254,15 @@ async def _get_frame_html(self, frame_id: str) -> str:
 	if error:
 		return error
 	assert browser_session is not None
-	all_frames, _ = await browser_session.get_all_frames()
+	all_frames, target_sessions = await browser_session.get_all_frames(include_backend_node_ids=False)
 	frame_info = all_frames.get(frame_id)
 	if frame_info is None:
 		return self._format_action_error(f'Unknown frame_id: {frame_id}', default_code='not_found')
-	cdp_session = await browser_session.cdp_client_for_frame(frame_id)
+	cdp_session = await browser_session.cdp_client_for_frame(
+		frame_id,
+		all_frames=all_frames,
+		target_sessions=target_sessions,
+	)
 	params: Any = {'frameId': frame_id, 'worldName': 'agentyc-frame-html'}
 	world = cast(
 		Any,

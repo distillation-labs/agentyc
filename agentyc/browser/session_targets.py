@@ -121,7 +121,11 @@ def _is_valid_target(
 	return url_allowed and type_allowed
 
 
-async def get_all_frames(session: BrowserSession) -> tuple[dict[str, dict], dict[str, str]]:
+async def get_all_frames(
+	session: BrowserSession,
+	*,
+	include_backend_node_ids: bool = True,
+) -> tuple[dict[str, dict], dict[str, str]]:
 	all_frames: dict[str, dict] = {}
 	target_sessions: dict[str, str] = {}
 	include_cross_origin = session.browser_profile.cross_origin_iframes
@@ -209,7 +213,7 @@ async def get_all_frames(session: BrowserSession) -> tuple[dict[str, dict], dict
 		except Exception as e:
 			session.logger.debug(f'Failed to get frame tree for target {target_id}: {e}')
 
-	if include_cross_origin:
+	if include_cross_origin and include_backend_node_ids:
 		await _populate_frame_metadata(session, all_frames, target_sessions)
 	return all_frames, target_sessions
 
@@ -248,10 +252,17 @@ async def cdp_client_for_target(session: BrowserSession, target_id: TargetID) ->
 	return await get_or_create_cdp_session(session, target_id, focus=False)
 
 
-async def cdp_client_for_frame(session: BrowserSession, frame_id: str) -> CDPSession:
+async def cdp_client_for_frame(
+	session: BrowserSession,
+	frame_id: str,
+	*,
+	all_frames: dict[str, dict] | None = None,
+	target_sessions: dict[str, str] | None = None,
+) -> CDPSession:
 	if not session.browser_profile.cross_origin_iframes:
 		return await get_or_create_cdp_session(session)
-	all_frames, target_sessions = await get_all_frames(session)
+	if all_frames is None or target_sessions is None:
+		all_frames, target_sessions = await get_all_frames(session, include_backend_node_ids=False)
 	frame_info = await find_frame_target(session, frame_id, all_frames)
 	if frame_info:
 		target_id = frame_info.get('frameTargetId')

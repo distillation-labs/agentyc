@@ -305,7 +305,7 @@ class DomServiceBuildMixin:
 
 					if should_process_iframe:
 						if all_frames is None:
-							all_frames, _ = await self.browser_session.get_all_frames()
+							all_frames, _ = await self.browser_session.get_all_frames(include_backend_node_ids=False)
 						assert all_frames is not None
 						frame_id = node.get('frameId', None)
 						if (not frame_id or frame_id not in all_frames) and attributes:

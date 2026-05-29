@@ -210,8 +210,8 @@ class SessionTargetsMixin:
 			include_workers=include_workers,
 		)
 
-	async def get_all_frames(self) -> tuple[dict[str, dict], dict[str, str]]:
-		return await session_targets.get_all_frames(self._session())
+	async def get_all_frames(self, *, include_backend_node_ids: bool = True) -> tuple[dict[str, dict], dict[str, str]]:
+		return await session_targets.get_all_frames(self._session(), include_backend_node_ids=include_backend_node_ids)
 
 	async def _populate_frame_metadata(self, all_frames: dict[str, dict], target_sessions: dict[str, str]) -> None:
 		await session_targets._populate_frame_metadata(self._session(), all_frames, target_sessions)
@@ -222,8 +222,19 @@ class SessionTargetsMixin:
 	async def cdp_client_for_target(self, target_id: TargetID) -> CDPSession:
 		return await session_targets.cdp_client_for_target(self._session(), target_id)
 
-	async def cdp_client_for_frame(self, frame_id: str) -> CDPSession:
-		return await session_targets.cdp_client_for_frame(self._session(), frame_id)
+	async def cdp_client_for_frame(
+		self,
+		frame_id: str,
+		*,
+		all_frames: dict[str, dict] | None = None,
+		target_sessions: dict[str, str] | None = None,
+	) -> CDPSession:
+		return await session_targets.cdp_client_for_frame(
+			self._session(),
+			frame_id,
+			all_frames=all_frames,
+			target_sessions=target_sessions,
+		)
 
 	async def cdp_client_for_node(self, node: EnhancedDOMTreeNode) -> CDPSession:
 		return await session_targets.cdp_client_for_node(self._session(), node)
