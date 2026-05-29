@@ -296,6 +296,9 @@ Supported route families:
 agentyc browser --port 9222 --detach
 # → ws://127.0.0.1:9222/devtools/browser/...
 
+# Reuse the latest locally launched Agentyc browser automatically
+agentyc mcp --reuse-local-browser
+
 # Attach MCP servers to it
 agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
 ```
@@ -303,7 +306,7 @@ agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
 **Parallel automation flow:**
 
 1. Primary agent starts a shared browser with `agentyc browser --detach`
-2. Each subagent spawns `agentyc mcp --cdp-url <url>` — Agentyc claims a dedicated collaboration tab in the shared browser profile
+2. Each subagent either spawns `agentyc mcp --cdp-url <url>` or uses `agentyc mcp --reuse-local-browser` / `AGENTYC_REUSE_LOCAL_BROWSER=1` — Agentyc claims a dedicated collaboration tab in the shared browser profile
 3. Subagents can immediately navigate and work in that owned tab; `browser_new_tab` is only needed when one subagent wants an additional tab of its own
 4. Subagents operate independently — refs, network logs, and console logs stay scoped to the owned tab, while auth/cookies/local storage remain shared with the browser profile
 5. Primary coordinates and collects results
@@ -317,8 +320,9 @@ When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by
 - `--shared-browser-mode` — `tab` (default) or `window`
 - `--shared-browser-focus-policy` — `preserve` or `activate`
 - `--shared-browser-window-bounds` — JSON bounds for window mode
+- `--reuse-local-browser` — auto-attach to the latest locally launched Agentyc browser without copying a CDP URL around
 
-> Tab mode is the default for parallel subagents. Window mode remains optional when an operator needs a separate visible surface.
+> Shared-browser reuse means the same browser process and profile. Each runtime still claims its own collaboration tab or window; Chrome does not provide a safe public contract for multiple agents to co-own the exact same tab.
 
 ---
 
@@ -389,6 +393,7 @@ The primary public story is MCP-first. Direct Python imports are available for e
 | `--session-timeout-minutes` | 0 (never) | Auto-close idle sessions |
 | `--hud-overlay` | off | Show a small transparent desktop HUD for sanitized live activity |
 | `--cdp-url` | — | Attach to existing browser |
+| `--reuse-local-browser` | off unless enabled explicitly or via env | Reuse the latest locally launched Agentyc browser |
 | `--runtime-label` | — | Ownership label for shared browser |
 | `--runtime-role` | — | Collaboration role |
 | `--shared-browser-mode` | `tab` | `tab` or `window` |
