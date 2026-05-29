@@ -40,6 +40,7 @@ The MCP server primarily consumes the default `browser_profile` entry and select
 
 ```bash
 agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
+agentyc mcp --reuse-local-browser
 agentyc --session-timeout-minutes 30  # auto-close after 30 min idle; 0 = never (default)
 ```
 
@@ -48,6 +49,7 @@ agentyc --session-timeout-minutes 30  # auto-close after 30 min idle; 0 = never 
 | `--session-timeout-minutes` | Idle timeout in minutes for the tracked browser session. `0` (default) disables automatic cleanup — sessions stay alive until the MCP server process exits. |
 | `--hud-overlay` | Show the optional transparent desktop HUD window for sanitized live activity |
 | `--cdp-url` | Attach to an existing browser instead of launching a local one |
+| `--reuse-local-browser` | Reuse the latest locally launched Agentyc browser instead of launching a new browser or manually copying a CDP URL |
 | `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
 | `--runtime-role` | Collaboration role string for this runtime |
 | `--parent-runtime-id` | Optional parent runtime identifier for nested collaboration flows |
@@ -76,6 +78,7 @@ agentyc browser --port 9222 --detach
 | `AGENTYC_HEADLESS` | Override `headless` in the default browser profile |
 | `AGENTYC_HUD_OVERLAY` | Override `hud_overlay` in the default browser profile |
 | `AGENTYC_ALLOWED_DOMAINS` | Comma-separated allowlist override |
+| `AGENTYC_REUSE_LOCAL_BROWSER` | Enable automatic reuse of the latest locally launched Agentyc browser when `--reuse-local-browser` is not passed explicitly |
 | `AGENTYC_DISABLE_EXTENSIONS` | Disable bundled browser extensions |
 | `AGENTYC_ACTION_TIMEOUT_S` | Per-action timeout parsed by `agentyc.tools.runtime` and enforced in `Tools.act()` |
 
