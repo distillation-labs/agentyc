@@ -1,25 +1,20 @@
 # Eval Rubric — Pytest Async Engineer
 
-## Triggering (routing)
-- Skill loads for test design, pytest-asyncio patterns, pytest-httpserver usage, LLM fixtures, and CI placement.
-- Skill does not load for production code design, CDP protocol work, or general Python debugging.
+## Pass when the skill:
 
-## Test Correctness
-- No `@pytest.mark.asyncio` decorator on test functions.
-- No real remote URLs — all HTML served via `pytest-httpserver`.
-- No mocks except for the LLM.
-- `await session.stop()` in all browser fixture teardowns.
+- loads for test design, pytest-asyncio patterns, pytest-httpserver usage, LLM fixtures, and CI placement
+- does not load for production code design, CDP protocol work, or general Python debugging
+- avoids `@pytest.mark.asyncio` on test functions in this repo
+- uses `pytest-httpserver` for local HTML and API content
+- avoids real remote URLs
+- avoids mocks except for the LLM
+- ensures browser fixtures use `headless=True` and call `await session.stop()` in teardown
+- places deterministic coverage in `tests/ci/` with sensible naming and fixture structure
 
-## Fixture Design
-- `pytest-httpserver` is used for all HTML content.
-- Browser fixture uses `headless=True`.
-- LLM fixture returns canned `ChatInvokeCompletion` via `AsyncMock`.
+## Fail when the skill:
 
-## CI Placement
-- Test goes in `tests/ci/` once it is deterministic and dependency-free.
-- Event-specific tests use `test_action_EventName.py` naming.
-
-## Output Quality
-- Response includes httpserver route setup.
-- Response addresses teardown.
-- Anti-patterns (remote URLs, mocking browser objects, sync sleep) are flagged.
+- uses remote URLs or browser mocks in tests
+- leaves teardown implicit or incomplete
+- relies on `time.sleep` inside async tests
+- stores browser state across unrelated test functions
+- asserts on private internals when public outputs are available
