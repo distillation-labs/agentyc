@@ -20,6 +20,7 @@ Supported MCP CLI arguments:
 | `--session-timeout-minutes` | Idle timeout in minutes; `0` (default) keeps the session alive indefinitely |
 | `--hud-overlay` | Open the optional transparent desktop HUD that mirrors sanitized runtime activity |
 | `--cdp-url` | Attach to an existing Chrome or Chromium instance instead of launching a local browser |
+| `--reuse-local-browser` | Reuse the latest locally launched Agentyc browser from the shared-browser registry |
 | `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
 | `--runtime-role` | Collaboration role string for this runtime, such as `primary` or `assistant` |
 | `--parent-runtime-id` | Optional parent runtime identifier for nested collaboration flows |
