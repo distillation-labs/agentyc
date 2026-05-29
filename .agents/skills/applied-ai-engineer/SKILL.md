@@ -5,21 +5,34 @@ description: >
   the user asks to productionize an AI feature, build or improve evals or harnesses, reduce
   regressions, add observability, design rollout or rollback, improve model routing or prompt/
   tool scaffolding, or convert research into a safe implementation path. Do not use for pure
-  literature review, speculative research with no implementation intent, or trivial edits.
+  literature review, speculative research with no implementation intent, ruthless open-ended
+  autoresearch loops, or trivial edits.
 when_to_use: >
   Especially useful for harness engineering, evaluator design, baseline comparisons,
   instrumentation, rollout safety, architecture legibility, compaction and resume flows, workflow
-  governance, model routing, and making agent systems reliable under real constraints.
+  governance, model routing, and making agent systems reliable under real constraints once the
+  direction is chosen.
 metadata:
-  version: "0.1.0"
+  version: "0.3.0"
   category: engineering
-  tags: [applied-ai, harness, evals, observability, rollout, reliability, benchmarking, routing, context, safety, experimentation]
+  tags: [applied-ai, harness, evals, observability, rollout, reliability, benchmarking, routing, context, safety, experimentation, research]
 license: Proprietary
 ---
 
 # Applied AI Engineer
 
 You turn AI ideas into systems that can be measured, debugged, and shipped.
+
+## Use Cases
+
+- "Turn this prototype into a benchmarked, observable feature with rollback criteria."
+- "Harden this working direction with an eval harness, observability, and regression guardrails."
+- "Take this promising experiment and make it safe to ship."
+
+## Boundaries
+
+- Use this skill when the likely direction is already chosen and now needs to be made real, measurable, and shippable.
+- Do not use it for open-ended root-cause research or ruthless autonomous experiment loops; use `breakthrough-autoresearch` for that.
 
 ## What Great Applied AI Engineers Optimize For
 
@@ -59,6 +72,7 @@ You turn AI ideas into systems that can be measured, debugged, and shipped.
 - Treat latency, memory, privacy, cost, and safety as first-class metrics.
 - If one metric improves while another regresses, call it out.
 - Define success criteria that are specific, measurable, achievable, and relevant.
+- Prefer negative evidence over hype when pruning weak ideas.
 
 ## Harness First
 
@@ -69,6 +83,13 @@ You turn AI ideas into systems that can be measured, debugged, and shipped.
 - Use human review sparingly, mostly for calibration.
 - Keep evals aligned with the production task distribution.
 - Maintain a rollback path if the harness reveals regressions.
+
+## Validation Discipline
+
+- Do not trust a change until the baseline and acceptance criteria are explicit.
+- Reproduce the current failure mode before claiming to fix it.
+- Compare before and after against the same harness.
+- If a proposed change is still speculative, narrow it into a measurable slice or hand off to `breakthrough-autoresearch`.
 
 In agentyc, prefer the existing benchmark and quality surfaces:
 
@@ -166,6 +187,8 @@ For meaningful AI or retrieval changes, define:
 
 Do not present a hypothesis as a truth.
 
+If the work is still dominated by hypothesis generation instead of implementation hardening, stop and switch to `breakthrough-autoresearch`.
+
 ### 5. Implement The Smallest Enforceable Slice
 
 Do not solve a broad problem with a large rewrite unless the harness proves you need one.
@@ -231,6 +254,33 @@ Return results in this order:
 10. `Rollout and rollback`
 11. `Open questions and tradeoffs`
 
+## Examples
+
+Example 1: Productionizing a promising prototype
+User says: "This retrieval change looks promising. Make it safe to ship."
+Actions:
+- define the primary metric and rollout guardrails
+- add or tighten the eval harness
+- implement the smallest hardening slice
+- add observability and rollback criteria
+Result: a measurable, guarded implementation path instead of a prototype-only win
+
+Example 2: Regression hardening
+User says: "This agent now fails more often on SPA pages. Add regression protection."
+Actions:
+- reproduce the failure on representative cases
+- encode the failure into tests or evals
+- add the minimal fix and verify before/after
+- document rollback and monitoring hooks
+Result: the regression is measurable and cannot silently return
+
+## Troubleshooting
+
+- If the solution space is still unclear, hand off to `breakthrough-autoresearch` before editing code.
+- If the harness is missing, build the smallest representative benchmark before proposing a fix.
+- If the metric is noisy, compare repeated runs and treat below-noise deltas as non-wins.
+- If the likely fix touches a subsystem boundary, compose with the subsystem skill rather than hand-waving over domain specifics.
+
 ## Anti-Patterns
 
 - Do not ship AI behavior with no evals.
@@ -244,13 +294,17 @@ Return results in this order:
 - Do not use LLM grading without a clear rubric and calibration.
 - Do not skip rollback planning.
 
-## Handoff Rule
+## Composition Rule
 
-- use `breakthrough-researcher` when the solution space is still unclear
-- use `autoresearch` when the metric and experiment loop are already defined and ready to run autonomously
+- use `breakthrough-autoresearch` when the work is still dominated by research, hypothesis ranking, or autonomous experiment loops
+- use `cdp-browser-engineer` when the winning path depends on CDP, BrowserSession, target plumbing, or watchdog behavior
+- use `llm-provider-engineer` when the work is primarily provider mapping, token accounting, or structured output integration
+- use `pytest-async-engineer` when a repeated failure needs to be encoded as deterministic browser or integration coverage
+- use `async-python-engineer` when the bottleneck is async task lifecycle, cancellation, or event-bus wiring
 
 ## References
 
 - Engineering patterns: `references/engineering-patterns.md`
 - Research notes: `references/research-notes.md`
 - Skill eval rubric: `references/eval-rubric.md`
+- Eval cases: `evals/cases.yaml`
