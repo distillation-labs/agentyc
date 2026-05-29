@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +37,59 @@ from agentyc.utils import is_new_tab_page
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
+
+_FRAME_SNAPSHOT_CACHE_TTL_S = 1.0
+
+
+def _clear_cached_frame_snapshot(session: BrowserSession) -> None:
+	session._cached_frame_snapshot = None
+	session._cached_frame_snapshot_target_id = None
+	session._cached_frame_snapshot_url = None
+	session._cached_frame_snapshot_has_backend_node_ids = False
+	session._cached_frame_snapshot_at = 0.0
+
+
+def _current_frame_snapshot_url(session: BrowserSession) -> str | None:
+	if not session.agent_focus_target_id or not session.session_manager:
+		return None
+	target = session.session_manager.get_target(session.agent_focus_target_id)
+	return target.url if target else None
+
+
+def _get_cached_frame_snapshot(
+	session: BrowserSession,
+	*,
+	include_backend_node_ids: bool,
+) -> tuple[dict[str, dict], dict[str, str]] | None:
+	cached_snapshot = session._cached_frame_snapshot
+	if cached_snapshot is None:
+		return None
+	if time.monotonic() - session._cached_frame_snapshot_at > _FRAME_SNAPSHOT_CACHE_TTL_S:
+		_clear_cached_frame_snapshot(session)
+		return None
+	if session._cached_frame_snapshot_target_id != session.agent_focus_target_id:
+		_clear_cached_frame_snapshot(session)
+		return None
+	if session._cached_frame_snapshot_url != _current_frame_snapshot_url(session):
+		_clear_cached_frame_snapshot(session)
+		return None
+	if include_backend_node_ids and not session._cached_frame_snapshot_has_backend_node_ids:
+		return None
+	return cached_snapshot
+
+
+def _cache_frame_snapshot(
+	session: BrowserSession,
+	*,
+	all_frames: dict[str, dict],
+	target_sessions: dict[str, str],
+	include_backend_node_ids: bool,
+) -> None:
+	session._cached_frame_snapshot = (all_frames, target_sessions)
+	session._cached_frame_snapshot_target_id = session.agent_focus_target_id
+	session._cached_frame_snapshot_url = _current_frame_snapshot_url(session)
+	session._cached_frame_snapshot_has_backend_node_ids = include_backend_node_ids
+	session._cached_frame_snapshot_at = time.monotonic()
 
 
 async def _cdp_get_all_pages(
@@ -126,6 +180,9 @@ async def get_all_frames(
 	*,
 	include_backend_node_ids: bool = True,
 ) -> tuple[dict[str, dict], dict[str, str]]:
+	cached_snapshot = _get_cached_frame_snapshot(session, include_backend_node_ids=include_backend_node_ids)
+	if cached_snapshot is not None:
+		return cached_snapshot
 	all_frames: dict[str, dict] = {}
 	target_sessions: dict[str, str] = {}
 	include_cross_origin = session.browser_profile.cross_origin_iframes
@@ -215,6 +272,12 @@ async def get_all_frames(
 
 	if include_cross_origin and include_backend_node_ids:
 		await _populate_frame_metadata(session, all_frames, target_sessions)
+	_cache_frame_snapshot(
+		session,
+		all_frames=all_frames,
+		target_sessions=target_sessions,
+		include_backend_node_ids=include_backend_node_ids,
+	)
 	return all_frames, target_sessions
 
 

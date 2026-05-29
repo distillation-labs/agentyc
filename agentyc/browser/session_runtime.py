@@ -57,6 +57,11 @@ async def reset(session: BrowserSession) -> None:
 	session._cdp_client_root = None
 	session._cached_browser_state_summary = None
 	session._cached_selector_map.clear()
+	session._cached_frame_snapshot = None
+	session._cached_frame_snapshot_target_id = None
+	session._cached_frame_snapshot_url = None
+	session._cached_frame_snapshot_has_backend_node_ids = False
+	session._cached_frame_snapshot_at = 0.0
 	session._downloaded_files.clear()
 	session._network_mock_rules.clear()
 	session._network_conditions_by_target.clear()

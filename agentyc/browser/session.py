@@ -373,6 +373,11 @@ class BrowserSession(SessionRuntimeMixin, SessionTargetsMixin, SessionDOMMixin, 
 
 	_cached_browser_state_summary: Any = PrivateAttr(default=None)
 	_cached_selector_map: dict[int, EnhancedDOMTreeNode] = PrivateAttr(default_factory=dict)
+	_cached_frame_snapshot: tuple[dict[str, dict], dict[str, str]] | None = PrivateAttr(default=None)
+	_cached_frame_snapshot_target_id: str | None = PrivateAttr(default=None)
+	_cached_frame_snapshot_url: str | None = PrivateAttr(default=None)
+	_cached_frame_snapshot_has_backend_node_ids: bool = PrivateAttr(default=False)
+	_cached_frame_snapshot_at: float = PrivateAttr(default=0.0)
 	_downloaded_files: list[str] = PrivateAttr(default_factory=list)  # Track files downloaded during this session
 	_closed_popup_messages: list[str] = PrivateAttr(default_factory=list)  # Store messages from auto-closed JavaScript dialogs
 	_pending_auto_handled_dialogs: list[str] = PrivateAttr(

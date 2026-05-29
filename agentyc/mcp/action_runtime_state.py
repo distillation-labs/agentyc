@@ -36,6 +36,12 @@ def _mark_browser_state_cache_clean(self) -> None:
 
 def _mark_browser_state_cache_dirty(self) -> None:
 	self._browser_state_cache_clean = False
+	if self.browser_session is not None:
+		self.browser_session._cached_frame_snapshot = None
+		self.browser_session._cached_frame_snapshot_target_id = None
+		self.browser_session._cached_frame_snapshot_url = None
+		self.browser_session._cached_frame_snapshot_has_backend_node_ids = False
+		self.browser_session._cached_frame_snapshot_at = 0.0
 
 
 async def _refresh_selector_map(self) -> None:
