@@ -152,6 +152,29 @@ Always use `uuid7str` (time-ordered UUIDs) for new IDs — not `uuid4`.
 - When `views.py` gets crowded, split along domain boundaries into focused modules such as `validators.py`, `types.py`, `aliases.py`, `builders.py`, or feature-specific `views_*.py` files.
 - Prefer reusable validators and aliases over redeclaring the same constraints across multiple model files.
 
+## Examples
+
+Example 1: Service model with runtime state
+User says: "This service needs EventBus plus a mutable cache."
+Actions:
+- use `Field()` for injected dependencies
+- use `PrivateAttr` for mutable runtime state
+- set `ConfigDict` intentionally for service semantics
+Result: runtime state stays out of serialization and validation traps
+
+Example 2: Request validation
+User says: "Add field-level and cross-field validation to this model."
+Actions:
+- prefer `AfterValidator` for single-field constraints
+- use `@model_validator(mode='after')` for cross-field rules
+Result: invariants live in the model contract instead of scattered helper code
+
+## Troubleshooting
+
+- If private state disappears unexpectedly, inspect `validate_assignment` and revalidation settings.
+- If a contract feels vague, replace dict-shaped inputs with explicit models.
+- If one file keeps growing, split validators, aliases, and views by concern before adding more models.
+
 ## Output Format
 
 Return:
@@ -176,3 +199,4 @@ Return:
 
 - `references/pydantic-patterns.md`
 - `references/eval-rubric.md`
+- `evals/cases.yaml`
