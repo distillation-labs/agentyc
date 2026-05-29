@@ -18,7 +18,8 @@ from agentyc.browser.events import (
 	TabCreatedEvent,
 )
 from agentyc.browser.session_leaf_helpers import _urls_match_for_navigation_ready
-from agentyc.utils import create_task_with_error_handling, is_new_tab_page
+from agentyc.browser.session_navigation_state import clear_session_state_caches, refresh_navigation_target_state
+from agentyc.utils import is_new_tab_page
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
@@ -134,7 +135,7 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 				status=None,
 			)
 		)
-		await _refresh_navigation_target_state(session, target_id)
+		await refresh_navigation_target_state(session, target_id)
 
 	except Exception as e:
 		session.logger.error(f'Navigation failed: {type(e).__name__}: {e}')
@@ -146,27 +147,8 @@ async def on_NavigateToUrlEvent(session: BrowserSession, event: NavigateToUrlEve
 					error_message=f'{type(e).__name__}: {e}',
 				)
 			)
-			await _refresh_navigation_target_state(session, target_id)
+			await refresh_navigation_target_state(session, target_id)
 		raise
-
-
-async def _refresh_navigation_target_state(session: BrowserSession, target_id: str) -> None:
-	"""Refresh lightweight per-tab state after navigation without re-running full focus handlers."""
-	if session._dom_watchdog:
-		session._dom_watchdog.clear_cache()
-	session._cached_browser_state_summary = None
-	session._cached_selector_map.clear()
-	session._cached_frame_snapshot = None
-	session._cached_frame_snapshot_target_id = None
-	session._cached_frame_snapshot_url = None
-	session._cached_frame_snapshot_has_backend_node_ids = False
-	session._cached_frame_snapshot_at = 0.0
-	create_task_with_error_handling(
-		session._apply_runtime_markers_to_target(target_id),
-		name='refresh_navigation_runtime_markers',
-		logger_instance=session.logger,
-		suppress_exceptions=True,
-	)
 
 
 async def _navigate_and_wait(
@@ -445,17 +427,7 @@ async def on_TabCreatedEvent(session: BrowserSession, event: TabCreatedEvent) ->
 async def on_AgentFocusChangedEvent(session: BrowserSession, event: AgentFocusChangedEvent) -> None:
 	"""Handle agent focus change - update focus and clear cache."""
 	session.logger.debug(f'🔄 AgentFocusChangedEvent received: target_id=...{event.target_id[-4:]} url={event.url}')
-
-	if session._dom_watchdog:
-		session._dom_watchdog.clear_cache()
-
-	session._cached_browser_state_summary = None
-	session._cached_selector_map.clear()
-	session._cached_frame_snapshot = None
-	session._cached_frame_snapshot_target_id = None
-	session._cached_frame_snapshot_url = None
-	session._cached_frame_snapshot_has_backend_node_ids = False
-	session._cached_frame_snapshot_at = 0.0
+	clear_session_state_caches(session)
 	session.logger.debug('🔄 Cached browser state cleared')
 
 	if event.target_id:
