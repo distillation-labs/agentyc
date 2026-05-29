@@ -1,0 +1,49 @@
+version: 1
+skill: docs-maintainer
+suites:
+  - name: triggering
+    objective: Load for release-facing and user-facing documentation maintenance.
+    pass_thresholds:
+      relevant_trigger_rate: ">=90%"
+      unrelated_non_trigger_rate: "100%"
+    cases:
+      - id: trig-01
+        prompt: Update the README and changelog for this new MCP tool.
+        expect_trigger: true
+      - id: trig-02
+        prompt: Fix broken docs links after the API reference moved.
+        expect_trigger: true
+      - id: trig-03
+        prompt: Sync release notes with the actual shipped feature set.
+        expect_trigger: true
+      - id: nontrig-01
+        prompt: Implement the new MCP tool itself.
+        expect_trigger: false
+      - id: nontrig-02
+        prompt: Research better browser automation architectures.
+        expect_trigger: false
+  - name: functional
+    objective: Keep docs accurate, scoped, and synced to the codebase.
+    cases:
+      - id: func-01
+        prompt: A tool was added. Update all affected docs without inventing claims.
+        success_criteria:
+          - Identifies the authoritative source of truth.
+          - Updates dependent docs in one pass.
+          - Avoids unverifiable benchmark or release claims.
+      - id: func-02
+        prompt: Remove stale install commands after a packaging change.
+        success_criteria:
+          - Deletes obsolete commands instead of leaving contradictory prose.
+          - Verifies paths and filenames still resolve.
+  - name: performance-and-robustness
+    objective: Reduce documentation drift and unnecessary rewrites.
+    baseline_without_skill:
+      symptoms:
+        - Broad rewrites for narrow changes.
+        - Inconsistent updates across README, docs, and changelog.
+        - Release claims unsupported by the repo state.
+    expectations_with_skill:
+      - Changes stay targeted and factual.
+      - Multi-doc updates remain internally consistent.
+      - Broken links and stale paths are explicitly removed.
