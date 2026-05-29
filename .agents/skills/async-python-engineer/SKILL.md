@@ -141,6 +141,29 @@ async with asyncio.timeout(30):
 | `asyncio.TaskGroup` | Sibling tasks that all must complete or all cancel; structured lifecycle |
 | `create_task_with_error_handling` | Fire-and-forget with explicit error logging (watchdog callbacks, event handlers) |
 
+## Examples
+
+Example 1: Background watchdog task
+User says: "This polling task sometimes fails silently."
+Actions:
+- replace raw task creation with `create_task_with_error_handling`
+- wire error logging and cancellation cleanup
+Result: background task failures become visible and cleanup-safe
+
+Example 2: Coordinated startup
+User says: "How should BrowserSession and watchdog startup be ordered?"
+Actions:
+- connect CDP first
+- initialize watchdogs and event subscriptions second
+- emit lifecycle events only after the system is ready
+Result: startup is deterministic and watchdogs see the right lifecycle
+
+## Troubleshooting
+
+- If exceptions vanish, inspect every fire-and-forget call site for raw `asyncio.create_task`.
+- If shutdown is flaky, check whether stop events are emitted before task cancellation.
+- If concurrent tasks mutate shared state, add an explicit synchronization primitive instead of relying on timing.
+
 ## Output Format
 
 Return:
@@ -165,3 +188,4 @@ Return:
 
 - `references/async-patterns.md`
 - `references/eval-rubric.md`
+- `evals/cases.yaml`
