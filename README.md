@@ -99,7 +99,7 @@ agentyc init --print              # stdout
 agentyc init --force              # overwrite
 ```
 
-The skills guide covers: read→ref→act loop, `since_hash` polling, frame listing and frame HTML inspection, storage inspection and mutation, precise network waits, network entry inspection and replay, narrow network mocks, per-tab offline/throttling controls, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, JS evaluation, and common pitfalls.
+The skills guide covers: read→ref→act loop, tool-selection rules, `since_hash` polling, shared-browser reuse with `--reuse-local-browser` / `AGENTYC_REUSE_LOCAL_BROWSER`, same-browser versus same-tab safety, frame listing and frame HTML inspection, storage and cookie workflows, precise network waits, network entry inspection and replay, narrow network mocks, per-tab offline/throttling controls, right-click / double-click / drag flows, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, JS evaluation, and a fuller quick-reference tool list.
 
 ---
 
@@ -350,26 +350,26 @@ agentyc helps separate browser work from agent thinking time:
 
 ## Benchmarks
 
-Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate`). The values below are the median of two confirmed headless post-change runs:
+Measured by the release-gate benchmark suite (`scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate`). The values below are the median of two confirmed headless runs on current `HEAD`:
 
 | Metric | Threshold | Current |
 |--------|-----------|---------|
-| Python import time | ≤ 2500 ms | 667.8 ms |
-| Cold-start session init | ≤ 35000 ms | 1174.0 ms |
-| `auto` payload reduction | ≥ 8.0% | 10.0% |
+| Python import time | ≤ 2500 ms | 194.4 ms |
+| Cold-start session init | ≤ 35000 ms | 1027.4 ms |
+| `auto` payload reduction | ≥ 8.0% | 10.2% |
 | `auto` element recall | ≥ 0.99 | 1.0 |
 | `min` element recall | ≥ 0.99 | 1.0 |
 | Deterministic extraction recall | ≥ 0.99 | 1.0 |
 | Structured extraction recall | ≥ 0.99 | 1.0 |
 | Action success rate | ≥ 1.0 | 1.0 |
 | Collaboration check pass rate | ≥ 1.0 | 1.0 |
-| Collaboration latency | informational | 1302.5 ms |
+| Collaboration latency | informational | 1283.1 ms |
 
 Confirmed headless stdio tool-surface median across two runs (`scripts/benchmark_mcp_stdio_e2e.py --targets source --minimum-total-calls 100`):
 
 - success / accuracy / precision: `1.0 / 1.0 / 1.0`
-- total duration: `26233.2 ms`
-- average / p95 tool latency: `50.9 ms / 174.5 ms`
+- total duration: `24140.0 ms`
+- average / p95 tool latency: `43.3 ms / 161.6 ms`
 
 ---
 
