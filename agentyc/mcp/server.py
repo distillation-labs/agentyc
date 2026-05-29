@@ -128,6 +128,7 @@ class AgentycServer:
 		shared_browser_mode: str = 'tab',
 		shared_browser_window_bounds: dict[str, Any] | None = None,
 		shared_browser_focus_policy: str = 'preserve',
+		reuse_local_browser: bool | None = None,
 	):
 		type(self)._bind_server_methods()
 
@@ -157,7 +158,7 @@ class AgentycServer:
 		self._shared_browser_mode = shared_browser_mode
 		self._shared_browser_window_bounds = shared_browser_window_bounds
 		self._shared_browser_focus_policy = shared_browser_focus_policy
-		self._reuse_local_browser = True
+		self._reuse_local_browser = reuse_local_browser
 
 		# Session management
 		self.active_sessions: dict[str, dict[str, Any]] = {}  # session_id -> session info
