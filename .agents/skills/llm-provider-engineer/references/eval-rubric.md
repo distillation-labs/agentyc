@@ -1,26 +1,21 @@
 # Eval Rubric — LLM Provider Engineer
 
-## Triggering (routing)
-- Skill loads for BaseChatModel Protocol compliance, ChatInvokeCompletion field mapping, token accounting, structured output, and adding/debugging providers.
-- Skill does not load for MCP tool design, CDP browser work, or generic Python refactors.
+## Pass when the skill:
 
-## Protocol Compliance
-- New provider satisfies `BaseChatModel` Protocol.
-- `isinstance(llm, BaseChatModel)` check is mentioned.
-- `provider` and `name` properties are implemented.
+- loads for BaseChatModel Protocol compliance, ChatInvokeCompletion field mapping, token accounting, structured output, and adding or debugging providers
+- does not load for MCP tool design, CDP browser work, or generic Python refactors
+- requires providers to satisfy `BaseChatModel`
+- returns `ChatInvokeCompletion` rather than raw SDK objects
+- populates `usage` with correct provider-specific fields
+- normalizes `stop_reason`
+- uses `output_format` for structured parsing instead of manual JSON parsing
+- addresses provider quirks like Anthropic thinking, Google image tokens, or OpenAI cached-token nesting when relevant
+- translates provider exceptions to shared agentyc exception types
 
-## Response Mapping
-- `ChatInvokeCompletion` is always returned — never a raw SDK object.
-- `usage` is populated with correct provider-specific fields.
-- `stop_reason` is normalized to a plain string.
-- `output_format` drives structured parsing, not manual JSON.
+## Fail when the skill:
 
-## Provider Quirks
-- Anthropic `thinking` block is handled if relevant.
-- Google `prompt_image_tokens` is mapped if relevant.
-- OpenAI `cached_tokens` nesting is addressed if relevant.
-
-## Output Quality
-- Response includes a field mapping table or checklist.
-- Error translation to `agentyc.llm.exceptions` is addressed.
-- Anti-patterns (raw SDK objects, skipped usage, manual JSON parsing) are flagged.
+- allows raw SDK responses to leak out of provider modules
+- skips token accounting or leaves it vague
+- recommends provider-specific top-level fields in shared completion models
+- treats manual JSON parsing as the default structured-output path
+- ignores the shared contract while focusing only on one provider's SDK
