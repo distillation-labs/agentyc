@@ -1,0 +1,60 @@
+version: 1
+skill: applied-ai-engineer
+suites:
+  - name: triggering
+    objective: Load for productionization, eval harnessing, observability, and rollout work once the direction is chosen.
+    pass_thresholds:
+      relevant_trigger_rate: ">=90%"
+      unrelated_non_trigger_rate: "100%"
+    cases:
+      - id: trig-01
+        prompt: Turn this prototype browser-agent improvement into a benchmarked, observable feature with rollback criteria.
+        expect_trigger: true
+      - id: trig-02
+        prompt: Add regression guardrails and observability to this AI feature before we ship it.
+        expect_trigger: true
+      - id: trig-03
+        prompt: Build the smallest reliable eval harness for this promising new routing strategy.
+        expect_trigger: true
+      - id: nontrig-01
+        prompt: Research deeply why our browser-agent action success rate fell after the last refactor and rank the best experiments.
+        expect_trigger: false
+      - id: nontrig-02
+        prompt: Keep improving this metric until we hit 95% or prove the bottleneck is elsewhere.
+        expect_trigger: false
+      - id: nontrig-03
+        prompt: Fix this import error in one Python file.
+        expect_trigger: false
+      - id: nontrig-04
+        prompt: Update the README to document a renamed CLI flag.
+        expect_trigger: false
+  - name: functional
+    objective: Produce a measurable productionization plan with harnesses, guardrails, and rollback.
+    cases:
+      - id: func-01
+        prompt: >
+          We have a promising retrieval change. Turn it into a safe, benchmarked rollout plan for
+          agentyc without broad rewrites.
+        success_criteria:
+          - Names the metric and current baseline.
+          - Includes harness, observability, and rollback requirements.
+          - Prefers the smallest enforceable implementation slice.
+      - id: func-02
+        prompt: >
+          A regression fix looks good locally. Add the right tests, evals, and release guardrails so
+          we can trust it in production.
+        success_criteria:
+          - Encodes the regression into durable repo artifacts.
+          - Calls out rollout and monitoring requirements.
+          - Preserves tests, lint, and latency guardrails.
+  - name: performance-and-robustness
+    objective: Beat the no-skill baseline on drift, rework, and unsafe shipping.
+    baseline_without_skill:
+      symptoms:
+        - Jumps into changes before measuring the baseline.
+        - Declares local fixes done without adding durable harnesses.
+        - Omits rollout and rollback thinking.
+    expectations_with_skill:
+      - Baseline is established before edits.
+      - Output includes guardrails and rollback, not just the proposed fix.
+      - The final recommendation is shippable rather than merely interesting.
