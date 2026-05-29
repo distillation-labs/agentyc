@@ -147,4 +147,3 @@ async def test_click_element_node_impl_does_not_block_on_slow_mouse_move():
 	assert result == {'click_x': 60.0, 'click_y': 40.0}
 	assert elapsed < 0.5
 	assert cdp_client.send.Input.dispatchMouseEvent.await_count == 3
-	assert cdp_client.send.Runtime.runIfWaitingForDebugger.await_count == 0

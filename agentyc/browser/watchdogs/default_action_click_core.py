@@ -387,7 +387,11 @@ async def click_element_node_impl(watchdog: DefaultActionClickEngineMixin, eleme
 				raise Exception(f'Failed to click element: {error}')
 		finally:
 			try:
-				await asyncio.wait_for(watchdog.browser_session.get_or_create_cdp_session(focus=True), timeout=0.4)
+				cdp_session = await asyncio.wait_for(watchdog.browser_session.get_or_create_cdp_session(focus=True), timeout=0.4)
+				await asyncio.wait_for(
+					cdp_session.cdp_client.send.Runtime.runIfWaitingForDebugger(session_id=cdp_session.session_id),
+					timeout=0.3,
+				)
 			except TimeoutError:
 				watchdog.logger.debug('⏱️ Refocus after click timed out (page may be blocked by dialog). Continuing...')
 			except Exception as refocus_error:
