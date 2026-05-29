@@ -7,6 +7,7 @@ from agentyc.browser.feedback import BUG_REPORT_URL, FEATURE_REQUEST_URL, SECURI
 from agentyc.browser.hud_overlay import HudOverlay
 from agentyc.browser.hud_stream import HudEvent, HudStream
 from agentyc.mcp.intent_tools import _set_intent
+from agentyc.mcp.tool_dispatch import _execute_tool
 from agentyc.mcp.tool_feedback import _should_publish_hud_event
 
 
@@ -83,6 +84,30 @@ async def test_set_intent_publishes_hud_event() -> None:
 	try:
 		server = SimpleNamespace(browser_session=SimpleNamespace(id='session-z'))
 		result = await _set_intent(server, 'Reviewing checkout flow')
+	finally:
+		stream.unsubscribe(subscriber)
+
+	assert result == 'Intent updated: Reviewing checkout flow'
+	assert received[-1].kind == 'intent'
+	assert received[-1].label == 'Reviewing checkout flow'
+	assert received[-1].session_id == 'session-z'
+
+
+async def test_browser_set_intent_dispatches_via_public_tool() -> None:
+	stream = HudStream.get()
+	received: list[HudEvent] = []
+	subscriber = received.append
+
+	server = SimpleNamespace(browser_session=SimpleNamespace(id='session-z'))
+
+	async def dispatch_set_intent(intent: str) -> str:
+		return await _set_intent(server, intent)
+
+	server._set_intent = dispatch_set_intent
+
+	stream.subscribe(subscriber)
+	try:
+		result = await _execute_tool(server, 'browser_set_intent', {'intent': 'Reviewing checkout flow'})
 	finally:
 		stream.unsubscribe(subscriber)
 
