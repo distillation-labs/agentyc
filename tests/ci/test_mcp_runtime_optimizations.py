@@ -750,6 +750,33 @@ class TestMCPHotPathFixes:
 		attached_session.start.assert_awaited_once()
 		assert server._cdp_url == 'http://127.0.0.1:9222/'
 
+	async def test_init_browser_session_reuses_registered_local_browser_when_explicitly_enabled(self):
+		server = AgentycServer(reuse_local_browser=True)
+		attached_session = SimpleNamespace(
+			id='session-shared',
+			start=AsyncMock(),
+			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-shared')),
+			event_bus=SimpleNamespace(dispatch=AsyncMock()),
+			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
+		)
+
+		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
+			with patch(
+				'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
+				new=AsyncMock(return_value='http://127.0.0.1:9222/'),
+			) as reusable_cdp_url:
+				with patch(
+					'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
+				) as browser_profile:
+					with patch('agentyc.browser.BrowserSession', return_value=attached_session):
+						await server._init_browser_session()
+
+		reusable_cdp_url.assert_awaited_once_with(headless=True)
+		profile_kwargs = browser_profile.call_args.kwargs
+		assert profile_kwargs['cdp_url'] == 'http://127.0.0.1:9222/'
+		assert profile_kwargs['keep_alive'] is True
+		attached_session.start.assert_awaited_once()
+
 	async def test_init_browser_session_claims_existing_blank_tab_on_explicit_attach(self):
 		server = AgentycServer(cdp_url='http://127.0.0.1:9222/')
 		current_runtime = RuntimeOwnershipMetadata.create(
@@ -883,6 +910,31 @@ class TestMCPHotPathFixes:
 
 		with patch.dict(os.environ, {}, clear=False):
 			os.environ.pop('AGENTYC_REUSE_LOCAL_BROWSER', None)
+			with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
+				with patch(
+					'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
+					new=AsyncMock(return_value='http://127.0.0.1:9222/'),
+				) as reusable_cdp_url:
+					with patch(
+						'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
+					) as browser_profile:
+						with patch('agentyc.browser.BrowserSession', return_value=local_session):
+							await server._init_browser_session()
+
+		reusable_cdp_url.assert_not_awaited()
+		profile_kwargs = browser_profile.call_args.kwargs
+		assert profile_kwargs.get('cdp_url') is None
+		assert profile_kwargs['keep_alive'] is False
+
+	async def test_init_browser_session_explicit_disable_overrides_reuse_env(self):
+		server = AgentycServer(reuse_local_browser=False)
+		local_session = SimpleNamespace(
+			id='session-local',
+			start=AsyncMock(),
+			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9333/', keep_alive=False),
+		)
+
+		with patch.dict(os.environ, {'AGENTYC_REUSE_LOCAL_BROWSER': 'true'}, clear=False):
 			with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
 				with patch(
 					'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
