@@ -213,6 +213,7 @@ class FlatEnvConfig(BaseSettings):
 	AGENTYC_HUD_OVERLAY: bool | None = Field(default=None)
 	AGENTYC_ALLOWED_DOMAINS: str | None = Field(default=None)
 	AGENTYC_LLM_MODEL: str | None = Field(default=None)
+	AGENTYC_REUSE_LOCAL_BROWSER: bool | None = Field(default=None)
 
 	# Proxy env vars
 	AGENTYC_PROXY_URL: str | None = Field(default=None)
