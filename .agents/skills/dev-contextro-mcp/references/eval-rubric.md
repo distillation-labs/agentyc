@@ -1,7 +1,7 @@
 # Dev Contextro MCP Eval Rubric
 
-Use this rubric to judge whether the skill matches Anthropic's skill guidance and the
-local `skills-guide.pdf`.
+Use this rubric to judge whether the skill matches the local `skills-guide.md` guidance and the
+repo's skill-evaluation conventions.
 
 ## Source Principles
 
@@ -12,47 +12,26 @@ local `skills-guide.pdf`.
 - Prefer problem-first routing. Users ask for outcomes; the skill should pick the right
   Contextro tool sequence.
 
-## Pass Criteria
+## Pass when the skill:
 
-### Triggering
+- triggers on obvious Contextro requests and paraphrased variants
+- does not over-trigger on direct single-file reads or from-scratch coding requests
+- uses `find_symbol` for exact symbols and `search` for concepts
+- uses `impact` before rename, delete, or signature-change guidance
+- uses `session_snapshot` first after compaction
+- uses `retrieve` when `sandbox_ref` is present
+- uses AST operations with `dry_run=True` before applying structural rewrites
+- correctly interprets compact result keys and response shapes
+- reduces file reads and shell-history work versus the no-skill baseline
 
-- Triggers on obvious Contextro requests.
-- Triggers on paraphrased versions of those requests.
-- Does not trigger on unrelated coding or knowledge tasks.
-- Does not over-trigger on direct single-file reads or from-scratch coding requests.
+## Fail when the skill:
 
-### Functional Routing
-
-- Uses `find_symbol` for exact symbols.
-- Uses `search` for concepts and `bm25` for exact identifiers.
-- Uses `impact` before rename, delete, or signature-change guidance.
-- Uses `session_snapshot` first after compaction.
-- Uses `retrieve` when `sandbox_ref` is present (regardless of whether `sandboxed` field appears).
-- Uses AST operations with `dry_run=True` before applying structural rewrites.
-
-### Response Format Interpretation
-
-- Reads compact keys: `n`=name, `f`=file, `l`=line, `c`=code, `t`=type, `lc`=line_count, `doc`=docstring.
-- Treats absent `confidence` as high (the default).
-- Treats absent `sandboxed` field as sandboxed when `sandbox_ref` is present.
-- Treats absent `indexed` field as true when `codebase_path` is present in status.
-- Reads flat single-result `find_symbol` response (no `symbols` wrapper).
-- Reads `{callers: [...]}` and `{callees: [...]}` directly from find_callers/find_callees.
-
-### Anti-Patterns
-
-- No repeated re-indexing.
-- No immediate search after `index()` before `status()` confirms readiness.
-- No serial `find_symbol` calls when `lookup_symbols` is better.
-- No `remember()` in place of `compact()` for pre-compaction archival.
-- No shell `git log` when Contextro history tools answer the question.
-
-### Performance Comparison
-
-- Fewer tool calls than the no-skill baseline for orientation, safe refactor checks, and
-  bug investigation.
-- Fewer file reads than the no-skill baseline.
-- Lower token usage by preferring compact Contextro outputs.
+- re-indexes the same repo repeatedly without reason
+- searches immediately after `index()` without waiting for readiness
+- uses serial `find_symbol` calls when batch lookup is better
+- ignores `sandbox_ref`
+- reaches for shell `git log` when Contextro history tools answer the question
+- inflates token usage with unnecessary file reads before narrowing scope
 
 ## Recommended Thresholds
 
