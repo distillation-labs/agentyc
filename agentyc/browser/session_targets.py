@@ -201,18 +201,22 @@ async def get_all_frames(
 		target_id = target['targetId']
 		if not include_cross_origin and target.get('type') == 'iframe':
 			continue
+		lookup_target_id = target_id
 		if not include_cross_origin:
 			if session.agent_focus_target_id and target_id != session.agent_focus_target_id:
 				continue
-			try:
-				cdp_session = await get_or_create_cdp_session(session, session.agent_focus_target_id, focus=False)
-			except ValueError:
-				continue
-		else:
-			try:
-				cdp_session = await get_or_create_cdp_session(session, target_id, focus=False)
-			except ValueError:
-				continue
+			lookup_target_id = session.agent_focus_target_id
+		if (
+			lookup_target_id is None
+			or session.session_manager is None
+			or not await session.session_manager.is_target_valid(lookup_target_id)
+		):
+			continue
+		assert lookup_target_id is not None
+		try:
+			cdp_session = await get_or_create_cdp_session(session, lookup_target_id, focus=False)
+		except ValueError:
+			continue
 
 		target_sessions[target_id] = cdp_session.session_id
 		try:
