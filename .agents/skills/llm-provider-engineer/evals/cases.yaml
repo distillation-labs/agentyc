@@ -1,0 +1,50 @@
+version: 1
+skill: llm-provider-engineer
+suites:
+  - name: triggering
+    objective: Load for provider integration, token mapping, structured output, and BaseChatModel compliance.
+    pass_thresholds:
+      relevant_trigger_rate: ">=90%"
+      unrelated_non_trigger_rate: "100%"
+    cases:
+      - id: trig-01
+        prompt: Add a new LLM provider that conforms to BaseChatModel.
+        expect_trigger: true
+      - id: trig-02
+        prompt: Why is usage.prompt_tokens_details.cached_tokens not reaching ChatInvokeUsage?
+        expect_trigger: true
+      - id: trig-03
+        prompt: How should structured output work for this provider's native JSON mode?
+        expect_trigger: true
+      - id: nontrig-01
+        prompt: How do I expose this feature as a FastMCP tool?
+        expect_trigger: false
+      - id: nontrig-02
+        prompt: How should BrowserSession attach to a new CDP target?
+        expect_trigger: false
+  - name: functional
+    objective: Preserve the shared LLM contract while handling provider-specific quirks.
+    cases:
+      - id: func-01
+        prompt: Wire OpenAI cached token accounting into ChatInvokeUsage.
+        success_criteria:
+          - Returns ChatInvokeCompletion, not raw SDK objects.
+          - Maps cached tokens from the nested OpenAI field.
+          - Leaves unrelated fields as None rather than inventing data.
+      - id: func-02
+        prompt: Add structured output support for a provider with native schema support.
+        success_criteria:
+          - Uses output_format as the contract.
+          - Prefers provider-native structured output.
+          - Raises typed parse errors when validation fails.
+  - name: performance-and-robustness
+    objective: Prevent provider drift from breaking the shared response contract.
+    baseline_without_skill:
+      symptoms:
+        - Raw provider responses leak through.
+        - Token accounting is skipped.
+        - Manual JSON parsing diverges per provider.
+    expectations_with_skill:
+      - All providers normalize into the same completion shape.
+      - Usage is populated consistently.
+      - Provider-specific quirks are isolated to provider modules.
