@@ -50,6 +50,22 @@ After `browser_hover`, `browser_press_key("Tab")`, or any other action that chan
 
 ---
 
+## Tool Selection Playbook
+
+Prefer the smallest tool that matches the task:
+
+- **Read the page** -> `browser_get_state`, `browser_find_elements`, `browser_search_page`, `browser_get_html`
+- **Work inside frames** -> `browser_list_frames`, `browser_get_frame_html`
+- **Act on controls** -> `browser_click`, `browser_type`, `browser_select_option`, `browser_upload_file`, `browser_press_key`
+- **Wait for change** -> `since_hash`, `browser_wait_for_element`, `browser_wait_for_request`, `browser_wait_for_response`, `browser_wait_for_stable_dom`
+- **Inspect browser state** -> `browser_get_storage`, `browser_get_cookies`, `browser_get_downloads`, `browser_get_focused_element`
+- **Debug failures** -> `browser_get_console_logs`, `browser_get_network_log`, `browser_inspect_network_entry`, `browser_export_debug_bundle`
+- **Control tabs and sessions** -> `browser_new_tab`, `browser_list_tabs`, `browser_switch_tab`, `browser_list_sessions`
+
+Only reach for `browser_evaluate(...)` when no dedicated tool already covers the job.
+
+---
+
 ## Handle Errors As Control Flow
 
 If a tool call returns MCP `isError=true` or text like `Error [stale_ref]: ...`, **branch immediately** instead of retrying the same call blindly.
@@ -430,12 +446,31 @@ Multiple agents can share one Chrome instance. Each attached runtime gets a dedi
 
 ### Setup
 
+The most explicit path is still:
+
 ```bash
 cdp_url=$(agentyc browser --port 9222 --detach)
 
 agentyc mcp --cdp-url "$cdp_url" --runtime-label "Agent-1"
 agentyc mcp --cdp-url "$cdp_url" --runtime-label "Agent-2"
 ```
+
+The easier local attach path now is:
+
+```bash
+agentyc browser --port 9222 --detach
+
+agentyc mcp --reuse-local-browser --runtime-label "Agent-1"
+agentyc mcp --reuse-local-browser --runtime-label "Agent-2"
+```
+
+Or set:
+
+```bash
+export AGENTYC_REUSE_LOCAL_BROWSER=1
+```
+
+and start `agentyc mcp` normally.
 
 Each attached runtime already receives its own collaboration tab automatically.
 
@@ -449,6 +484,7 @@ browser_navigate(url="https://example.com")
 Coordination rules:
 
 - each agent should work from its own tab
+- shared browser means the same **browser process and profile**, not safe co-ownership of the exact same live tab
 - auth, cookies, localStorage, and sessionStorage are shared across attached runtimes because they stay in the same browser profile
 - use `browser_list_tabs` to inspect the shared browser surface
 - use display titles, URLs, and runtime metadata to confirm you are in the right tab before acting
@@ -503,6 +539,7 @@ browser_get_state(mode="min")
 browser_get_state(mode="full")
 browser_get_state(mode="focus", focus_ref="e42")
 browser_get_state(mode="min", since_hash="...")
+browser_set_intent(intent="Reviewing checkout failure")
 browser_list_frames()
 browser_get_frame_html(frame_id="...")
 browser_get_focused_element()
@@ -513,6 +550,9 @@ browser_get_downloads()
 browser_get_storage(origin="...")
 browser_set_storage(origin="...", storage_type="localStorage", key="...", value="...")
 browser_clear_storage(origin="...", storage_type="sessionStorage")
+browser_get_cookies()
+browser_set_cookies(cookies=[{"name": "session", "value": "..."}])
+browser_clear_cookies(name="session")
 
 # Navigate and tabs
 browser_navigate(url="...")
@@ -526,10 +566,14 @@ browser_refresh()
 browser_list_tabs()
 browser_switch_tab(tab_id="...")
 browser_close_tab(tab_id="...")
+browser_close_all()
 
 # Interact
 browser_click(ref="e42")
+browser_right_click(ref="e42")
+browser_double_click(ref="e42")
 browser_hover(ref="e42")
+browser_drag_to(source_ref="e5", target_ref="e9")
 browser_type(text="...", ref="e17")
 browser_press_key(key="Enter")
 browser_scroll(direction="down", pages=2)
@@ -545,6 +589,7 @@ browser_extract_content(query="...", extract_links=True)
 browser_extract_content(query="...", output_schema={...})
 browser_find_elements(selector=".row")
 browser_search_page(pattern="Error", regex=True)
+browser_evaluate(code="(function(){ return document.title; })()")
 
 # Wait and debug
 browser_wait_for_network_idle()
