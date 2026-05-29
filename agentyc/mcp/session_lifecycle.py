@@ -215,9 +215,9 @@ async def _init_browser_session(self, allowed_domains: list[str] | None = None, 
 	cdp_url = self._cdp_url or provided_cdp_url
 	headless = _configured_headless_value(profile_config, kwargs)
 	is_attaching_to_existing_browser = cdp_url is not None
+	reuse_local_browser = getattr(self, '_reuse_local_browser', None)
 	should_reuse_local_browser = bool(
-		getattr(self, '_reuse_local_browser', True)
-		and reuse_local_browser_enabled()
+		(reuse_local_browser if reuse_local_browser is not None else reuse_local_browser_enabled())
 		and not getattr(self, '_explicit_cdp_url', False)
 	)
 	if cdp_url is None and should_reuse_local_browser:
