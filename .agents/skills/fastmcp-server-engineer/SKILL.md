@@ -1,19 +1,19 @@
 ---
 name: fastmcp-server-engineer
 description: >
-  Use for building or refactoring FastMCP servers, tools, resources, prompts, middleware,
-  validation, annotations, structured outputs, context, visibility, timeouts, background tasks,
-  and transport/runtime behavior. Trigger when the user asks how to implement a FastMCP tool,
-  resource, or prompt; how to shape typed signatures or output schemas; when to use ToolResult,
-  ResourceResult, PromptResult, or Context; how to add middleware or server configuration; or
-  how to make a FastMCP server production-ready. Do not use for pure MCP protocol design with
-  no FastMCP implementation intent.
+  Use for designing, building, or refactoring FastMCP servers and MCP surfaces: tool/resource/
+  prompt boundaries, lifecycle, capability negotiation, discovery, notifications, transport,
+  middleware, validation, context, structured outputs, and deployment/runtime behavior. Trigger
+  when the user asks how an MCP feature should be modeled in FastMCP, how to choose between a
+  tool, resource, or prompt, how to structure a production-ready FastMCP server, or how to wire
+  typed schemas and middleware correctly. Do not use for pure protocol theory with no FastMCP
+  implementation intent.
 when_to_use: >
-  Especially useful when the repo already uses FastMCP and the question is about decorators,
-  typed schemas, return shaping, request context, visibility, validation mode, deployment, or
-  server lifecycle.
+  Especially useful when the repo already uses FastMCP and the question is about protocol
+  primitive selection, decorators, typed schemas, return shaping, request context, discovery,
+  notifications, validation mode, deployment, or server lifecycle.
 metadata:
-  version: "0.3.0"
+  version: "0.4.0"
   category: mcp-development
   tags: [fastmcp, server, tools, resources, prompts, validation, context, middleware, transport]
 license: Proprietary
@@ -33,6 +33,29 @@ output shape intentional.
 - Reach for result objects only when you need explicit control.
 - Treat 300-500 lines as the strict upper bound for server and tool implementation files. Files above 500 lines must be split up — no exceptions.
 - Prefer thin server and tool entrypoints with shared logic extracted into validators, adapters, serializers, transport helpers, and domain modules instead of growing `server.py` or giant tool modules.
+
+## Design Sequence
+
+1. Name the workflow the user is trying to accomplish.
+2. Split it into tool, resource, and prompt sized responsibilities.
+3. Decide what is static, what is dynamic, and what needs change notifications.
+4. Pick the transport that matches deployment reality.
+5. Map the design onto concrete FastMCP components and shared helpers.
+
+## Protocol Surface Guidance
+
+- Use a tool for model-invoked actions or derived computation.
+- Use a resource for passive or browsable context.
+- Use a prompt for reusable user-invoked workflows.
+- Keep static context out of tools when a resource fits better.
+- Do not use prompts to paper over a poorly designed primitive boundary.
+
+## Lifecycle And Discovery
+
+- Respect initialization and capability negotiation.
+- Model dynamic catalogs explicitly and pair them with list-changed notifications.
+- Prefer stable component names and keys because clients cache discovered surfaces.
+- If a component is role-based or filtered, make that visibility model explicit.
 
 ## Component Guidance
 
@@ -140,6 +163,30 @@ mcp = FastMCP("api-server", providers=[OpenAPIProvider(spec, client=client)])
 - Use `custom_route` only for adjacent HTTP endpoints such as health checks.
 - Configure duplicate handling, masking, pagination, auth, lifespan, and tasks on the server.
 
+## Examples
+
+Example 1: Primitive selection
+User says: "Should this MCP feature be a tool, resource, or prompt?"
+Actions:
+- define the workflow
+- map stable context to resources and actions to tools
+- use prompts only for reusable user-invoked flows
+Result: the surface matches the protocol and the user workflow
+
+Example 2: Typed tool plus structured output
+User says: "Implement a FastMCP tool with a strict machine-readable response."
+Actions:
+- choose a typed signature
+- decide between plain returns and `ToolResult`
+- wire validation, context, and runtime settings intentionally
+Result: the tool is both client-friendly and implementation-friendly
+
+## Troubleshooting
+
+- If the surface feels awkward, revisit primitive choice before adding more code.
+- If clients cannot discover dynamic changes, add list-changed notifications and clearer visibility rules.
+- If `server.py` is growing too large, extract middleware, validators, and shared adapters before adding more endpoints.
+
 ## Output Format
 
 Return:
@@ -166,3 +213,4 @@ Return:
 
 - `references/fastmcp-patterns.md`
 - `references/eval-rubric.md`
+- `evals/cases.yaml`
