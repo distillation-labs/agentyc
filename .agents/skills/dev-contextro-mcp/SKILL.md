@@ -184,6 +184,29 @@ This is the default orientation path. Do not start with broad file reads.
 Prefer Contextro first for discovery. Once it has narrowed the scope to a specific file
 or symbol, direct file reads are acceptable if the full implementation body is needed.
 
+## Examples
+
+Example 1: Safe rename planning
+User says: "What breaks if we rename this symbol?"
+Actions:
+- use `impact()` first
+- inspect callers or explanation output
+- only then move into code edits
+Result: refactors start with blast-radius evidence instead of guesswork
+
+Example 2: New codebase orientation
+User says: "How is this part of the codebase structured?"
+Actions:
+- start with `overview()` and `architecture()`
+- explain the hub symbol before reading full files
+Result: faster orientation with fewer token-heavy file reads
+
+## Troubleshooting
+
+- If search results are noisy, switch to exact-name lookup or BM25 mode.
+- If the repo was just indexed, wait for `status()` to confirm readiness before searching.
+- If a response includes `sandbox_ref`, retrieve it before claiming you have the full result.
+
 ## Benchmarks
 
 Token efficiency (measured on 8,498-file production codebase, v0.1.0):
@@ -220,3 +243,4 @@ Indexing (8,498 files / 11,534 symbols):
 - Full routing guide: `references/tool-decision-tree.md`
 - Token and benchmark data: `references/benchmark-results.md`
 - Eval rubric: `references/eval-rubric.md`
+- Eval cases: `evals/cases.yaml`
