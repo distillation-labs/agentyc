@@ -80,6 +80,29 @@ When release-gate thresholds change: update README benchmarks table.
 | Sync docs after code change | README + changelog | Keep scope narrow and consistent |
 | Remove outdated doc sections | docs | Prefer deletion over contradictory duplication |
 
+## Examples
+
+Example 1: New tool shipped
+User says: "Update the docs for this new MCP tool."
+Actions:
+- confirm the shipped behavior from code and tests
+- update README and dependent docs together
+- keep claims bounded to what actually shipped
+Result: the public docs match the repo state
+
+Example 2: Path drift cleanup
+User says: "Fix the broken docs links after this refactor."
+Actions:
+- find stale paths and commands
+- update all dependent references in one pass
+Result: no dead links or contradictory instructions remain
+
+## Troubleshooting
+
+- If docs disagree with code, prefer the code and make the mismatch explicit.
+- If a claim cannot be verified from the repo, remove or soften it.
+- If a change touches multiple docs, update them in one pass to avoid temporary drift.
+
 ## Output Rules
 
 - Favor concrete file-level edits over abstract recommendations.
@@ -99,3 +122,4 @@ When release-gate thresholds change: update README benchmarks table.
 
 - `references/docs-maintenance-patterns.md`
 - `references/eval-rubric.md`
+- `evals/cases.yaml`
