@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-import re
 from typing import Any
 
 import yaml
-
 
 SKILLS_ROOT = Path('.agents/skills')
 KEBAB_CASE_RE = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
