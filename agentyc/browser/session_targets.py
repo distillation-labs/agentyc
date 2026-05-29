@@ -197,10 +197,64 @@ async def get_all_frames(
 		include_chrome_extensions=False,
 		include_chrome_error=include_cross_origin,
 	)
-	for target in targets:
+
+	def merge_frame_tree(target: TargetInfo, frame_tree_result: dict[str, Any]) -> None:
 		target_id = target['targetId']
-		if not include_cross_origin and target.get('type') == 'iframe':
-			continue
+
+		def process_frame_tree(node: Any, parent_frame_id: str | None = None) -> None:
+			frame = node.get('frame', {})
+			current_frame_id = frame.get('id')
+			if not current_frame_id:
+				return
+			actual_parent_id = frame.get('parentId') or parent_frame_id
+			frame_info = {
+				**frame,
+				'frameTargetId': target_id,
+				'parentFrameId': actual_parent_id,
+				'childFrameIds': [],
+				'isCrossOrigin': False,
+				'isValidTarget': _is_valid_target(
+					target,
+					include_http=True,
+					include_about=True,
+					include_pages=True,
+					include_iframes=True,
+					include_workers=False,
+					include_chrome=False,
+					include_chrome_extensions=False,
+					include_chrome_error=False,
+				),
+			}
+			cross_origin_type = frame.get('crossOriginIsolatedContextType')
+			if cross_origin_type and cross_origin_type != 'NotIsolated':
+				frame_info['isCrossOrigin'] = True
+			if target.get('type') == 'iframe':
+				frame_info['isCrossOrigin'] = True
+			if not include_cross_origin and frame_info.get('isCrossOrigin'):
+				return
+			child_frames = node.get('childFrames', [])
+			for child in child_frames:
+				child_frame = child.get('frame', {})
+				child_frame_id = child_frame.get('id')
+				if child_frame_id:
+					frame_info['childFrameIds'].append(child_frame_id)
+			if current_frame_id in all_frames:
+				existing = all_frames[current_frame_id]
+				if target.get('type') == 'iframe':
+					existing['frameTargetId'] = target_id
+					existing['isCrossOrigin'] = True
+			else:
+				all_frames[current_frame_id] = frame_info
+			if include_cross_origin or not frame_info.get('isCrossOrigin'):
+				for child in child_frames:
+					process_frame_tree(child, current_frame_id)
+
+		process_frame_tree(frame_tree_result.get('frameTree', {}))
+
+	page_targets = [target for target in targets if target.get('type') != 'iframe']
+	iframe_targets = [target for target in targets if target.get('type') == 'iframe']
+	for target in page_targets:
+		target_id = target['targetId']
 		if not include_cross_origin:
 			if session.agent_focus_target_id and target_id != session.agent_focus_target_id:
 				continue
@@ -217,58 +271,37 @@ async def get_all_frames(
 		target_sessions[target_id] = cdp_session.session_id
 		try:
 			frame_tree_result = await cdp_session.cdp_client.send.Page.getFrameTree(session_id=cdp_session.session_id)
-
-			def process_frame_tree(node: Any, parent_frame_id: str | None = None) -> None:
-				frame = node.get('frame', {})
-				current_frame_id = frame.get('id')
-				if not current_frame_id:
-					return
-				actual_parent_id = frame.get('parentId') or parent_frame_id
-				frame_info = {
-					**frame,
-					'frameTargetId': target_id,
-					'parentFrameId': actual_parent_id,
-					'childFrameIds': [],
-					'isCrossOrigin': False,
-					'isValidTarget': _is_valid_target(
-						target,
-						include_http=True,
-						include_about=True,
-						include_pages=True,
-						include_iframes=True,
-						include_workers=False,
-						include_chrome=False,
-						include_chrome_extensions=False,
-						include_chrome_error=False,
-					),
-				}
-				cross_origin_type = frame.get('crossOriginIsolatedContextType')
-				if cross_origin_type and cross_origin_type != 'NotIsolated':
-					frame_info['isCrossOrigin'] = True
-				if target.get('type') == 'iframe':
-					frame_info['isCrossOrigin'] = True
-				if not include_cross_origin and frame_info.get('isCrossOrigin'):
-					return
-				child_frames = node.get('childFrames', [])
-				for child in child_frames:
-					child_frame = child.get('frame', {})
-					child_frame_id = child_frame.get('id')
-					if child_frame_id:
-						frame_info['childFrameIds'].append(child_frame_id)
-				if current_frame_id in all_frames:
-					existing = all_frames[current_frame_id]
-					if target.get('type') == 'iframe':
-						existing['frameTargetId'] = target_id
-						existing['isCrossOrigin'] = True
-				else:
-					all_frames[current_frame_id] = frame_info
-				if include_cross_origin or not frame_info.get('isCrossOrigin'):
-					for child in child_frames:
-						process_frame_tree(child, current_frame_id)
-
-			process_frame_tree(frame_tree_result.get('frameTree', {}))
+			merge_frame_tree(target, frame_tree_result)
 		except Exception as e:
 			session.logger.debug(f'Failed to get frame tree for target {target_id}: {e}')
+
+	if include_cross_origin and iframe_targets:
+		frame_ids_by_url: dict[str, list[str]] = {}
+		for frame_id_iter, frame_info in all_frames.items():
+			frame_url = str(frame_info.get('url') or '')
+			if frame_url and frame_info.get('parentFrameId'):
+				frame_ids_by_url.setdefault(frame_url, []).append(frame_id_iter)
+		matched_frame_ids: set[str] = set()
+		for target in iframe_targets:
+			target_id = target['targetId']
+			try:
+				cdp_session = await get_or_create_cdp_session(session, target_id, focus=False)
+			except ValueError:
+				continue
+			target_sessions[target_id] = cdp_session.session_id
+			target_url = str(target.get('url') or '')
+			candidate_frame_ids = [frame_id_iter for frame_id_iter in frame_ids_by_url.get(target_url, []) if frame_id_iter not in matched_frame_ids]
+			if len(candidate_frame_ids) == 1:
+				frame_info = all_frames[candidate_frame_ids[0]]
+				frame_info['frameTargetId'] = target_id
+				frame_info['isCrossOrigin'] = True
+				matched_frame_ids.add(candidate_frame_ids[0])
+				continue
+			try:
+				frame_tree_result = await cdp_session.cdp_client.send.Page.getFrameTree(session_id=cdp_session.session_id)
+				merge_frame_tree(target, frame_tree_result)
+			except Exception as e:
+				session.logger.debug(f'Failed to get frame tree for iframe target {target_id}: {e}')
 
 	if include_cross_origin and include_backend_node_ids:
 		await _populate_frame_metadata(session, all_frames, target_sessions)
