@@ -35,7 +35,6 @@ _TRANSIENT_NAVIGATION_ERROR_MARKERS = (
 )
 _TRANSIENT_NAVIGATION_MAX_ATTEMPTS = 5
 _TRANSIENT_NAVIGATION_RETRY_BASE_DELAY_S = 0.75
-_NAVIGATION_READY_POLL_INTERVAL_S = 0.025
 
 
 def _is_transient_navigation_error(error: Exception) -> bool:
@@ -261,7 +260,7 @@ async def _navigate_and_wait_once(
 	if wait_until == 'domcontentloaded':
 		acceptable_events.add('DOMContentLoaded')
 
-	poll_interval = _NAVIGATION_READY_POLL_INTERVAL_S
+	poll_interval = 0.05
 	while (asyncio.get_event_loop().time() - start_time) < timeout:
 		try:
 			for event_data in list(cdp_session._lifecycle_events):
