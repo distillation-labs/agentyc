@@ -53,6 +53,7 @@ def _cmd_mcp(args: argparse.Namespace) -> None:
 			shared_browser_mode=args.shared_browser_mode,
 			shared_browser_window_bounds=window_bounds,
 			shared_browser_focus_policy=args.shared_browser_focus_policy,
+			reuse_local_browser=args.reuse_local_browser,
 		)
 	)
 
@@ -64,6 +65,8 @@ def _cmd_browser(args: argparse.Namespace) -> None:
 	import sys
 	import time
 	import urllib.request
+
+	from agentyc.mcp.shared_browser_registry import register_local_shared_browser
 
 	port = args.port
 
@@ -113,6 +116,12 @@ def _cmd_browser(args: argparse.Namespace) -> None:
 		print(f'Chrome did not start within 15 seconds on port {port}', file=sys.stderr)
 		sys.exit(1)
 
+	register_local_shared_browser(
+		cdp_url=cdp_url,
+		browser_pid=proc.pid,
+		headless=args.headless,
+		user_data_dir=None,
+	)
 	print(cdp_url, flush=True)
 
 	if not args.detach:
@@ -169,6 +178,13 @@ def main() -> None:
 		default='preserve',
 		help='Preserve human focus by default for internal attach/new-tab flows, or activate the runtime target.',
 	)
+	mcp_parser.add_argument(
+		'--reuse-local-browser',
+		action=argparse.BooleanOptionalAction,
+		default=None,
+		help='Reuse a previously launched local Agentyc browser from the shared-browser registry. '
+		'Defaults to AGENTYC_REUSE_LOCAL_BROWSER when unset.',
+	)
 
 	# init subcommand: write skills guide to a file
 	init_parser = sub.add_parser('init', help='Write the agentyc skills guide to a file for your coding agent')
@@ -208,6 +224,7 @@ def main() -> None:
 		flat_parser.add_argument('--shared-browser-mode', choices=('tab', 'window'), default='tab')
 		flat_parser.add_argument('--shared-browser-window-bounds', type=str, default=None)
 		flat_parser.add_argument('--shared-browser-focus-policy', choices=('preserve', 'activate'), default='preserve')
+		flat_parser.add_argument('--reuse-local-browser', action=argparse.BooleanOptionalAction, default=None)
 		flat_args = flat_parser.parse_args()
 		window_bounds = json.loads(flat_args.shared_browser_window_bounds) if flat_args.shared_browser_window_bounds else None
 		asyncio.run(
@@ -221,5 +238,6 @@ def main() -> None:
 				shared_browser_mode=flat_args.shared_browser_mode,
 				shared_browser_window_bounds=window_bounds,
 				shared_browser_focus_policy=flat_args.shared_browser_focus_policy,
+				reuse_local_browser=flat_args.reuse_local_browser,
 			)
 		)
