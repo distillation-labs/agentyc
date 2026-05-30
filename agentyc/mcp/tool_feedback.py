@@ -5,7 +5,7 @@ from typing import Any
 
 import mcp.types as types
 
-from agentyc.browser.hud_stream import HudEvent, HudEventKind, HudStream
+from agentyc.browser.hud_stream import HudEvent, HudEventDetails, HudEventKind, HudStream
 
 _LOG_LEVEL_RANK = {
 	'debug': 0,
@@ -17,7 +17,7 @@ _LOG_LEVEL_RANK = {
 	'alert': 6,
 	'emergency': 7,
 }
-_HUD_CHATTTY_TOOLS = {
+_HUD_CHATTY_TOOLS = {
 	'browser_find_elements',
 	'browser_get_attribute',
 	'browser_get_dropdown_options',
@@ -26,7 +26,23 @@ _HUD_CHATTTY_TOOLS = {
 	'browser_get_state',
 	'browser_search_page',
 }
-_HUD_CHATTTY_DURATION_MS = 500.0
+_HUD_CHATTY_DURATION_MS = 2000.0
+_HUD_ARGUMENT_PREVIEW_LIMIT = 3
+_HUD_ARGUMENT_TEXT_LIMIT = 40
+_HUD_REDACTED_ARGUMENT_TOKENS = (
+	'auth',
+	'body',
+	'code',
+	'cookie',
+	'header',
+	'password',
+	'prompt',
+	'secret',
+	'script',
+	'text',
+	'token',
+	'value',
+)
 
 
 def _tool_phase_message(self, tool_name: str, arguments: dict[str, Any]) -> str:
@@ -116,6 +132,41 @@ def _extract_tool_error_message(content: list[types.TextContent | types.ImageCon
 	return None
 
 
+def _format_hud_argument_value(key: str, value: Any) -> str:
+	normalized_key = key.lower()
+	if any(token in normalized_key for token in _HUD_REDACTED_ARGUMENT_TOKENS):
+		return '<redacted>'
+	if isinstance(value, bool):
+		return 'true' if value else 'false'
+	if isinstance(value, int | float):
+		return str(value)
+	if isinstance(value, str):
+		normalized_value = ' '.join(value.split())
+		if len(normalized_value) > _HUD_ARGUMENT_TEXT_LIMIT:
+			return f'{normalized_value[: _HUD_ARGUMENT_TEXT_LIMIT - 3]}...'
+		return normalized_value or '""'
+	if isinstance(value, list):
+		return f'[{len(value)}]'
+	if isinstance(value, dict):
+		return f'{{{len(value)}}}'
+	return type(value).__name__
+
+
+def _summarize_tool_arguments(arguments: dict[str, Any]) -> str:
+	if not arguments:
+		return 'none'
+	parts = [
+		f'{key}={_format_hud_argument_value(key, value)}' for key, value in list(arguments.items())[:_HUD_ARGUMENT_PREVIEW_LIMIT]
+	]
+	remaining = len(arguments) - len(parts)
+	if remaining > 0:
+		parts.append(f'+{remaining} more')
+	summary = ', '.join(parts)
+	if len(summary) > 120:
+		return f'{summary[:117]}...'
+	return summary
+
+
 def _attach_tool_result_metadata(
 	self,
 	*,
@@ -161,11 +212,11 @@ def _attach_tool_result_metadata(
 def _should_publish_hud_event(kind: HudEventKind, tool_name: str, duration_ms: float | None, error: str | None) -> bool:
 	if error:
 		return True
-	if tool_name not in _HUD_CHATTTY_TOOLS:
+	if tool_name not in _HUD_CHATTY_TOOLS:
 		return True
 	if kind == 'tool_start':
 		return False
-	return duration_ms is not None and duration_ms >= _HUD_CHATTTY_DURATION_MS
+	return duration_ms is not None and duration_ms >= _HUD_CHATTY_DURATION_MS
 
 
 def _publish_hud_event(
@@ -190,6 +241,7 @@ def _publish_hud_event(
 	label = self._tool_phase_message(tool_name, arguments)
 	if kind == 'tool_error' and error:
 		label = f'{label} failed'
+	details: HudEventDetails = {'args_summary': _summarize_tool_arguments(arguments)}
 	HudStream.get().publish(
 		HudEvent(
 			kind=kind,
@@ -198,6 +250,7 @@ def _publish_hud_event(
 			tool_name=tool_name,
 			duration_ms=duration_ms,
 			error=error,
+			details=details,
 		)
 	)
 
@@ -205,10 +258,12 @@ def _publish_hud_event(
 __all__ = [
 	'_attach_tool_result_metadata',
 	'_extract_tool_error_message',
+	'_format_hud_argument_value',
 	'_publish_hud_event',
 	'_send_log_notification',
 	'_should_log',
 	'_should_publish_hud_event',
+	'_summarize_tool_arguments',
 	'_tool_output_is_error',
 	'_tool_phase_message',
 	'_tool_text_is_error',

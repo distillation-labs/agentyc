@@ -8,10 +8,10 @@ The public MCP server in `agentyc.mcp.server` exposes tools only. It does not pu
 
 Agentyc now ships two optional user-visible HUD surfaces on top of the same sanitized activity stream:
 
-- **Browser HUD** via `BrowserProfile(demo_mode=True)` — a compact square-border panel injected into the controlled page
+- **Browser HUD** via `BrowserProfile(demo_mode=True)` — a high-visibility panel injected into the controlled page, with a recent timeline plus a `DETAILS` toggle for sanitized tool/session context
 - **Desktop HUD** via `agentyc mcp --hud-overlay` or `AGENTYC_HUD_OVERLAY=1` — a small transparent desktop window for local operator visibility
 
-Both surfaces show short intent/action labels only. They do not expose raw chain-of-thought, typed secrets, cookies, storage values, or raw network payloads. The browser HUD also includes a `REPORT` menu that copies sanitized context and opens bug, feature, or private security destinations.
+Both surfaces show short intent/action labels only. They do not expose raw chain-of-thought, typed secrets, cookies, storage values, or raw network payloads. The browser HUD also includes a `DETAILS` mode for sanitized tool/argument/session summaries plus a `REPORT` menu that copies sanitized context and opens bug, feature, or private security destinations.
 
 ### Navigation And Session Control
 

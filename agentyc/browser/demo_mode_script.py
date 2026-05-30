@@ -1,4 +1,4 @@
-"""Embedded JavaScript for the demo-mode browser panel."""
+"""Embedded JavaScript for the demo-mode browser HUD."""
 
 DEMO_PANEL_SCRIPT = r"""
 (() => {
@@ -6,451 +6,429 @@ DEMO_PANEL_SCRIPT = r"""
   const PANEL_ID = `agentyc-hud-panel-${HUD_CONFIG.sessionId}`;
   const STYLE_ID = `${PANEL_ID}-style`;
   const STORAGE_KEY = `${PANEL_ID}-state`;
-  const MAX_ROWS = 8;
+  const MAX_ROWS = 10;
+  const CHATTY_THRESHOLD_MS = 2000;
+  const CHATTY_TOOLS = new Set([
+    'browser_find_elements',
+    'browser_get_attribute',
+    'browser_get_dropdown_options',
+    'browser_get_focused_element',
+    'browser_get_html',
+    'browser_get_state',
+    'browser_search_page',
+  ]);
 
   if (window.__agentycHudBooted === HUD_CONFIG.sessionId) {
     return;
   }
-  window.__agentycHudBooted = HUD_CONFIG.sessionId;
 
   const defaultState = {
     current: 'Waiting for the next action',
     status: 'Live',
+    statusKind: 'browser_event',
     rows: [],
     reportOpen: false,
+    advanced: false,
+    lastTool: '',
+    lastArgs: 'none',
+    lastSession: HUD_CONFIG.sessionId,
+    lastDuration: 'n/a',
+    lastError: '',
   };
 
   function loadState() {
     try {
-      const raw = window.sessionStorage.getItem(STORAGE_KEY);
-      if (!raw) {
+      const saved = JSON.parse(window.sessionStorage.getItem(STORAGE_KEY) || 'null');
+      if (!saved || typeof saved !== 'object') {
         return { ...defaultState };
       }
-      const parsed = JSON.parse(raw);
       return {
         ...defaultState,
-        ...parsed,
-        rows: Array.isArray(parsed?.rows) ? parsed.rows.slice(0, MAX_ROWS) : [],
+        ...saved,
+        rows: Array.isArray(saved.rows) ? saved.rows.slice(0, MAX_ROWS) : [],
       };
     } catch {
       return { ...defaultState };
     }
   }
 
-  let state = loadState();
+  const state = loadState();
 
   function saveState() {
     try {
       window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch {
-      // Ignore storage failures on restricted pages.
+      // Best effort only.
     }
-  }
-
-  function ensureStyle() {
-    if (document.getElementById(STYLE_ID)) {
-      return;
-    }
-
-    const style = document.createElement('style');
-    style.id = STYLE_ID;
-    style.textContent = `
-      #${PANEL_ID} {
-        position: fixed;
-        top: 12px;
-        right: 12px;
-        width: 320px;
-        z-index: 2147483647;
-        background: rgba(10, 10, 12, 0.82);
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        color: #f4f4f5;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-        font-size: 12px;
-        line-height: 1.45;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
-        backdrop-filter: blur(10px);
-      }
-      #${PANEL_ID} * {
-        box-sizing: border-box;
-      }
-      #${PANEL_ID} .agentyc-hud-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 8px 10px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-      }
-      #${PANEL_ID} .agentyc-hud-title {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        min-width: 0;
-      }
-      #${PANEL_ID} .agentyc-hud-title strong {
-        font-size: 11px;
-        letter-spacing: 0.06em;
-      }
-      #${PANEL_ID} .agentyc-hud-status {
-        color: rgba(255, 255, 255, 0.62);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      #${PANEL_ID} .agentyc-hud-actions {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        position: relative;
-      }
-      #${PANEL_ID} button {
-        appearance: none;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        background: rgba(255, 255, 255, 0.04);
-        color: #f4f4f5;
-        font: inherit;
-        padding: 4px 8px;
-        cursor: pointer;
-      }
-      #${PANEL_ID} button:hover {
-        background: rgba(255, 255, 255, 0.1);
-      }
-      #${PANEL_ID} .agentyc-hud-body {
-        padding: 10px;
-        display: grid;
-        gap: 10px;
-      }
-      #${PANEL_ID} .agentyc-hud-current {
-        padding: 8px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(255, 255, 255, 0.04);
-      }
-      #${PANEL_ID} .agentyc-hud-label {
-        display: block;
-        margin-bottom: 6px;
-        color: rgba(255, 255, 255, 0.62);
-        font-size: 10px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-      #${PANEL_ID} .agentyc-hud-current-text {
-        color: #fafafa;
-        word-break: break-word;
-      }
-      #${PANEL_ID} .agentyc-hud-feed {
-        display: grid;
-        gap: 6px;
-      }
-      #${PANEL_ID} .agentyc-hud-row {
-        display: grid;
-        grid-template-columns: 12px 1fr auto;
-        gap: 8px;
-        align-items: start;
-        padding: 6px 8px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.03);
-      }
-      #${PANEL_ID} .agentyc-hud-dot {
-        width: 8px;
-        height: 8px;
-        margin-top: 4px;
-        background: #60a5fa;
-      }
-      #${PANEL_ID} .agentyc-hud-row[data-kind="tool_done"] .agentyc-hud-dot {
-        background: #34d399;
-      }
-      #${PANEL_ID} .agentyc-hud-row[data-kind="tool_error"] .agentyc-hud-dot {
-        background: #f87171;
-      }
-      #${PANEL_ID} .agentyc-hud-row[data-kind="intent"] .agentyc-hud-dot {
-        background: #fbbf24;
-      }
-      #${PANEL_ID} .agentyc-hud-text {
-        word-break: break-word;
-      }
-      #${PANEL_ID} .agentyc-hud-meta {
-        color: rgba(255, 255, 255, 0.5);
-        white-space: nowrap;
-      }
-      #${PANEL_ID} .agentyc-hud-menu {
-        position: absolute;
-        top: calc(100% + 6px);
-        right: 0;
-        width: 148px;
-        display: none;
-        grid-auto-flow: row;
-        gap: 4px;
-        padding: 6px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        background: rgba(12, 12, 14, 0.96);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-      }
-      #${PANEL_ID} .agentyc-hud-menu[data-open="true"] {
-        display: grid;
-      }
-      #${PANEL_ID} .agentyc-hud-menu button {
-        text-align: left;
-        width: 100%;
-      }
-      #${PANEL_ID} .agentyc-hud-empty {
-        color: rgba(255, 255, 255, 0.45);
-        padding: 10px 8px;
-        border: 1px dashed rgba(255, 255, 255, 0.12);
-      }
-    `;
-    document.documentElement.appendChild(style);
   }
 
   function createEl(tag, className, text) {
-    const node = document.createElement(tag);
+    const element = document.createElement(tag);
     if (className) {
-      node.className = className;
+      element.className = className;
     }
-    if (typeof text === 'string') {
-      node.textContent = text;
+    if (text) {
+      element.textContent = text;
     }
-    return node;
+    return element;
   }
 
-  function ensurePanel() {
-    ensureStyle();
-
-    let panel = document.getElementById(PANEL_ID);
-    if (panel) {
-      return panel;
-    }
-
-    panel = createEl('aside', '');
-    panel.id = PANEL_ID;
-
-    const header = createEl('div', 'agentyc-hud-header');
-    const title = createEl('div', 'agentyc-hud-title');
-    title.appendChild(createEl('strong', '', 'AGENTYC MCP'));
-    title.appendChild(createEl('div', 'agentyc-hud-status', state.status));
-
-    const actions = createEl('div', 'agentyc-hud-actions');
-    const reportButton = createEl('button', '', 'REPORT');
-    reportButton.type = 'button';
-    reportButton.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      state.reportOpen = !state.reportOpen;
-      render();
-    });
-
-    const menu = createEl('div', 'agentyc-hud-menu');
-    menu.dataset.open = String(state.reportOpen);
-    const actionsByKind = {
-      bug: 'Bug report',
-      feature: 'Feature request',
-      security: 'Report privately',
-    };
-    Object.entries(actionsByKind).forEach(([kind, label]) => {
-      const button = createEl('button', '', label);
-      button.type = 'button';
-      button.addEventListener('click', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        state.reportOpen = false;
-        render();
-        await openReport(kind);
-      });
-      menu.appendChild(button);
-    });
-
-    actions.appendChild(reportButton);
-    actions.appendChild(menu);
-    header.appendChild(title);
-    header.appendChild(actions);
-
-    const body = createEl('div', 'agentyc-hud-body');
-    const current = createEl('section', 'agentyc-hud-current');
-    current.appendChild(createEl('span', 'agentyc-hud-label', 'Current'));
-    current.appendChild(createEl('div', 'agentyc-hud-current-text', state.current));
-    const feed = createEl('section', 'agentyc-hud-feed');
-
-    body.appendChild(current);
-    body.appendChild(feed);
-    panel.appendChild(header);
-    panel.appendChild(body);
-    document.documentElement.appendChild(panel);
-
-    document.addEventListener('click', () => {
-      if (!state.reportOpen) {
-        return;
-      }
-      state.reportOpen = false;
-      render();
-    });
-
-    render();
-    return panel;
+  function documentRoot() {
+    return document.documentElement || document.body || document.head || null;
   }
 
-  function sanitizeLocation(href) {
-    try {
-      const url = new URL(href);
-      return `${url.origin}${url.pathname}`;
-    } catch {
-      return '';
+  function relativeTime(isoString) {
+    if (!isoString) {
+      return 'just now';
     }
-  }
-
-  function escapeLine(text) {
-    return String(text || '').replace(/\s+/g, ' ').trim();
-  }
-
-  function recentActivityLines() {
-    return state.rows.slice(0, 6).map((row) => {
-      const duration = row.durationLabel ? ` (${row.durationLabel})` : '';
-      return `- ${row.label}${duration}`;
-    });
-  }
-
-  async function copyText(text) {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-      return;
+    const delta = Math.max(0, Date.now() - Date.parse(isoString));
+    if (delta < 1000) {
+      return 'just now';
     }
-
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.setAttribute('readonly', 'true');
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    (document.body || document.documentElement).appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    textarea.remove();
-  }
-
-  function buildReportText(kind) {
-    const location = sanitizeLocation(window.location.href);
-    const title = escapeLine(document.title);
-    const lines = [
-      `Report type: ${kind}`,
-      `Agentyc version: ${HUD_CONFIG.version}`,
-      `Session id: ${HUD_CONFIG.sessionId}`,
-      `Page: ${location || 'n/a'}`,
-    ];
-
-    if (title) {
-      lines.push(`Title: ${title}`);
+    if (delta < 60_000) {
+      return `${Math.round(delta / 1000)}s ago`;
     }
-
-    lines.push('', 'Recent HUD activity:');
-    const activityLines = recentActivityLines();
-    if (activityLines.length === 0) {
-      lines.push('- none captured yet');
-    } else {
-      lines.push(...activityLines);
-    }
-
-    lines.push('', 'Notes:');
-    lines.push('- Add reproduction steps here.');
-    return lines.join('\n');
-  }
-
-  async function openReport(kind) {
-    const reportText = buildReportText(kind);
-    try {
-      await copyText(reportText);
-      state.status = 'Copied sanitized report context';
-    } catch {
-      state.status = 'Opened report link';
-    }
-    render();
-
-    const url = HUD_CONFIG.feedbackUrls?.[kind];
-    if (url) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
+    return `${Math.round(delta / 60_000)}m ago`;
   }
 
   function durationLabel(durationMs) {
     if (typeof durationMs !== 'number' || Number.isNaN(durationMs)) {
       return '';
     }
-    if (durationMs >= 1000) {
-      return `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)}s`;
+    return durationMs >= 1000 ? `${(durationMs / 1000).toFixed(1)}s` : `${Math.round(durationMs)}ms`;
+  }
+
+  function escapeLine(value) {
+    if (!value) {
+      return '';
     }
-    return `${Math.round(durationMs)}ms`;
+    return String(value).replace(/\s+/g, ' ').trim();
+  }
+
+  function statusFromKind(kind) {
+    if (kind === 'tool_error') {
+      return 'Attention needed';
+    }
+    if (kind === 'tool_done') {
+      return 'Updated';
+    }
+    if (kind === 'tool_start') {
+      return 'Running';
+    }
+    if (kind === 'intent') {
+      return 'Intent updated';
+    }
+    return 'Live';
   }
 
   function normalizeEntry(detail) {
-    if (!detail || typeof detail.message !== 'string' || !detail.message.trim()) {
-      return null;
-    }
-
-    const metadata = detail.metadata || {};
-    const kind = typeof metadata.kind === 'string'
-      ? metadata.kind
-      : detail.level === 'error'
-        ? 'tool_error'
-        : detail.level === 'success'
-          ? 'tool_done'
-          : 'browser_event';
-    const duration = typeof metadata.duration_ms === 'number' ? metadata.duration_ms : null;
-
+    const metadata = detail.metadata && typeof detail.metadata === 'object' ? detail.metadata : {};
+    const extraDetails = metadata.details && typeof metadata.details === 'object' ? metadata.details : {};
+    const durationMs = typeof metadata.duration_ms === 'number' ? metadata.duration_ms : null;
+    const kind =
+      metadata.kind ||
+      (detail.level === 'error' ? 'tool_error' : detail.level === 'success' ? 'tool_done' : 'browser_event');
     return {
       kind,
-      label: escapeLine(detail.message),
-      durationLabel: durationLabel(duration),
+      label: escapeLine(detail.message) || 'Browser activity',
       timestamp: detail.timestamp || new Date().toISOString(),
+      durationMs,
+      durationLabel: durationLabel(durationMs),
+      tool: typeof metadata.tool_name === 'string' ? metadata.tool_name : '',
+      session: typeof metadata.session_id === 'string' ? metadata.session_id : HUD_CONFIG.sessionId,
+      argsSummary: typeof extraDetails.args_summary === 'string' ? extraDetails.args_summary : 'none',
+      error:
+        typeof metadata.error === 'string'
+          ? escapeLine(metadata.error)
+          : typeof extraDetails.error === 'string'
+            ? escapeLine(extraDetails.error)
+            : '',
     };
   }
 
-  function applyEntry(entry) {
-    state.current = entry.label;
-    if (entry.kind === 'tool_error') {
-      state.status = 'Attention needed';
-    } else if (entry.kind === 'tool_done') {
-      state.status = 'Updated';
-    } else if (entry.kind === 'intent') {
-      state.status = 'Intent updated';
-    } else {
-      state.status = 'Live';
+  function shouldSkipEntry(entry) {
+    if (!entry.tool || entry.error || !CHATTY_TOOLS.has(entry.tool)) {
+      return false;
     }
+    if (entry.kind === 'tool_start') {
+      return true;
+    }
+    return entry.kind === 'tool_done' && typeof entry.durationMs === 'number' && entry.durationMs < CHATTY_THRESHOLD_MS;
+  }
 
-    state.rows = [entry, ...state.rows].slice(0, MAX_ROWS);
-    saveState();
+  function buildReportText() {
+    const lines = [
+      'Agentyc browser report',
+      `Page: ${location.href}`,
+      `Current step: ${state.current}`,
+      '',
+      'Recent activity:',
+      ...state.rows.slice(0, 6).map((row) => {
+        const suffix = row.durationLabel ? ` (${row.durationLabel})` : '';
+        return `- ${row.label}${suffix}`;
+      }),
+    ];
+    return lines.join('\n');
+  }
+
+  function openReportWindow() {
+    const report = buildReportText();
+    const popup = window.open('', '_blank', 'noopener,noreferrer,width=720,height=640');
+    if (!popup) {
+      navigator.clipboard?.writeText(report).catch(() => {});
+      return;
+    }
+    popup.document.write(
+      `<html><head><title>Agentyc Browser Report</title></head><body><pre style="font-family: ui-monospace, SFMono-Regular, monospace; white-space: pre-wrap; padding: 24px; line-height: 1.5;">${report.replace(/</g, '&lt;')}</pre></body></html>`
+    );
+    popup.document.close();
+  }
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) {
+      return true;
+    }
+    const root = documentRoot();
+    if (!root) {
+      return false;
+    }
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+      #${PANEL_ID}{position:fixed;top:16px;right:16px;width:360px;max-width:calc(100vw - 32px);padding:12px;background:rgba(6,7,11,.92);color:#f8fafc;border:1px solid rgba(96,165,250,.32);box-shadow:0 18px 40px rgba(2,6,23,.42);z-index:2147483647;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;line-height:1.45;pointer-events:none;border-radius:10px;backdrop-filter:blur(12px) saturate(125%)}
+      #${PANEL_ID} *{box-sizing:border-box}
+      #${PANEL_ID}[data-kind="tool_error"]{border-color:rgba(248,113,113,.55)}
+      #${PANEL_ID} .agentyc-hud-header,#${PANEL_ID} .agentyc-hud-current,#${PANEL_ID} .agentyc-hud-advanced,#${PANEL_ID} .agentyc-hud-feed{display:grid;gap:8px}
+      #${PANEL_ID} .agentyc-hud-header{grid-template-columns:minmax(0,1fr) auto;align-items:start;margin-bottom:10px}
+      #${PANEL_ID} .agentyc-hud-title{display:grid;gap:4px;min-width:0}
+      #${PANEL_ID} .agentyc-hud-status-line{display:flex;align-items:center;gap:8px;min-width:0}
+      #${PANEL_ID} .agentyc-hud-status-dot{width:10px;height:10px;border-radius:999px;background:#38bdf8;box-shadow:0 0 0 4px rgba(56,189,248,.18)}
+      #${PANEL_ID} .agentyc-hud-status-dot[data-kind="tool_done"]{background:#34d399;box-shadow:0 0 0 4px rgba(52,211,153,.18)}
+      #${PANEL_ID} .agentyc-hud-status-dot[data-kind="tool_start"]{background:#fbbf24;box-shadow:0 0 0 4px rgba(251,191,36,.18)}
+      #${PANEL_ID} .agentyc-hud-status-dot[data-kind="tool_error"]{background:#f87171;box-shadow:0 0 0 4px rgba(248,113,113,.18)}
+      #${PANEL_ID} .agentyc-hud-status-dot[data-kind="intent"]{background:#a78bfa;box-shadow:0 0 0 4px rgba(167,139,250,.2)}
+      #${PANEL_ID} .agentyc-hud-name{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#93c5fd;font-weight:700}
+      #${PANEL_ID} .agentyc-hud-status{color:rgba(226,232,240,.82);font-size:12px;min-width:0}
+      #${PANEL_ID} .agentyc-hud-actions{display:flex;gap:6px;pointer-events:auto}
+      #${PANEL_ID} button{appearance:none;border:1px solid rgba(148,163,184,.3);background:rgba(15,23,42,.82);color:#f8fafc;font:inherit;padding:6px 10px;border-radius:8px;cursor:pointer}
+      #${PANEL_ID} button[data-active="true"]{border-color:rgba(96,165,250,.72);background:rgba(30,41,59,.95)}
+      #${PANEL_ID} .agentyc-hud-menu{position:absolute;top:44px;right:0;display:none;pointer-events:auto}
+      #${PANEL_ID} .agentyc-hud-menu[data-open="true"]{display:block}
+      #${PANEL_ID} .agentyc-hud-menu button{width:100%;text-align:left;white-space:nowrap}
+      #${PANEL_ID} .agentyc-hud-current{padding:10px;background:linear-gradient(180deg,rgba(96,165,250,.12),rgba(255,255,255,.04));border:1px solid rgba(96,165,250,.24)}
+      #${PANEL_ID} .agentyc-hud-label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:rgba(191,219,254,.75)}
+      #${PANEL_ID} .agentyc-hud-current-text{font-size:14px;font-weight:700;color:#fff}
+      #${PANEL_ID} .agentyc-hud-advanced{margin-top:10px;padding:10px;border:1px solid rgba(148,163,184,.24);background:rgba(15,23,42,.72);display:none}
+      #${PANEL_ID} .agentyc-hud-advanced[data-open="true"]{display:grid}
+      #${PANEL_ID} .agentyc-hud-advanced-text{color:rgba(226,232,240,.88);font-family:ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap;word-break:break-word}
+      #${PANEL_ID} .agentyc-hud-feed{margin-top:10px}
+      #${PANEL_ID} .agentyc-hud-row{display:grid;grid-template-columns:12px minmax(0,1fr) auto;gap:8px;align-items:start;padding:8px 10px;background:rgba(255,255,255,.035);border:1px solid rgba(148,163,184,.14)}
+      #${PANEL_ID} .agentyc-hud-row-dot{width:8px;height:8px;border-radius:999px;background:#38bdf8;margin-top:5px}
+      #${PANEL_ID} .agentyc-hud-row[data-kind="tool_done"] .agentyc-hud-row-dot{background:#34d399}
+      #${PANEL_ID} .agentyc-hud-row[data-kind="tool_start"] .agentyc-hud-row-dot{background:#fbbf24}
+      #${PANEL_ID} .agentyc-hud-row[data-kind="tool_error"] .agentyc-hud-row-dot{background:#f87171}
+      #${PANEL_ID} .agentyc-hud-row[data-kind="intent"] .agentyc-hud-row-dot{background:#a78bfa}
+      #${PANEL_ID} .agentyc-hud-row-text{overflow:hidden;text-overflow:ellipsis}
+      #${PANEL_ID} .agentyc-hud-row-meta{color:rgba(148,163,184,.88);white-space:nowrap}
+    `;
+    root.appendChild(style);
+    return true;
+  }
+
+  function ensurePanel() {
+    if (!ensureStyle()) {
+      return null;
+    }
+    let panel = document.getElementById(PANEL_ID);
+    if (panel) {
+      return panel;
+    }
+    panel = createEl('section');
+    panel.id = PANEL_ID;
+    panel.dataset.sessionId = HUD_CONFIG.sessionId;
+    panel.setAttribute('aria-live', 'polite');
+    panel.setAttribute('role', 'status');
+
+    const header = createEl('header', 'agentyc-hud-header');
+    const title = createEl('div', 'agentyc-hud-title');
+    const statusLine = createEl('div', 'agentyc-hud-status-line');
+    const statusDot = createEl('div', 'agentyc-hud-status-dot');
+    statusDot.dataset.kind = state.statusKind;
+    statusLine.appendChild(statusDot);
+    statusLine.appendChild(createEl('strong', 'agentyc-hud-name', 'AGENTYC HUD'));
+    title.appendChild(statusLine);
+    title.appendChild(createEl('div', 'agentyc-hud-status', state.status));
+    header.appendChild(title);
+
+    const actions = createEl('div', 'agentyc-hud-actions');
+    const detailsButton = createEl('button', '', 'DETAILS');
+    detailsButton.type = 'button';
+    detailsButton.dataset.role = 'details-toggle';
+    detailsButton.dataset.active = String(state.advanced);
+    detailsButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.advanced = !state.advanced;
+      state.reportOpen = false;
+      saveState();
+      render();
+    });
+    actions.appendChild(detailsButton);
+
+    const reportWrap = createEl('div');
+    reportWrap.style.position = 'relative';
+    const reportButton = createEl('button', '', 'REPORT');
+    reportButton.type = 'button';
+    reportButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.reportOpen = !state.reportOpen;
+      saveState();
+      render();
+    });
+    const menu = createEl('div', 'agentyc-hud-menu');
+    const openReport = createEl('button', '', 'Open browser report');
+    openReport.type = 'button';
+    openReport.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.reportOpen = false;
+      saveState();
+      render();
+      openReportWindow();
+    });
+    menu.appendChild(openReport);
+    reportWrap.appendChild(reportButton);
+    reportWrap.appendChild(menu);
+    actions.appendChild(reportWrap);
+    header.appendChild(actions);
+    panel.appendChild(header);
+
+    const current = createEl('section', 'agentyc-hud-current');
+    current.appendChild(createEl('span', 'agentyc-hud-label', 'Current step'));
+    current.appendChild(createEl('div', 'agentyc-hud-current-text', state.current));
+    panel.appendChild(current);
+
+    const advanced = createEl('section', 'agentyc-hud-advanced');
+    advanced.dataset.open = String(state.advanced);
+    advanced.appendChild(createEl('span', 'agentyc-hud-label', 'Tool details'));
+    advanced.appendChild(createEl('div', 'agentyc-hud-advanced-text'));
+    panel.appendChild(advanced);
+
+    const feed = createEl('div', 'agentyc-hud-feed');
+    panel.appendChild(feed);
+
+    const root = documentRoot();
+    if (!root) {
+      return null;
+    }
+    root.appendChild(panel);
+    document.addEventListener('click', () => {
+      if (!state.reportOpen) {
+        return;
+      }
+      state.reportOpen = false;
+      saveState();
+      render();
+    });
     render();
+    return panel;
+  }
+
+  function renderRows(feed) {
+    feed.replaceChildren();
+    if (!state.rows.length) {
+      const row = createEl('div', 'agentyc-hud-row');
+      row.appendChild(createEl('div', 'agentyc-hud-row-dot'));
+      row.appendChild(createEl('div', 'agentyc-hud-row-text', 'No browser activity yet.'));
+      row.appendChild(createEl('div', 'agentyc-hud-row-meta', 'live'));
+      feed.appendChild(row);
+      return;
+    }
+    for (const row of state.rows) {
+      const rowEl = createEl('div', 'agentyc-hud-row');
+      rowEl.dataset.kind = row.kind;
+      rowEl.appendChild(createEl('div', 'agentyc-hud-row-dot'));
+      rowEl.appendChild(createEl('div', 'agentyc-hud-row-text', row.label));
+      rowEl.appendChild(createEl('div', 'agentyc-hud-row-meta', row.durationLabel || relativeTime(row.timestamp)));
+      feed.appendChild(rowEl);
+    }
   }
 
   function render() {
     const panel = ensurePanel();
-    panel.querySelector('.agentyc-hud-status').textContent = state.status;
-    panel.querySelector('.agentyc-hud-current-text').textContent = state.current;
-
-    const menu = panel.querySelector('.agentyc-hud-menu');
-    menu.dataset.open = String(state.reportOpen);
-
-    const feed = panel.querySelector('.agentyc-hud-feed');
-    feed.innerHTML = '';
-
-    if (state.rows.length === 0) {
-      feed.appendChild(createEl('div', 'agentyc-hud-empty', 'No visible actions yet.'));
+    if (!panel) {
       return;
     }
-
-    state.rows.forEach((row) => {
-      const item = createEl('div', 'agentyc-hud-row');
-      item.dataset.kind = row.kind;
-      item.appendChild(createEl('div', 'agentyc-hud-dot'));
-      item.appendChild(createEl('div', 'agentyc-hud-text', row.label));
-      item.appendChild(createEl('div', 'agentyc-hud-meta', row.durationLabel || ''));
-      feed.appendChild(item);
-    });
+    panel.dataset.kind = state.statusKind || 'browser_event';
+    panel.querySelector('.agentyc-hud-status').textContent = state.status;
+    panel.querySelector('.agentyc-hud-status-dot').dataset.kind = state.statusKind || 'browser_event';
+    panel.querySelector('.agentyc-hud-current-text').textContent = state.current;
+    const detailsButton = panel.querySelector('[data-role="details-toggle"]');
+    detailsButton.dataset.active = String(state.advanced);
+    const menu = panel.querySelector('.agentyc-hud-menu');
+    menu.dataset.open = String(state.reportOpen);
+    const advanced = panel.querySelector('.agentyc-hud-advanced');
+    advanced.dataset.open = String(state.advanced);
+    const advancedLines = [
+      `Tool: ${state.lastTool || 'No browser tool yet'}`,
+      `Args: ${state.lastArgs || 'none'}`,
+      `Session: ${state.lastSession || HUD_CONFIG.sessionId}`,
+      `Last duration: ${state.lastDuration || 'n/a'}`,
+    ];
+    if (state.lastError) {
+      advancedLines.push(`Last error: ${state.lastError}`);
+    }
+    panel.querySelector('.agentyc-hud-advanced-text').textContent = advancedLines.join('\n');
+    renderRows(panel.querySelector('.agentyc-hud-feed'));
+    saveState();
   }
 
-  window.addEventListener('agentyc-log', (event) => {
-    const entry = normalizeEntry(event.detail);
-    if (!entry) {
+  function applyEntry(entry) {
+    state.current = entry.label;
+    state.statusKind = entry.kind;
+    state.status = statusFromKind(entry.kind);
+    if (entry.tool) {
+      state.lastTool = entry.tool;
+      state.lastArgs = entry.argsSummary || 'none';
+      state.lastSession = entry.session || HUD_CONFIG.sessionId;
+      state.lastDuration = entry.durationLabel || 'n/a';
+      state.lastError = entry.error || '';
+    } else if (entry.error) {
+      state.lastError = entry.error;
+    }
+    state.rows = [
+      { kind: entry.kind, label: entry.label, timestamp: entry.timestamp, durationLabel: entry.durationLabel },
+      ...state.rows,
+    ].slice(0, MAX_ROWS);
+    render();
+  }
+
+  const onHudLog = (event) => {
+    const entry = normalizeEntry(event.detail || {});
+    if (shouldSkipEntry(entry)) {
       return;
     }
     applyEntry(entry);
-  });
+  };
 
-  ensurePanel();
+  function bootHud() {
+    if (window.__agentycHudBooted === HUD_CONFIG.sessionId) {
+      render();
+      return;
+    }
+    if (!ensurePanel()) {
+      if (window.__agentycHudPending !== HUD_CONFIG.sessionId) {
+        window.__agentycHudPending = HUD_CONFIG.sessionId;
+        document.addEventListener('DOMContentLoaded', bootHud, { once: true });
+      }
+      return;
+    }
+    window.__agentycHudPending = null;
+    window.addEventListener('agentyc-log', onHudLog);
+    window.__agentycHudBooted = HUD_CONFIG.sessionId;
+    render();
+  }
+
+  bootHud();
 })();
 """
+
+__all__ = ['DEMO_PANEL_SCRIPT']

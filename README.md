@@ -105,7 +105,7 @@ The skills guide covers: read→ref→act loop, tool-selection rules, `since_has
 
 ## Live HUD
 
-When `BrowserProfile(demo_mode=True)` is enabled, Agentyc now injects a compact square-border HUD into the controlled browser page. It shows the current step, a short recent timeline, and a `REPORT` menu that copies sanitized context before opening the repo's bug-report, feature-request, or private security flow.
+When `BrowserProfile(demo_mode=True)` is enabled, Agentyc injects a high-visibility HUD into the controlled browser page. It shows the current step, a short recent timeline, a `DETAILS` toggle with sanitized tool/session/argument context, and a `REPORT` menu that copies sanitized context before opening the repo's bug-report, feature-request, or private security flow.
 
 For local operator visibility outside the browser, `agentyc mcp --hud-overlay` opens a small transparent desktop HUD window that mirrors the same sanitized activity stream. Agents can also call `browser_set_intent` to push a short human-readable status label into both HUD surfaces.
 

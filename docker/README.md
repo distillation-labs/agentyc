@@ -29,7 +29,7 @@ If you use the layered base-image workflow, build those base images first:
 - `docker/base-images/system/`: Python and system dependencies.
 - `docker/base-images/chromium/`: Chromium-enabled base image.
 - `docker/base-images/python-deps/`: Python dependency layer.
-- `docker/scripts/build-base-images.sh`: helper for building the base layers.
+- `scripts/build-base-images.sh`: helper for building the base layers.
 
 ## Notes
 

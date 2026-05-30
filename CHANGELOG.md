@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.2] - 2026-05-29
+
+### Added
+
+- **Stronger headed HUD details mode** — the in-browser HUD is now more visible in headed sessions and includes a `DETAILS` toggle that surfaces sanitized tool/session/argument summaries plus the last duration or error.
+
+### Fixed
+
+- **Demo-mode HUD boot timing** — the HUD now waits for a usable document root before finalizing boot, so it no longer half-initializes on early document loads.
+
+### Changed
+
+- **HUD polling noise is quieter** — chatty read-only browser tools are now suppressed unless they run long enough to matter, which keeps the live HUD more readable during real agent sessions.
+- **Stale base-image release scaffolding removed** — the disabled `build-base-image` workflow has been deleted, and the Docker docs now point at the actual base-image helper script path.
+
+### Tests
+
+- **New headed HUD verification** — `tests/ci/browser/test_hud.py` now checks visible headed rendering plus details-mode content.
+- **Release validation rerun** — `./scripts/lint.sh`, `./scripts/test.sh`, `uv build`, `scripts/validate_skills.py`, and `scripts/run_skill_evals.py` all passed for this release.
+
 ## [0.3.1] - 2026-05-29
 
 ### Added
