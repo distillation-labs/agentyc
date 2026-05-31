@@ -10,6 +10,15 @@ from typing import TYPE_CHECKING, Any
 from cdp_use.cdp.page import CaptureScreenshotParameters
 from cdp_use.cdp.target import TargetID
 
+from agentyc.browser.session_emulation import (
+	_cdp_clear_geolocation,
+	_cdp_grant_permissions,
+	_cdp_set_emulated_media,
+	_cdp_set_geolocation,
+	_cdp_set_locale,
+	_cdp_set_timezone,
+	_cdp_set_user_agent,
+)
 from agentyc.browser.session_lookup import (
 	get_most_recently_opened_target_id,
 	get_or_create_cdp_session,
@@ -21,14 +30,11 @@ from agentyc.browser.session_models import CDPSession
 from agentyc.browser.session_storage import (
 	_cdp_add_init_script,
 	_cdp_clear_cookies,
-	_cdp_clear_geolocation,
 	_cdp_get_cookies,
 	_cdp_get_origins,
 	_cdp_get_storage_state,
-	_cdp_grant_permissions,
 	_cdp_remove_init_script,
 	_cdp_set_cookies,
-	_cdp_set_geolocation,
 	_cdp_set_viewport,
 	export_storage_state,
 )
@@ -426,7 +432,11 @@ __all__ = [
 	'_cdp_navigate',
 	'_cdp_remove_init_script',
 	'_cdp_set_cookies',
+	'_cdp_set_emulated_media',
 	'_cdp_set_geolocation',
+	'_cdp_set_locale',
+	'_cdp_set_timezone',
+	'_cdp_set_user_agent',
 	'_cdp_set_viewport',
 	'_is_valid_target',
 	'cdp_client_for_frame',
