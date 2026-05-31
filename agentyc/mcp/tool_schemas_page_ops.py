@@ -54,6 +54,18 @@ PAGE_OPERATION_TOOL_SCHEMAS: list[types.Tool] = [
 		},
 	),
 	types.Tool(
+		name='browser_wait_for_url',
+		description='Wait until the current page URL matches a substring or regex. Use after delayed navigation or History API route changes.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'url_substring': {'type': 'string', 'description': 'Match when the current URL contains this substring.'},
+				'url_regex': {'type': 'string', 'description': 'Regex alternative to url_substring.'},
+				'timeout_seconds': {'type': 'number', 'default': 10.0, 'description': 'Maximum wait time.'},
+			},
+		},
+	),
+	types.Tool(
 		name='browser_right_click',
 		description='Right-click to open a context menu.',
 		inputSchema={
@@ -105,6 +117,117 @@ PAGE_OPERATION_TOOL_SCHEMAS: list[types.Tool] = [
 		},
 	),
 	types.Tool(
+		name='browser_grant_permissions',
+		description='Grant browser permissions such as geolocation for the current origin or an explicit origin.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'permissions': {
+					'type': 'array',
+					'items': {'type': 'string'},
+					'description': 'Permission names to grant, such as geolocation.',
+				},
+				'origin': {
+					'type': 'string',
+					'description': 'Optional exact origin to scope the grant to, such as https://example.com.',
+				},
+			},
+			'required': ['permissions'],
+		},
+	),
+	types.Tool(
+		name='browser_set_geolocation',
+		description='Override browser geolocation for the current session.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'latitude': {'type': 'number'},
+				'longitude': {'type': 'number'},
+				'accuracy': {'type': 'number', 'default': 100.0},
+			},
+			'required': ['latitude', 'longitude'],
+		},
+	),
+	types.Tool(
+		name='browser_set_extra_headers',
+		description='Set extra HTTP headers for the focused page target. Pass an empty object to clear.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'headers': {
+					'type': 'object',
+					'additionalProperties': {'type': 'string'},
+					'description': 'Header map to apply to future requests from the focused page target.',
+				}
+			},
+			'required': ['headers'],
+		},
+	),
+	types.Tool(
+		name='browser_set_user_agent',
+		description='Override the user agent for the focused page target.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'user_agent': {'type': 'string', 'description': 'User agent string to emulate.'},
+				'accept_language': {'type': 'string', 'description': 'Optional Accept-Language override.'},
+				'platform': {'type': 'string', 'description': 'Optional navigator.platform override.'},
+			},
+			'required': ['user_agent'],
+		},
+	),
+	types.Tool(
+		name='browser_set_timezone',
+		description='Override the timezone for the focused page target. Pass an empty string to clear.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'timezone_id': {
+					'type': 'string',
+					'description': 'IANA timezone id such as America/New_York. Empty string clears the override.',
+				}
+			},
+		},
+	),
+	types.Tool(
+		name='browser_set_locale',
+		description='Override the locale for the focused page target. Omit or pass an empty string to clear.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'locale': {
+					'type': 'string',
+					'description': 'Locale such as en-US or fr-FR. Empty string clears the override.',
+				}
+			},
+		},
+	),
+	types.Tool(
+		name='browser_emulate_media',
+		description='Emulate CSS media type and key user-preference media features for the focused page target.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'media': {
+					'type': 'string',
+					'description': 'Optional media type override: screen, print, speech, or empty string for default.',
+				},
+				'color_scheme': {
+					'type': 'string',
+					'description': 'Optional prefers-color-scheme override: dark, light, or no-preference.',
+				},
+				'reduced_motion': {
+					'type': 'string',
+					'description': 'Optional prefers-reduced-motion override: reduce or no-preference.',
+				},
+				'forced_colors': {
+					'type': 'string',
+					'description': 'Optional forced-colors override: active or none.',
+				},
+			},
+		},
+	),
+	types.Tool(
 		name='browser_save_as_pdf',
 		description='Save the current page as a PDF file and return the file path. Uses CDP Page.printToPDF.',
 		inputSchema={
@@ -133,6 +256,39 @@ PAGE_OPERATION_TOOL_SCHEMAS: list[types.Tool] = [
 		name='browser_get_downloads',
 		description='List files that have been downloaded during the current browser session.',
 		inputSchema={'type': 'object', 'properties': {}},
+	),
+	types.Tool(
+		name='browser_wait_for_download',
+		description='Wait until a download completes and return the matched file metadata as JSON.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'expected_name': {
+					'type': 'string',
+					'description': 'Exact file name to wait for. Omit to return the latest available download.',
+				},
+				'timeout_seconds': {'type': 'number', 'default': 10.0, 'description': 'Maximum wait time.'},
+			},
+		},
+	),
+	types.Tool(
+		name='browser_wait_for_tab',
+		description='Wait until a new tab appears and optionally switch focus to it.',
+		inputSchema={
+			'type': 'object',
+			'properties': {
+				'url_substring': {
+					'type': 'string',
+					'description': 'Optional substring the new tab URL must contain.',
+				},
+				'url_regex': {
+					'type': 'string',
+					'description': 'Optional regex the new tab URL must match.',
+				},
+				'timeout_seconds': {'type': 'number', 'default': 10.0, 'description': 'Maximum wait time.'},
+				'switch_focus': {'type': 'boolean', 'default': True, 'description': 'Switch focus to the new tab.'},
+			},
+		},
 	),
 	types.Tool(
 		name='browser_set_viewport',
