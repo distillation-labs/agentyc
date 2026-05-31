@@ -43,6 +43,16 @@ When release-gate thresholds change: update README benchmarks table.
 - If there is a mismatch between code and docs, call it out explicitly rather than papering over it.
 - Prefer small, targeted updates over broad rewrites.
 
+## Benchmark Claim Provenance
+
+- Cite the source of every latency, reliability, token, or benchmark claim: benchmark script,
+  release-gate doc, test artifact, or measured output.
+- If benchmark thresholds, tool counts, or public surfaces change, update all affected docs in the
+  same pass, especially `README.md`, `docs/features.md`, `docs/api.md`, and `docs/release-gate.md`.
+- When internal skill guidance changes, keep `.agents/skills/README.md` and the shipped platform
+  copies of each edited `SKILL.md` aligned.
+- Prefer removing an unverified performance claim over softening it into vague hype.
+
 ## Use It For
 
 - Changelog entries for user-visible changes.
@@ -109,6 +119,7 @@ Result: no dead links or contradictory instructions remain
 - Preserve the repo's documentation tone and structure.
 - Call out any doc claims that cannot be verified from the current repository state.
 - If a change affects multiple docs, update them in a single consistent pass.
+- Attach benchmark-claim provenance when touching performance or release-gate language.
 
 ## Anti-Patterns
 
@@ -117,6 +128,7 @@ Result: no dead links or contradictory instructions remain
 - duplicating the same content in multiple docs without a source of truth
 - making docs broader than the actual shipped scope
 - hiding a breaking doc change behind unrelated prose edits
+- turning a measured benchmark delta into a broader claim than the data supports
 
 ## References
 
