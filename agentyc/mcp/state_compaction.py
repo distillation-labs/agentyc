@@ -14,12 +14,18 @@ from agentyc.mcp.state_refs import make_element_ref
 
 StateMode = Literal['auto', 'full', 'min', 'focus']
 
-_DEFAULT_MIN_ELEMENTS = 24
-# Auto can safely use the compact element schema on medium pages because min mode
-# still preserves the full element set until the min-element cap is reached.
+_DEFAULT_MIN_ELEMENTS = 9
+# Auto can safely use the compact element schema on medium pages because it keeps
+# the highest-signal subset once the interactive element count crosses the cap.
 _DEFAULT_AUTO_FULL_THRESHOLD = 10
+_DEFAULT_MIN_RELATIVE_SCORE_FLOOR = 0.7
+_DEFAULT_MIN_KEEP_ELEMENTS = 4
 _MAX_DUPLICATES_PER_SIGNATURE = 3
 _DIGITS_PATTERN = re.compile(r'\d+')
+_NAVIGATION_LINK_HINTS = ('help', 'support', 'runbook', 'reference', 'quickstart', 'authentication')
+_SECONDARY_CONTROL_PREFIXES = ('enable ', 'require ', 'schedule ', 'include ', 'export ', 'focus ')
+_SECONDARY_CONTROL_PHRASES = ('open issue template',)
+_SECONDARY_CONTROL_PENALTY = 32
 
 # (tag, input_type) → implied ARIA role. Omit from serialized element to save tokens.
 _IMPLICIT_ROLE_MAP: dict[tuple[str, str], str] = {
@@ -149,6 +155,9 @@ def select_elements_for_min_mode(
 		if len(selected_elements) >= max_elements:
 			break
 
+	if max_elements <= _DEFAULT_MIN_ELEMENTS:
+		selected_elements = _trim_selected_min_mode_elements(selected_elements)
+
 	return [element for _, _, _, element in sorted(selected_elements, key=lambda item: item[1])]
 
 
@@ -171,6 +180,20 @@ def _should_pin_min_mode_element(element: EnhancedDOMTreeNode) -> bool:
 		)
 	)
 	return input_type == 'search' or role == 'searchbox' or 'search' in search_like_text
+
+
+def _trim_selected_min_mode_elements(
+	selected_elements: list[tuple[float, int, int, EnhancedDOMTreeNode]],
+) -> list[tuple[float, int, int, EnhancedDOMTreeNode]]:
+	if len(selected_elements) <= _DEFAULT_MIN_KEEP_ELEMENTS:
+		return selected_elements
+
+	threshold = selected_elements[0][0] * _DEFAULT_MIN_RELATIVE_SCORE_FLOOR
+	trimmed = [item for item in selected_elements if item[0] >= threshold]
+	min_keep = min(_DEFAULT_MIN_KEEP_ELEMENTS, len(selected_elements))
+	if len(trimmed) < min_keep:
+		return selected_elements[:min_keep]
+	return trimmed
 
 
 def score_element_for_compaction(element: EnhancedDOMTreeNode) -> float:
@@ -198,8 +221,15 @@ def score_element_for_compaction(element: EnhancedDOMTreeNode) -> float:
 		score += 6
 	if text:
 		score += min(len(text), 40) / 3
+	if tag == 'a' and any(token in text for token in _NAVIGATION_LINK_HINTS):
+		score += 30
 	if input_type in {'email', 'password', 'search', 'url'}:
 		score += 10
+	# Prefer the primary task path over optional/export/follow-up controls on dense pages.
+	if any(text.startswith(prefix) for prefix in _SECONDARY_CONTROL_PREFIXES) or any(
+		phrase in text for phrase in _SECONDARY_CONTROL_PHRASES
+	):
+		score -= _SECONDARY_CONTROL_PENALTY
 	if 'disabled' in element.attributes:
 		score -= 12
 	if input_type == 'hidden':

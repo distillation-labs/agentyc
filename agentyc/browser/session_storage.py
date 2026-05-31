@@ -66,24 +66,6 @@ async def _cdp_clear_cookies(session: BrowserSession) -> None:
 	await cdp_session.cdp_client.send.Storage.clearCookies(session_id=cdp_session.session_id)
 
 
-async def _cdp_grant_permissions(session: BrowserSession, permissions: list[str], origin: str | None = None) -> None:
-	params: dict[str, Any] = {'permissions': permissions}
-	if origin:
-		params['origin'] = origin
-	await get_or_create_cdp_session(session)
-	raise NotImplementedError('Not implemented yet')
-
-
-async def _cdp_set_geolocation(session: BrowserSession, latitude: float, longitude: float, accuracy: float = 100) -> None:
-	await session.cdp_client.send.Emulation.setGeolocationOverride(
-		params={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy}
-	)
-
-
-async def _cdp_clear_geolocation(session: BrowserSession) -> None:
-	await session.cdp_client.send.Emulation.clearGeolocationOverride()
-
-
 async def _cdp_add_init_script(session: BrowserSession, script: str, target_id: TargetID | None = None) -> str:
 	assert session._cdp_client_root is not None
 	cdp_session = await session.get_or_create_cdp_session(target_id=target_id, focus=False)

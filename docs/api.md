@@ -94,7 +94,9 @@ The runtime startup path is:
 | `browser_wait_for_network_idle` | optional `timeout_seconds`, `idle_duration_ms` |
 | `browser_wait_for_request` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `timeout_seconds`, optional `include_headers` |
 | `browser_wait_for_response` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `status`, optional `timeout_seconds`, optional `include_headers` |
+| `browser_wait_for_url` | optional `url_substring`, optional `url_regex`, optional `timeout_seconds` |
 | `browser_wait_for_stable_dom` | optional `timeout_seconds`, `quiet_ms` |
+| `browser_wait_for_download` | optional `expected_name`, optional `timeout_seconds` |
 | `browser_save_as_pdf` | optional `file_name`, `print_background`, `landscape`, `scale`, `paper_format` |
 | `browser_set_viewport` | `width`, `height`, optional `device_scale_factor` |
 | `browser_get_state` | optional `include_screenshot`, `mode`, `focus_ref`, `since_hash` |
@@ -116,18 +118,19 @@ The runtime startup path is:
 | Tool | Arguments |
 |------|-----------|
 | `browser_set_intent` | `intent` |
-| `browser_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y`, optional `new_tab` |
+| `browser_click` | `ref`, `index`, or `label`, or `coordinate_x` plus `coordinate_y`; optional `new_tab`, `wait_for_download`, `wait_for_tab`, `wait_for_url_substring`, `wait_for_url_regex`, `wait_for_request` object, `wait_for_response` object, `expected_download_name`, `download_timeout_seconds`, `expected_tab_url_substring`, `tab_timeout_seconds`, `url_timeout_seconds` |
 | `browser_right_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
 | `browser_double_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
 | `browser_hover` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
 | `browser_drag_to` | source and target refs or coordinates, optional `steps` |
-| `browser_type` | `text`, plus `ref` or `index` |
+| `browser_type` | `text`, plus `ref`, `index`, or `label` |
+| `browser_fill_form` | `fields[]` where each item provides `ref`, `index`, or `label`, and exactly one of `text`, `option_text`, `path`, or `checked` |
 | `browser_press_key` | `key` |
 | `browser_scroll` | optional `direction`, `pages`, `ref`, `index` |
 | `browser_scroll_to_text` | `text` |
-| `browser_select_option` | `text`, plus `ref` or `index` |
-| `browser_get_dropdown_options` | optional `ref`, optional `index` |
-| `browser_upload_file` | `path`, plus `ref` or `index` |
+| `browser_select_option` | `text`, plus `ref`, `index`, or `label` |
+| `browser_get_dropdown_options` | optional `ref`, optional `index`, optional `label` |
+| `browser_upload_file` | `path`, plus `ref`, `index`, or `label` |
 | `browser_handle_dialog` | optional `accept`, optional `prompt_text` |
 
 ### Inspection And Extraction
@@ -150,9 +153,17 @@ The runtime startup path is:
 | `browser_list_tabs` | none |
 | `browser_switch_tab` | `tab_id` |
 | `browser_close_tab` | `tab_id` |
+| `browser_wait_for_tab` | optional `url_substring`, optional `url_regex`, optional `timeout_seconds`, optional `switch_focus` |
 | `browser_get_cookies` | none |
 | `browser_set_cookies` | `cookies` |
 | `browser_clear_cookies` | optional `name` |
+| `browser_grant_permissions` | `permissions[]`, optional `origin` |
+| `browser_set_geolocation` | `latitude`, `longitude`, optional `accuracy` |
+| `browser_set_extra_headers` | `headers` object; pass `{}` to clear |
+| `browser_set_user_agent` | `user_agent`, optional `accept_language`, optional `platform` |
+| `browser_set_timezone` | optional `timezone_id`; pass `""` to clear |
+| `browser_set_locale` | optional `locale`; omit or pass `""` to clear |
+| `browser_emulate_media` | optional `media`, optional `color_scheme`, optional `reduced_motion`, optional `forced_colors`; omit all to clear |
 | `browser_save_state` | optional `path` |
 | `browser_load_state` | `path` |
 

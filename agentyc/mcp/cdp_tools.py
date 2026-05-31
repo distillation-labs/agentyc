@@ -38,6 +38,7 @@ from agentyc.mcp.cdp_tabs_trace_tools import (
 	_stop_trace,
 	_switch_tab,
 	_wait_for_stable_dom,
+	_wait_for_tab,
 )
 
 __all__ = [
@@ -64,6 +65,7 @@ __all__ = [
 	'_get_focused_element',
 	'_list_tabs',
 	'_switch_tab',
+	'_wait_for_tab',
 	'_new_tab',
 	'_close_tab',
 	'_wait_for_stable_dom',

@@ -151,6 +151,18 @@ class SessionTargetsMixin:
 	async def _cdp_clear_geolocation(self) -> None:
 		await session_targets._cdp_clear_geolocation(self._session())
 
+	async def _cdp_set_locale(self, locale: str | None = None) -> None:
+		await session_targets._cdp_set_locale(self._session(), locale)
+
+	async def _cdp_set_timezone(self, timezone_id: str) -> None:
+		await session_targets._cdp_set_timezone(self._session(), timezone_id)
+
+	async def _cdp_set_user_agent(self, user_agent: str, accept_language: str | None = None, platform: str | None = None) -> None:
+		await session_targets._cdp_set_user_agent(self._session(), user_agent, accept_language, platform)
+
+	async def _cdp_set_emulated_media(self, media: str | None = None, features: list[dict[str, str]] | None = None) -> None:
+		await session_targets._cdp_set_emulated_media(self._session(), media, features)
+
 	async def _cdp_add_init_script(self, script: str, target_id: TargetID | None = None) -> str:
 		return await session_targets._cdp_add_init_script(self._session(), script, target_id)
 

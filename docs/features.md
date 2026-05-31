@@ -44,6 +44,7 @@ Both surfaces show short intent/action labels only. They do not expose raw chain
 | `browser_find_elements` | Query the current page with a CSS selector |
 | `browser_search_page` | Search for text or a regex pattern on the current page |
 | `browser_wait_for_element` | Poll until text or a ref appears or disappears |
+| `browser_wait_for_url` | Wait until the current page URL matches a substring or regex |
 | `browser_get_focused_element` | Return the element that currently has keyboard focus |
 | `browser_evaluate` | Execute JavaScript in the current page context and return the result as text |
 
@@ -61,19 +62,20 @@ Both surfaces show short intent/action labels only. They do not expose raw chain
 
 | Tool | Description |
 |------|-------------|
-| `browser_click` | Click by stable ref, legacy index, or viewport coordinates |
+| `browser_click` | Click by stable ref, legacy index, label, or viewport coordinates, optionally waiting for a download, new tab, URL change, matching request, or matching response |
 | `browser_set_intent` | Publish a short operator-facing intent label into the live HUD |
 | `browser_right_click` | Open a context menu by ref, index, or coordinates |
 | `browser_double_click` | Double-click an element or coordinates |
 | `browser_hover` | Trigger hover states and hover-driven UI |
 | `browser_drag_to` | Drag from one element or coordinate to another |
-| `browser_type` | Clear and type into an input-like target |
+| `browser_type` | Clear and type into an input-like target by ref, index, or label |
+| `browser_fill_form` | Batch text, selects, uploads, and checkbox/radio toggles in one round trip |
 | `browser_press_key` | Send a key or shortcut |
 | `browser_scroll` | Scroll the page or a scrollable element |
 | `browser_scroll_to_text` | Scroll until text is visible |
-| `browser_select_option` | Select an option by visible text |
-| `browser_get_dropdown_options` | Inspect available options for a dropdown |
-| `browser_upload_file` | Upload a local file to an upload control |
+| `browser_select_option` | Select an option by visible text, targeting by ref, index, or label |
+| `browser_get_dropdown_options` | Inspect available options for a dropdown by ref, index, or label |
+| `browser_upload_file` | Upload a local file to an upload control by ref, index, or label |
 | `browser_handle_dialog` | Accept or dismiss JavaScript dialogs (alert, confirm, prompt) |
 
 ### Tabs And Cookies
@@ -84,9 +86,17 @@ Both surfaces show short intent/action labels only. They do not expose raw chain
 | `browser_list_tabs` | List open tabs |
 | `browser_switch_tab` | Switch to a tab by `tab_id` |
 | `browser_close_tab` | Close a tab by `tab_id` |
+| `browser_wait_for_tab` | Wait for a new tab to appear and optionally switch focus to it |
 | `browser_get_cookies` | Read cookies for the current page URL |
 | `browser_set_cookies` | Set one or more cookies |
 | `browser_clear_cookies` | Delete one cookie or clear browser cookies |
+| `browser_grant_permissions` | Grant browser permissions such as geolocation for the current or explicit origin |
+| `browser_set_geolocation` | Override browser geolocation for the current session |
+| `browser_set_extra_headers` | Set or clear extra HTTP headers for the focused page target |
+| `browser_set_user_agent` | Override the user agent, platform, and optional Accept-Language for the focused page target |
+| `browser_set_timezone` | Override the timezone for the focused page target |
+| `browser_set_locale` | Override the locale for the focused page target |
+| `browser_emulate_media` | Emulate CSS media type and key user-preference media features |
 
 ### Deterministic Extraction, Network Control, And Observability
 
@@ -104,6 +114,7 @@ Both surfaces show short intent/action labels only. They do not expose raw chain
 | `browser_replay_request` | Replay a captured request with optional header or body overrides |
 | `browser_export_debug_bundle` | Return one compact debug artifact with state, logs, trace summary, optional HTML, and optional screenshot |
 | `browser_get_downloads` | List files downloaded during the current browser session |
+| `browser_wait_for_download` | Wait for a download to finish and return the matched file metadata |
 | `browser_get_attribute` | Get a specific attribute value from an element by ref or index |
 | `browser_clear_logs` | Clear console and/or network log buffers |
 | `browser_start_trace` | Start a CDP performance trace |

@@ -79,6 +79,31 @@ Each `evals/cases.yaml` must cover the three evaluation tracks from `skills-guid
 Use real prompts, repo-specific tool expectations, and measurable pass thresholds. Prefer battle-test
 scenarios that reflect the actual repo surface over generic toy prompts.
 
+## Browser Automation Operating Doctrine
+
+Skills that touch browser automation, MCP runtime design, retrieval, routing, or evals should encode
+the same defaults:
+
+- Start from Agentyc's actual architecture: deterministic CDP control, compact
+  `browser_get_state(...)` reads, explicit inspection surfaces, and no hidden fallback automation
+  loops.
+- Ground improvement claims in the canonical benchmark surface:
+  - `uv run python scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate --fail-on-regression`
+  - `uv run python scripts/benchmark_mcp_stdio_e2e.py --targets source --minimum-total-calls 100`
+  - `uv run pytest -vxs tests/ci`
+  - `./scripts/test.sh`
+  - `./scripts/lint.sh`
+  - `uv run pyright`
+- Every improvement loop must name the primary metric, baseline, breakthrough target, guardrails,
+  held-out tasks or stressors, and keep/discard rule.
+- Never game the benchmark: do not weaken tests or evals, overfit one site, inflate context or
+  tokens without measuring, or count "click succeeded" as task success.
+- Prefer minimal-context retrieval, stable refs, `since_hash`, focused state reads, deterministic
+  extraction, and explicit browser or network evidence over broad reads, custom JS, or
+  screenshot-only proof.
+- When a skill update changes a shipped `SKILL.md`, sync the existing platform copies in the same
+  change.
+
 ## Consolidation Decisions
 
 - `breakthrough-researcher` and `autoresearch` were combined into `breakthrough-autoresearch`

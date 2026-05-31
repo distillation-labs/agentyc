@@ -12,6 +12,16 @@ from agentyc.mcp.action_runtime_actions import (
 	_type_text,
 	_upload_file,
 )
+from agentyc.mcp.action_runtime_emulation import (
+	_emulate_media,
+	_grant_permissions,
+	_set_extra_headers,
+	_set_geolocation,
+	_set_locale,
+	_set_timezone,
+	_set_user_agent,
+)
+from agentyc.mcp.action_runtime_forms import _fill_form
 from agentyc.mcp.action_runtime_misc import (
 	_evaluate,
 	_find_elements,
@@ -25,7 +35,9 @@ from agentyc.mcp.action_runtime_misc import (
 	_search_page,
 	_select_option,
 	_wait,
+	_wait_for_download,
 	_wait_for_element,
+	_wait_for_url,
 )
 from agentyc.mcp.action_runtime_state import (
 	_cache_state_payload,
@@ -43,6 +55,7 @@ from agentyc.mcp.action_runtime_support import (
 	_resolve_upload_available_file_paths,
 	_validate_actionable_element,
 )
+from agentyc.mcp.action_runtime_targeting import _interactive_elements_for_targeting, _resolve_target_by_label
 
 __all__ = [
 	'_cache_state_payload',
@@ -50,13 +63,17 @@ __all__ = [
 	'_click',
 	'_ensure_extract_runtime',
 	'_evaluate',
+	'_emulate_media',
 	'_extract_content',
+	'_fill_form',
 	'_find_elements',
 	'_format_action_error',
 	'_get_browser_state',
 	'_get_dropdown_options',
+	'_grant_permissions',
 	'_go_back',
 	'_go_forward',
+	'_interactive_elements_for_targeting',
 	'_inject_extraction_metadata',
 	'_mark_browser_state_cache_clean',
 	'_mark_browser_state_cache_dirty',
@@ -67,15 +84,23 @@ __all__ = [
 	'_refresh_selector_map',
 	'_resolve_element_index',
 	'_resolve_live_element',
+	'_resolve_target_by_label',
 	'_resolve_upload_available_file_paths',
 	'_run_tool_action',
 	'_save_as_pdf',
 	'_scroll',
 	'_search_page',
 	'_select_option',
+	'_set_extra_headers',
+	'_set_geolocation',
+	'_set_locale',
+	'_set_timezone',
+	'_set_user_agent',
 	'_type_text',
 	'_upload_file',
 	'_validate_actionable_element',
 	'_wait',
+	'_wait_for_download',
 	'_wait_for_element',
+	'_wait_for_url',
 ]

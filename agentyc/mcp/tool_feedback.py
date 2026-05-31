@@ -56,13 +56,45 @@ def _tool_phase_message(self, tool_name: str, arguments: dict[str, Any]) -> str:
 	if tool_name == 'browser_click':
 		if arguments.get('new_tab'):
 			return 'Opening link in new tab'
+		if arguments.get('wait_for_download'):
+			return 'Clicking and waiting for download'
+		if arguments.get('wait_for_tab'):
+			return 'Clicking and waiting for new tab'
+		if arguments.get('wait_for_url_substring') or arguments.get('wait_for_url_regex'):
+			return 'Clicking and waiting for URL change'
+		if arguments.get('wait_for_request'):
+			return 'Clicking and waiting for request'
+		if arguments.get('wait_for_response'):
+			return 'Clicking and waiting for response'
 		return 'Clicking page element'
 	if tool_name == 'browser_set_intent':
 		return 'Updating live intent'
 	if tool_name == 'browser_type':
 		return 'Typing into focused field'
+	if tool_name == 'browser_fill_form':
+		return 'Filling form fields'
+	if tool_name == 'browser_grant_permissions':
+		return 'Granting browser permissions'
+	if tool_name == 'browser_set_user_agent':
+		return 'Setting browser user agent'
+	if tool_name == 'browser_set_timezone':
+		return 'Setting browser timezone'
+	if tool_name == 'browser_set_locale':
+		return 'Setting browser locale'
+	if tool_name == 'browser_emulate_media':
+		return 'Emulating browser media preferences'
+	if tool_name == 'browser_set_extra_headers':
+		return 'Setting extra request headers'
+	if tool_name == 'browser_set_geolocation':
+		return 'Setting browser geolocation'
+	if tool_name == 'browser_wait_for_download':
+		return 'Waiting for download to complete'
+	if tool_name == 'browser_wait_for_tab':
+		return 'Waiting for new tab to appear'
 	if tool_name == 'browser_wait_for_element':
 		return 'Waiting for page element to change'
+	if tool_name == 'browser_wait_for_url':
+		return 'Waiting for page URL to change'
 	if tool_name == 'browser_wait_for_network_idle':
 		return 'Waiting for network to go idle'
 	if tool_name == 'browser_screenshot':

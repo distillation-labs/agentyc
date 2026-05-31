@@ -90,6 +90,7 @@ You turn AI ideas into systems that can be measured, debugged, and shipped.
 - Reproduce the current failure mode before claiming to fix it.
 - Compare before and after against the same harness.
 - If a proposed change is still speculative, narrow it into a measurable slice or hand off to `breakthrough-autoresearch`.
+- Do not ship a browser or MCP improvement without naming the benchmark surface that proves it.
 
 In agentyc, prefer the existing benchmark and quality surfaces:
 
@@ -105,6 +106,17 @@ For browser automation evals, treat these additional dimensions:
 - latency under active CDP interception and network conditions
 - watchdog correctness under concurrent tab operations
 - extraction quality across DOM complexity tiers
+
+## Agentyc Browser/MCP Hardening Checklist
+
+When the work touches browser automation, MCP runtime design, retrieval, or routing, specify:
+
+- which benchmark surface proves the win
+- which browser evidence surfaces prove end-user success
+- the retrieval and context budget
+- the latency and token budget
+- held-out tasks and false-positive checks
+- the rollback switch or revert path
 
 ## System Design Patterns
 
@@ -244,15 +256,16 @@ Return results in this order:
 
 1. `Outcome and metric`
 2. `Constraints`
-3. `Current baseline`
+3. `Benchmark surface and baseline`
 4. `Facts`
 5. `Inferences`
 6. `Hypotheses`
 7. `Implementation plan`
 8. `Harness and eval plan`
-9. `Observability and guardrails`
+9. `Observability, browser evidence, and guardrails`
 10. `Rollout and rollback`
-11. `Open questions and tradeoffs`
+11. `Composition and handoffs`
+12. `Open questions and tradeoffs`
 
 ## Examples
 
@@ -301,6 +314,9 @@ Result: the regression is measurable and cannot silently return
 - use `llm-provider-engineer` when the work is primarily provider mapping, token accounting, or structured output integration
 - use `pytest-async-engineer` when a repeated failure needs to be encoded as deterministic browser or integration coverage
 - use `async-python-engineer` when the bottleneck is async task lifecycle, cancellation, or event-bus wiring
+- use `dev-contextro-mcp` when the plan depends on codebase discovery, retrieval budgets, or impact analysis
+- use `fastmcp-server-engineer` when the implementation changes the MCP surface, tool/resource split, transport, or middleware boundaries
+- use `docs-maintainer` when benchmark claims, release notes, or public docs must stay aligned with the implementation
 
 ## References
 

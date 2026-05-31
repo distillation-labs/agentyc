@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-import json
+import time
 from typing import Any, cast
 
+from agentyc.mcp.action_runtime_click_waits import (
+	_finalize_click_wait_result,
+)
+from agentyc.mcp.action_runtime_helpers import _inject_extraction_metadata, _new_tab_postcondition_satisfied
+from agentyc.mcp.action_runtime_targeting import _resolve_target_by_label
 from agentyc.mcp.navigation_runtime import _element_triggers_form_navigation
 
 
@@ -42,43 +47,6 @@ async def _run_tool_action(
 		available_file_paths=available_file_paths,
 		file_system=self.file_system,
 	)
-
-
-def _inject_extraction_metadata(self, extracted_content: str, metadata: dict[str, Any] | None) -> str:
-	if not metadata:
-		return extracted_content
-	visible_metadata = {
-		'route': metadata.get('route') or metadata.get('strategy'),
-		'llm_used': bool(metadata.get('llm_used', False)),
-		'is_partial': bool(metadata.get('is_partial', False)),
-		'structured_extraction': bool(metadata.get('structured_extraction', False)),
-		'deterministic_extraction': bool(metadata.get('deterministic_extraction', False)),
-	}
-	if metadata.get('next_start_char') is not None:
-		visible_metadata['next_start_char'] = metadata.get('next_start_char')
-	return f'{extracted_content}\n<extraction_metadata>\n{json.dumps(visible_metadata, sort_keys=True)}\n</extraction_metadata>'
-
-
-def _new_tab_postcondition_satisfied(self, *, before_tabs: list[Any], before_focus_target_id: str | None) -> bool:
-	if not self.browser_session:
-		return False
-
-	from agentyc._utils_urls import is_new_tab_page
-
-	current_target_id = self.browser_session.agent_focus_target_id
-	if current_target_id is None:
-		return False
-
-	before_target_ids = {tab.target_id for tab in before_tabs}
-	if current_target_id not in before_target_ids:
-		return True
-	if before_focus_target_id is not None and current_target_id != before_focus_target_id:
-		return True
-	if before_focus_target_id is None:
-		return False
-
-	before_focus_tab = next((tab for tab in before_tabs if tab.target_id == before_focus_target_id), None)
-	return before_focus_tab is not None and is_new_tab_page(before_focus_tab.url)
 
 
 async def _navigate(self, url: str, new_tab: bool = False) -> str:
@@ -123,25 +91,107 @@ async def _click(
 	self,
 	ref: str | None = None,
 	index: int | None = None,
+	label: str | None = None,
 	coordinate_x: int | None = None,
 	coordinate_y: int | None = None,
 	new_tab: bool = False,
+	wait_for_download: bool = False,
+	wait_for_tab: bool = False,
+	wait_for_url_substring: str | None = None,
+	wait_for_url_regex: str | None = None,
+	wait_for_request: dict[str, object] | None = None,
+	wait_for_response: dict[str, object] | None = None,
+	expected_download_name: str | None = None,
+	download_timeout_seconds: float = 10.0,
+	expected_tab_url_substring: str | None = None,
+	tab_timeout_seconds: float = 10.0,
+	url_timeout_seconds: float = 10.0,
 ) -> str:
 	"""Click an element by index or at viewport coordinates."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
+	url_wait_requested = bool(wait_for_url_substring or wait_for_url_regex)
+	request_wait_requested = wait_for_request is not None
+	response_wait_requested = wait_for_response is not None
+	if wait_for_download and new_tab:
+		return 'Error [invalid_argument]: browser_click cannot wait for a download while opening a new tab'
+	if wait_for_download and wait_for_tab:
+		return 'Error [invalid_argument]: browser_click cannot wait for a download and a new tab at the same time'
+	if wait_for_download and url_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a download and a URL change at the same time'
+	if wait_for_download and request_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a download and a request at the same time'
+	if wait_for_download and response_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a download and a response at the same time'
+	if wait_for_tab and new_tab:
+		return 'Error [invalid_argument]: browser_click cannot use wait_for_tab together with new_tab'
+	if wait_for_tab and url_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a new tab and a URL change at the same time'
+	if wait_for_tab and request_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a new tab and a request at the same time'
+	if wait_for_tab and response_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a new tab and a response at the same time'
+	if url_wait_requested and new_tab:
+		return 'Error [invalid_argument]: browser_click cannot use URL waiting together with new_tab'
+	if url_wait_requested and request_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a URL change and a request at the same time'
+	if url_wait_requested and response_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a URL change and a response at the same time'
+	if request_wait_requested and new_tab:
+		return 'Error [invalid_argument]: browser_click cannot use request waiting together with new_tab'
+	if request_wait_requested and response_wait_requested:
+		return 'Error [invalid_argument]: browser_click cannot wait for a request and a response at the same time'
+	if wait_for_url_substring and wait_for_url_regex:
+		return 'Error [invalid_argument]: browser_click accepts only one of wait_for_url_substring or wait_for_url_regex'
 
 	self._update_session_activity(self.browser_session.id)
 	self._mark_browser_state_cache_dirty()
+	network_wait_started_at: float | None = None
+	if request_wait_requested or response_wait_requested:
+		if not self._cdp_events_registered:
+			try:
+				await self._register_cdp_event_listeners()
+			except Exception as exc:
+				return self._format_action_error(str(exc), default_code='action_failed')
+		network_wait_started_at = time.time()
 
 	if coordinate_x is not None and coordinate_y is not None:
+		before_tabs = await self.browser_session.get_tabs() if wait_for_tab else []
 		action_result = await self._run_tool_action('click', {'coordinate_x': coordinate_x, 'coordinate_y': coordinate_y})
 		if action_result.error:
 			return self._format_action_error(action_result.error, default_code='click_failed')
-		return f'Clicked at coordinates ({coordinate_x}, {coordinate_y})'
+		base_msg = f'Clicked at coordinates ({coordinate_x}, {coordinate_y})'
+		return await _finalize_click_wait_result(
+			self,
+			base_msg=base_msg,
+			wait_for_download=wait_for_download,
+			expected_download_name=expected_download_name,
+			download_timeout_seconds=download_timeout_seconds,
+			wait_for_tab=wait_for_tab,
+			before_target_ids={tab.target_id for tab in before_tabs},
+			expected_tab_url_substring=expected_tab_url_substring,
+			tab_timeout_seconds=tab_timeout_seconds,
+			wait_for_url_substring=wait_for_url_substring,
+			wait_for_url_regex=wait_for_url_regex,
+			url_timeout_seconds=url_timeout_seconds,
+			wait_for_request=wait_for_request,
+			wait_for_response=wait_for_response,
+			network_wait_started_at=network_wait_started_at,
+		)
 
+	resolved_label = label.strip() if isinstance(label, str) else None
+	if ref is None and index is None and resolved_label:
+		try:
+			ref, index, resolved_label = await _resolve_target_by_label(
+				self,
+				label=resolved_label,
+				operation='click',
+				error_prefix='Element',
+			)
+		except ValueError as error:
+			return f'Error [invalid_argument]: {error}'
 	if ref is None and index is None:
-		return 'Error: Provide either ref, index, or both coordinate_x and coordinate_y'
+		return 'Error: Provide ref, index, label, or both coordinate_x and coordinate_y'
 
 	element, resolved_index, drift_recovered = await self._resolve_live_element(index=index, ref=ref)
 	if not element:
@@ -179,19 +229,21 @@ async def _click(
 					f'Click on element {ref or resolved_index} did not open a new tab.',
 					default_code='postcondition_failed',
 				)
-			return f'Clicked element {ref or resolved_index} and opened in new tab {full_url[:20]}...'
+			target_label = resolved_label or str(ref or resolved_index)
+			return f'Clicked element {target_label} and opened in new tab {full_url[:20]}...'
 		return self._format_action_error(
-			f'Element {ref or resolved_index} does not support opening in a new tab because it has no href target.',
+			f'Element {resolved_label or ref or resolved_index} does not support opening in a new tab because it has no href target.',
 			default_code='invalid_target',
 		)
 
 	pre_click_url = await self.browser_session.get_current_page_url()
+	before_tabs = await self.browser_session.get_tabs() if wait_for_tab else []
 	action_result = await self._run_tool_action('click', {'index': resolved_index})
 	if action_result.error:
 		return self._format_action_error(action_result.error, default_code='click_failed')
 	after_url = await self.browser_session.get_current_page_url()
-	label = ref or resolved_index
-	base_msg = f'Clicked element {label}'
+	target_label = resolved_label or str(ref or resolved_index)
+	base_msg = f'Clicked element {target_label}'
 	if drift_recovered:
 		base_msg += ' (recovered after DOM drift)'
 	wait_for_submit_navigation = _element_triggers_form_navigation(element)
@@ -213,15 +265,43 @@ async def _click(
 
 		after_title = await self.browser_session.get_current_page_title()
 		title_hint = f' | "{truncate_text(after_title, 60)}"' if after_title and after_title != 'Unknown page title' else ''
-		return f'{base_msg} → {after_url}{title_hint}'
-	return base_msg
+		base_msg = f'{base_msg} → {after_url}{title_hint}'
+	return await _finalize_click_wait_result(
+		self,
+		base_msg=base_msg,
+		wait_for_download=wait_for_download,
+		expected_download_name=expected_download_name,
+		download_timeout_seconds=download_timeout_seconds,
+		wait_for_tab=wait_for_tab,
+		before_target_ids={tab.target_id for tab in before_tabs},
+		expected_tab_url_substring=expected_tab_url_substring,
+		tab_timeout_seconds=tab_timeout_seconds,
+		wait_for_url_substring=wait_for_url_substring,
+		wait_for_url_regex=wait_for_url_regex,
+		url_timeout_seconds=url_timeout_seconds,
+		wait_for_request=wait_for_request,
+		wait_for_response=wait_for_response,
+		network_wait_started_at=network_wait_started_at,
+	)
 
 
-async def _type_text(self, text: str, index: int | None = None, ref: str | None = None) -> str:
+async def _type_text(self, text: str, index: int | None = None, ref: str | None = None, label: str | None = None) -> str:
 	"""Type text into an element."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
 	self._mark_browser_state_cache_dirty()
+
+	resolved_label = label.strip() if isinstance(label, str) else None
+	if ref is None and index is None and resolved_label:
+		try:
+			ref, index, resolved_label = await _resolve_target_by_label(
+				self,
+				label=resolved_label,
+				operation='text',
+				error_prefix='Type target',
+			)
+		except ValueError as error:
+			return f'Error [invalid_argument]: {error}'
 
 	element, resolved_index, drift_recovered = await self._resolve_live_element(index=index, ref=ref)
 	if not element:
@@ -294,14 +374,31 @@ async def _type_text(self, text: str, index: int | None = None, ref: str | None 
 	return prefix
 
 
-async def _upload_file(self, path: str, index: int | None = None, ref: str | None = None) -> str:
+async def _upload_file(
+	self,
+	path: str,
+	index: int | None = None,
+	ref: str | None = None,
+	label: str | None = None,
+) -> str:
 	"""Upload a file to a file input or nearby upload control."""
 	if not self.browser_session:
 		return 'Error: No browser session active'
 	if not self.tools:
 		return 'Error: Tools not initialized'
+	resolved_label = label.strip() if isinstance(label, str) else None
+	if index is None and ref is None and resolved_label:
+		try:
+			ref, index, resolved_label = await _resolve_target_by_label(
+				self,
+				label=resolved_label,
+				operation='path',
+				error_prefix='Upload target',
+			)
+		except ValueError as error:
+			return f'Error [invalid_argument]: {error}'
 	if index is None and ref is None:
-		return 'Error: Provide either ref or index'
+		return 'Error: Provide either ref, index, or label'
 
 	self._update_session_activity(self.browser_session.id)
 	self._mark_browser_state_cache_dirty()
@@ -322,7 +419,7 @@ async def _upload_file(self, path: str, index: int | None = None, ref: str | Non
 	if action_result.error:
 		return self._format_action_error(action_result.error, default_code='upload_failed')
 
-	message = action_result.extracted_content or f'Uploaded file {path} to element {ref or resolved_index}'
+	message = action_result.extracted_content or f'Uploaded file {path} to element {resolved_label or ref or resolved_index}'
 	if drift_recovered:
 		message = f'{message} (recovered after DOM drift)'
 	return message

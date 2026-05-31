@@ -30,6 +30,18 @@ across callers.
 - Keep watchdog logic inside a `BaseWatchdog` subclass with typed `LISTENS_TO` and `EMITS` class vars.
 - Publish browser lifecycle changes through the `EventBus`; never call watchdogs directly.
 
+## Measurement And Guardrails
+
+- Name the benchmark surface before low-level changes. Default to the runtime release gate plus the
+  focused browser tests that exercise the affected path.
+- Measure the user-visible effect of CDP changes: action success, session init or attach latency,
+  frame or target correctness, watchdog false positives, extraction recall, and interception
+  correctness.
+- Preserve inspectability: state, HTML, screenshots, console, and network traces should still
+  explain failures after the change.
+- Prefer reusable session-scoped helpers and typed events over site-specific branches or one-off
+  protocol hacks.
+
 ## CDP-Use API Patterns
 
 ### Sending commands
@@ -238,7 +250,8 @@ Return:
 3. event registration approach
 4. watchdog placement (if side-effecting)
 5. error handling and timeout considerations
-6. rejected alternatives
+6. benchmark impact and verification plan
+7. rejected alternatives
 
 ## Anti-Patterns
 
@@ -249,6 +262,15 @@ Return:
 - accessing the active target URL directly instead of listening to navigation events
 - bypassing `DomService` for DOM queries to avoid "unnecessary" abstraction
 - adding more unrelated responsibilities to a giant `BrowserSession` or watchdog file instead of splitting by target plumbing, event handling, overlay logic, or domain helpers
+- adding site-specific CDP branches to BrowserSession or watchdog infrastructure instead of fixing the reusable abstraction
+- hiding protocol failures behind broad retry loops or suppressed exceptions
+- broadening a target-scoped command to root scope just to "make it work"
+
+## Composition Rule
+
+- use `breakthrough-autoresearch` when the low-level change is still hypothesis-heavy or benchmark-driven
+- use `agentyc-browser-automation` when you need end-to-end browser-task evidence around the CDP change
+- use `async-python-engineer` when the failure mode is really task lifecycle, concurrency, or cancellation
 
 ## References
 

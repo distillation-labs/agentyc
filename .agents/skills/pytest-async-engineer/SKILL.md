@@ -170,6 +170,18 @@ def mock_llm_click():
 - For URL assertions, use `browser_session.active_target.url`.
 - Avoid `time.sleep` — use `asyncio.wait_for` with a short timeout.
 
+## Benchmark Harness Rules
+
+- When a change claims browser improvement, encode the exact user-visible success metric and
+  failure mode into a test or eval.
+- Cover the representative page structures and stressors that match the claim: forms, modals,
+  SPAs, iframes, downloads, network throttling, auth, collaboration, or session reuse.
+- Use `HTTPServer(threaded=True)` for shared-browser or concurrent-request fixtures so serialized
+  serving does not create false timeouts.
+- For noisy metrics, rerun and compare medians; below-noise deltas are not wins.
+- False-positive protection matters: assert the final browser outcome, not just that an
+  intermediate event fired.
+
 ## Examples
 
 Example 1: Button click test
@@ -201,7 +213,8 @@ Return:
 2. fixture setup (httpserver routes, browser_session, LLM mock if needed)
 3. test body (navigate, action, assertion)
 4. teardown notes
-5. CI inclusion criteria
+5. benchmark / eval coverage
+6. CI inclusion criteria
 
 ## Anti-Patterns
 
@@ -212,6 +225,14 @@ Return:
 - storing browser state across test functions
 - asserting on internal private attributes instead of public API outputs
 - letting one test module accumulate unrelated scenarios when fixtures or helper modules would keep the tests smaller and easier to debug
+- asserting on a click or request without checking the final user-visible state
+- masking flakiness with long sleeps or weaker assertions
+
+## Composition Rule
+
+- use `breakthrough-autoresearch` when the test strategy depends on ranking unknown fixes or proving a benchmark bottleneck
+- use `cdp-browser-engineer` when the failure mode lives in target/session/watchdog/interception plumbing
+- use `agentyc-browser-automation` when you need the end-to-end browser workflow before encoding it as coverage
 
 ## References
 

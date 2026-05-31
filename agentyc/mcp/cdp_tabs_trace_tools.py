@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from typing import Any
 
@@ -55,6 +56,101 @@ async def _switch_tab(self, tab_id: str) -> str:
 			pass
 	current_url = await self.browser_session.get_current_page_url()
 	return f'Switched to tab {tab_id}: {current_url}'
+
+
+def _tab_matches_wait_filters(tab: Any, *, url_substring: str | None = None, url_regex: str | None = None) -> bool:
+	url = str(getattr(tab, 'url', '') or '')
+	if url_substring and url_substring not in url:
+		return False
+	if url_regex and re.search(url_regex, url) is None:
+		return False
+	return True
+
+
+async def _wait_for_tab_since(
+	self,
+	*,
+	before_target_ids: set[str],
+	url_substring: str | None = None,
+	url_regex: str | None = None,
+	timeout_seconds: float = 10.0,
+	switch_focus: bool = True,
+) -> str:
+	from agentyc.mcp.state import serialize_tab_info
+	from agentyc.mcp.state_tabs import _serialize_tab_id
+
+	timeout = min(max(float(timeout_seconds), 0.5), 60.0)
+	loop = asyncio.get_running_loop()
+	deadline = loop.time() + timeout
+	last_seen_new_tab = None
+	if url_regex:
+		try:
+			re.compile(url_regex)
+		except re.error as exc:
+			return f'Error [invalid_argument]: Invalid url_regex: {exc}'
+
+	while loop.time() < deadline:
+		current_tabs = await self.browser_session.get_tabs()
+		for tab in current_tabs:
+			if tab.target_id in before_target_ids:
+				continue
+			last_seen_new_tab = tab
+			if not _tab_matches_wait_filters(tab, url_substring=url_substring, url_regex=url_regex):
+				continue
+			self._mark_browser_state_cache_dirty()
+			if switch_focus and self.browser_session.agent_focus_target_id != tab.target_id:
+				tab_id = _serialize_tab_id(tab.target_id)
+				if tab_id is None:
+					return self._format_action_error(
+						'New tab opened without a serializable tab id.', default_code='postcondition_failed'
+					)
+				switch_result = await self._switch_tab(tab_id)
+				if switch_result.startswith('Error'):
+					return switch_result
+				current_tabs = await self.browser_session.get_tabs()
+				for refreshed_tab in current_tabs:
+					if refreshed_tab.target_id == tab.target_id:
+						tab = refreshed_tab
+						break
+			return json.dumps(serialize_tab_info(tab))
+		await asyncio.sleep(0.05)
+
+	if last_seen_new_tab is not None and url_substring:
+		return self._format_action_error(
+			f'New tab opened but URL did not match substring "{url_substring}" within {timeout:.1f}s',
+			default_code='timeout',
+		)
+	if last_seen_new_tab is not None and url_regex:
+		return self._format_action_error(
+			f'New tab opened but URL did not match regex "{url_regex}" within {timeout:.1f}s',
+			default_code='timeout',
+		)
+	return self._format_action_error(f'No new tab opened within {timeout:.1f}s', default_code='timeout')
+
+
+async def _wait_for_tab(
+	self,
+	url_substring: str | None = None,
+	url_regex: str | None = None,
+	timeout_seconds: float = 10.0,
+	switch_focus: bool = True,
+) -> str:
+	"""Wait until a new tab appears and optionally switch focus to it."""
+	if not self.browser_session:
+		return 'Error: No browser session active'
+
+	self._update_session_activity(self.browser_session.id)
+	self._mark_browser_state_cache_dirty()
+	before_tabs = await self.browser_session.get_tabs()
+	before_target_ids = {tab.target_id for tab in before_tabs}
+	return await _wait_for_tab_since(
+		self,
+		before_target_ids=before_target_ids,
+		url_substring=url_substring,
+		url_regex=url_regex,
+		timeout_seconds=timeout_seconds,
+		switch_focus=switch_focus,
+	)
 
 
 async def _new_tab(self, url: str = 'about:blank') -> str:
