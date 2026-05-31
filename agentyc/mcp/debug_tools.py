@@ -282,6 +282,7 @@ async def _wait_for_request(
 	resource_type: str | None = None,
 	timeout_seconds: float = 10.0,
 	include_headers: bool = False,
+	_baseline_started_at: float | None = None,
 ) -> str:
 	"""Wait for a network request matching URL and optional filters."""
 	if not self.browser_session:
@@ -301,7 +302,7 @@ async def _wait_for_request(
 	timeout = _coerce_timeout(timeout_seconds)
 	method_filter = method.upper() if method else None
 	resource_type_filter = resource_type.lower() if resource_type else None
-	baseline_started_at = time.time()
+	baseline_started_at = _baseline_started_at if _baseline_started_at is not None else time.time()
 	deadline = time.monotonic() + timeout
 	while time.monotonic() < deadline:
 		pending_matches = [
@@ -354,6 +355,7 @@ async def _wait_for_response(
 	status: int | None = None,
 	timeout_seconds: float = 10.0,
 	include_headers: bool = False,
+	_baseline_started_at: float | None = None,
 ) -> str:
 	"""Wait for a network response matching URL and optional filters."""
 	if not self.browser_session:
@@ -373,7 +375,7 @@ async def _wait_for_response(
 	timeout = _coerce_timeout(timeout_seconds)
 	method_filter = method.upper() if method else None
 	resource_type_filter = resource_type.lower() if resource_type else None
-	baseline_started_at = time.time()
+	baseline_started_at = _baseline_started_at if _baseline_started_at is not None else time.time()
 	deadline = time.monotonic() + timeout
 	while time.monotonic() < deadline:
 		pending_matches = [
