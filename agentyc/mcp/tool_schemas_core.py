@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import mcp.types as types
 
+from agentyc.mcp.tool_schemas_interaction import EARLY_INTERACTION_TOOL_SCHEMAS, LATE_INTERACTION_TOOL_SCHEMAS
+
 CORE_TOOL_SCHEMAS: list[types.Tool] = [
 	types.Tool(
 		name='browser_navigate',
@@ -17,57 +19,7 @@ CORE_TOOL_SCHEMAS: list[types.Tool] = [
 			'required': ['url'],
 		},
 	),
-	types.Tool(
-		name='browser_set_intent',
-		description='Update the live HUD with a short human-readable intent summary. No raw chain-of-thought.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'intent': {'type': 'string', 'description': 'Short intent label, ideally a concise gerund phrase.'},
-			},
-			'required': ['intent'],
-		},
-	),
-	types.Tool(
-		name='browser_click',
-		description='Click an element (ref preferred) or viewport coordinates.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'ref': {'type': 'string', 'description': 'Stable ref from browser_get_state (e.g. "e123")'},
-				'index': {'type': 'integer', 'description': 'Backend node id (legacy). Use ref instead.'},
-				'coordinate_x': {'type': 'integer', 'description': 'Viewport X — use with coordinate_y'},
-				'coordinate_y': {'type': 'integer', 'description': 'Viewport Y — use with coordinate_x'},
-				'new_tab': {'type': 'boolean', 'default': False},
-			},
-		},
-	),
-	types.Tool(
-		name='browser_type',
-		description='Type text into a field. Clears existing text first. Use text="" to clear only.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'ref': {'type': 'string', 'description': 'Stable ref (e.g. "e123")'},
-				'index': {'type': 'integer'},
-				'text': {'type': 'string', 'description': 'Text to type. Empty string clears the field.'},
-			},
-			'required': ['text'],
-		},
-	),
-	types.Tool(
-		name='browser_upload_file',
-		description='Upload a local file to a file input element.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'ref': {'type': 'string', 'description': 'Stable ref (e.g. "e123")'},
-				'index': {'type': 'integer'},
-				'path': {'type': 'string', 'description': 'Absolute local file path to upload.'},
-			},
-			'required': ['path'],
-		},
-	),
+	*EARLY_INTERACTION_TOOL_SCHEMAS,
 	types.Tool(
 		name='browser_get_state',
 		description='Get the current page state: URL, title, interactive elements with stable refs. Pass since_hash to skip unchanged re-reads.',
@@ -241,173 +193,7 @@ CORE_TOOL_SCHEMAS: list[types.Tool] = [
 		description='Close all browser sessions.',
 		inputSchema={'type': 'object', 'properties': {}},
 	),
-	types.Tool(
-		name='browser_scroll',
-		description='Scroll the page or an element. pages=10 reaches the bottom fast.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'direction': {'type': 'string', 'enum': ['up', 'down'], 'default': 'down'},
-				'pages': {'type': 'number', 'description': '0.5=half, 1=full (default), 10=to end', 'default': 1.0},
-				'ref': {'type': 'string', 'description': 'Scroll within element ref. Omit for page scroll.'},
-				'index': {'type': 'integer'},
-			},
-		},
-	),
-	types.Tool(
-		name='browser_go_back', description='Go back in browser history.', inputSchema={'type': 'object', 'properties': {}}
-	),
-	types.Tool(
-		name='browser_go_forward',
-		description='Go forward in browser history.',
-		inputSchema={'type': 'object', 'properties': {}},
-	),
-	types.Tool(name='browser_refresh', description='Reload the current page.', inputSchema={'type': 'object', 'properties': {}}),
-	types.Tool(
-		name='browser_press_key',
-		description='Send a key or shortcut (e.g. "Enter", "Tab", "Control+a", "Meta+r").',
-		inputSchema={
-			'type': 'object',
-			'properties': {'key': {'type': 'string', 'description': 'Key name or chord'}},
-			'required': ['key'],
-		},
-	),
-	types.Tool(
-		name='browser_wait',
-		description='Wait N seconds. Prefer since_hash polling for dynamic content.',
-		inputSchema={
-			'type': 'object',
-			'properties': {'seconds': {'type': 'number', 'default': 2}},
-		},
-	),
-	types.Tool(
-		name='browser_evaluate',
-		description='Execute JavaScript in the page and return the result. Wrap in IIFE: (function(){ ... })()',
-		inputSchema={
-			'type': 'object',
-			'properties': {'code': {'type': 'string'}},
-			'required': ['code'],
-		},
-	),
-	types.Tool(
-		name='browser_select_option',
-		description='Select an option in a <select> dropdown by its visible label.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'ref': {'type': 'string', 'description': 'Stable ref of the <select>'},
-				'index': {'type': 'integer'},
-				'text': {'type': 'string', 'description': 'Exact visible option text'},
-			},
-			'required': ['text'],
-		},
-	),
-	types.Tool(
-		name='browser_get_dropdown_options',
-		description='List all options in a <select> or ARIA combobox.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'ref': {'type': 'string'},
-				'index': {'type': 'integer'},
-			},
-		},
-	),
-	types.Tool(
-		name='browser_find_elements',
-		description='Find elements by CSS selector. Returns tag, text, and requested attributes.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'selector': {'type': 'string', 'description': 'CSS selector (e.g. "table tr", "input[type=email]")'},
-				'attributes': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Attributes to extract.'},
-				'max_results': {'type': 'integer', 'default': 50},
-			},
-			'required': ['selector'],
-		},
-	),
-	types.Tool(
-		name='browser_wait_for_element',
-		description='Poll until an element (by text or ref) appears or disappears. Use for async content and action confirmation.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'text': {'type': 'string', 'description': 'Text the element must contain (case-insensitive).'},
-				'ref': {'type': 'string', 'description': 'Element ref to wait for.'},
-				'appear': {'type': 'boolean', 'description': 'true=wait to appear, false=wait to disappear', 'default': True},
-				'timeout_seconds': {'type': 'number', 'default': 10},
-			},
-		},
-	),
-	types.Tool(
-		name='browser_search_page',
-		description='Search for text or regex on the page with surrounding context (like Ctrl+F).',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'pattern': {'type': 'string'},
-				'regex': {'type': 'boolean', 'default': False},
-				'max_results': {'type': 'integer', 'default': 25},
-			},
-			'required': ['pattern'],
-		},
-	),
-	types.Tool(
-		name='browser_get_focused_element',
-		description='Return the element with keyboard focus. Useful after Tab or click to confirm which field is active.',
-		inputSchema={'type': 'object', 'properties': {}},
-	),
-	types.Tool(
-		name='browser_hover',
-		description='Hover over an element to trigger :hover states and mouseover handlers. Use before browser_get_state to reveal dropdown menus.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'ref': {'type': 'string'},
-				'index': {'type': 'integer'},
-				'coordinate_x': {'type': 'integer'},
-				'coordinate_y': {'type': 'integer'},
-			},
-		},
-	),
-	types.Tool(
-		name='browser_double_click',
-		description='Double-click an element or coordinates. Use for text selection, file open, or double-click handlers.',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'ref': {'type': 'string'},
-				'index': {'type': 'integer'},
-				'coordinate_x': {'type': 'integer'},
-				'coordinate_y': {'type': 'integer'},
-			},
-		},
-	),
-	types.Tool(
-		name='browser_drag_to',
-		description='Drag from source to target (kanban, sortable lists, sliders, file drop zones).',
-		inputSchema={
-			'type': 'object',
-			'properties': {
-				'source_ref': {'type': 'string'},
-				'target_ref': {'type': 'string'},
-				'source_x': {'type': 'integer'},
-				'source_y': {'type': 'integer'},
-				'target_x': {'type': 'integer'},
-				'target_y': {'type': 'integer'},
-				'steps': {'type': 'integer', 'default': 10},
-			},
-		},
-	),
-	types.Tool(
-		name='browser_scroll_to_text',
-		description='Scroll until the given text is visible in the viewport.',
-		inputSchema={
-			'type': 'object',
-			'properties': {'text': {'type': 'string'}},
-			'required': ['text'],
-		},
-	),
+	*LATE_INTERACTION_TOOL_SCHEMAS,
 	types.Tool(
 		name='browser_save_state',
 		description='Save cookies, localStorage, and sessionStorage to a file for auth persistence across sessions.',
