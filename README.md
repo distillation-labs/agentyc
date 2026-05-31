@@ -2,7 +2,7 @@
 
 <p align="center">
   <em>Deterministic, MCP-first browser automation for coding agents.</em><br>
-  No API key needed. No LLM fallback. Just CDP, stdio MCP, live HUD surfaces, and 66 tools.
+  No API key needed. No LLM fallback. Just CDP, stdio MCP, live HUD surfaces, and 77 tools.
 </p>
 
 <p align="center">
@@ -45,12 +45,12 @@ agentyc                          # Starts the MCP server — that's it
 | **Parallel agent model** | Shared browser profile + per-runtime owned tabs | N/A | N/A |
 | **Dependencies** | ~20 core (lean) | ~40+ (heavy) | Playwright + SDK |
 | **Install size** | Small (Python package) | Very large | Moderate |
-| **Tool count** | 66 | ~15-20 actions | ~20 tools |
+| **Tool count** | 77 | ~15-20 actions | ~20 tools |
 | **Console/Network capture** | CDP-native built-in | Limited | Limited |
 | **Deterministic extraction** | Tables, lists, forms, links, images, key-value | None (LLM only) | None |
 | **Headless by default** | No (visible), flag for headless | Configurable | Configurable |
 
-**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 66 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
+**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 77 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
 
 ---
 
@@ -111,9 +111,9 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 
 ---
 
-## MCP Surface: 66 Tools
+## MCP Surface: 77 Tools
 
-### Navigation & State (14 tools)
+### Navigation & State (15 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -122,6 +122,7 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 | `browser_go_forward` | History forward |
 | `browser_refresh` | Reload current page |
 | `browser_wait` | Wait N seconds (bounded) |
+| `browser_wait_for_url` | Wait until the current page URL matches a substring or regex |
 | `browser_wait_for_network_idle` | Wait until AJAX/XHR settles |
 | `browser_wait_for_request` | Wait for a matching request by URL, method, or resource type |
 | `browser_wait_for_response` | Wait for a matching response or network failure by URL, method, or status |
@@ -132,22 +133,23 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 | `browser_save_as_pdf` | Save current page as PDF via CDP `Page.printToPDF` |
 | `browser_set_viewport` | Set browser viewport width, height, and scale |
 
-### Interaction (13 tools)
+### Interaction (14 tools)
 
 | Tool | What it does |
 |------|-------------|
-| `browser_click` | Click by ref, index, or viewport coordinates |
+| `browser_click` | Click by ref, index, label, or viewport coordinates; can also wait for a download, new tab, URL change, matching request, or matching response |
 | `browser_right_click` | Context menu |
 | `browser_double_click` | Double-click (text selection, file open) |
 | `browser_hover` | Trigger hover states and menus |
 | `browser_drag_to` | Drag source to target (kanban, sliders, drop zones) |
-| `browser_type` | Clear and type into a field |
+| `browser_type` | Clear and type into a field by ref, index, or label |
+| `browser_fill_form` | Batch text, selects, uploads, and checkbox/radio toggles in one round trip |
 | `browser_press_key` | Send keys / shortcuts (Enter, Tab, Meta+r) |
 | `browser_scroll` | Scroll page or element |
 | `browser_scroll_to_text` | Bring text into viewport |
-| `browser_select_option` | Pick a `<select>` option by label |
-| `browser_get_dropdown_options` | Inspect all options in a combobox |
-| `browser_upload_file` | Upload a file to a file input |
+| `browser_select_option` | Pick a `<select>` option by visible text, targeting by ref, index, or label |
+| `browser_get_dropdown_options` | Inspect all options in a combobox by ref, index, or label |
+| `browser_upload_file` | Upload a file to a file input by ref, index, or label |
 | `browser_handle_dialog` | Accept/dismiss JS dialogs (alert, confirm, prompt) |
 
 ### Inspection & Extraction (7 tools)
@@ -172,7 +174,7 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 | `browser_set_storage` | Set one `localStorage` / `sessionStorage` key for the current origin |
 | `browser_clear_storage` | Clear one key, one storage area, or all storage for the current origin |
 
-### Tabs & Session State (9 tools)
+### Tabs & Session State (17 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -180,13 +182,21 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 | `browser_list_tabs` | List open tabs, grouped by owning agent/runtime by default |
 | `browser_switch_tab` | Switch by 4-char `tab_id` |
 | `browser_close_tab` | Close by `tab_id` |
+| `browser_wait_for_tab` | Wait for a new tab to appear and optionally switch focus to it |
 | `browser_get_cookies` | Read cookies for current domain |
 | `browser_set_cookies` | Inject cookies (auth persistence) |
 | `browser_clear_cookies` | Delete one or all cookies |
+| `browser_grant_permissions` | Grant browser permissions such as geolocation for the current or explicit origin |
+| `browser_set_geolocation` | Override browser geolocation for the current session |
+| `browser_set_extra_headers` | Set or clear extra HTTP headers for the focused page target |
+| `browser_set_user_agent` | Override the user agent, platform, and optional Accept-Language for the focused page target |
+| `browser_set_timezone` | Override the timezone for the focused page target |
+| `browser_set_locale` | Override the locale for the focused page target |
+| `browser_emulate_media` | Emulate CSS media type and key user-preference media features |
 | `browser_save_state` | Persist cookies + storage to disk |
 | `browser_load_state` | Restore cookies + storage from disk |
 
-### Observability, Network Control & Lifecycle (18 tools)
+### Observability, Network Control & Lifecycle (19 tools)
 
 | Tool | What it does |
 |------|-------------|
@@ -202,6 +212,7 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 | `browser_export_debug_bundle` | Bundle state, console, network, trace summary, optional HTML, and screenshot in one round-trip |
 | `browser_set_intent` | Publish a short operator-facing intent label into the live HUD surfaces |
 | `browser_get_downloads` | List downloaded files from the session |
+| `browser_wait_for_download` | Wait for a download to finish and return the matched file metadata |
 | `browser_clear_logs` | Clear console and/or network log buffers |
 | `browser_start_trace` | Start CDP performance trace |
 | `browser_stop_trace` | Stop trace and return collected events as JSON |
@@ -219,7 +230,7 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 |------|----------|
 | `auto` | Full state on small pages, compact ranked on dense pages |
 | `full` | Complete interactive-element payload |
-| `min` | Compact ranked subset (30 elements, viewport-proximity scored) |
+| `min` | Compact ranked subset (default 9-element budget with adaptive trimming and viewport-aware scoring) |
 | `focus` | Single-element payload |
 
 - **Stable refs**: Elements get `e123` refs derived from backend node IDs — survive re-renders.
