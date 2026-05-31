@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **11 new public browser tools** — the MCP surface now includes `browser_wait_for_url`, `browser_wait_for_download`, `browser_wait_for_tab`, `browser_fill_form`, `browser_grant_permissions`, `browser_set_geolocation`, `browser_set_extra_headers`, `browser_set_user_agent`, `browser_set_timezone`, `browser_set_locale`, and `browser_emulate_media`.
+
+### Changed
+
+- **Public tool surface expanded from 66 to 77** — interaction tools now support richer label-based targeting where appropriate, `browser_click` can fuse post-click waits for downloads/tabs/URL/request/response, and the README/docs inventory now reflects the shipped browser surface.
+- **Compact auto-state is sharper on dense pages** — the default compact path now uses a 9-element budget with adaptive trimming, navigation-link preservation, and secondary-control de-prioritization, improving the current runtime benchmark to `avg_auto_precision=0.906`, `avg_auto_payload_reduction_pct=16.7`, and `avg_auto_estimated_tokens=506.6` while keeping recall and action metrics at `1.0`.
+- **StdIO benchmark baseline refreshed** — the current source-tree benchmark remains `success=1.0`, `accuracy=1.0`, `precision=1.0`, with fixture-summary `avg_auto_precision=0.853`, `avg_auto_payload_reduction_pct=10.4`, `avg_auto_estimated_tokens=532.0`, `avg_auto_recall=1.0`, and overall latency `avg_ms=51.5`, `p95_ms=164.5`.
+
+### Tests
+
+- **New browser and runtime coverage** — the suite now covers tab waits, URL waits, click-triggered request/response waits, download waits, batch form fill, label-based dropdown/type/upload targeting, environment emulation controls, and the latest compact-state precision heuristics in `tests/ci/browser/*` and `tests/ci/test_mcp_runtime_optimizations.py`.
+
 ## [0.3.2] - 2026-05-29
 
 ### Added
