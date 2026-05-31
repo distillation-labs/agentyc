@@ -45,13 +45,25 @@ target is met or the bottleneck is disproven.
 
 ## Agentyc Defaults
 
-Primary benchmark surfaces:
+Canonical benchmark surfaces:
+
+- `uv run python scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate --fail-on-regression`
+  — release-gate runtime metrics such as import time, session init, payload reduction, recall,
+  action success, and collaboration correctness
+- `uv run python scripts/benchmark_mcp_stdio_e2e.py --targets source --minimum-total-calls 100`
+  — end-to-end stdio success, accuracy, precision, and average/p95 latency
+
+Guardrail surfaces:
 
 - `./scripts/test.sh` — full test suite
 - `uv run pytest -vxs tests/ci` — CI tests with real browser behavior
 - `./scripts/lint.sh` — linting and formatting checks
 - `uv run pyright` — type checking
 - `uv run ruff check --fix` — code quality
+
+When the question is "browser excellence," name the exact metric you are moving: task completion,
+false-positive completion rate, average or p95 tool latency, token/context footprint, recall,
+extraction quality, interruption recovery, or long-horizon reliability.
 
 ## Method
 
@@ -66,6 +78,18 @@ State:
 - the current baseline or the plan to obtain it
 
 If the question is too broad, narrow it before touching code.
+
+### Required Experiment Card
+
+Before editing, write down:
+
+- benchmark surface and exact command
+- current baseline and noise floor
+- breakthrough target and keep/discard threshold
+- guardrails that must stay green
+- one main variable under test
+- held-out tasks or failure clusters
+- rollback or revert path
 
 ### 2. Ground In Repository Reality
 
@@ -151,6 +175,12 @@ Valid stop conditions:
 - Never weaken tests or fixtures to make an experiment look better.
 - Always keep a clean revert path.
 - Do not treat a single promising run as enough on noisy tasks.
+- Never hide regressions behind bigger prompts, extra retries, larger models, or broader context
+  windows without measuring the cost.
+- Never count a partial step like a click, request, or DOM mutation as success if the user-visible
+  task is still incomplete.
+- Never ship a single-site or one-benchmark hack as a general win without proving transfer on
+  held-out tasks.
 
 ## Examples
 
@@ -183,22 +213,27 @@ Result: adopt, adapt, or avoid guidance tied to measurable tests
 Return results in this order:
 
 1. `Research question and target`
-2. `Current baseline`
-3. `Facts`
-4. `Inferences`
-5. `Hypotheses`
-6. `Ranked backlog`
-7. `Current experiment`
-8. `Measured result`
-9. `Keep or discard decision`
-10. `Next experiment or stop reason`
-11. `Recommendation`
+2. `Benchmark surface`
+3. `Current baseline`
+4. `Facts`
+5. `Inferences`
+6. `Hypotheses`
+7. `Ranked backlog`
+8. `Experiment card`
+9. `Current experiment`
+10. `Measured result`
+11. `Keep or discard decision`
+12. `Next experiment or stop reason`
+13. `Recommendation`
 
 ## Composition Rule
 
 - use `applied-ai-engineer` once the winning direction needs productionization, observability, and rollout safety
 - use `cdp-browser-engineer` when the hypothesis is specifically about CDP, BrowserSession, target plumbing, or watchdog logic
 - use `pytest-async-engineer` when a discovered failure mode should be locked into deterministic coverage
+- use `dev-contextro-mcp` when the bottleneck starts with codebase discovery, impact tracing, or retrieval-budget work
+- use `agentyc-browser-automation` when the experiment needs end-to-end browser-task evidence rather than subsystem analysis
+- use `llm-provider-engineer` when the hypothesis is about model routing, token accounting, or structured output stability
 
 ## References
 
