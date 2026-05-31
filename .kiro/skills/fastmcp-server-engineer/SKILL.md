@@ -101,6 +101,18 @@ output shape intentional.
 - Shape outputs for both humans and clients; do not dump raw internal objects.
 - For resources, remember that dicts are not automatically valid return values.
 
+## Agent-Optimized MCP Contract
+
+- Optimize tool, resource, and prompt boundaries for low round-trip latency, low input tokens, and
+  low hallucination risk.
+- Prefer compact, typed result shapes that give agents enough to act without dumping raw internals.
+- Use background tasks only when work is truly long-running; foreground tools should fail fast and
+  surface progress or errors explicitly.
+- Keep static context in resources, active work in tools, and reusable user workflows in prompts so
+  agents do not pay to re-request the same context.
+- When the server fronts browser automation, preserve stable refs, inspectability, and deterministic
+  failure surfaces.
+
 ## Context And Middleware
 
 - Use `CurrentContext()` / `Context` for logging, progress, resource access, prompt access,
@@ -196,7 +208,8 @@ Return:
 3. output/result shape
 4. context and middleware needs
 5. runtime/deployment settings
-6. rejected alternatives
+6. latency/token impact
+7. rejected alternatives
 
 ## Anti-Patterns
 
@@ -208,6 +221,14 @@ Return:
 - choosing HTTP for a local subprocess by default
 - ignoring list-changed notifications for dynamic surfaces
 - growing monolithic server or tool files instead of extracting reusable adapters, validators, and output-shaping helpers
+- returning large unfiltered payloads that force agents to spend tokens just to find the answer
+- backgrounding cheap calls that should return synchronously
+
+## Composition Rule
+
+- use `agentyc-browser-automation` when the MCP surface depends on concrete browser workflows
+- use `llm-provider-engineer` when tool or prompt behavior depends on model routing or structured output
+- use `breakthrough-autoresearch` when surface changes are still benchmark exploration rather than known implementation work
 
 ## References
 
