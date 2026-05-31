@@ -2052,7 +2052,7 @@ class TestMCPStateProtocolAndExtraction:
 		assert 'API Reference' in texts
 		assert texts.count('Read more') <= 3
 
-	def test_auto_mode_compacts_medium_pages_without_dropping_elements(self):
+	def test_auto_mode_respects_explicit_medium_page_cap_without_dropping_elements(self):
 		selector_map = {
 			1: _StubElement(1, 'Project name', tag='input', attrs={'placeholder': 'Project name', 'type': 'text'}),
 			2: _StubElement(2, 'Repository URL', tag='input', attrs={'placeholder': 'Repository URL', 'type': 'url'}),
@@ -2066,12 +2066,126 @@ class TestMCPStateProtocolAndExtraction:
 			10: _StubElement(10, 'Open docs', tag='a', attrs={'href': '/docs'}, role='link'),
 		}
 
-		payload = build_browser_state_payload(_stub_state(selector_map=selector_map), mode='auto')
+		payload = build_browser_state_payload(
+			_stub_state(selector_map=selector_map),
+			mode='auto',
+			max_min_elements=10,
+		)
 
 		assert payload['effective_mode'] == 'min'
 		assert len(payload['interactive_elements']) == 10
 		assert 'interactive_elements_truncated' not in payload
 		assert all('index' not in element for element in payload['interactive_elements'])
+
+	def test_auto_mode_default_cap_truncates_medium_dense_pages(self):
+		selector_map = {
+			1: _StubElement(1, 'Search products', tag='input', attrs={'placeholder': 'Search products', 'type': 'search'}),
+			2: _StubElement(2, 'Sort by', tag='select', attrs={'aria-label': 'Sort by'}),
+			3: _StubElement(3, 'Open cart', tag='button', role='button'),
+			4: _StubElement(4, 'API Reference', tag='a', attrs={'href': '/docs/api'}, role='link'),
+		}
+		for index in range(5, 16):
+			selector_map[index] = _StubElement(index, 'Read more', tag='a', attrs={'href': f'/items/{index}'}, role='link')
+
+		payload = build_browser_state_payload(_stub_state(selector_map=selector_map), mode='auto')
+
+		texts = [element.get('text') for element in payload['interactive_elements']]
+		assert payload['effective_mode'] == 'min'
+		assert payload['interactive_elements_truncated'] is True
+		assert len(payload['interactive_elements']) < len(selector_map)
+		assert len(payload['interactive_elements']) <= 9
+		assert 'Search products' in texts
+		assert 'Sort by' in texts
+		assert 'Open cart' in texts
+		assert 'API Reference' in texts
+		assert texts.count('Read more') <= 3
+
+	def test_auto_mode_default_cap_keeps_help_link_when_trimming_form_tail(self):
+		selector_map = {
+			1: _StubElement(1, 'Project name', tag='input', attrs={'placeholder': 'Project name', 'type': 'text'}),
+			2: _StubElement(2, 'Repository URL', tag='input', attrs={'placeholder': 'Repository URL', 'type': 'url'}),
+			3: _StubElement(3, 'Environment', tag='select', attrs={'aria-label': 'Environment'}),
+			4: _StubElement(4, 'Enable canary rollout', tag='input', attrs={'type': 'checkbox'}, role='checkbox'),
+			5: _StubElement(5, 'Enable canary rollout', tag='label', role='LabelText'),
+			6: _StubElement(6, 'Require manual approval', tag='input', attrs={'type': 'checkbox'}, role='checkbox'),
+			7: _StubElement(7, 'Require manual approval', tag='label', role='LabelText'),
+			8: _StubElement(8, 'Deploy preview', tag='button', role='button'),
+			9: _StubElement(9, 'Schedule production deploy', tag='button', role='button'),
+			10: _StubElement(10, 'Open validation help', tag='a', attrs={'href': '/help'}, role='link'),
+		}
+
+		payload = build_browser_state_payload(_stub_state(selector_map=selector_map), mode='auto')
+
+		texts = [element.get('text') for element in payload['interactive_elements']]
+		assert payload['effective_mode'] == 'min'
+		assert payload['interactive_elements_truncated'] is True
+		assert len(payload['interactive_elements']) <= 5
+		assert 'Project name' in texts
+		assert 'Repository URL' in texts
+		assert 'Environment' in texts
+		assert 'Deploy preview' in texts
+		assert 'Open validation help' in texts
+		assert 'Enable canary rollout' not in texts
+		assert 'Require manual approval' not in texts
+		assert 'Schedule production deploy' not in texts
+
+	def test_auto_mode_default_cap_drops_accessibility_follow_up_actions(self):
+		selector_map = {
+			1: _StubElement(1, 'Run accessibility scan', tag='button', role='button'),
+			2: _StubElement(2, 'Export accessibility report', tag='button', role='button'),
+			3: _StubElement(3, 'Accessibility guide', tag='a', attrs={'href': '/guide'}, role='link'),
+			4: _StubElement(4, 'Severity filter', tag='select', attrs={'aria-label': 'Severity filter'}),
+			5: _StubElement(5, 'Only show keyboard blockers', tag='input', attrs={'type': 'checkbox'}, role='checkbox'),
+			6: _StubElement(6, 'Only show keyboard blockers', tag='label', role='LabelText'),
+			7: _StubElement(7, 'Include color contrast issues', tag='input', attrs={'type': 'checkbox'}, role='checkbox'),
+			8: _StubElement(8, 'Include color contrast issues', tag='label', role='LabelText'),
+			9: _StubElement(9, 'Focus first failing element', tag='button', role='button'),
+			10: _StubElement(10, 'Open issue template', tag='button', role='button'),
+		}
+
+		payload = build_browser_state_payload(_stub_state(selector_map=selector_map), mode='auto')
+
+		texts = [element.get('text') for element in payload['interactive_elements']]
+		assert payload['effective_mode'] == 'min'
+		assert payload['interactive_elements_truncated'] is True
+		assert len(payload['interactive_elements']) <= 4
+		assert 'Run accessibility scan' in texts
+		assert 'Severity filter' in texts
+		assert 'Only show keyboard blockers' in texts
+		assert 'Export accessibility report' not in texts
+		assert 'Focus first failing element' not in texts
+		assert 'Open issue template' not in texts
+
+	def test_auto_mode_default_cap_keeps_support_link_in_dense_catalog(self):
+		selector_map = {
+			1: _StubElement(1, 'Search products', tag='input', attrs={'placeholder': 'Search products', 'type': 'search'}),
+			2: _StubElement(2, 'Sort by', tag='select', attrs={'aria-label': 'Sort by'}),
+			3: _StubElement(3, 'Discounted', tag='label', role='LabelText'),
+			4: _StubElement(4, 'Only show discounted items', tag='input', attrs={'type': 'checkbox'}, role='checkbox'),
+			5: _StubElement(5, 'Open cart', tag='button', role='button'),
+			6: _StubElement(6, 'Open support', tag='a', attrs={'href': '/support'}, role='link'),
+			7: _StubElement(7, 'Add Featured Product 1 to cart', tag='button', role='button'),
+			8: _StubElement(8, 'Featured Product 1', tag='a', attrs={'href': '/products/1'}, role='link'),
+			9: _StubElement(9, 'View details', tag='a', attrs={'href': '/products/1/details'}, role='link'),
+			10: _StubElement(10, 'Add Featured Product 2 to cart', tag='button', role='button'),
+			11: _StubElement(11, 'Featured Product 2', tag='a', attrs={'href': '/products/2'}, role='link'),
+			12: _StubElement(12, 'View details', tag='a', attrs={'href': '/products/2/details'}, role='link'),
+			13: _StubElement(13, 'Add Featured Product 3 to cart', tag='button', role='button'),
+		}
+
+		payload = build_browser_state_payload(_stub_state(selector_map=selector_map), mode='auto')
+
+		texts = [element.get('text') for element in payload['interactive_elements']]
+		assert payload['effective_mode'] == 'min'
+		assert payload['interactive_elements_truncated'] is True
+		assert len(payload['interactive_elements']) == 5
+		assert 'Search products' in texts
+		assert 'Sort by' in texts
+		assert 'Open cart' in texts
+		assert 'Open support' in texts
+		assert 'Add Featured Product 1 to cart' not in texts
+		assert 'Add Featured Product 2 to cart' not in texts
+		assert 'Add Featured Product 3 to cart' not in texts
 
 	def test_table_projection_supports_issue_queue_schema_aliases(self):
 		payload = build_table_structured_payload(
