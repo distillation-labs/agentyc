@@ -55,6 +55,16 @@ Pure Rust binary. No Python. No interpreter. Cold start <25ms.
 
 Index persists. Do not re-index before every call. Use `status()` to check readiness.
 
+## Retrieval Budget Rules
+
+- Start with `overview()` / `architecture()` for unfamiliar repos or `search()` / `find_symbol()`
+  for targeted questions; do not combine both blindly.
+- Default to the smallest query and result set that can name the next file, symbol, or decision.
+- Prefer `explain`, `impact`, callers or callees, and document symbols before reading full files.
+- Stop retrieving once you can answer or hand off; context you never use is regression.
+- For browser-runtime work, hand off to `agentyc-browser-automation` or `cdp-browser-engineer`
+  once the code surface is narrowed.
+
 ## Routing
 
 | Task | Use | Notes |
@@ -167,6 +177,9 @@ This is the default orientation path. Do not start with broad file reads.
 - If the response includes `sandbox_ref`, call `retrieve(ref_id="sx_...")` before claiming you have the full result set.
 - Keep default search limits unless the user explicitly wants exhaustive output.
 - If the user mentions a tight context budget, pass `context_budget` to `search()`.
+- Return the minimal context slice that enables the next action.
+- When chasing latency or token improvements, say why this retrieval path is cheaper than the
+  broader alternatives you skipped.
 
 ## Anti-Patterns
 
@@ -182,7 +195,10 @@ This is the default orientation path. Do not start with broad file reads.
 ## Escalation Rule
 
 Prefer Contextro first for discovery. Once it has narrowed the scope to a specific file
-or symbol, direct file reads are acceptable if the full implementation body is needed.
+or symbol, direct file reads are acceptable if the full implementation body is needed. When the
+question shifts from code discovery to live browser behavior or benchmark execution, hand off to
+`agentyc-browser-automation`, `cdp-browser-engineer`, or `breakthrough-autoresearch` instead of
+continuing to pull code blindly.
 
 ## Examples
 
