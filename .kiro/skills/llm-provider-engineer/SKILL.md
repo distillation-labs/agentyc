@@ -35,6 +35,18 @@ and don't invent ones that don't exist on that provider.
 - Run `uv run pyright` after adding a new provider — the Protocol check is type-enforced.
 - Keep files between 300-500 lines max. Files above 500 lines must be split up — this is a strict rule, no exceptions. Split into focused modules like `chat.py`, serializers/parsers, views, and shared helpers.
 
+## Routing And Budget Discipline
+
+- State the user-visible metric you are improving: latency, structured-output success, token cost,
+  browser-task reliability, or provider coverage.
+- Measure end-to-end browser workflow impact when routing changes affect automation, not just
+  provider microbenchmarks.
+- Use the smallest capable model for each task class and record why.
+- Keep stable response shapes and token accounting exact; unsupported fields should be `None`, not
+  guessed.
+- Treat larger prompts, bigger models, or extra retries as costs that must be measured, not free
+  wins.
+
 ## BaseChatModel Protocol
 
 ```python
@@ -165,8 +177,9 @@ Return:
 2. ChatInvokeCompletion field mapping for the provider
 3. structured output strategy
 4. token field mapping
-5. provider-specific edge cases
-6. test plan
+5. routing / latency-token impact
+6. provider-specific edge cases
+7. test plan
 
 ## Anti-Patterns
 
@@ -177,6 +190,14 @@ Return:
 - hardcoding provider names as strings instead of using the `provider` property
 - adding provider-specific fields to `ChatInvokeCompletion` (use `thinking` / existing fields or don't add)
 - letting one provider module absorb chat invocation, response mapping, serializers, view models, and retries without splitting reusable helpers
+- switching to a slower or larger model without measuring end-to-end impact
+- inventing token or usage fields when the provider does not expose them
+
+## Composition Rule
+
+- use `breakthrough-autoresearch` when provider or routing work is still hypothesis-heavy
+- use `applied-ai-engineer` when the winning routing path needs harnesses, observability, rollout, or rollback
+- use `agentyc-browser-automation` when provider quality must be judged on real browser tasks rather than isolated completions
 
 ## References
 
