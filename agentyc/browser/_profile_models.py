@@ -28,7 +28,6 @@ from ._profile_types import (
 	ViewportSize,
 )
 from ._profile_validation import optimize_large_domain_list
-from .session_models import BrowserWindowBounds
 
 
 class BrowserContextArgs(BaseModel):
@@ -46,13 +45,6 @@ class BrowserContextArgs(BaseModel):
 	viewport: ViewportSize | None = Field(default=None)
 	no_viewport: bool | None = None
 	device_scale_factor: NonNegativeFloat | None = None
-	record_har_content: RecordHarContent = RecordHarContent.EMBED
-	record_har_mode: RecordHarMode = RecordHarMode.FULL
-	record_har_path: str | Path | None = Field(default=None, validation_alias=AliasChoices('save_har_path', 'record_har_path'))
-	record_video_dir: str | Path | None = Field(
-		default=None,
-		validation_alias=AliasChoices('save_recording_path', 'record_video_dir'),
-	)
 
 
 class BrowserConnectArgs(BaseModel):
@@ -198,23 +190,6 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	)
 
 	cdp_url: str | None = Field(default=None, description='CDP URL for connecting to existing browser instance')
-	runtime_label: str | None = Field(default=None, description='Human-readable collaboration label for this runtime.')
-	runtime_role: str = Field(default='primary', description='Collaboration role for this runtime.')
-	parent_runtime_id: str | None = Field(
-		default=None, description='Optional parent runtime identifier for nested collaboration flows.'
-	)
-	shared_browser_mode: Literal['tab', 'window'] | None = Field(
-		default=None,
-		description='When attaching to a shared browser, create a background tab or a separate window for this runtime.',
-	)
-	shared_browser_window_bounds: BrowserWindowBounds | None = Field(
-		default=None,
-		description='Optional bounds to apply when the shared browser creates a separate runtime window.',
-	)
-	shared_browser_focus_policy: Literal['preserve', 'activate'] = Field(
-		default='preserve',
-		description='Whether internal attach/new-page flows preserve the human-focused surface or activate the runtime target.',
-	)
 	is_local: bool = Field(default=False, description='Whether this is a local browser instance')
 	disable_security: bool = Field(default=False, description='Disable browser security features.')
 	deterministic_rendering: bool = Field(default=False, description='Enable deterministic rendering flags.')
@@ -238,18 +213,6 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	enable_default_extensions: bool = Field(
 		default_factory=_get_enable_default_extensions_default,
 		description="Enable automation-optimized extensions: ad blocking (uBlock Origin), cookie handling (I still don't care about cookies), and URL cleaning (ClearURLs). All extensions work automatically without manual intervention. Extensions are automatically downloaded and loaded when enabled. Can be disabled via AGENTYC_DISABLE_EXTENSIONS=1 environment variable.",
-	)
-	captcha_solver: bool = Field(
-		default=True,
-		description='Enable the captcha solver watchdog that listens for captcha events from the browser proxy. Automatically pauses agent steps while a CAPTCHA is being solved when those events are emitted. Harmless when disabled or when events are not emitted.',
-	)
-	demo_mode: bool = Field(
-		default=False,
-		description='Enable demo mode side panel that streams runtime logs directly inside the browser window (requires headless=False).',
-	)
-	hud_overlay: bool = Field(
-		default=False,
-		description='Enable a small transparent desktop HUD window that mirrors sanitized runtime activity outside the browser.',
 	)
 	cookie_whitelist_domains: list[str] = Field(
 		default_factory=lambda: ['nature.com', 'qatarairways.com'],
@@ -289,15 +252,6 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	interaction_highlight_duration: float = Field(default=0.3, description='Duration in seconds to show interaction highlights.')
 	auto_download_pdfs: bool = Field(default=True, description='Automatically download PDFs when navigating to PDF viewer pages.')
 	profile_directory: str = 'Default'
-	record_video_dir: Path | None = Field(
-		default=None,
-		description='Directory to save video recordings. If set, a video of the session will be recorded.',
-		validation_alias=AliasChoices('save_recording_path', 'record_video_dir'),
-	)
-	record_video_size: ViewportSize | None = Field(
-		default=None, description='Video frame size. If not set, it will use the viewport size.'
-	)
-	record_video_framerate: int = Field(default=30, description='The framerate to use for the video recording.')
 
 	def __repr__(self) -> str:
 		short_dir = _log_pretty_path(self.user_data_dir) if self.user_data_dir else '<incognito>'
