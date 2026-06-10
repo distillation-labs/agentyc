@@ -38,19 +38,6 @@ if TYPE_CHECKING:
 	from agentyc.browser import BrowserProfile, BrowserSession
 	from agentyc.browser import BrowserSession as Browser
 	from agentyc.dom.service import DomService
-	from agentyc.llm import models
-	from agentyc.llm.agentyc.chat import ChatAgentyc
-	from agentyc.llm.anthropic.chat import ChatAnthropic
-	from agentyc.llm.azure.chat import ChatAzureOpenAI
-	from agentyc.llm.copilot.chat import ChatGitHubCopilot
-	from agentyc.llm.google.chat import ChatGoogle
-	from agentyc.llm.groq.chat import ChatGroq
-	from agentyc.llm.litellm.chat import ChatLiteLLM
-	from agentyc.llm.mistral.chat import ChatMistral
-	from agentyc.llm.oci_raw.chat import ChatOCIRaw
-	from agentyc.llm.ollama.chat import ChatOllama
-	from agentyc.llm.openai.chat import ChatOpenAI
-	from agentyc.llm.vercel.chat import ChatVercel
 	from agentyc.mcp.server import AgentycServer
 	from agentyc.tools.service import Controller, Tools
 
@@ -64,20 +51,7 @@ _LAZY_IMPORTS = {
 	'Tools': ('agentyc.tools.service', 'Tools'),
 	'Controller': ('agentyc.tools.service', 'Controller'),
 	'DomService': ('agentyc.dom.service', 'DomService'),
-	'ChatOpenAI': ('agentyc.llm.openai.chat', 'ChatOpenAI'),
-	'ChatGoogle': ('agentyc.llm.google.chat', 'ChatGoogle'),
-	'ChatAnthropic': ('agentyc.llm.anthropic.chat', 'ChatAnthropic'),
-	'ChatAgentyc': ('agentyc.llm.agentyc.chat', 'ChatAgentyc'),
-	'ChatGitHubCopilot': ('agentyc.llm.copilot.chat', 'ChatGitHubCopilot'),
-	'ChatGroq': ('agentyc.llm.groq.chat', 'ChatGroq'),
-	'ChatLiteLLM': ('agentyc.llm.litellm.chat', 'ChatLiteLLM'),
-	'ChatMistral': ('agentyc.llm.mistral.chat', 'ChatMistral'),
-	'ChatAzureOpenAI': ('agentyc.llm.azure.chat', 'ChatAzureOpenAI'),
-	'ChatOCIRaw': ('agentyc.llm.oci_raw.chat', 'ChatOCIRaw'),
-	'ChatOllama': ('agentyc.llm.ollama.chat', 'ChatOllama'),
-	'ChatVercel': ('agentyc.llm.vercel.chat', 'ChatVercel'),
 	'AgentycServer': ('agentyc.mcp.server', 'AgentycServer'),
-	'models': ('agentyc.llm.models', None),
 }
 
 
@@ -107,18 +81,5 @@ __all__ = [
 	'Controller',
 	'DomService',
 	'AgentycServer',
-	'ChatOpenAI',
-	'ChatGoogle',
-	'ChatAnthropic',
-	'ChatAgentyc',
-	'ChatGitHubCopilot',
-	'ChatGroq',
-	'ChatLiteLLM',
-	'ChatMistral',
-	'ChatAzureOpenAI',
-	'ChatOCIRaw',
-	'ChatOllama',
-	'ChatVercel',
 	'Tools',
-	'models',
 ]
