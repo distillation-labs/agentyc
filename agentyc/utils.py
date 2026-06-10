@@ -13,7 +13,7 @@ from agentyc._utils_runtime import (
 	merge_dicts,
 )
 from agentyc._utils_signals import SignalHandler
-from agentyc._utils_strings import collect_sensitive_data_values, redact_sensitive_string, sanitize_surrogates
+from agentyc._utils_strings import redact_sensitive_string, sanitize_surrogates
 from agentyc._utils_urls import (
 	_log_pretty_path,
 	_log_pretty_url,
@@ -31,7 +31,6 @@ __all__ = [
 	'_log_pretty_url',
 	'check_env_variables',
 	'check_latest_agentyc_version',
-	'collect_sensitive_data_values',
 	'create_task_with_error_handling',
 	'get_agentyc_version',
 	'get_git_info',
