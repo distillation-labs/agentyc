@@ -8,7 +8,6 @@ from agentyc.actions import ActionResult
 from agentyc.browser import BrowserSession
 from agentyc.dom.service import EnhancedDOMTreeNode
 from agentyc.filesystem.file_system import FileSystem
-from agentyc.llm.base import BaseChatModel
 from agentyc.tools.extraction.router import (
 	get_deterministic_extraction_strategy,
 	maybe_extract_deterministic_content,
@@ -28,7 +27,6 @@ def register_extraction_actions(tools: Any) -> None:
 	async def extract(
 		params: ExtractAction,
 		browser_session: BrowserSession,
-		page_extraction_llm: BaseChatModel | None = None,
 		file_system: FileSystem | None = None,
 		extraction_schema: dict | None = None,
 	):
