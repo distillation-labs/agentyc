@@ -15,16 +15,13 @@ async def attach_all_watchdogs(session: BrowserSession) -> None:
 		return
 
 	from agentyc.browser.watchdogs.aboutblank_watchdog import AboutBlankWatchdog
-	from agentyc.browser.watchdogs.captcha_watchdog import CaptchaWatchdog
 	from agentyc.browser.watchdogs.crash_watchdog import CrashWatchdog
 	from agentyc.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
 	from agentyc.browser.watchdogs.dom_watchdog import DOMWatchdog
 	from agentyc.browser.watchdogs.downloads_watchdog import DownloadsWatchdog
-	from agentyc.browser.watchdogs.har_recording_watchdog import HarRecordingWatchdog
 	from agentyc.browser.watchdogs.local_browser_watchdog import LocalBrowserWatchdog
 	from agentyc.browser.watchdogs.permissions_watchdog import PermissionsWatchdog
 	from agentyc.browser.watchdogs.popups_watchdog import PopupsWatchdog
-	from agentyc.browser.watchdogs.recording_watchdog import RecordingWatchdog
 	from agentyc.browser.watchdogs.screenshot_watchdog import ScreenshotWatchdog
 	from agentyc.browser.watchdogs.security_watchdog import SecurityWatchdog
 	from agentyc.browser.watchdogs.storage_state_watchdog import StorageStateWatchdog
@@ -51,9 +48,6 @@ async def attach_all_watchdogs(session: BrowserSession) -> None:
 			save_on_change=False,
 		)
 		session._storage_state_watchdog.attach_to_session()
-		session.logger.debug(
-			f'🍪 StorageStateWatchdog enabled (storage_state: {bool(session.browser_profile.storage_state)}, user_data_dir: {bool(session.browser_profile.user_data_dir)})'
-		)
 	else:
 		session.logger.debug('🍪 StorageStateWatchdog disabled (no storage_state or user_data_dir configured)')
 
@@ -88,20 +82,6 @@ async def attach_all_watchdogs(session: BrowserSession) -> None:
 	DOMWatchdog.model_rebuild()
 	session._dom_watchdog = DOMWatchdog(event_bus=session.event_bus, browser_session=session)
 	session._dom_watchdog.attach_to_session()
-
-	RecordingWatchdog.model_rebuild()
-	session._recording_watchdog = RecordingWatchdog(event_bus=session.event_bus, browser_session=session)
-	session._recording_watchdog.attach_to_session()
-
-	if session.browser_profile.record_har_path:
-		HarRecordingWatchdog.model_rebuild()
-		session._har_recording_watchdog = HarRecordingWatchdog(event_bus=session.event_bus, browser_session=session)
-		session._har_recording_watchdog.attach_to_session()
-
-	if session.browser_profile.captcha_solver:
-		CaptchaWatchdog.model_rebuild()
-		session._captcha_watchdog = CaptchaWatchdog(event_bus=session.event_bus, browser_session=session)
-		session._captcha_watchdog.attach_to_session()
 
 	session._watchdogs_attached = True
 
