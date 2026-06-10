@@ -65,7 +65,6 @@ except ImportError:
 	logger.error('MCP SDK not installed. Install with: pip install mcp')
 	sys.exit(1)
 
-
 class AgentycServer:
 	"""MCP Server for agentyc capabilities."""
 
@@ -130,15 +129,6 @@ class AgentycServer:
 		self,
 		session_timeout_minutes: int = 0,
 		cdp_url: str | None = None,
-		*,
-		hud_overlay: bool | None = None,
-		runtime_label: str | None = None,
-		runtime_role: str = 'primary',
-		parent_runtime_id: str | None = None,
-		shared_browser_mode: str = 'tab',
-		shared_browser_window_bounds: dict[str, Any] | None = None,
-		shared_browser_focus_policy: str = 'preserve',
-		reuse_local_browser: bool | None = None,
 	):
 		type(self)._bind_server_methods()
 
@@ -146,7 +136,6 @@ class AgentycServer:
 		_ensure_all_loggers_use_stderr()
 
 		from agentyc.config import load_agentyc_config
-		from agentyc.telemetry import ProductTelemetry
 
 		self.server = Server('agentyc')
 		self.config = load_agentyc_config()
@@ -154,21 +143,9 @@ class AgentycServer:
 		self.tools: Tools | None = None
 		self.file_system: FileSystem | None = None
 		self._file_system_base_dir: Path | None = None
-		self._telemetry = ProductTelemetry()
 		self._start_time = time.time()
 		self._cdp_url = cdp_url  # shared-browser CDP URL for parallel tab mode
 		self._explicit_cdp_url = cdp_url is not None
-		self._hud_overlay_enabled = bool(
-			self.config.get('browser_profile', {}).get('hud_overlay', False) if hud_overlay is None else hud_overlay
-		)
-		self._hud_overlay = None
-		self._runtime_label = runtime_label
-		self._runtime_role = runtime_role
-		self._parent_runtime_id = parent_runtime_id
-		self._shared_browser_mode = shared_browser_mode
-		self._shared_browser_window_bounds = shared_browser_window_bounds
-		self._shared_browser_focus_policy = shared_browser_focus_policy
-		self._reuse_local_browser = reuse_local_browser
 
 		# Session management
 		self.active_sessions: dict[str, dict[str, Any]] = {}  # session_id -> session info
@@ -194,15 +171,6 @@ class AgentycServer:
 
 		# MCP logging level — client uses logging/setLevel to control this
 		self._min_log_level: types.LoggingLevel = 'info'
-
-		if self._hud_overlay_enabled:
-			try:
-				from agentyc.browser.hud_overlay import HudOverlay
-
-				self._hud_overlay = HudOverlay()
-				self._hud_overlay.start()
-			except Exception:
-				self._hud_overlay = None
 
 		# Setup handlers
 		self._setup_handlers()
@@ -312,24 +280,9 @@ class AgentycServer:
 					is_error=True,
 				)
 				return types.CallToolResult(content=cast(list[types.ContentBlock], content), isError=True)
-			finally:
-				# Capture telemetry for tool calls
-				duration = time.time() - start_time
-				from agentyc.telemetry import MCPServerTelemetryEvent
-				from agentyc.utils import get_agentyc_version
-
-				self._telemetry.capture(
-					MCPServerTelemetryEvent(
-						version=get_agentyc_version(),
-						action='tool_call',
-						tool_name=name,
-						duration_seconds=duration,
-						error_message=error_msg,
-					)
-				)
 
 	async def run(self):
-		"""Run the MCP server."""
+		"""Run the MCP server over stdio."""
 		# Start the cleanup task
 		await self._start_cleanup_task()
 
@@ -358,6 +311,44 @@ class AgentycServer:
 		finally:
 			await self._shutdown()
 
+	async def run_http(self, host: str = '127.0.0.1', port: int = 8765) -> None:
+		"""Run the MCP server over Streamable HTTP so N clients share one process."""
+		import mcp.server.streamable_http_manager as shm
+		import uvicorn
+		from starlette.applications import Starlette
+		from starlette.routing import Mount
+
+		from agentyc.utils import get_agentyc_version
+
+		await self._start_cleanup_task()
+
+		event_store = None  # stateless; clients reconnect from scratch
+		session_manager = shm.StreamableHTTPSessionManager(
+			app=self.server,
+			event_store=event_store,
+			json_response=False,
+			stateless=True,
+		)
+
+		async def handle_streamable_http(scope, receive, send):
+			await session_manager.handle_request(scope, receive, send)
+
+		starlette_app = Starlette(
+			routes=[Mount('/mcp', app=handle_streamable_http)],
+		)
+
+		version = get_agentyc_version()
+		print(f'agentyc {version} HTTP/MCP listening on http://{host}:{port}/mcp', file=sys.stderr, flush=True)
+		print(f'Configure clients: "type": "streamable-http", "url": "http://{host}:{port}/mcp"', file=sys.stderr, flush=True)
+
+		config = uvicorn.Config(starlette_app, host=host, port=port, log_level='warning', loop='asyncio')
+		server_instance = uvicorn.Server(config)
+		try:
+			await session_manager.__aenter__()
+			await server_instance.serve()
+		finally:
+			await session_manager.__aexit__(None, None, None)
+			await self._shutdown()
 
 if __name__ == '__main__':
 	from agentyc.mcp.server_main import main
