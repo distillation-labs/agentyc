@@ -5,8 +5,6 @@ from typing import Any
 
 import mcp.types as types
 
-from agentyc.browser.hud_stream import HudEvent, HudEventDetails, HudEventKind, HudStream
-
 _LOG_LEVEL_RANK = {
 	'debug': 0,
 	'info': 1,
@@ -17,32 +15,6 @@ _LOG_LEVEL_RANK = {
 	'alert': 6,
 	'emergency': 7,
 }
-_HUD_CHATTY_TOOLS = {
-	'browser_find_elements',
-	'browser_get_attribute',
-	'browser_get_dropdown_options',
-	'browser_get_focused_element',
-	'browser_get_html',
-	'browser_get_state',
-	'browser_search_page',
-}
-_HUD_CHATTY_DURATION_MS = 2000.0
-_HUD_ARGUMENT_PREVIEW_LIMIT = 3
-_HUD_ARGUMENT_TEXT_LIMIT = 40
-_HUD_REDACTED_ARGUMENT_TOKENS = (
-	'auth',
-	'body',
-	'code',
-	'cookie',
-	'header',
-	'password',
-	'prompt',
-	'secret',
-	'script',
-	'text',
-	'token',
-	'value',
-)
 
 
 def _tool_phase_message(self, tool_name: str, arguments: dict[str, Any]) -> str:
@@ -73,30 +45,6 @@ def _tool_phase_message(self, tool_name: str, arguments: dict[str, Any]) -> str:
 		return 'Typing into focused field'
 	if tool_name == 'browser_fill_form':
 		return 'Filling form fields'
-	if tool_name == 'browser_grant_permissions':
-		return 'Granting browser permissions'
-	if tool_name == 'browser_set_user_agent':
-		return 'Setting browser user agent'
-	if tool_name == 'browser_set_timezone':
-		return 'Setting browser timezone'
-	if tool_name == 'browser_set_locale':
-		return 'Setting browser locale'
-	if tool_name == 'browser_emulate_media':
-		return 'Emulating browser media preferences'
-	if tool_name == 'browser_set_extra_headers':
-		return 'Setting extra request headers'
-	if tool_name == 'browser_set_geolocation':
-		return 'Setting browser geolocation'
-	if tool_name == 'browser_wait_for_download':
-		return 'Waiting for download to complete'
-	if tool_name == 'browser_wait_for_tab':
-		return 'Waiting for new tab to appear'
-	if tool_name == 'browser_wait_for_element':
-		return 'Waiting for page element to change'
-	if tool_name == 'browser_wait_for_url':
-		return 'Waiting for page URL to change'
-	if tool_name == 'browser_wait_for_network_idle':
-		return 'Waiting for network to go idle'
 	if tool_name == 'browser_screenshot':
 		return 'Capturing screenshot'
 	if tool_name == 'browser_extract_content':
@@ -125,7 +73,6 @@ async def _send_log_notification(
 	completed: bool = False,
 	error: str | None = None,
 ) -> None:
-	"""Send an MCP log message notification for a tool action."""
 	if not self._should_log(level):
 		return
 	try:
@@ -135,13 +82,8 @@ async def _send_log_notification(
 		elif completed and duration is not None:
 			ms = round(duration * 1000)
 			message = f'{message} — done ({ms}ms)'
-
 		ctx = self.server.request_context
-		await ctx.session.send_log_message(
-			level=level,
-			data=message,
-			logger='agentyc',
-		)
+		await ctx.session.send_log_message(level=level, data=message, logger='agentyc')
 	except Exception:
 		pass
 
@@ -162,41 +104,6 @@ def _extract_tool_error_message(content: list[types.TextContent | types.ImageCon
 		if isinstance(item, types.TextContent) and item.text:
 			return item.text
 	return None
-
-
-def _format_hud_argument_value(key: str, value: Any) -> str:
-	normalized_key = key.lower()
-	if any(token in normalized_key for token in _HUD_REDACTED_ARGUMENT_TOKENS):
-		return '<redacted>'
-	if isinstance(value, bool):
-		return 'true' if value else 'false'
-	if isinstance(value, int | float):
-		return str(value)
-	if isinstance(value, str):
-		normalized_value = ' '.join(value.split())
-		if len(normalized_value) > _HUD_ARGUMENT_TEXT_LIMIT:
-			return f'{normalized_value[: _HUD_ARGUMENT_TEXT_LIMIT - 3]}...'
-		return normalized_value or '""'
-	if isinstance(value, list):
-		return f'[{len(value)}]'
-	if isinstance(value, dict):
-		return f'{{{len(value)}}}'
-	return type(value).__name__
-
-
-def _summarize_tool_arguments(arguments: dict[str, Any]) -> str:
-	if not arguments:
-		return 'none'
-	parts = [
-		f'{key}={_format_hud_argument_value(key, value)}' for key, value in list(arguments.items())[:_HUD_ARGUMENT_PREVIEW_LIMIT]
-	]
-	remaining = len(arguments) - len(parts)
-	if remaining > 0:
-		parts.append(f'+{remaining} more')
-	summary = ', '.join(parts)
-	if len(summary) > 120:
-		return f'{summary[:117]}...'
-	return summary
 
 
 def _attach_tool_result_metadata(
@@ -223,79 +130,26 @@ def _attach_tool_result_metadata(
 			merged_meta = dict(getattr(item, 'meta', None) or {})
 			merged_meta.update(metadata)
 			updated_content.append(
-				types.TextContent(
-					type='text',
-					text=item.text,
-					annotations=item.annotations,
-					_meta=merged_meta,
-				)
+				types.TextContent(type='text', text=item.text, annotations=item.annotations, _meta=merged_meta)
 			)
 			attached = True
 		else:
 			updated_content.append(item)
 	if not attached:
-		updated_content.insert(
-			0,
-			types.TextContent(type='text', text='', _meta=metadata),
-		)
+		updated_content.insert(0, types.TextContent(type='text', text='', _meta=metadata))
 	return updated_content
 
 
-def _should_publish_hud_event(kind: HudEventKind, tool_name: str, duration_ms: float | None, error: str | None) -> bool:
-	if error:
-		return True
-	if tool_name not in _HUD_CHATTY_TOOLS:
-		return True
-	if kind == 'tool_start':
-		return False
-	return duration_ms is not None and duration_ms >= _HUD_CHATTY_DURATION_MS
-
-
-def _publish_hud_event(
-	self,
-	kind: HudEventKind,
-	tool_name: str,
-	arguments: dict[str, Any],
-	*,
-	duration: float | None = None,
-	error: str | None = None,
-) -> None:
-	if not tool_name.startswith('browser_'):
-		return
-	if tool_name == 'browser_set_intent':
-		return
-	session_id = getattr(getattr(self, 'browser_session', None), 'id', None)
-	if session_id is None:
-		return
-	duration_ms = round(duration * 1000, 1) if duration is not None else None
-	if not _should_publish_hud_event(kind, tool_name, duration_ms, error):
-		return
-	label = self._tool_phase_message(tool_name, arguments)
-	if kind == 'tool_error' and error:
-		label = f'{label} failed'
-	details: HudEventDetails = {'args_summary': _summarize_tool_arguments(arguments)}
-	HudStream.get().publish(
-		HudEvent(
-			kind=kind,
-			label=label,
-			session_id=session_id,
-			tool_name=tool_name,
-			duration_ms=duration_ms,
-			error=error,
-			details=details,
-		)
-	)
+def _publish_hud_event(self, kind: str, tool_name: str, arguments: dict[str, Any], *, duration: float | None = None, error: str | None = None) -> None:
+	pass  # HUD removed
 
 
 __all__ = [
 	'_attach_tool_result_metadata',
 	'_extract_tool_error_message',
-	'_format_hud_argument_value',
 	'_publish_hud_event',
 	'_send_log_notification',
 	'_should_log',
-	'_should_publish_hud_event',
-	'_summarize_tool_arguments',
 	'_tool_output_is_error',
 	'_tool_phase_message',
 	'_tool_text_is_error',
