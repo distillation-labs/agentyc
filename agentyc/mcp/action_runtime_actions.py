@@ -43,7 +43,6 @@ async def _run_tool_action(
 	return await self.tools.act(
 		action=action,
 		browser_session=self.browser_session,
-		page_extraction_llm=None,
 		available_file_paths=available_file_paths,
 		file_system=self.file_system,
 	)
@@ -460,7 +459,6 @@ async def _extract_content(
 	action_result = await self.tools.act(
 		action=action,
 		browser_session=self.browser_session,
-		page_extraction_llm=None,
 		file_system=self.file_system,
 	)
 	if action_result.error:
