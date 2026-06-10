@@ -58,8 +58,6 @@ class OldConfig:
 		return os.getenv('AGENTYC_LOGGING_LEVEL', 'info').lower()
 
 	@property
-	def ANONYMIZED_TELEMETRY(self) -> bool:
-		return os.getenv('ANONYMIZED_TELEMETRY', 'true').lower()[:1] in 'ty1'
 
 	@property
 	def AGENTYC_MODEL_PRICING_URL(self) -> str:
@@ -181,7 +179,6 @@ class FlatEnvConfig(BaseSettings):
 	CDP_LOGGING_LEVEL: str = Field(default='WARNING')
 	AGENTYC_DEBUG_LOG_FILE: str | None = Field(default=None)
 	AGENTYC_INFO_LOG_FILE: str | None = Field(default=None)
-	ANONYMIZED_TELEMETRY: bool = Field(default=True)
 	AGENTYC_MODEL_PRICING_URL: str = Field(default='')
 
 	# Path configuration
@@ -210,7 +207,6 @@ class FlatEnvConfig(BaseSettings):
 	# MCP-specific env vars
 	AGENTYC_CONFIG_PATH: str | None = Field(default=None)
 	AGENTYC_HEADLESS: bool | None = Field(default=None)
-	AGENTYC_HUD_OVERLAY: bool | None = Field(default=None)
 	AGENTYC_ALLOWED_DOMAINS: str | None = Field(default=None)
 	AGENTYC_LLM_MODEL: str | None = Field(default=None)
 	AGENTYC_REUSE_LOCAL_BROWSER: bool | None = Field(default=None)
@@ -454,8 +450,6 @@ class Config:
 		if env_config.AGENTYC_HEADLESS is not None:
 			config['browser_profile']['headless'] = env_config.AGENTYC_HEADLESS
 
-		if env_config.AGENTYC_HUD_OVERLAY is not None:
-			config['browser_profile']['hud_overlay'] = env_config.AGENTYC_HUD_OVERLAY
 
 		if env_config.AGENTYC_ALLOWED_DOMAINS:
 			domains = [d.strip() for d in env_config.AGENTYC_ALLOWED_DOMAINS.split(',') if d.strip()]
