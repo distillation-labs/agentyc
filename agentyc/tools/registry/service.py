@@ -7,10 +7,7 @@ from pydantic import BaseModel, Field, RootModel, create_model
 
 from agentyc.browser import BrowserSession
 from agentyc.filesystem.file_system import FileSystem
-from agentyc.llm.base import BaseChatModel
 from agentyc.observability import observe_debug
-from agentyc.telemetry.service import ProductTelemetry
-from agentyc.tools.registry.sensitive_data import log_sensitive_data_usage, replace_sensitive_data
 from agentyc.tools.registry.signature_helpers import create_param_model, normalize_action_function_signature
 from agentyc.tools.registry.views import (
 	ActionModel,
@@ -29,7 +26,6 @@ class Registry(Generic[Context]):
 
 	def __init__(self, exclude_actions: list[str] | None = None):
 		self.registry = ActionRegistry()
-		self.telemetry = ProductTelemetry()
 		# Create a new list to avoid mutable default argument issues
 		self.exclude_actions = list(exclude_actions) if exclude_actions is not None else []
 
@@ -112,9 +108,7 @@ class Registry(Generic[Context]):
 		action_name: str,
 		params: dict,
 		browser_session: BrowserSession | None = None,
-		page_extraction_llm: BaseChatModel | None = None,
 		file_system: FileSystem | None = None,
-		sensitive_data: dict[str, str | dict[str, str]] | None = None,
 		available_file_paths: list[str] | None = None,
 		extraction_schema: dict | None = None,
 	) -> Any:
@@ -130,32 +124,14 @@ class Registry(Generic[Context]):
 			except Exception as e:
 				raise ValueError(f'Invalid parameters {params} for action {action_name}: {type(e)}: {e}') from e
 
-			if sensitive_data:
-				# Get current URL if browser_session is provided
-				current_url = None
-				if browser_session and browser_session.agent_focus_target_id:
-					try:
-						# Get current page info from session_manager
-						target = browser_session.session_manager.get_target(browser_session.agent_focus_target_id)
-						if target:
-							current_url = target.url
-					except Exception:
-						pass
-				validated_params = self._replace_sensitive_data(validated_params, sensitive_data, current_url)
 
 			# Build special context dict
 			special_context = {
 				'browser_session': browser_session,
-				'page_extraction_llm': page_extraction_llm,
 				'available_file_paths': available_file_paths,
-				'has_sensitive_data': action_name == 'input' and bool(sensitive_data),
 				'file_system': file_system,
 				'extraction_schema': extraction_schema,
 			}
-
-			# Only pass sensitive_data to actions that explicitly need it (input)
-			if action_name == 'input':
-				special_context['sensitive_data'] = sensitive_data
 
 			# Add CDP-related parameters if browser_session is available
 			if browser_session:
@@ -177,9 +153,7 @@ class Registry(Generic[Context]):
 
 		except ValueError as e:
 			# Preserve ValueError messages from validation
-			if 'requires browser_session but none provided' in str(e) or 'requires page_extraction_llm but none provided' in str(
-				e
-			):
+			if 'requires browser_session but none provided' in str(e):
 				raise RuntimeError(str(e)) from e
 			else:
 				raise RuntimeError(f'Error executing action {action_name}: {str(e)}') from e
@@ -188,15 +162,6 @@ class Registry(Generic[Context]):
 		except Exception as e:
 			raise RuntimeError(f'Error executing action {action_name}: {str(e)}') from e
 
-	def _log_sensitive_data_usage(self, placeholders_used: set[str], current_url: str | None) -> None:
-		"""Log when sensitive data is being used on a page."""
-		log_sensitive_data_usage(placeholders_used, current_url)
-
-	def _replace_sensitive_data(
-		self, params: BaseModel, sensitive_data: dict[str, Any], current_url: str | None = None
-	) -> BaseModel:
-		"""Replace sensitive data placeholders in params with actual values."""
-		return replace_sensitive_data(params, sensitive_data, current_url)
 
 	# @time_execution_sync('--create_action_model')
 	def create_action_model(self, include_actions: list[str] | None = None, page_url: str | None = None) -> type[ActionModel]:
