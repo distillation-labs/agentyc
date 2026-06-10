@@ -18,15 +18,11 @@ from agentyc.browser._cdp_timeout import TimeoutWrappedCDPClient
 # CDP logging is now handled by setup_logging() in logging_config.py
 # It automatically sets CDP logs to the same level as agentyc logs
 from agentyc.browser.profile import BrowserProfile, ProxySettings
-from agentyc.browser.session_models import (
-	BrowserWindowBounds,
-	RuntimeOwnershipMetadata,
-)
+from agentyc.browser.session_models import CDPSession, Target
 from agentyc.dom.views import EnhancedDOMTreeNode
 
 if TYPE_CHECKING:
-	from agentyc.browser.demo_mode import DemoMode
-	from agentyc.browser.watchdogs.captcha_watchdog import CaptchaWaitResult
+	pass
 
 
 def __getattr__(name: str) -> Any:
@@ -127,11 +123,10 @@ class BrowserSession(SessionRuntimeMixin, SessionTargetsMixin, SessionDOMMixin, 
 		runtime_role: str | None = None,
 		parent_runtime_id: str | None = None,
 		shared_browser_mode: Literal['tab', 'window'] | None = None,
-		shared_browser_window_bounds: BrowserWindowBounds | dict[str, Any] | None = None,
+		shared_browser_window_bounds: dict[str, Any] | None = None,
 		shared_browser_focus_policy: Literal['preserve', 'activate'] | None = None,
 		proxy: ProxySettings | None = None,
 		enable_default_extensions: bool | None = None,
-		captcha_solver: bool | None = None,
 		window_size: dict | None = None,
 		window_position: dict | None = None,
 		minimum_wait_page_load_time: float | None = None,
@@ -242,11 +237,9 @@ class BrowserSession(SessionRuntimeMixin, SessionTargetsMixin, SessionDOMMixin, 
 
 	# Cache of original viewport size for coordinate conversion (set when browser state is captured)
 	_original_viewport_size: tuple[int, int] | None = PrivateAttr(default=None)
-	_runtime_metadata: RuntimeOwnershipMetadata | None = PrivateAttr(default=None)
 	_target_init_scripts: dict[str, set[str]] = PrivateAttr(default_factory=dict)
 	_runtime_marker_script_ids: dict[str, str] = PrivateAttr(default_factory=dict)
 	_global_init_script_targets: dict[str, set[str]] = PrivateAttr(default_factory=dict)
-	_browser_context_id: str | None = PrivateAttr(default=None)
 	_network_mock_rules: dict[str, Any] = PrivateAttr(default_factory=dict)
 	_network_conditions_by_target: dict[str, Any] = PrivateAttr(default_factory=dict)
 	_fetch_handlers_registered: bool = PrivateAttr(default=False)
@@ -311,9 +304,6 @@ class BrowserSession(SessionRuntimeMixin, SessionTargetsMixin, SessionDOMMixin, 
 		"""Whether this is a local browser instance from browser profile."""
 		return self.browser_profile.is_local
 
-	@property
-	def is_shared_browser_runtime(self) -> bool:
-		return self.browser_profile.shared_browser_mode is not None and bool(self.cdp_url)
 
 	@property
 	def is_cdp_connected(self) -> bool:
@@ -332,31 +322,12 @@ class BrowserSession(SessionRuntimeMixin, SessionTargetsMixin, SessionDOMMixin, 
 		except Exception:
 			return False
 
-	async def wait_if_captcha_solving(self, timeout: float | None = None) -> 'CaptchaWaitResult | None':
-		"""Wait if a captcha is currently being solved by the browser proxy.
-
-		Returns:
-			A CaptchaWaitResult if we had to wait, or None if no captcha was in progress.
-		"""
-		if self._captcha_watchdog is not None:
-			return await self._captcha_watchdog.wait_if_captcha_solving(timeout=timeout)
-		return None
 
 	@property
 	def is_reconnecting(self) -> bool:
 		"""Whether a WebSocket reconnection attempt is currently in progress."""
 		return self._reconnecting
 
-	@property
-	def demo_mode(self) -> 'DemoMode | None':
-		"""Lazy init demo mode helper when enabled."""
-		if not self.browser_profile.demo_mode:
-			return None
-		if self._demo_mode is None:
-			from agentyc.browser.demo_mode import DemoMode
-
-			self._demo_mode = DemoMode(self)
-		return self._demo_mode
 
 	# Main shared event bus for all browser session + all watchdogs
 	event_bus: EventBus = Field(default_factory=EventBus)
@@ -396,12 +367,8 @@ class BrowserSession(SessionRuntimeMixin, SessionTargetsMixin, SessionDOMMixin, 
 	_screenshot_watchdog: Any | None = PrivateAttr(default=None)
 	_permissions_watchdog: Any | None = PrivateAttr(default=None)
 	_popups_watchdog: Any | None = PrivateAttr(default=None)
-	_recording_watchdog: Any | None = PrivateAttr(default=None)
-	_har_recording_watchdog: Any | None = PrivateAttr(default=None)
-	_captcha_watchdog: Any | None = PrivateAttr(default=None)
 	_watchdogs_attached: bool = PrivateAttr(default=False)
 
-	_demo_mode: 'DemoMode | None' = PrivateAttr(default=None)
 
 	# WebSocket reconnection state
 	# Max wait = attempts * timeout_per_attempt + sum(delays) + small buffer
