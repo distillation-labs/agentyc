@@ -2,7 +2,7 @@
 
 <p align="center">
   <em>Deterministic, MCP-first browser automation for coding agents.</em><br>
-  No API key needed. No LLM fallback. Just CDP, stdio MCP, live HUD surfaces, and 77 tools.
+  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 77 deterministic browser tools.
 </p>
 
 <p align="center">
@@ -50,7 +50,7 @@ agentyc                          # Starts the MCP server — that's it
 | **Deterministic extraction** | Tables, lists, forms, links, images, key-value | None (LLM only) | None |
 | **Headless by default** | No (visible), flag for headless | Configurable | Configurable |
 
-**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your agent 77 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
+**agentyc is not a testing framework or an autonomous agent loop.** It is a browser MCP: launch it, give your coding agent 77 tools, let it inspect and interact — deterministically, compactly, without an LLM in the critical path.
 
 ---
 
@@ -99,15 +99,7 @@ agentyc init --print              # stdout
 agentyc init --force              # overwrite
 ```
 
-The skills guide covers: read→ref→act loop, tool-selection rules, `since_hash` polling, shared-browser reuse with `--reuse-local-browser` / `AGENTYC_REUSE_LOCAL_BROWSER`, same-browser versus same-tab safety, frame listing and frame HTML inspection, storage and cookie workflows, precise network waits, network entry inspection and replay, narrow network mocks, per-tab offline/throttling controls, right-click / double-click / drag flows, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, JS evaluation, and a fuller quick-reference tool list.
-
----
-
-## Live HUD
-
-When `BrowserProfile(demo_mode=True)` is enabled, Agentyc injects a high-visibility HUD into the controlled browser page. It shows the current step, a short recent timeline, a `DETAILS` toggle with sanitized tool/session/argument context, and a `REPORT` menu that copies sanitized context before opening the repo's bug-report, feature-request, or private security flow.
-
-For local operator visibility outside the browser, `agentyc mcp --hud-overlay` opens a small transparent desktop HUD window that mirrors the same sanitized activity stream. Agents can also call `browser_set_intent` to push a short human-readable status label into both HUD surfaces.
+The skills guide covers: read→ref→act loop, tool-selection rules, `since_hash` polling, frame listing and frame HTML inspection, storage and cookie workflows, precise network waits, network entry inspection and replay, narrow network mocks, per-tab offline/throttling controls, right-click / double-click / drag flows, debug bundles, dynamic-text waits, error recovery, long-page search, multi-tab navigation, extraction routes, auth persistence, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, JS evaluation, and a fuller quick-reference tool list.
 
 ---
 
@@ -178,7 +170,7 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 
 | Tool | What it does |
 |------|-------------|
-| `browser_new_tab` | Create tab + switch focus — **parallel agent primitive** |
+| `browser_new_tab` | Create tab + switch focus |
 | `browser_list_tabs` | List open tabs, grouped by owning agent/runtime by default |
 | `browser_switch_tab` | Switch by 4-char `tab_id` |
 | `browser_close_tab` | Close by `tab_id` |
@@ -237,7 +229,6 @@ For local operator visibility outside the browser, `agentyc mcp --hud-overlay` o
 - **`since_hash`**: Poll unchanged pages with `changed=false` — zero element payload sent.
 - **In `min` mode**: elements within 2× viewport height get a proximity score boost.
 - **Unchanged responses**: still return `url`, `title`, `state_hash`, `current_tab_id`, scroll position.
-- **Shared-browser tabs**: `tabs` stays flat for compatibility, and `tab_groups` groups tabs by owning agent/runtime by default.
 - **Screenshots**: delivered as MCP image content, not embedded base64. Screenshot format, size, quality, and grayscale are configurable via `BrowserSession` constructor parameters (see [LLM Screenshot Optimization](#llm-screenshot-optimization)).
 
 **Best practice:** Start with `mode="min"`, use `since_hash` for follow-up reads, escalate to `mode="full"` only when compact payload omitted something you need.
@@ -297,43 +288,6 @@ Supported route families:
 - `output_schema` works when the query matches a deterministic route.
 - Unrecognized queries return an explicit error with examples — no silent degradation.
 - Responses include `<extraction_metadata>` with route and truncation info.
-
----
-
-## Shared Browser & Parallel Agents
-
-```bash
-# Start a browser for sharing
-agentyc browser --port 9222 --detach
-# → ws://127.0.0.1:9222/devtools/browser/...
-
-# Reuse the latest locally launched Agentyc browser automatically
-agentyc mcp --reuse-local-browser
-
-# Attach MCP servers to it
-agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
-```
-
-**Parallel automation flow:**
-
-1. Primary agent starts a shared browser with `agentyc browser --detach`
-2. Each subagent either spawns `agentyc mcp --cdp-url <url>` or uses `agentyc mcp --reuse-local-browser` / `AGENTYC_REUSE_LOCAL_BROWSER=1` — Agentyc claims a dedicated collaboration tab in the shared browser profile
-3. Subagents can immediately navigate and work in that owned tab; `browser_new_tab` is only needed when one subagent wants an additional tab of its own
-4. Subagents operate independently — refs, network logs, and console logs stay scoped to the owned tab, while auth/cookies/local storage remain shared with the browser profile
-5. Primary coordinates and collects results
-
-When multiple runtimes share one browser, Agentyc surfaces a grouped tab view by default so developers can quickly see which agent owns how many tabs.
-
-**Collaboration flags:**
-
-- `--runtime-label` — human-readable ownership label
-- `--runtime-role` — `primary` / `assistant`
-- `--shared-browser-mode` — `tab` (default) or `window`
-- `--shared-browser-focus-policy` — `preserve` or `activate`
-- `--shared-browser-window-bounds` — JSON bounds for window mode
-- `--reuse-local-browser` — auto-attach to the latest locally launched Agentyc browser without copying a CDP URL around
-
-> Shared-browser reuse means the same browser process and profile. Each runtime still claims its own collaboration tab or window; Chrome does not provide a safe public contract for multiple agents to co-own the exact same tab.
 
 ---
 
@@ -402,13 +356,7 @@ The primary public story is MCP-first. Direct Python imports are available for e
 | CLI flag | Default | Description |
 |----------|---------|-------------|
 | `--session-timeout-minutes` | 0 (never) | Auto-close idle sessions |
-| `--hud-overlay` | off | Show a small transparent desktop HUD for sanitized live activity |
 | `--cdp-url` | — | Attach to existing browser |
-| `--reuse-local-browser` | off unless enabled explicitly or via env | Reuse the latest locally launched Agentyc browser |
-| `--runtime-label` | — | Ownership label for shared browser |
-| `--runtime-role` | — | Collaboration role |
-| `--shared-browser-mode` | `tab` | `tab` or `window` |
-| `--shared-browser-focus-policy` | `preserve` | `preserve` or `activate` |
 
 ### BrowserSession config
 
@@ -423,7 +371,7 @@ The primary public story is MCP-first. Direct Python imports are available for e
 
 ### Environment variables
 
-`AGENTYC_HEADLESS`, `AGENTYC_HUD_OVERLAY`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_ACTION_TIMEOUT_S`, `AGENTYC_PROXY_*`, `AGENTYC_LOGGING_LEVEL`.
+`AGENTYC_HEADLESS`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_ACTION_TIMEOUT_S`, `AGENTYC_PROXY_*`, `AGENTYC_LOGGING_LEVEL`.
 
 ### Browser defaults
 
