@@ -30,8 +30,6 @@ When a human is waiting on the run, narrate intent before a likely pause:
 
 Keep those lines short and concrete. They are progress narration, not chain-of-thought.
 
-If the live HUD is enabled, prefer `browser_set_intent(intent="...")` for major step changes so the operator sees a stable current-status label without exposing raw reasoning.
-
 ---
 
 ## Escalation Ladder When Something Is Missing
@@ -240,13 +238,6 @@ Dialog already auto-handled by runtime: [confirm] Delete this branch? (accepted 
 
 Treat that as a confirmation of what happened, not as a failure that needs a retry.
 
-### Live HUD and reporting
-
-- `BrowserProfile(demo_mode=True)` enables the in-browser HUD.
-- `agentyc mcp --hud-overlay` enables the transparent desktop HUD.
-- Use `browser_set_intent` for short operator-facing status updates such as `Reviewing failed checkout step`.
-- The browser HUD's `REPORT` menu copies sanitized context and opens the repo's bug, feature, or private security destination. Do not paste secrets, cookies, raw headers, or full auth URLs into those reports.
-
 ### Extract structured data
 
 Use `browser_extract_content` for deterministic extraction:
@@ -437,59 +428,6 @@ while True:
 ```
 
 Do **not** compare `since_hash` against a pre-action state when the action intentionally changes the page. Re-read once after the intentional change, then start your unchanged polling from the fresh hash.
-
----
-
-## Parallel Agents with Shared Browser
-
-Multiple agents can share one Chrome instance. Each attached runtime gets a dedicated owned tab in the same shared browser profile.
-
-### Setup
-
-The most explicit path is still:
-
-```bash
-cdp_url=$(agentyc browser --port 9222 --detach)
-
-agentyc mcp --cdp-url "$cdp_url" --runtime-label "Agent-1"
-agentyc mcp --cdp-url "$cdp_url" --runtime-label "Agent-2"
-```
-
-The easier local attach path now is:
-
-```bash
-agentyc browser --port 9222 --detach
-
-agentyc mcp --reuse-local-browser --runtime-label "Agent-1"
-agentyc mcp --reuse-local-browser --runtime-label "Agent-2"
-```
-
-Or set:
-
-```bash
-export AGENTYC_REUSE_LOCAL_BROWSER=1
-```
-
-and start `agentyc mcp` normally.
-
-Each attached runtime already receives its own collaboration tab automatically.
-
-Open another tab only when one runtime needs more than its default owned tab:
-
-```python
-browser_new_tab()
-browser_navigate(url="https://example.com")
-```
-
-Coordination rules:
-
-- each agent should work from its own tab
-- shared browser means the same **browser process and profile**, not safe co-ownership of the exact same live tab
-- auth, cookies, localStorage, and sessionStorage are shared across attached runtimes because they stay in the same browser profile
-- use `browser_list_tabs` to inspect the shared browser surface
-- use display titles, URLs, and runtime metadata to confirm you are in the right tab before acting
-- do not call `browser_close_all` in a shared-browser session
-- default shared-browser focus policy preserves the human's focus
 
 ---
 
