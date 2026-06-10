@@ -1,12 +1,29 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-06-10
+
+### Removed
+
+- **LLM provider stack** — removed `openai`, `anthropic`, `google-genai`, `groq`, `ollama`, and all Google API packages from dependencies. agentyc is a browser MCP server, not an agent library. These packages were pulled in from the Browser-Use origin and added ~200 MB of install weight and startup overhead for zero benefit.
+- **Telemetry / PostHog** — removed `posthog` dependency and the entire `agentyc/telemetry/` module. No data is collected.
+- **LLM integration code** — removed `agentyc/llm/` (all provider adapters), `agentyc/tokens/` (token cost tracking), `page_ai.py` (LLM-based element finding), and `agentyc/controller/` alias shim.
+- **HUD / demo mode** — removed `demo_mode.py`, `demo_mode_script.py`, `hud_overlay.py`, `hud_stream.py`, `hud_events.py`, `feedback.py`, and `BrowserProfile.demo_mode` / `hud_overlay` fields.
+- **Parallel agent / shared-browser infrastructure** — removed `collaboration.py`, `session_shared_browser.py`, `shared_browser_registry.py`, `state_tabs.py`, `RuntimeOwnershipMetadata`, `TargetOwnershipMetadata`, `BrowserWindowBounds` (from session_models), `tab_groups` from state payloads, `--runtime-label`, `--runtime-role`, `--parent-runtime-id`, `--shared-browser-mode`, `--shared-browser-window-bounds`, `--shared-browser-focus-policy`, `--reuse-local-browser` CLI flags, and `AGENTYC_REUSE_LOCAL_BROWSER` env var.
+- **Browser-Use legacy features** — removed video recording (`video_recorder.py`, `recording_watchdog.py`), HAR recording (`har_recording_watchdog.py`, `har_recording_models.py`, `har_recording_writer.py`), captcha watchdog (`captcha_watchdog.py`), sensitive data / TOTP (`sensitive_data.py`, `pyotp` dep), Gmail integration (`agentyc/integrations/`), `dogfood.py`, and `skill_quality.py`.
+- **Unused dependencies** — removed `requests`, `pyotp`, `posthog`, `pypdf` (now optional), `reportlab` (now optional), `python-docx` (now optional), and dev deps `tokencost`, `fastapi`, `inngest`, `lmnr`.
 
 ### Added
 
-- **11 new public browser tools** — the MCP surface now includes `browser_wait_for_url`, `browser_wait_for_download`, `browser_wait_for_tab`, `browser_fill_form`, `browser_grant_permissions`, `browser_set_geolocation`, `browser_set_extra_headers`, `browser_set_user_agent`, `browser_set_timezone`, `browser_set_locale`, and `browser_emulate_media`.
+- **HTTP/SSE transport** (`agentyc serve`) — run a persistent MCP daemon that all clients share via Streamable HTTP instead of spawning one Python process per session. Configure with `"type": "streamable-http", "url": "http://127.0.0.1:8765/mcp"`. Eliminates N×memory when running multiple agent windows.
+- **Allocator preload** — on startup, automatically preloads `mimalloc` or `jemalloc` if installed to reduce RSS fragmentation (most impactful on macOS). Skip with `AGENTYC_SKIP_ALLOCATOR_PRELOAD=1`. Install with `brew install mimalloc`.
+- **`filesystem-extras` optional extra** — `pip install agentyc[filesystem-extras]` adds `pypdf`, `reportlab`, and `python-docx` for PDF/DOCX file tools.
 
 ### Changed
+
+- **Leaner startup** — `posthog` no longer imported at process start. Total startup RSS reduced significantly; import chain no longer drags in LLM provider packages.
+- **Simplified session model** — `session_models.py` now only contains `Target` and `CDPSession`. Window/bounds helpers moved to `windowing.py`.
+- **Page/tab helpers consolidated** — functions previously split across `session_shared_browser.py` (`get_tabs`, `get_current_page_url`, `new_page`, `_cdp_create_new_page`, `get_window_bounds`, etc.) are now in `session_targets.py`.
+- **`pyproject.toml` cleanup** — removed stale comments referencing removed packages.
 
 - **Public tool surface expanded from 66 to 77** — interaction tools now support richer label-based targeting where appropriate, `browser_click` can fuse post-click waits for downloads/tabs/URL/request/response, and the README/docs inventory now reflects the shipped browser surface.
 - **Compact auto-state is sharper on dense pages** — the default compact path now uses a 9-element budget with adaptive trimming, navigation-link preservation, and secondary-control de-prioritization, improving the current runtime benchmark to `avg_auto_precision=0.906`, `avg_auto_payload_reduction_pct=16.7`, and `avg_auto_estimated_tokens=506.6` while keeping recall and action metrics at `1.0`.
