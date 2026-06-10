@@ -23,28 +23,22 @@ if TYPE_CHECKING:
 	from cdp_use.cdp.target.types import TargetInfo
 
 	from agentyc.browser.session import BrowserSession
-	from agentyc.llm.base import BaseChatModel
 
 	from .element import Element
 	from .mouse import Mouse
 
 
-from agentyc.browser.page_ai import PageAIMixin
-
-
-class Page(PageAIMixin):
+class Page:
 	"""Page operations (tab or iframe)."""
 
 	def __init__(
-		self, browser_session: 'BrowserSession', target_id: str, session_id: str | None = None, llm: 'BaseChatModel | None' = None
+		self, browser_session: 'BrowserSession', target_id: str, session_id: str | None = None
 	):
 		self._browser_session = browser_session
 		self._client = browser_session.cdp_client
 		self._target_id = target_id
 		self._session_id: str | None = session_id
 		self._mouse: 'Mouse | None' = None
-
-		self._llm = llm
 
 	async def _ensure_session(self) -> str:
 		"""Ensure we have a session ID for this target."""
