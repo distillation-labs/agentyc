@@ -175,10 +175,6 @@ def build_compact_action_context(
 	return '\n'.join(lines)
 
 
-def detect_sensitive_key_name(text: str, sensitive_data: dict[str, str | dict[str, str]] | None) -> str | None:
-	"""Detect which sensitive key name corresponds to the given text value."""
-	if not sensitive_data or not text:
-		return None
 
 	for domain_or_key, content in sensitive_data.items():
 		if isinstance(content, dict):
