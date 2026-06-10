@@ -19,8 +19,6 @@ from agentyc.browser.events import (
 	TabClosedEvent,
 	TabCreatedEvent,
 )
-from agentyc.browser.hud_events import publish_browser_event
-from agentyc.browser.session_models import RuntimeOwnershipMetadata
 from agentyc.browser.views import BrowserStateSummary
 
 if TYPE_CHECKING:
@@ -80,13 +78,7 @@ async def reset(session: BrowserSession) -> None:
 	session._dom_watchdog = None
 	session._screenshot_watchdog = None
 	session._permissions_watchdog = None
-	session._recording_watchdog = None
-	session._captcha_watchdog = None
 	session._watchdogs_attached = False
-	if session._demo_mode:
-		session._demo_mode.cleanup()
-		session._demo_mode.reset()
-		session._demo_mode = None
 
 	session._intentional_stop = False
 	session.logger.info('✅ Browser session reset complete')
@@ -94,12 +86,6 @@ async def reset(session: BrowserSession) -> None:
 
 def model_post_init(session: BrowserSession, context: Any) -> None:
 	session._connection_lock = asyncio.Lock()
-	session._runtime_metadata = RuntimeOwnershipMetadata.create(
-		session_id=session.id,
-		runtime_label=session.browser_profile.runtime_label,
-		runtime_role=session.browser_profile.runtime_role,
-		parent_runtime_id=session.browser_profile.parent_runtime_id,
-	)
 	session._reconnect_event = asyncio.Event()
 	session._reconnect_event.set()
 
@@ -178,10 +164,7 @@ async def on_FileDownloadedEvent(session: BrowserSession, event: FileDownloadedE
 	session.logger.debug(f'FileDownloadedEvent received: {event.file_name} at {event.path}')
 	if event.path and event.path not in session._downloaded_files:
 		session._downloaded_files.append(event.path)
-		publish_browser_event(session_id=session.id, label=f'Downloaded {event.file_name}')
-		session.logger.info(
-			f'📁 Tracked download: {event.file_name} ({len(session._downloaded_files)} total downloads in session)'
-		)
+		session.logger.info(f'📁 Tracked download: {event.file_name} ({len(session._downloaded_files)} total downloads in session)')
 	else:
 		if not event.path:
 			session.logger.warning(f'FileDownloadedEvent has no path: {event}')
@@ -231,20 +214,6 @@ async def stop(session: BrowserSession) -> None:
 
 async def close(session: BrowserSession) -> None:
 	await stop(session)
-
-
-async def send_demo_mode_log(
-	session: BrowserSession, message: str, level: str = 'info', metadata: dict[str, Any] | None = None
-) -> None:
-	if not session.browser_profile.demo_mode:
-		return
-	demo = session.demo_mode
-	if not demo:
-		return
-	try:
-		await demo.send_log(message=message, level=level, metadata=metadata or {})
-	except Exception as exc:
-		session.logger.debug(f'[DemoMode] Failed to send log: {exc}')
 
 
 def downloaded_files(session: BrowserSession) -> list[str]:
