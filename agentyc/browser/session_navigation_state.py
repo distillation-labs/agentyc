@@ -26,9 +26,3 @@ def clear_session_state_caches(session: BrowserSession) -> None:
 async def refresh_navigation_target_state(session: BrowserSession, target_id: str) -> None:
 	"""Refresh lightweight per-tab state after navigation."""
 	clear_session_state_caches(session)
-	create_task_with_error_handling(
-		session._apply_runtime_markers_to_target(target_id),
-		name='refresh_navigation_runtime_markers',
-		logger_instance=session.logger,
-		suppress_exceptions=True,
-	)
