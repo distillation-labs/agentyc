@@ -5,7 +5,6 @@ from pydantic import BaseModel, ConfigDict
 
 from agentyc.browser import BrowserSession
 from agentyc.filesystem.file_system import FileSystem
-from agentyc.llm.base import BaseChatModel
 
 if TYPE_CHECKING:
 	pass
@@ -167,10 +166,9 @@ class SpecialActionParameters(BaseModel):
 	cdp_client: Any | None = None  # CDPClient type from cdp_use
 
 	# extra injected config if the action asks for these arg names
-	page_extraction_llm: BaseChatModel | None = None
+	page_extraction_llm: None = None
 	file_system: FileSystem | None = None
 	available_file_paths: list[str] | None = None
-	has_sensitive_data: bool = False
 	extraction_schema: dict | None = None
 
 	@classmethod
