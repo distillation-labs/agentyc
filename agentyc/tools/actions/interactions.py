@@ -16,7 +16,7 @@ from agentyc.browser.events import (
 from agentyc.browser.views import BrowserError
 from agentyc.dom.service import EnhancedDOMTreeNode
 from agentyc.filesystem.file_system import FileSystem
-from agentyc.tools.runtime import detect_sensitive_key_name, handle_browser_error
+from agentyc.tools.runtime import handle_browser_error
 from agentyc.tools.utils import get_click_description
 from agentyc.tools.views import (
 	ClickElementAction,
@@ -259,8 +259,6 @@ def register_interaction_actions(tools: Any) -> None:
 	async def input(
 		params: InputTextAction,
 		browser_session: BrowserSession,
-		has_sensitive_data: bool = False,
-		sensitive_data: dict[str, str | dict[str, str]] | None = None,
 	):
 		node = await browser_session.get_element_by_index(params.index)
 		if node is None:
