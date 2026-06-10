@@ -14,17 +14,13 @@ async def _list_tabs(self) -> str:
 	if not self.browser_session:
 		return 'Error: No browser session active'
 
-	from agentyc.mcp.state import build_tab_groups_payload, serialize_tab_info
+	from agentyc.mcp.state import serialize_tab_info
 
 	tabs_info = await self.browser_session.get_tabs()
 	tabs = [serialize_tab_info(tab) for tab in tabs_info]
 	current_target_id = getattr(self.browser_session, 'agent_focus_target_id', None)
 	current_tab_id = str(current_target_id)[-4:] if current_target_id else None
-	payload = {
-		'tabs': tabs,
-		'tab_groups': build_tab_groups_payload(tabs, current_tab_id=current_tab_id),
-	}
-	return json.dumps(payload)
+	return json.dumps({'tabs': tabs, 'current_tab_id': current_tab_id})
 
 
 async def _switch_tab(self, tab_id: str) -> str:
@@ -77,7 +73,6 @@ async def _wait_for_tab_since(
 	switch_focus: bool = True,
 ) -> str:
 	from agentyc.mcp.state import serialize_tab_info
-	from agentyc.mcp.state_tabs import _serialize_tab_id
 
 	timeout = min(max(float(timeout_seconds), 0.5), 60.0)
 	loop = asyncio.get_running_loop()
@@ -99,7 +94,8 @@ async def _wait_for_tab_since(
 				continue
 			self._mark_browser_state_cache_dirty()
 			if switch_focus and self.browser_session.agent_focus_target_id != tab.target_id:
-				tab_id = _serialize_tab_id(tab.target_id)
+				s = str(tab.target_id)
+				tab_id = s[-4:] if len(s) >= 4 else s
 				if tab_id is None:
 					return self._format_action_error(
 						'New tab opened without a serializable tab id.', default_code='postcondition_failed'
