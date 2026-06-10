@@ -12,47 +12,22 @@ from cdp_use.cdp.target import AttachedToTargetEvent, DetachedFromTargetEvent, S
 
 from agentyc.browser.session_manager_events import (
 	handle_target_attached as handle_target_attached_helper,
-)
-from agentyc.browser.session_manager_events import (
 	handle_target_detached as handle_target_detached_helper,
-)
-from agentyc.browser.session_manager_events import (
 	handle_target_info_changed as handle_target_info_changed_helper,
-)
-from agentyc.browser.session_manager_events import (
 	start_monitoring as start_monitoring_helper,
 )
 from agentyc.browser.session_manager_recovery import (
 	ensure_valid_focus as ensure_valid_focus_helper,
-)
-from agentyc.browser.session_manager_recovery import (
 	recover_agent_focus as recover_agent_focus_helper,
-)
-from agentyc.browser.session_manager_recovery import (
 	recover_focus_on_demand as recover_focus_on_demand_helper,
 )
 from agentyc.browser.session_manager_support import (
-	apply_target_info as apply_target_info_helper,
+	apply_target_info,
+	enable_page_monitoring,
+	initialize_existing_targets,
+	set_target_window_context,
 )
-from agentyc.browser.session_manager_support import (
-	enable_page_monitoring as enable_page_monitoring_helper,
-)
-from agentyc.browser.session_manager_support import (
-	initialize_existing_targets as initialize_existing_targets_helper,
-)
-from agentyc.browser.session_manager_support import (
-	runtime_metadata_from_title,
-)
-from agentyc.browser.session_manager_support import (
-	set_target_human_ownership as set_target_human_ownership_helper,
-)
-from agentyc.browser.session_manager_support import (
-	set_target_ownership as set_target_ownership_helper,
-)
-from agentyc.browser.session_manager_support import (
-	set_target_window_context as set_target_window_context_helper,
-)
-from agentyc.browser.session_models import CDPSession, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
+from agentyc.browser.session_models import CDPSession, Target
 from agentyc.utils import create_task_with_error_handling
 
 if TYPE_CHECKING:
@@ -98,39 +73,14 @@ class SessionManager:
 		self._recovery_complete_event: asyncio.Event | None = None
 		self._recovery_task: asyncio.Task | None = None
 
-	def _runtime_metadata_from_target_info(self, target_id: TargetID, title: str) -> RuntimeOwnershipMetadata | None:
-		return runtime_metadata_from_title(title)
 
 	def _apply_target_info(self, target: Target, target_info: Mapping[str, Any]) -> None:
-		apply_target_info_helper(
-			target,
-			target_info,
-			current_runtime_id=self.browser_session.runtime_metadata.runtime_id,
-		)
+		apply_target_info(target, target_info)
 
-	def set_target_ownership(
-		self,
-		target_id: TargetID,
-		runtime: RuntimeOwnershipMetadata | TargetOwnershipMetadata,
-		*,
-		source: str | None = None,
-	) -> None:
-		set_target_ownership_helper(
-			self._targets.get(target_id),
-			runtime,
-			current_runtime_id=self.browser_session.runtime_metadata.runtime_id,
-			source=source,
-		)
 
-	def set_target_human_ownership(self, target_id: TargetID, *, display_label: str = 'Human') -> None:
-		set_target_human_ownership_helper(self._targets.get(target_id), display_label=display_label)
 
 	def set_target_window_context(self, target_id: TargetID, *, window_id: int | None = None, window_bounds=None) -> None:
-		set_target_window_context_helper(
-			self._targets.get(target_id),
-			window_id=window_id,
-			window_bounds=window_bounds,
-		)
+		set_target_window_context(self._targets.get(target_id), window_id=window_id, window_bounds=window_bounds)
 
 	async def start_monitoring(self) -> None:
 		"""Start monitoring Target attach/detach events."""
@@ -375,7 +325,7 @@ class SessionManager:
 		await recover_agent_focus_helper(self, crashed_target_id)
 
 	async def _initialize_existing_targets(self) -> None:
-		await initialize_existing_targets_helper(self)
+		await initialize_existing_targets(self)
 
 	async def _enable_page_monitoring(self, cdp_session: 'CDPSession') -> None:
-		await enable_page_monitoring_helper(self, cdp_session)
+		await enable_page_monitoring(self, cdp_session)
