@@ -11,7 +11,6 @@ from agentyc.browser.events import (
 	BrowserReconnectedEvent,
 	BrowserReconnectingEvent,
 )
-from agentyc.browser.hud_events import publish_browser_event
 
 if TYPE_CHECKING:
 	from agentyc.browser.session import BrowserSession
@@ -96,11 +95,6 @@ async def _auto_reconnect(session: BrowserSession, max_attempts: int = 3) -> Non
 	delays = [1.0, 2.0, 4.0]
 	try:
 		for attempt in range(1, max_attempts + 1):
-			publish_browser_event(
-				session_id=session.id,
-				label=f'Reconnecting to browser ({attempt}/{max_attempts})',
-				details={'attempt': attempt, 'max_attempts': max_attempts},
-			)
 			session.event_bus.dispatch(
 				BrowserReconnectingEvent(
 					cdp_url=session.cdp_url or '',
