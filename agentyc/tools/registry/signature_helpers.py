@@ -10,7 +10,6 @@ from pydantic import BaseModel, create_model
 
 from agentyc.browser import BrowserSession
 from agentyc.filesystem.file_system import FileSystem
-from agentyc.llm.base import BaseChatModel
 from agentyc.tools.registry.views import ActionModel
 
 
@@ -21,9 +20,7 @@ def get_special_param_types() -> dict[str, type | UnionType | None]:
 		'browser_session': BrowserSession,
 		'page_url': str,
 		'cdp_client': None,
-		'page_extraction_llm': BaseChatModel,
 		'available_file_paths': list,
-		'has_sensitive_data': bool,
 		'file_system': FileSystem,
 		'extraction_schema': None,
 	}
@@ -180,8 +177,6 @@ def create_param_model(function: Callable) -> type[BaseModel]:
 def _missing_special_param_message(function_name: str, param_name: str) -> str:
 	if param_name == 'browser_session':
 		return f'Action {function_name} requires browser_session but none provided.'
-	if param_name == 'page_extraction_llm':
-		return f'Action {function_name} requires page_extraction_llm but none provided.'
 	if param_name == 'file_system':
 		return f'Action {function_name} requires file_system but none provided.'
 	if param_name == 'page':
