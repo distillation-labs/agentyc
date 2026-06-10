@@ -452,3 +452,139 @@ __all__ = [
 	'set_extra_headers',
 	'take_screenshot',
 ]
+
+
+# ---- Page/tab/window helpers (consolidated from session_shared_browser) ----
+
+async def get_tabs(session: 'BrowserSession') -> list:
+	"""Get TabInfo list for all open tabs."""
+	from agentyc.browser.views import TabInfo
+	tabs = []
+	if not session.session_manager:
+		return tabs
+	for target in session.session_manager.get_all_page_targets():
+		url = target.url
+		title = target.title
+		if is_new_tab_page(url):
+			title = ''
+		tabs.append(TabInfo(target_id=target.target_id, url=url, title=title))
+	return tabs
+
+
+async def get_current_target_info(session: 'BrowserSession') -> TargetInfo | None:
+	if not session.agent_focus_target_id or not session.session_manager:
+		return None
+	target = session.session_manager.get_target(session.agent_focus_target_id)
+	if not target:
+		return None
+	return {'targetId': target.target_id, 'url': target.url, 'title': target.title, 'type': target.target_type, 'attached': True, 'canAccessOpener': False}
+
+
+async def get_current_page_url(session: 'BrowserSession') -> str:
+	if session.agent_focus_target_id and session.session_manager:
+		target = session.session_manager.get_target(session.agent_focus_target_id)
+		if target:
+			return target.url
+	return 'about:blank'
+
+
+async def get_current_page_title(session: 'BrowserSession') -> str:
+	if session.agent_focus_target_id and session.session_manager:
+		target = session.session_manager.get_target(session.agent_focus_target_id)
+		if target:
+			return target.title
+	return ''
+
+
+async def new_page(session: 'BrowserSession', url: str | None = None) -> Any:
+	from agentyc.browser.page import Page
+	target_id = await _cdp_create_new_page(session, url or 'about:blank')
+	return Page(session, target_id)
+
+
+async def get_current_page(session: 'BrowserSession') -> Any:
+	from agentyc.browser.page import Page
+	if not session.agent_focus_target_id:
+		return None
+	return Page(session, session.agent_focus_target_id)
+
+
+async def must_get_current_page(session: 'BrowserSession') -> Any:
+	page = await get_current_page(session)
+	if page is None:
+		raise RuntimeError('No current page available')
+	return page
+
+
+async def get_pages(session: 'BrowserSession') -> list:
+	from agentyc.browser.page import Page
+	if not session.session_manager:
+		return []
+	return [Page(session, t.target_id) for t in session.session_manager.get_all_page_targets()]
+
+
+async def close_page(session: 'BrowserSession', page: Any) -> None:
+	target_id = page._target_id if hasattr(page, '_target_id') else str(page)
+	await _cdp_close_page(session, target_id)
+
+
+async def _cdp_close_page(session: 'BrowserSession', target_id: str) -> None:
+	assert session._cdp_client_root is not None
+	await session._cdp_client_root.send.Target.closeTarget(params={'targetId': target_id})
+
+
+async def _cdp_create_new_page(session: 'BrowserSession', url: str = 'about:blank', background: bool = False, new_window: bool = False, browser_context_id: str | None = None) -> str:
+	assert session._cdp_client_root is not None
+	params: dict[str, Any] = {'url': url}
+	if background:
+		params['background'] = True
+	if new_window:
+		params['newWindow'] = True
+	if browser_context_id:
+		params['browserContextId'] = browser_context_id
+	result = await session._cdp_client_root.send.Target.createTarget(params=params)
+	return result['targetId']
+
+
+async def _cdp_get_window_context(session: 'BrowserSession', target_id: str) -> dict[str, Any] | None:
+	try:
+		assert session._cdp_client_root is not None
+		result = await session._cdp_client_root.send.Browser.getWindowForTarget(params={'targetId': target_id})
+		window_id = result.get('windowId')
+		if window_id is not None and session.session_manager:
+			target = session.session_manager.get_target(target_id)
+			if target:
+				session.session_manager.set_target_window_context(target_id, window_id=window_id)
+		return result
+	except Exception:
+		return None
+
+
+async def get_window_bounds(session: 'BrowserSession', target_id: str | None = None) -> dict[str, Any] | None:
+	resolved = target_id or session.agent_focus_target_id
+	if not resolved:
+		return None
+	return await _cdp_get_window_context(session, resolved)
+
+
+async def set_window_bounds(session: 'BrowserSession', bounds: Any, target_id: str | None = None) -> dict[str, Any] | None:
+	from agentyc.browser.windowing import normalize_window_bounds
+	resolved = target_id or session.agent_focus_target_id
+	if not resolved:
+		return None
+	normalized = normalize_window_bounds(bounds)
+	if normalized is None:
+		return None
+	try:
+		assert session._cdp_client_root is not None
+		window_result = await _cdp_get_window_context(session, resolved)
+		if not window_result:
+			return None
+		window_id = window_result.get('windowId')
+		if window_id is None:
+			return None
+		bounds_dict = {k: v for k, v in normalized.model_dump(by_alias=True).items() if v is not None}
+		await session._cdp_client_root.send.Browser.setWindowBounds(params={'windowId': window_id, 'bounds': bounds_dict})
+		return bounds_dict
+	except Exception:
+		return None
