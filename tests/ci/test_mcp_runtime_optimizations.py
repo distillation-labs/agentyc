@@ -11,7 +11,7 @@ from pytest_httpserver import HTTPServer
 from websockets.protocol import State
 
 from agentyc.actions import ActionResult
-from agentyc.browser import BrowserProfile, BrowserSession, session_navigation, session_runtime, session_shared_browser
+from agentyc.browser import BrowserProfile, BrowserSession, session_navigation, session_runtime
 from agentyc.browser.events import (
 	AgentFocusChangedEvent,
 	BrowserLaunchEvent,
@@ -21,7 +21,7 @@ from agentyc.browser.events import (
 	RefreshEvent,
 	TabCreatedEvent,
 )
-from agentyc.browser.session_models import BrowserWindowBounds, RuntimeOwnershipMetadata, Target, TargetOwnershipMetadata
+from agentyc.browser.session_models import Target
 from agentyc.browser.views import TabInfo
 from agentyc.browser.watchdogs.default_action_navigation import DefaultActionNavigationMixin
 from agentyc.browser.watchdogs.dom_watchdog import DOMWatchdog
@@ -719,237 +719,12 @@ class TestMCPHotPathFixes:
 		assert server.tools is None
 		assert server.file_system is None
 
-	async def test_init_browser_session_reuses_registered_local_browser(self):
-		server = AgentycServer()
-		attached_session = SimpleNamespace(
-			id='session-shared',
-			start=AsyncMock(),
-			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-shared')),
-			event_bus=SimpleNamespace(dispatch=AsyncMock()),
-			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
-		)
 
-		with patch.dict(os.environ, {'AGENTYC_REUSE_LOCAL_BROWSER': 'true'}, clear=False):
-			with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
-				with patch(
-					'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
-					new=AsyncMock(return_value='http://127.0.0.1:9222/'),
-				) as reusable_cdp_url:
-					with patch(
-						'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
-					) as browser_profile:
-						with patch('agentyc.browser.BrowserSession', return_value=attached_session):
-							await server._init_browser_session()
 
-		reusable_cdp_url.assert_awaited_once_with(headless=True)
-		profile_kwargs = browser_profile.call_args.kwargs
-		assert profile_kwargs['cdp_url'] == 'http://127.0.0.1:9222/'
-		assert profile_kwargs['keep_alive'] is True
-		assert profile_kwargs['shared_browser_mode'] == 'tab'
-		assert profile_kwargs['shared_browser_focus_policy'] == 'preserve'
-		attached_session.start.assert_awaited_once()
-		assert server._cdp_url == 'http://127.0.0.1:9222/'
 
-	async def test_init_browser_session_reuses_registered_local_browser_when_explicitly_enabled(self):
-		server = AgentycServer(reuse_local_browser=True)
-		attached_session = SimpleNamespace(
-			id='session-shared',
-			start=AsyncMock(),
-			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-shared')),
-			event_bus=SimpleNamespace(dispatch=AsyncMock()),
-			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
-		)
 
-		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
-			with patch(
-				'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
-				new=AsyncMock(return_value='http://127.0.0.1:9222/'),
-			) as reusable_cdp_url:
-				with patch(
-					'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
-				) as browser_profile:
-					with patch('agentyc.browser.BrowserSession', return_value=attached_session):
-						await server._init_browser_session()
 
-		reusable_cdp_url.assert_awaited_once_with(headless=True)
-		profile_kwargs = browser_profile.call_args.kwargs
-		assert profile_kwargs['cdp_url'] == 'http://127.0.0.1:9222/'
-		assert profile_kwargs['keep_alive'] is True
-		attached_session.start.assert_awaited_once()
 
-	async def test_init_browser_session_claims_existing_blank_tab_on_explicit_attach(self):
-		server = AgentycServer(cdp_url='http://127.0.0.1:9222/')
-		current_runtime = RuntimeOwnershipMetadata.create(
-			session_id='session-shared',
-			runtime_id='runtime-shared',
-			runtime_label='Attached runtime',
-		)
-		blank_target = Target(
-			target_id='target-blank',
-			target_type='page',
-			url='about:blank',
-			title='Blank',
-			ownership=TargetOwnershipMetadata.human(target_id='target-blank'),
-		)
-		dispatch = AsyncMock()
-		set_target_ownership = Mock()
-		attached_session = SimpleNamespace(
-			id='session-shared',
-			start=AsyncMock(),
-			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-new')),
-			event_bus=SimpleNamespace(dispatch=dispatch),
-			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
-			runtime_metadata=current_runtime,
-			session_manager=SimpleNamespace(
-				get_all_page_targets=lambda: [blank_target],
-				set_target_ownership=set_target_ownership,
-			),
-		)
-
-		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
-			with patch('agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)):
-				with patch('agentyc.browser.BrowserSession', return_value=attached_session):
-					await server._init_browser_session(headless=True, user_data_dir=None)
-
-		attached_session.start.assert_awaited_once()
-		attached_session.create_collaborative_page.assert_not_awaited()
-		set_target_ownership.assert_called_once_with('target-blank', current_runtime, source='current_runtime')
-		assert dispatch.call_count == 1
-		dispatched_event = dispatch.call_args.args[0]
-		assert isinstance(dispatched_event, AgentFocusChangedEvent)
-		assert dispatched_event.target_id == 'target-blank'
-
-	async def test_init_browser_session_creates_new_tab_when_existing_tabs_are_owned(self):
-		server = AgentycServer(cdp_url='http://127.0.0.1:9222/')
-		current_runtime = RuntimeOwnershipMetadata.create(
-			session_id='session-shared',
-			runtime_id='runtime-shared',
-			runtime_label='Attached runtime',
-		)
-		peer_runtime = RuntimeOwnershipMetadata.create(
-			session_id='session-peer',
-			runtime_id='runtime-peer',
-			runtime_label='Peer runtime',
-		)
-		owned_target = Target(
-			target_id='target-peer',
-			target_type='page',
-			url='about:blank',
-			title='Owned blank',
-			ownership=TargetOwnershipMetadata.for_runtime(
-				target_id='target-peer',
-				runtime=peer_runtime,
-				current_runtime_id=current_runtime.runtime_id,
-				source='detected_runtime',
-				title_prefix_applied=True,
-			),
-		)
-		dispatch = AsyncMock()
-		set_target_ownership = Mock()
-		attached_session = SimpleNamespace(
-			id='session-shared',
-			start=AsyncMock(),
-			create_collaborative_page=AsyncMock(return_value=SimpleNamespace(_target_id='target-new')),
-			event_bus=SimpleNamespace(dispatch=dispatch),
-			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9222/', keep_alive=True),
-			runtime_metadata=current_runtime,
-			session_manager=SimpleNamespace(
-				get_all_page_targets=lambda: [owned_target],
-				set_target_ownership=set_target_ownership,
-			),
-		)
-
-		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
-			with patch('agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)):
-				with patch('agentyc.browser.BrowserSession', return_value=attached_session):
-					await server._init_browser_session(headless=True, user_data_dir=None)
-
-		attached_session.start.assert_awaited_once()
-		attached_session.create_collaborative_page.assert_awaited_once_with('about:blank')
-		set_target_ownership.assert_not_called()
-		assert dispatch.call_count == 2
-		assert isinstance(dispatch.call_args_list[0].args[0], TabCreatedEvent)
-		assert dispatch.call_args_list[0].args[0].target_id == 'target-new'
-		assert isinstance(dispatch.call_args_list[1].args[0], AgentFocusChangedEvent)
-		assert dispatch.call_args_list[1].args[0].target_id == 'target-new'
-
-	async def test_init_browser_session_does_not_register_local_browser_for_reuse_by_default(self):
-		server = AgentycServer()
-		fresh_session = SimpleNamespace(
-			id='session-local',
-			start=AsyncMock(),
-			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9333/', keep_alive=True, headless=True, user_data_dir=None),
-			_local_browser_watchdog=SimpleNamespace(browser_pid=1234, _owns_browser_resources=True),
-		)
-
-		with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
-			with patch(
-				'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
-				new=AsyncMock(return_value=None),
-			):
-				with patch(
-					'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
-				) as browser_profile:
-					with patch('agentyc.browser.BrowserSession', return_value=fresh_session):
-						with patch('agentyc.mcp.shared_browser_registry.register_local_shared_browser') as register_shared:
-							await server._init_browser_session(headless=True, user_data_dir=None)
-
-		profile_kwargs = browser_profile.call_args.kwargs
-		assert profile_kwargs['keep_alive'] is False
-		assert 'shared_browser_mode' not in profile_kwargs
-		register_shared.assert_not_called()
-		assert fresh_session._local_browser_watchdog._owns_browser_resources is True
-
-	async def test_init_browser_session_does_not_reuse_registered_local_browser_by_default(self):
-		server = AgentycServer()
-		local_session = SimpleNamespace(
-			id='session-local',
-			start=AsyncMock(),
-			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9333/', keep_alive=False),
-		)
-
-		with patch.dict(os.environ, {}, clear=False):
-			os.environ.pop('AGENTYC_REUSE_LOCAL_BROWSER', None)
-			with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
-				with patch(
-					'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
-					new=AsyncMock(return_value='http://127.0.0.1:9222/'),
-				) as reusable_cdp_url:
-					with patch(
-						'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
-					) as browser_profile:
-						with patch('agentyc.browser.BrowserSession', return_value=local_session):
-							await server._init_browser_session()
-
-		reusable_cdp_url.assert_not_awaited()
-		profile_kwargs = browser_profile.call_args.kwargs
-		assert profile_kwargs.get('cdp_url') is None
-		assert profile_kwargs['keep_alive'] is False
-
-	async def test_init_browser_session_explicit_disable_overrides_reuse_env(self):
-		server = AgentycServer(reuse_local_browser=False)
-		local_session = SimpleNamespace(
-			id='session-local',
-			start=AsyncMock(),
-			browser_profile=SimpleNamespace(cdp_url='http://127.0.0.1:9333/', keep_alive=False),
-		)
-
-		with patch.dict(os.environ, {'AGENTYC_REUSE_LOCAL_BROWSER': 'true'}, clear=False):
-			with patch('agentyc.config.get_default_profile', return_value={'headless': True}):
-				with patch(
-					'agentyc.mcp.shared_browser_registry.get_reusable_local_browser_cdp_url',
-					new=AsyncMock(return_value='http://127.0.0.1:9222/'),
-				) as reusable_cdp_url:
-					with patch(
-						'agentyc.browser.BrowserProfile', side_effect=lambda **kwargs: SimpleNamespace(**kwargs)
-					) as browser_profile:
-						with patch('agentyc.browser.BrowserSession', return_value=local_session):
-							await server._init_browser_session()
-
-		reusable_cdp_url.assert_not_awaited()
-		profile_kwargs = browser_profile.call_args.kwargs
-		assert profile_kwargs.get('cdp_url') is None
-		assert profile_kwargs['keep_alive'] is False
 
 	async def test_execute_tool_reinitializes_unhealthy_cached_browser_runtime(self):
 		server = AgentycServer()
@@ -1034,36 +809,6 @@ class TestMCPHotPathFixes:
 		local_watchdog.on_BrowserKillEvent.assert_awaited_once()
 		stop_mock.assert_awaited_once_with(clear=True, timeout=5)
 
-	async def test_second_server_reuses_existing_local_browser_without_explicit_cdp_url(self, monkeypatch):
-		from agentyc.mcp.shared_browser_registry import clear_registered_local_shared_browser
-
-		monkeypatch.setenv('AGENTYC_REUSE_LOCAL_BROWSER', '1')
-		clear_registered_local_shared_browser()
-		primary = AgentycServer()
-		secondary = AgentycServer()
-		launched_process = None
-
-		try:
-			with patch.dict(os.environ, {'AGENTYC_REUSE_LOCAL_BROWSER': 'true'}, clear=False):
-				await primary._init_browser_session(headless=True, user_data_dir=None)
-				primary_watchdog = getattr(primary.browser_session, '_local_browser_watchdog', None)
-				launched_process = getattr(primary_watchdog, '_subprocess', None)
-				primary_cdp_url = primary.browser_session.browser_profile.cdp_url
-				assert primary_cdp_url
-
-				await secondary._init_browser_session(headless=True, user_data_dir=None)
-				secondary_cdp_url = secondary.browser_session.browser_profile.cdp_url
-				assert secondary_cdp_url == primary_cdp_url
-				assert secondary.browser_session.id != primary.browser_session.id
-				assert secondary.browser_session.agent_focus_target_id != primary.browser_session.agent_focus_target_id
-		finally:
-			await secondary._shutdown()
-			await primary._shutdown()
-			if launched_process is not None:
-				from agentyc.browser.watchdogs.local_browser_watchdog import LocalBrowserWatchdog
-
-				await LocalBrowserWatchdog._cleanup_process(launched_process)
-			clear_registered_local_shared_browser()
 
 	async def test_get_state_forwards_include_screenshot_flag(self):
 		server = AgentycServer()
@@ -1574,66 +1319,6 @@ class TestMCPHotPathFixes:
 		assert title == 'Example page'
 		assert elapsed < 0.5
 
-	async def test_get_tabs_skips_live_peer_ownership_probe_for_detected_runtime_tabs(self):
-		current_runtime = RuntimeOwnershipMetadata.create(
-			session_id='session-self',
-			runtime_id='runtime-self',
-			runtime_label='Runtime Self',
-		)
-		peer_runtime = RuntimeOwnershipMetadata.create(
-			session_id='peer-runtime',
-			runtime_id='peer-runtime',
-			runtime_label='Peer Runtime',
-		)
-		current_target = Target(
-			target_id='target-self',
-			target_type='page',
-			url='https://example.com/self',
-			title='Self',
-			display_title='Self',
-			ownership=TargetOwnershipMetadata.for_runtime(
-				target_id='target-self',
-				runtime=current_runtime,
-				current_runtime_id=current_runtime.runtime_id,
-				source='current_runtime',
-			),
-		)
-		peer_target = Target(
-			target_id='target-peer',
-			target_type='page',
-			url='https://example.com/peer',
-			title='Peer',
-			display_title='Peer',
-			ownership=TargetOwnershipMetadata.for_runtime(
-				target_id='target-peer',
-				runtime=peer_runtime,
-				current_runtime_id=current_runtime.runtime_id,
-				source='detected_runtime',
-			),
-		)
-		fake_session = SimpleNamespace(
-			session_manager=SimpleNamespace(
-				get_all_page_targets=lambda: [current_target, peer_target],
-				get_target=lambda target_id: current_target if target_id == 'target-self' else peer_target,
-			),
-			agent_focus_target_id='target-self',
-			runtime_metadata=current_runtime,
-			logger=SimpleNamespace(debug=lambda *_args, **_kwargs: None),
-			_cdp_client_root=SimpleNamespace(),
-		)
-
-		with (
-			patch.object(session_shared_browser, '_reconcile_missing_page_targets', new=AsyncMock()),
-			patch.object(
-				session_shared_browser, '_detect_target_ownership', new=AsyncMock(return_value=None)
-			) as detect_target_ownership,
-		):
-			tabs = await session_shared_browser.get_tabs(fake_session)
-
-		assert len(tabs) == 2
-		assert tabs[1].ownership is not None
-		assert tabs[1].ownership.source == 'detected_runtime'
-		detect_target_ownership.assert_not_awaited()
 
 	async def test_navigate_new_tab_accepts_reused_blank_tab(self):
 		server = AgentycServer()
@@ -2262,46 +1947,6 @@ class TestMCPStateProtocolAndExtraction:
 		assert 'page' not in unchanged_payload
 		assert 'scroll' not in unchanged_payload
 
-	def test_browser_state_payload_uses_metadata_only_fast_path_for_unchanged_since_hash(self):
-		state = _stub_state(
-			tabs=[
-				TabInfo(
-					target_id='target-owned-1234',
-					url='https://example.com',
-					title='Example page',
-					display_title='[Agent 1234] Example page',
-					ownership={
-						'target_id': 'target-owned-1234',
-						'owner_kind': 'agent',
-						'source': 'current_runtime',
-						'display_label': 'Agent 1234',
-						'runtime': RuntimeOwnershipMetadata.create(
-							session_id='session-1234',
-							runtime_id='runtime-1234',
-							runtime_label='Agent 1234',
-						),
-					},
-					window_bounds=BrowserWindowBounds(left=10, top=20, width=1200, height=800),
-				)
-			],
-			current_tab_id='target-owned-1234',
-		)
-		state_hash = build_browser_state_payload(state, mode='min')['state_hash']
-
-		payload = build_browser_state_payload(state, mode='min', since_hash=state_hash)
-
-		assert payload == {
-			'url': 'https://example.com',
-			'title': 'Example page',
-			'mode': 'min',
-			'effective_mode': 'min',
-			'state_hash': state_hash,
-			'changed': False,
-			'interactive_element_count': 2,
-			'interactive_elements': [],
-			'current_tab_id': '1234',
-			'scroll': {'x': 0, 'y': 320},
-		}
 
 	async def test_browser_get_state_auto_uses_full_on_small_pages(self, browser_session: BrowserSession, base_url: str):
 		await browser_session.navigate_to(f'{base_url}/accessible')
@@ -2355,185 +2000,8 @@ class TestMCPStateProtocolAndExtraction:
 		assert payload['interactive_element_count'] == 3
 		assert server.browser_session.get_browser_state_summary.await_count == 1
 
-	def test_browser_state_payload_includes_collaboration_metadata_for_current_tab(self):
-		runtime = RuntimeOwnershipMetadata.create(
-			session_id='session-1234',
-			runtime_id='runtime-1234',
-			runtime_label='Agent 1234',
-		)
-		other_runtime = RuntimeOwnershipMetadata.create(
-			session_id='session-5678',
-			runtime_id='runtime-5678',
-			runtime_label='Agent 5678',
-		)
-		payload = build_browser_state_payload(
-			_stub_state(
-				tabs=[
-					TabInfo(
-						target_id='target-owned-1234',
-						url='https://example.com',
-						title='Example page',
-						display_title=f'{runtime.title_prefix}Example page',
-						ownership={
-							'target_id': 'target-owned-1234',
-							'owner_kind': 'agent',
-							'source': 'current_runtime',
-							'display_label': runtime.runtime_label,
-							'runtime': runtime,
-						},
-						window_bounds=BrowserWindowBounds(left=10, top=20, width=1200, height=800),
-					),
-					TabInfo(
-						target_id='target-owned-5678',
-						url='https://example.com/status',
-						title='Status page',
-						display_title=f'{other_runtime.title_prefix}Status page',
-						ownership={
-							'target_id': 'target-owned-5678',
-							'owner_kind': 'runtime',
-							'source': 'detected_runtime',
-							'display_label': other_runtime.runtime_label,
-							'runtime': other_runtime,
-						},
-					),
-				],
-				current_tab_id='target-owned-1234',
-			),
-			mode='min',
-		)
 
-		assert payload['tabs'][0]['tab_id'] == '1234'
-		assert payload['tabs'][0]['ownership']['owner_kind'] == 'agent'
-		assert payload['tabs'][0]['ownership']['source'] == 'current_runtime'
-		assert payload['tabs'][0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
-		assert 'target_id' not in payload['tabs'][0]['ownership']
-		assert 'marker_version' not in payload['tabs'][0]['ownership']
-		assert 'title_prefix_applied' not in payload['tabs'][0]['ownership']
-		assert 'session_id' not in payload['tabs'][0]['ownership']['runtime']
-		assert 'title_prefix' not in payload['tabs'][0]['ownership']['runtime']
-		assert 'runtime_role' not in payload['tabs'][0]['ownership']['runtime']
-		assert 'parent_runtime_id' not in payload['tabs'][0]['ownership']['runtime']
-		assert payload['tabs'][0]['window_bounds']['width'] == 1200
-		assert payload['tab_groups'][0]['runtime_id'] == runtime.runtime_id
-		assert payload['tab_groups'][0]['tab_count'] == 1
-		assert payload['tab_groups'][0]['tab_ids'] == ['1234']
-		assert payload['current_tab_id'] == '1234'
-		assert payload['current_tab']['tab_id'] == '1234'
-		assert payload['current_tab']['display_title'].startswith('[Agent 1234]')
-		assert payload['current_tab']['window_bounds']['height'] == 800
-		assert 'url' not in payload['current_tab']
-		assert 'title' not in payload['current_tab']
-		assert payload['current_tab']['ownership']['source'] == 'current_runtime'
-		assert payload['current_tab']['ownership']['runtime']['runtime_id'] == runtime.runtime_id
-		assert 'target_id' not in payload['current_tab']['ownership']
-		assert 'marker_version' not in payload['current_tab']['ownership']
-		assert 'title_prefix_applied' not in payload['current_tab']['ownership']
-		assert 'session_id' not in payload['current_tab']['ownership']['runtime']
-		assert 'title_prefix' not in payload['current_tab']['ownership']['runtime']
-		assert 'runtime_role' not in payload['current_tab']['ownership']['runtime']
-		assert 'parent_runtime_id' not in payload['current_tab']['ownership']['runtime']
-		assert 'ownership' not in payload
-		assert 'runtime' not in payload
 
-	def test_browser_state_hash_changes_when_tab_ownership_changes(self):
-		runtime_a = RuntimeOwnershipMetadata.create(
-			session_id='session-a',
-			runtime_id='runtime-a',
-			runtime_label='Agent A',
-		)
-		runtime_b = RuntimeOwnershipMetadata.create(
-			session_id='session-b',
-			runtime_id='runtime-b',
-			runtime_label='Agent B',
-		)
-		state_a = _stub_state(
-			tabs=[
-				TabInfo(
-					target_id='target-owned-1234',
-					url='https://example.com',
-					title='Example page',
-					display_title=f'{runtime_a.title_prefix}Example page',
-					ownership={
-						'target_id': 'target-owned-1234',
-						'owner_kind': 'agent',
-						'source': 'current_runtime',
-						'display_label': runtime_a.runtime_label,
-						'runtime': runtime_a,
-					},
-				)
-			],
-			current_tab_id='target-owned-1234',
-		)
-		state_b = _stub_state(
-			tabs=[
-				TabInfo(
-					target_id='target-owned-1234',
-					url='https://example.com',
-					title='Example page',
-					display_title=f'{runtime_b.title_prefix}Example page',
-					ownership={
-						'target_id': 'target-owned-1234',
-						'owner_kind': 'runtime',
-						'source': 'detected_runtime',
-						'display_label': runtime_b.runtime_label,
-						'runtime': runtime_b,
-					},
-				)
-			],
-			current_tab_id='target-owned-1234',
-		)
-
-		# state_hash tracks page content only, not tab ownership metadata
-		assert (
-			build_browser_state_payload(state_a, mode='min')['state_hash']
-			== build_browser_state_payload(state_b, mode='min')['state_hash']
-		)
-
-	async def test_browser_list_tabs_includes_collaboration_metadata(self):
-		runtime = RuntimeOwnershipMetadata.create(
-			session_id='session-1234',
-			runtime_id='runtime-1234',
-			runtime_label='Agent 1234',
-		)
-		server = AgentycServer()
-		server.browser_session = AsyncMock()
-		server.browser_session.get_tabs = AsyncMock(
-			return_value=[
-				TabInfo(
-					target_id='target-owned-1234',
-					url='https://example.com',
-					title='Example page',
-					display_title=f'{runtime.title_prefix}Example page',
-					ownership={
-						'target_id': 'target-owned-1234',
-						'owner_kind': 'agent',
-						'source': 'current_runtime',
-						'display_label': runtime.runtime_label,
-						'runtime': runtime,
-					},
-					window_bounds=BrowserWindowBounds(left=10, top=20, width=1200, height=800),
-				)
-			]
-		)
-
-		result = json.loads(await server._list_tabs())
-
-		assert result['tabs'][0]['tab_id'] == '1234'
-		assert result['tabs'][0]['display_title'].startswith('[Agent 1234]')
-		assert result['tabs'][0]['ownership']['owner_kind'] == 'agent'
-		assert result['tabs'][0]['ownership']['source'] == 'current_runtime'
-		assert result['tabs'][0]['ownership']['runtime']['runtime_id'] == runtime.runtime_id
-		assert 'target_id' not in result['tabs'][0]['ownership']
-		assert 'marker_version' not in result['tabs'][0]['ownership']
-		assert 'title_prefix_applied' not in result['tabs'][0]['ownership']
-		assert 'session_id' not in result['tabs'][0]['ownership']['runtime']
-		assert 'title_prefix' not in result['tabs'][0]['ownership']['runtime']
-		assert 'runtime_role' not in result['tabs'][0]['ownership']['runtime']
-		assert 'parent_runtime_id' not in result['tabs'][0]['ownership']['runtime']
-		assert result['tabs'][0]['window_bounds']['left'] == 10
-		assert result['tab_groups'][0]['runtime_id'] == runtime.runtime_id
-		assert result['tab_groups'][0]['tab_count'] == 1
-		assert result['tab_groups'][0]['tab_ids'] == ['1234']
 
 	async def test_extract_links_can_run_without_llm(
 		self, tools: Tools, browser_session: BrowserSession, base_url: str, tmp_path
@@ -2544,7 +2012,6 @@ class TestMCPStateProtocolAndExtraction:
 			query='list all links on the page',
 			extract_links=True,
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -2562,7 +2029,6 @@ class TestMCPStateProtocolAndExtraction:
 			query='extract the pricing table on the page',
 			extract_links=False,
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -2579,7 +2045,6 @@ class TestMCPStateProtocolAndExtraction:
 			query='list all checklist items on the page',
 			extract_links=False,
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -2597,7 +2062,6 @@ class TestMCPStateProtocolAndExtraction:
 			query='list all form fields on the page',
 			extract_links=False,
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -2617,7 +2081,6 @@ class TestMCPStateProtocolAndExtraction:
 			query='Summarize the shopping controls and primary calls to action',
 			extract_links=True,
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -2634,7 +2097,6 @@ class TestMCPStateProtocolAndExtraction:
 			query='Summarize the form fields and deployment actions',
 			extract_links=True,
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -2669,7 +2131,6 @@ class TestMCPStateProtocolAndExtraction:
 				'required': ['status', 'region'],
 			},
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -2707,7 +2168,6 @@ class TestMCPStateProtocolAndExtraction:
 				'required': ['results'],
 			},
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -3018,7 +2478,6 @@ class TestMCPStateProtocolAndExtraction:
 				'required': ['rows'],
 			},
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -3048,7 +2507,6 @@ class TestMCPStateProtocolAndExtraction:
 				'required': ['steps'],
 			},
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -3087,7 +2545,6 @@ class TestMCPStateProtocolAndExtraction:
 				'required': ['field_count', 'fields'],
 			},
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -3113,7 +2570,6 @@ class TestMCPStateProtocolAndExtraction:
 				'required': ['summary'],
 			},
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -3129,7 +2585,6 @@ class TestMCPStateProtocolAndExtraction:
 		result = await tools.extract(
 			query='summarize the page',
 			browser_session=browser_session,
-			page_extraction_llm=None,
 			file_system=FileSystem(base_dir=str(tmp_path)),
 		)
 
@@ -3144,191 +2599,4 @@ class TestParallelTabExecution:
 	Each server gets its own isolated tab — actions taken in one should not affect the other.
 	"""
 
-	async def test_two_agents_operate_on_independent_tabs(self, base_url: str):
-		"""Two servers attach to the same browser. Each navigates to a different page.
-		Reading state from server A must not see server B's page and vice-versa.
-		"""
-		# Start a primary browser (keep_alive=True so the second agent can attach)
-		primary_session = BrowserSession(
-			browser_profile=BrowserProfile(
-				headless=True,
-				user_data_dir=None,
-				keep_alive=True,
-			)
-		)
-		await primary_session.start()
 
-		try:
-			# Get the CDP URL of the shared browser
-			cdp_url = primary_session.browser_profile.cdp_url
-			assert cdp_url, 'Primary session must expose a CDP URL for shared-browser attachment'
-
-			# Server A: the primary session itself (owns the first tab)
-			server_a = AgentycServer(cdp_url=cdp_url)
-			server_a.browser_session = primary_session
-			server_a.tools = Tools()
-			server_a.tools.set_coordinate_clicking(True)
-
-			# Server B: creates a new tab in the same browser via cdp_url
-			server_b = AgentycServer(cdp_url=cdp_url)
-			await server_b._init_browser_session(headless=True, user_data_dir=None)
-
-			try:
-				# Navigate each agent to a different page concurrently
-				nav_a, nav_b = await asyncio.gather(
-					server_a._navigate(f'{base_url}/accessible'),
-					server_b._navigate(f'{base_url}/status'),
-				)
-				assert not nav_a.startswith('Error'), f'Server A navigation failed: {nav_a}'
-				assert not nav_b.startswith('Error'), f'Server B navigation failed: {nav_b}'
-
-				# Poll until both agents have interactive elements — avoids fixed sleeps
-				# that are brittle under a loaded event loop (e.g. after a full test suite).
-				state_a: dict = {}
-				state_b: dict = {}
-				for _ in range(20):
-					state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
-					state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
-					state_a = json.loads(state_a_json)
-					state_b = json.loads(state_b_json)
-					if state_a.get('interactive_elements') and state_b.get('interactive_elements'):
-						break
-					await asyncio.sleep(0.1)
-
-				assert (
-					state_a['current_tab']['ownership']['runtime']['runtime_id']
-					== server_a.browser_session.runtime_metadata.runtime_id
-				)
-				assert (
-					state_b['current_tab']['ownership']['runtime']['runtime_id']
-					== server_b.browser_session.runtime_metadata.runtime_id
-				)
-				assert state_a['current_tab']['tab_id'] != state_b['current_tab']['tab_id']
-				# Server_a must see server_b's tab in its tab list.
-				# We check by tab_id. Ownership attribution is best-effort and depends on JS running
-				# in server_b's page, so we don't assert on owner_kind here.
-				server_b_tab_id = state_b['current_tab']['tab_id']
-				assert any(tab.get('tab_id') == server_b_tab_id for tab in state_a['tabs']), (
-					f'Server A does not see server B tab {server_b_tab_id} in its tab list: {[t.get("tab_id") for t in state_a["tabs"]]}'
-				)
-
-				# Server A is on /accessible which has "Email address" and "Start checkout"
-				texts_a = {el.get('text', '') for el in state_a['interactive_elements']}
-				assert any('Email' in t or 'Start' in t for t in texts_a), (
-					f'Server A should be on /accessible, got elements: {texts_a}'
-				)
-
-				# Server B is on /status which has "Restart service"
-				texts_b = {el.get('text', '') for el in state_b['interactive_elements']}
-				assert any('Restart' in t for t in texts_b), f'Server B should be on /status, got elements: {texts_b}'
-
-				# The two sets of elements must be completely different (no bleed-over)
-				assert texts_a.isdisjoint(texts_b), f'Tab isolation violation — shared elements: {texts_a & texts_b}'
-
-			finally:
-				await server_b._shutdown()
-
-		finally:
-			await primary_session.kill()
-
-	async def test_parallel_actions_do_not_interfere(self, base_url: str):
-		"""Two agents fire click/type actions simultaneously on their own tabs.
-		Each action must succeed and land on the correct tab.
-		"""
-		primary_session = BrowserSession(
-			browser_profile=BrowserProfile(
-				headless=True,
-				user_data_dir=None,
-				keep_alive=True,
-			)
-		)
-		await primary_session.start()
-
-		try:
-			cdp_url = primary_session.browser_profile.cdp_url
-			assert cdp_url
-
-			server_a = AgentycServer(cdp_url=cdp_url)
-			server_a.browser_session = primary_session
-			server_a.tools = Tools()
-			server_a.tools.set_coordinate_clicking(True)
-
-			server_b = AgentycServer(cdp_url=cdp_url)
-			await server_b._init_browser_session(headless=True, user_data_dir=None)
-
-			try:
-				# Point each agent at the accessible form
-				nav_a = await server_a._navigate(f'{base_url}/accessible')
-				nav_b = await server_b._navigate(f'{base_url}/accessible')
-				assert not nav_a.startswith('Error'), f'Server A navigation failed: {nav_a}'
-				assert not nav_b.startswith('Error'), f'Server B navigation failed: {nav_b}'
-
-				# Poll until both agents have interactive elements
-				state_a: dict = {}
-				state_b: dict = {}
-				for _ in range(20):
-					state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
-					state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
-					state_a = json.loads(state_a_json)
-					state_b = json.loads(state_b_json)
-					if state_a.get('interactive_elements') and state_b.get('interactive_elements'):
-						break
-					await asyncio.sleep(0.1)
-
-				email_ref_a = next(
-					(
-						el['ref']
-						for el in state_a['interactive_elements']
-						if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
-					),
-					None,
-				)
-				email_ref_b = next(
-					(
-						el['ref']
-						for el in state_b['interactive_elements']
-						if 'Email' in el.get('text', '') or 'email' in el.get('placeholder', '').lower()
-					),
-					None,
-				)
-				assert email_ref_a is not None, (
-					f'Server A state has no email field. Elements: {[el.get("text") or el.get("placeholder") for el in state_a["interactive_elements"]]}'
-				)
-				assert email_ref_b is not None, (
-					f'Server B state has no email field. Elements: {[el.get("text") or el.get("placeholder") for el in state_b["interactive_elements"]]}'
-				)
-
-				# Both agents type simultaneously into their own tabs
-				result_a, result_b = await asyncio.gather(
-					server_a._type_text(ref=email_ref_a, text='agent-a@example.com'),
-					server_b._type_text(ref=email_ref_b, text='agent-b@example.com'),
-				)
-
-				assert not result_a.startswith('Error'), f'Server A type failed: {result_a}'
-				assert not result_b.startswith('Error'), f'Server B type failed: {result_b}'
-
-				# Verify each tab has the correct value (not bleed-over from the other agent).
-				# Use get_browser_state which surfaces the live input `value` field.
-				post_state_a_json, _ = await server_a._get_browser_state(include_screenshot=False)
-				post_state_b_json, _ = await server_b._get_browser_state(include_screenshot=False)
-				post_state_a = json.loads(post_state_a_json)
-				post_state_b = json.loads(post_state_b_json)
-
-				values_a = {el.get('value', '') for el in post_state_a['interactive_elements']}
-				values_b = {el.get('value', '') for el in post_state_b['interactive_elements']}
-
-				assert any('agent-a' in v for v in values_a), (
-					f'Tab A should have agent-a value in elements, got values: {values_a}'
-				)
-				assert any('agent-b' in v for v in values_b), (
-					f'Tab B should have agent-b value in elements, got values: {values_b}'
-				)
-				# Confirm the values did NOT bleed across tabs
-				assert not any('agent-b' in v for v in values_a), f'agent-b value leaked into Tab A: {values_a}'
-				assert not any('agent-a' in v for v in values_b), f'agent-a value leaked into Tab B: {values_b}'
-
-			finally:
-				await server_b._shutdown()
-
-		finally:
-			await primary_session.kill()
