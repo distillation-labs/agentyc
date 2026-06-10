@@ -21,7 +21,6 @@ from agentyc.browser.events import (
 )
 from agentyc.browser.watchdog_base import BaseWatchdog
 from agentyc.browser.watchdogs.local_browser_utils import _cleanup_temp_dir, _find_free_port
-from agentyc.mcp.shared_browser_registry import clear_registered_local_shared_browser
 from agentyc.observability import observe_debug
 
 if TYPE_CHECKING:
@@ -78,7 +77,6 @@ class LocalBrowserWatchdog(BaseWatchdog):
 		if self._subprocess:
 			await self._cleanup_process(self._subprocess)
 			self._subprocess = None
-			clear_registered_local_shared_browser(cdp_url=self._launched_cdp_url)
 
 		# Clean up temp directories if any were created
 		for temp_dir in self._temp_dirs_to_cleanup:
