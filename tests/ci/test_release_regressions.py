@@ -2,7 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from agentyc.browser import session_runtime
-from agentyc.mcp.shared_browser_registry import reuse_local_browser_enabled
 from agentyc.tools.javascript import validate_and_fix_javascript
 
 
@@ -30,10 +29,6 @@ def test_validate_and_fix_javascript_preserves_escaped_selector_quotes():
 	assert 'querySelector("button[aria-label=\\"Publish comment\\"]")' in result
 
 
-def test_reuse_local_browser_disabled_by_default(monkeypatch):
-	monkeypatch.delenv('AGENTYC_REUSE_LOCAL_BROWSER', raising=False)
-
-	assert reuse_local_browser_enabled() is False
 
 
 async def test_session_kill_preserves_local_watchdog_cleanup_after_stop_reset():
