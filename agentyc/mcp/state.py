@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from agentyc.browser.views import BrowserStateSummary
+from agentyc.browser.views import BrowserStateSummary, TabInfo
 from agentyc.dom.views import EnhancedDOMTreeNode
 from agentyc.mcp.state_compaction import (
 	_DEFAULT_MIN_ELEMENTS,
@@ -22,14 +22,30 @@ from agentyc.mcp.state_debug import (
 	_build_unchanged_state_payload,
 )
 from agentyc.mcp.state_refs import make_element_ref, parse_element_ref
-from agentyc.mcp.state_tabs import (
-	_resolve_current_tab_payload,
-	_serialize_tab_id,
-	build_tab_groups_payload,
-	serialize_tab_info,
-)
 
 StateMode = Literal['auto', 'full', 'min', 'focus']
+
+
+def _serialize_tab_id(target_id: Any) -> str | None:
+	if target_id is None:
+		return None
+	s = str(target_id)
+	return s[-4:] if len(s) >= 4 else s
+
+
+def serialize_tab_info(tab: Any) -> dict[str, Any]:
+	if hasattr(tab, 'model_dump'):
+		d = tab.model_dump(by_alias=True)
+	elif hasattr(tab, '__dict__'):
+		d = tab.__dict__.copy()
+	else:
+		d = dict(tab)
+	# Trim target_id to 4 chars if present as full string
+	for key in ('tab_id', 'target_id'):
+		if key in d and isinstance(d[key], str) and len(d[key]) > 4:
+			d['tab_id'] = d.pop(key)[-4:]
+			break
+	return {k: v for k, v in d.items() if v is not None}
 
 
 def build_browser_state_payload(
@@ -53,18 +69,16 @@ def build_browser_state_payload(
 		mode=mode, interactive_element_count=len(selector_map), max_min_elements=max_min_elements
 	)
 	tabs_payload: list[dict[str, Any]] = [serialize_tab_info(tab) for tab in state.tabs]
-	tab_groups_payload = build_tab_groups_payload(
-		tabs_payload, current_tab_id=_serialize_tab_id(getattr(state, 'current_tab_id', None))
-	)
 	state_hash = getattr(state, 'state_hash', None)
 	if state_hash is None:
 		state_hash = compute_browser_state_hash(state)
 		state.state_hash = state_hash
+
+	serialized_current_tab_id = _serialize_tab_id(getattr(state, 'current_tab_id', None))
 	result: dict[str, Any] = {
 		'url': state.url,
 		'title': state.title,
 		'tabs': tabs_payload,
-		'tab_groups': tab_groups_payload,
 		'mode': mode,
 		'effective_mode': effective_mode,
 		'state_hash': state_hash,
@@ -72,23 +86,8 @@ def build_browser_state_payload(
 		'interactive_element_count': len(selector_map),
 		'interactive_elements': [],
 	}
-
-	current_tab_id = getattr(state, 'current_tab_id', None)
-	serialized_current_tab_id = _serialize_tab_id(current_tab_id)
 	if serialized_current_tab_id is not None:
 		result['current_tab_id'] = serialized_current_tab_id
-	current_tab = _resolve_current_tab_payload(
-		tabs=state.tabs,
-		serialized_tabs=tabs_payload,
-		current_tab_id=current_tab_id,
-		current_url=state.url,
-		current_title=state.title,
-		include_page_identity=effective_mode != 'min',
-	)
-	if current_tab is not None:
-		result['current_tab'] = current_tab
-		if 'current_tab_id' not in result and 'tab_id' in current_tab:
-			result['current_tab_id'] = current_tab['tab_id']
 
 	if focus_index is not None:
 		result['focus_ref'] = make_element_ref(focus_index)
@@ -103,7 +102,7 @@ def build_browser_state_payload(
 			effective_mode=effective_mode,
 			state_hash=state_hash,
 			focus_index=focus_index,
-			current_tab=current_tab,
+			current_tab=None,
 			serialized_current_tab_id=serialized_current_tab_id,
 			interactive_element_count=len(selector_map),
 			debug_payload=debug_payload,
@@ -168,7 +167,6 @@ __all__ = [
 	'_build_debug_payload',
 	'_build_debug_payload_with_options',
 	'build_browser_state_payload',
-	'build_tab_groups_payload',
 	'compute_browser_state_hash',
 	'compute_element_signature',
 	'derive_element_context',
