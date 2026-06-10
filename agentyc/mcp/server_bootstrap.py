@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import logging
 import os
+import platform
 import sys
 
 from agentyc.logging_config import setup_logging
@@ -14,6 +17,44 @@ try:
 	PSUTIL_AVAILABLE = True
 except ImportError:
 	PSUTIL_AVAILABLE = False
+
+
+def _try_preload_allocator() -> str | None:
+	"""Try to preload mimalloc or jemalloc for lower RSS fragmentation.
+
+	On macOS, the default allocator holds partially-freed spans resident.
+	mimalloc's background purging keeps RSS closer to actual live data.
+	Returns the name of the loaded allocator, or None if none found.
+	"""
+	if os.environ.get('AGENTYC_SKIP_ALLOCATOR_PRELOAD'):
+		return None
+
+	system = platform.system()
+	if system == 'Darwin':
+		candidates = [
+			('mimalloc', ['libmimalloc.dylib', 'libmimalloc.2.dylib', '/opt/homebrew/lib/libmimalloc.dylib', '/usr/local/lib/libmimalloc.dylib']),
+			('jemalloc', ['libjemalloc.dylib', '/opt/homebrew/lib/libjemalloc.dylib', '/usr/local/lib/libjemalloc.dylib']),
+		]
+	elif system == 'Linux':
+		candidates = [
+			('mimalloc', ['libmimalloc.so.2', 'libmimalloc.so', '/usr/lib/libmimalloc.so.2']),
+			('jemalloc', ['libjemalloc.so.2', 'libjemalloc.so', '/usr/lib/x86_64-linux-gnu/libjemalloc.so.2']),
+		]
+	else:
+		return None
+
+	for name, paths in candidates:
+		# Try ctypes.util.find_library first
+		found = ctypes.util.find_library(name)
+		if found:
+			paths = [found] + paths
+		for path in paths:
+			try:
+				ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+				return name
+			except OSError:
+				continue
+	return None
 
 
 def _configure_mcp_server_logging() -> None:
@@ -59,32 +100,4 @@ def _ensure_all_loggers_use_stderr() -> None:
 		logger_obj.propagate = False
 
 
-def get_parent_process_cmdline() -> str | None:
-	"""Get the command line of all parent processes up the chain."""
-	if not PSUTIL_AVAILABLE:
-		return None
-
-	try:
-		cmdlines: list[str] = []
-		current_process = psutil.Process()
-		parent = current_process.parent()
-
-		while parent:
-			try:
-				cmdline = parent.cmdline()
-				if cmdline:
-					cmdlines.append(' '.join(cmdline))
-			except (psutil.AccessDenied, psutil.NoSuchProcess):
-				pass
-
-			try:
-				parent = parent.parent()
-			except (psutil.AccessDenied, psutil.NoSuchProcess):
-				break
-
-		return ';'.join(cmdlines) if cmdlines else None
-	except Exception:
-		return None
-
-
-__all__ = ['_configure_mcp_server_logging', '_ensure_all_loggers_use_stderr', 'get_parent_process_cmdline']
+__all__ = ['_configure_mcp_server_logging', '_ensure_all_loggers_use_stderr', '_try_preload_allocator']
