@@ -1,0 +1,17 @@
+[package]
+name = "agentyc-dom"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentyc-cdp = { path = "../agentyc-cdp" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+regex = { workspace = true }
+scraper = { workspace = true }
+htmd = { workspace = true }
+chromiumoxide_cdp = { workspace = true }
