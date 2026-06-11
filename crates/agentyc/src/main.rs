@@ -1,0 +1,184 @@
+#![allow(clippy::collapsible_if)]
+
+use mimalloc::MiMalloc;
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+use anyhow::{anyhow, Result};
+use clap::{Parser, Subcommand};
+use tracing_subscriber::EnvFilter;
+
+const SKILL_MD: &str = include_str!("../../../SKILL.md");
+
+#[derive(Parser)]
+#[command(name = "agentyc", about = "Deterministic browser automation MCP server", version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Cmd>,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Run MCP server over stdio (default).
+    Mcp {
+        #[arg(long)]
+        cdp_url: Option<String>,
+        /// Idle timeout in minutes (0 = never, default).
+        #[arg(long, default_value = "0")]
+        session_timeout_minutes: u64,
+    },
+    /// Run MCP server over Streamable HTTP.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value = "8765")]
+        port: u16,
+        #[arg(long)]
+        cdp_url: Option<String>,
+        /// Idle timeout in minutes (0 = never, default).
+        #[arg(long, default_value = "0")]
+        session_timeout_minutes: u64,
+    },
+    /// Write the agentyc skills guide to a file.
+    Init {
+        #[arg(long, default_value = "agentyc-skill.md")]
+        output: String,
+        #[arg(long)]
+        print: bool,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Launch Chrome with remote debugging and print the CDP WebSocket URL.
+    Browser {
+        #[arg(long, default_value = "9222")]
+        port: u16,
+        #[arg(long)]
+        headless: bool,
+        #[arg(long)]
+        detach: bool,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // stderr-only tracing — stdout is the JSON-RPC channel
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            EnvFilter::try_from_env("AGENTYC_LOGGING_LEVEL")
+                .unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
+        .init();
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        None => agentyc_mcp::run_stdio(None).await,
+        Some(Cmd::Mcp { cdp_url, .. }) => {
+            agentyc_mcp::run_stdio(cdp_url.as_deref()).await
+        }
+        Some(Cmd::Serve { host, port, cdp_url, .. }) => {
+            run_serve(&host, port, cdp_url.as_deref()).await
+        }
+        Some(Cmd::Init { output, print, force }) => {
+            cmd_init(&output, print, force)
+        }
+        Some(Cmd::Browser { port, headless, detach }) => {
+            cmd_browser(port, headless, detach).await
+        }
+    }
+}
+
+async fn run_serve(host: &str, port: u16, cdp_url: Option<&str>) -> Result<()> {
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService,
+        session::local::LocalSessionManager,
+    };
+
+    let cdp_owned = cdp_url.map(str::to_string);
+    let service: StreamableHttpService<agentyc_mcp::BrowserServer, LocalSessionManager> =
+        StreamableHttpService::new(
+            move || {
+                let server = agentyc_mcp::BrowserServer::new();
+                let _u = &cdp_owned; // cdp_url connect is done async at first navigate
+                Ok(server)
+            },
+            Default::default(),
+            StreamableHttpServerConfig::default(),
+        );
+    let addr = format!("{host}:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("agentyc MCP server listening on http://{addr}/mcp");
+    let router = axum::Router::new().nest_service("/mcp", service);
+    axum::serve(listener, router).await?;
+    Ok(())
+}
+
+fn cmd_init(output: &str, print_only: bool, force: bool) -> Result<()> {
+    if print_only {
+        print!("{SKILL_MD}");
+        return Ok(());
+    }
+    let dest = std::path::Path::new(output);
+    if dest.exists() && !force {
+        eprintln!("{output} already exists. Use --force to overwrite.");
+        std::process::exit(1);
+    }
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(dest, SKILL_MD)?;
+    println!("Written to {output}");
+    println!();
+    println!("Add this file to your coding agent context:");
+    println!("  Claude Code:  add \"{output}\" to CLAUDE.md with @{output}");
+    println!("  Cursor:       copy to .cursor/rules/agentyc.md");
+    Ok(())
+}
+
+async fn cmd_browser(port: u16, headless: bool, detach: bool) -> Result<()> {
+    let chrome = agentyc_browser::find_chrome_binary()
+        .ok_or_else(|| anyhow!("Could not find Chrome or Chromium. Install Chrome and try again."))?;
+
+    let mut args = vec![
+        format!("--remote-debugging-port={port}"),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        "--disable-background-networking".to_string(),
+    ];
+    if headless {
+        args.push("--headless=new".to_string());
+    }
+
+    let mut child = tokio::process::Command::new(&chrome)
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    // Poll /json/version until ready
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut cdp_url: Option<String> = None;
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(resp) = reqwest::get(format!("http://localhost:{port}/json/version")).await {
+            if let Ok(data) = resp.json::<serde_json::Value>().await {
+                if let Some(url) = data["webSocketDebuggerUrl"].as_str() {
+                    cdp_url = Some(url.to_string());
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    let url = cdp_url
+        .ok_or_else(|| anyhow!("Chrome did not start within 15 seconds on port {port}"))?;
+    println!("{url}");
+
+    if !detach {
+        let _ = child.wait().await;
+    }
+    Ok(())
+}
