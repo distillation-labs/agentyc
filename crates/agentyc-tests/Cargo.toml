@@ -1,0 +1,11 @@
+[package]
+name = "agentyc-tests"
+version.workspace = true
+edition.workspace = true
+
+[[test]]
+name = "mcp_protocol"
+path = "../../tests/mcp_protocol.rs"
+
+[dev-dependencies]
+serde_json = { workspace = true }
