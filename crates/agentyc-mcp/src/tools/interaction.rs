@@ -194,19 +194,19 @@ pub async fn browser_type(
     mouse_event(state, "mousePressed", x, y, "left", 1).await?;
     mouse_event(state, "mouseReleased", x, y, "left", 1).await?;
 
-    // Get the backendNodeId for targeted value setting
     let bid = if let Some(r) = &r#ref {
         parse_ref(r).ok()
     } else {
         index
     };
 
+    let text_json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
+
+    // Primary path: callFunctionOn via resolved objectId
     if let Some(id) = bid.filter(|&id| id > 0) {
-        // Resolve node to objectId and use React-compatible native setter
         let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await;
         if let Ok(rr) = resolve {
             if let Some(obj_id) = rr["object"]["objectId"].as_str() {
-                let text_json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
                 let func = format!(
                     r#"function(){{
                         var v={text_json};
@@ -217,6 +217,7 @@ pub async fn browser_type(
                         if(d&&d.set){{d.set.call(el,v);}}else{{el.value=v;}}
                         el.dispatchEvent(new Event('input',{{bubbles:true}}));
                         el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                        return el.value;
                     }}"#
                 );
                 let g = state.lock().await;
@@ -224,16 +225,41 @@ pub async fn browser_type(
                 let result = g.cdp()?.send::<serde_json::Value>("Runtime.callFunctionOn", json!({
                     "objectId": obj_id,
                     "functionDeclaration": func,
+                    "returnByValue": true,
                 }), sid.as_deref()).await;
                 drop(g);
-                if result.is_ok() {
-                    return Ok(ok_text(format!("Typed {} chars", text.len())));
+                if let Ok(r) = result {
+                    let returned = r["result"]["value"].as_str().unwrap_or("");
+                    if !returned.is_empty() {
+                        return Ok(ok_text(format!("Typed {} chars", text.len())));
+                    }
                 }
             }
         }
     }
 
-    // Fallback: select all + insertText (works for non-React/native inputs)
+    // Fallback 1: Runtime.evaluate on focused element (works for React inputs, same context as browser_evaluate)
+    let js_set = format!(
+        r#"(function(){{
+            var el = document.activeElement;
+            if(!el || el===document.body) return false;
+            var v={text_json};
+            var d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')
+                ||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');
+            if(d&&d.set){{d.set.call(el,v);}}else{{el.value=v;}}
+            el.dispatchEvent(new Event('input',{{bubbles:true}}));
+            el.dispatchEvent(new Event('change',{{bubbles:true}}));
+            return el.value===v;
+        }})()"#
+    );
+    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js_set, "returnByValue": true})).await;
+    if let Ok(r) = resp {
+        if r["result"]["value"].as_bool() == Some(true) {
+            return Ok(ok_text(format!("Typed {} chars", text.len())));
+        }
+    }
+
+    // Fallback 2: insertText (native inputs without React)
     dispatch_key(state, "a", true, false, false).await?;
     cdp(state, "Input.dispatchKeyEvent", json!({"type":"keyDown","key":"Delete"})).await.ok();
     cdp(state, "Input.insertText", json!({"text": text})).await?;
