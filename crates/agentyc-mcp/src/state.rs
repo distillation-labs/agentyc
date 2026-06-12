@@ -2,7 +2,6 @@
 
 #![allow(clippy::collapsible_if, clippy::collapsible_match)]
 
-use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -14,11 +13,26 @@ const SCORE_FLOOR: f64 = 0.7;
 
 // ── hashing ──────────────────────────────────────────────────────────────────
 
-/// Compute a 16-hex-char MD5 digest matching Python's `compute_browser_state_hash`.
+/// Compute a 16-hex-char MD5 digest.
 pub fn compute_state_hash(parts: &[&str]) -> String {
-    let key = parts.join("|");
-    let digest = md5::compute(key.as_bytes());
-    format!("{:x}", digest)[..16].to_string()
+    // Avoid join() allocation by feeding parts directly into md5
+    let mut ctx = md5::Context::new();
+    let mut first = true;
+    for p in parts {
+        if !first { ctx.consume(b"|"); }
+        ctx.consume(p.as_bytes());
+        first = false;
+    }
+    let digest = ctx.compute();
+    // Write 16 hex chars without format!() allocation
+    let mut out = [0u8; 16];
+    let hex = b"0123456789abcdef";
+    let d = digest.0;
+    for (i, &byte) in d[..8].iter().enumerate() {
+        out[i * 2]     = hex[(byte >> 4) as usize];
+        out[i * 2 + 1] = hex[(byte & 0xf) as usize];
+    }
+    std::str::from_utf8(&out).unwrap().to_string()
 }
 
 // ── text helpers ─────────────────────────────────────────────────────────────
@@ -28,6 +42,11 @@ pub fn normalize_text(s: &str) -> String {
 }
 
 pub fn truncate_text(s: &str, max_len: usize) -> String {
+    // Fast path: if no whitespace collapsing needed and fits, return early
+    let trimmed = s.trim();
+    if trimmed.len() <= max_len && !trimmed.contains("  ") && !trimmed.contains('\n') && !trimmed.contains('\t') {
+        return if trimmed.len() == s.len() { s.to_string() } else { trimmed.to_string() };
+    }
     let c: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if c.len() <= max_len {
         c
@@ -36,9 +55,11 @@ pub fn truncate_text(s: &str, max_len: usize) -> String {
     }
 }
 
+static DIGIT_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
 fn normalize_sig_text(s: &str) -> String {
-    let re = Regex::new(r"\d+").unwrap();
-    re.replace_all(&normalize_text(s), "#").to_string()
+    let re = DIGIT_RE.get_or_init(|| regex::Regex::new(r"\d+").unwrap());
+    re.replace_all(&normalize_text(s), "#").into_owned()
 }
 
 // ── mode resolution ──────────────────────────────────────────────────────────
@@ -92,8 +113,6 @@ pub struct ElemSummary {
     pub value: Option<String>,
     pub disabled: bool,
     pub score: f64,
-    #[allow(dead_code)]
-    pub order: usize,
     pub rect_y: Option<f64>,
     pub off_screen: Option<String>,
 }
@@ -166,30 +185,26 @@ pub fn select_min_elements(
     let prox_near = sy + viewport_h;
     let prox_far = sy + viewport_h * 2.0;
 
-    let mut sig_counts: HashMap<String, usize> = HashMap::new();
+    // Pre-compute all sigs once
+    let sigs: Vec<String> = elements.iter().map(compaction_sig).collect();
+
+    let mut sig_counts: HashMap<&str, usize> = HashMap::new();
     let mut scored: Vec<(f64, usize)> = elements
         .iter()
         .enumerate()
         .map(|(i, el)| {
-            let sig = compaction_sig(el);
-            let dup = *sig_counts.get(&sig).unwrap_or(&0);
-            sig_counts.insert(sig, dup + 1);
+            let sig = sigs[i].as_str();
+            let dup = *sig_counts.get(sig).unwrap_or(&0);
+            *sig_counts.entry(sig).or_insert(0) += 1;
 
             let mut s = el.score + (16.0 - (i as f64 * 0.35)).max(0.0);
-            if dup == 0 {
-                s += 4.0;
-            }
+            if dup == 0 { s += 4.0; }
             s -= dup as f64 * 6.0;
-            if dup >= MAX_DUPS_PER_SIG {
-                s -= 50.0;
-            }
+            if dup >= MAX_DUPS_PER_SIG { s -= 50.0; }
             if let Some(y) = el.rect_y {
                 let abs_y = sy + y;
-                if abs_y <= prox_near {
-                    s += 18.0;
-                } else if abs_y <= prox_far {
-                    s += 9.0;
-                }
+                if abs_y <= prox_near { s += 18.0; }
+                else if abs_y <= prox_far { s += 9.0; }
             }
             (s, i)
         })
@@ -198,30 +213,22 @@ pub fn select_min_elements(
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut selected: Vec<usize> = Vec::new();
-    let mut sel_sigs: HashMap<String, usize> = HashMap::new();
+    let mut sel_sigs: HashMap<&str, usize> = HashMap::new();
     for (_, i) in &scored {
-        if selected.len() >= max {
-            break;
-        }
-        let sig = compaction_sig(&elements[*i]);
-        let cnt = *sel_sigs.get(&sig).unwrap_or(&0);
-        if cnt >= MAX_DUPS_PER_SIG {
-            continue;
-        }
+        if selected.len() >= max { break; }
+        let sig = sigs[*i].as_str();
+        let cnt = *sel_sigs.get(sig).unwrap_or(&0);
+        if cnt >= MAX_DUPS_PER_SIG { continue; }
         selected.push(*i);
-        sel_sigs.insert(sig, cnt + 1);
+        *sel_sigs.entry(sig).or_insert(0) += 1;
     }
 
     // Trim by relative score floor
     if selected.len() > MIN_KEEP && max <= DEFAULT_MIN_ELEMENTS {
         let top = scored.first().map(|(s, _)| *s).unwrap_or(0.0);
         let threshold = top * SCORE_FLOOR;
-        let trimmed: Vec<usize> = selected
-            .iter()
-            .copied()
-            .filter(|&i| {
-                scored.iter().find(|(_, idx)| *idx == i).map(|(s, _)| *s).unwrap_or(0.0) >= threshold
-            })
+        let trimmed: Vec<usize> = selected.iter().copied()
+            .filter(|&i| scored.iter().find(|(_, idx)| *idx == i).map(|(s, _)| *s).unwrap_or(0.0) >= threshold)
             .collect();
         if trimmed.len() >= MIN_KEEP {
             selected = trimmed;
@@ -256,15 +263,15 @@ impl<'a> StateBuilder<'a> {
         let scroll_y = self.scroll.map(|(_, y)| y as f64);
         let vh = self.viewport.map(|(_, h)| h as f64);
 
-        // Compute hash
-        let mut hash_parts: Vec<String> = vec![self.url.to_string(), self.title.to_string()];
+        // Compute hash — feed parts directly without intermediate Vec<String>+Vec<&str>
+        let url_s = self.url;
+        let title_s = self.title;
+        let mut hash_parts: Vec<String> = Vec::with_capacity(4 + self.elements.len() * 2);
+        hash_parts.push(url_s.to_string());
+        hash_parts.push(title_s.to_string());
         if let Some((vw, vh_)) = self.viewport {
             hash_parts.push(vw.to_string());
             hash_parts.push(vh_.to_string());
-        }
-        if let Some((_, pw)) = self.page_size {
-            // page_width and page_height — not in Python hash, only viewport+scroll+elements
-            let _ = pw;
         }
         if let Some((sx, sy)) = self.scroll {
             hash_parts.push(sx.to_string());
