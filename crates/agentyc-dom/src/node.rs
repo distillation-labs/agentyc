@@ -58,8 +58,6 @@ pub struct DomRect {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotData {
     pub bounds: Option<DomRect>,
-    pub scroll_rects: Option<DomRect>,
-    pub client_rects: Option<DomRect>,
     pub computed_styles: HashMap<String, String>,
     pub paint_order: i64,
     pub cursor_style: Option<String>,

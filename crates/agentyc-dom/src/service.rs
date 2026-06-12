@@ -143,8 +143,6 @@ fn build_snapshot_lookup(snapshot: &Value) -> HashMap<u64, SnapshotData> {
                 bid,
                 SnapshotData {
                     bounds,
-                    scroll_rects: None,
-                    client_rects: None,
                     computed_styles: computed,
                     paint_order,
                     cursor_style,
