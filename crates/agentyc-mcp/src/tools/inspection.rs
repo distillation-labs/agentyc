@@ -177,14 +177,25 @@ pub async fn browser_get_attribute(
     index: Option<u64>,
 ) -> Result<CallToolResult> {
     let id = if let Some(r) = &r#ref { parse_ref(r)? } else { index.unwrap_or(0) };
-    let js = if id > 0 {
-        format!("document.querySelectorAll('*')[{id}]?.getAttribute({:?})", name)
-    } else {
-        format!("document.querySelector('*')?.getAttribute({:?})", name)
-    };
-    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
-    let val = &resp["result"]["value"];
-    Ok(ok_text(val.as_str().unwrap_or("null")))
+    if id == 0 {
+        return Err(anyhow!("Must provide ref or index"));
+    }
+    // Resolve backendNodeId to objectId, then callFunctionOn
+    let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await?;
+    if let Some(obj_id) = resolve["object"]["objectId"].as_str() {
+        let g = state.lock().await;
+        let sid = g.session_id.clone();
+        let func = format!("function(){{return this.getAttribute({})}}", serde_json::to_string(&name).unwrap());
+        let call_resp = g.cdp()?.send::<Value>("Runtime.callFunctionOn", json!({
+            "objectId": obj_id,
+            "functionDeclaration": func,
+            "returnByValue": true,
+        }), sid.as_deref()).await?;
+        drop(g);
+        let val = &call_resp["result"]["value"];
+        return Ok(ok_text(if val.is_null() { "null".to_string() } else { val.as_str().unwrap_or("null").to_string() }));
+    }
+    Ok(ok_text("null"))
 }
 
 pub async fn browser_evaluate(state: &SharedState, code: String) -> Result<CallToolResult> {
