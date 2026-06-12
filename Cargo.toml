@@ -2,7 +2,6 @@
 members = [
     "crates/agentyc-cdp",
     "crates/agentyc-browser",
-    "crates/agentyc-dom",
     "crates/agentyc-tools",
     "crates/agentyc-mcp",
     "crates/agentyc",
@@ -53,3 +52,4 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+panic = "abort"
