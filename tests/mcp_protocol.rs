@@ -85,11 +85,11 @@ impl Drop for McpProcess {
 }
 
 #[test]
-fn test_tool_count_is_77() {
+fn test_tool_count_is_61() {
     let mut mcp = McpProcess::start();
     let r = mcp.send("tools/list", serde_json::json!({}));
     let tools = r["result"]["tools"].as_array().expect("no tools array");
-    assert_eq!(tools.len(), 77, "Expected 77 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 61, "Expected 61 tools, got {}", tools.len());
 }
 
 #[test]
@@ -122,11 +122,6 @@ fn test_all_tool_names_present() {
         "browser_set_extra_headers", "browser_set_user_agent", "browser_set_timezone",
         "browser_set_locale", "browser_emulate_media", "browser_save_state", "browser_load_state",
         "browser_list_sessions", "browser_close_session", "browser_close_all",
-        "browser_get_console_logs", "browser_get_network_log", "browser_inspect_network_entry",
-        "browser_add_network_mock", "browser_remove_network_mock", "browser_list_network_mocks",
-        "browser_set_network_conditions", "browser_get_network_conditions", "browser_replay_request",
-        "browser_export_debug_bundle", "browser_set_intent", "browser_get_downloads",
-        "browser_wait_for_download", "browser_clear_logs", "browser_start_trace", "browser_stop_trace",
     ];
     for name in &required {
         assert!(tools.contains(*name), "Missing tool: {name}");
@@ -141,32 +136,11 @@ fn test_browser_wait() {
 }
 
 #[test]
-fn test_browser_set_intent() {
-    let mut mcp = McpProcess::start();
-    let r = mcp.call("browser_set_intent", serde_json::json!({"intent": "unit test"}));
-    assert!(mcp.result_text(&r).contains("unit test"), "unexpected: {:?}", r);
-}
-
-#[test]
 fn test_browser_list_sessions() {
     let mut mcp = McpProcess::start();
     let r = mcp.call("browser_list_sessions", serde_json::json!({}));
     let text = mcp.result_text(&r);
     assert!(text.contains("session_id") || text.contains("has_cdp"), "unexpected: {text}");
-}
-
-#[test]
-fn test_browser_get_console_logs_empty() {
-    let mut mcp = McpProcess::start();
-    let r = mcp.call("browser_get_console_logs", serde_json::json!({}));
-    assert_eq!(mcp.result_text(&r).trim(), "[]");
-}
-
-#[test]
-fn test_browser_list_network_mocks_empty() {
-    let mut mcp = McpProcess::start();
-    let r = mcp.call("browser_list_network_mocks", serde_json::json!({}));
-    assert_eq!(mcp.result_text(&r).trim(), "[]");
 }
 
 #[test]
