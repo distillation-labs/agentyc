@@ -39,17 +39,7 @@ impl ScrollDir {
     }
 }
 
-#[derive(Deserialize, JsonSchema, Default)]
-#[serde(rename_all = "lowercase")]
-enum NetworkStatusFilter { #[default] All, Errors, Success }
-impl NetworkStatusFilter {
-    fn as_str(&self) -> &'static str {
-        match self { Self::All => "all", Self::Errors => "errors", Self::Success => "success" }
-    }
-}
-
-
-/// agentyc browser automation MCP server with all 77 tools.
+/// agentyc browser automation MCP server with all 76 tools.
 #[derive(Clone)]
 pub struct BrowserServer {
     state: SharedState,
@@ -59,13 +49,15 @@ pub struct BrowserServer {
 impl BrowserServer {
     pub fn new() -> Self {
         let state = Arc::new(Mutex::new(ServerState::new()));
-        let tr = Self::tool_router_nav()
+        let mut tr = Self::tool_router_nav()
             + Self::tool_router_state()
             + Self::tool_router_interaction()
             + Self::tool_router_inspection()
             + Self::tool_router_frames()
-            + Self::tool_router_tabs()
-            + Self::tool_router_obs();
+            + Self::tool_router_tabs();
+        // Strip verbose schemars-generated fields from every tool's inputSchema
+        // to reduce tools/list payload size (~30% reduction).
+        slim_tool_schemas(&mut tr);
         Self { state, tool_router: tr }
     }
 
@@ -98,7 +90,6 @@ impl BrowserServer {
                 }
             }
         }
-        tools::navigation::spawn_event_listeners(Arc::clone(&self.state), client.clone());
         self.state.lock().await.cdp = Some(client);
         Ok(())
     }
@@ -106,6 +97,26 @@ impl BrowserServer {
 
 impl Default for BrowserServer {
     fn default() -> Self { Self::new() }
+}
+
+/// Strip verbose schemars fields from inputSchema to reduce tools/list payload.
+/// Removes: "$schema", "title", "format" (per-property), "$defs".
+fn slim_tool_schemas(tr: &mut rmcp::handler::server::router::tool::ToolRouter<BrowserServer>) {
+    for route in tr.map.values_mut() {
+        let schema = std::sync::Arc::make_mut(&mut route.attr.input_schema);
+        schema.remove("$schema");
+        schema.remove("title");
+        schema.remove("$defs");
+        if let Some(serde_json::Value::Object(props)) = schema.get_mut("properties") {
+            for prop in props.values_mut() {
+                if let serde_json::Value::Object(p) = prop {
+                    p.remove("format");
+                    p.remove("title");
+                    // Simplify nullable types: ["T", "null"] -> just keep as-is but remove format
+                }
+            }
+        }
+    }
 }
 
 // ── Navigation tools ─────────────────────────────────────────────────────────
@@ -227,9 +238,7 @@ impl BrowserServer {
 struct ClickParams {
     r#ref: Option<String>, index: Option<u64>, label: Option<String>,
     coordinate_x: Option<f64>, coordinate_y: Option<f64>,
-    new_tab: Option<bool>,
     wait_for_url_substring: Option<String>, wait_for_url_regex: Option<String>,
-    wait_for_download: Option<bool>, wait_for_tab: Option<bool>,
     url_timeout_seconds: Option<f64>,
 }
 #[derive(Deserialize, JsonSchema)]
@@ -267,9 +276,9 @@ struct DragToParams {
 
 #[tool_router(router = tool_router_interaction, vis = "pub")]
 impl BrowserServer {
-    #[rmcp::tool(description = "Click an element (ref preferred) or viewport coordinates. Optionally wait for a matching download, new tab, URL change, request, or response triggered by the click.")]
+    #[rmcp::tool(description = "Click an element (ref preferred) or viewport coordinates. Optionally wait for a URL change triggered by the click.")]
     async fn browser_click(&self, p: rmcp::handler::server::wrapper::Parameters<ClickParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::interaction::browser_click(&self.state, p.0.r#ref, p.0.index, p.0.label, p.0.coordinate_x, p.0.coordinate_y, p.0.new_tab, p.0.wait_for_url_substring, p.0.wait_for_url_regex, p.0.wait_for_download, p.0.wait_for_tab, p.0.url_timeout_seconds).await)
+        tools::res(tools::interaction::browser_click(&self.state, p.0.r#ref, p.0.index, p.0.label, p.0.coordinate_x, p.0.coordinate_y, p.0.wait_for_url_substring, p.0.wait_for_url_regex, p.0.url_timeout_seconds).await)
     }
     #[rmcp::tool(description = "Right-click to open a context menu.")]
     async fn browser_right_click(&self, p: rmcp::handler::server::wrapper::Parameters<MouseParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
@@ -526,126 +535,13 @@ impl BrowserServer {
 
 // ── Observability tools ───────────────────────────────────────────────────────
 
-#[derive(Deserialize, JsonSchema)]
-struct ConsoleLogsParams { level: Option<String>, max_entries: Option<usize> }
-#[derive(Deserialize, JsonSchema)]
-struct NetworkLogParams { type_filter: Option<String>, status_filter: Option<String>, max_entries: Option<usize>, include_headers: Option<bool> }
-#[derive(Deserialize, JsonSchema)]
-struct InspectNetworkParams {
-    request_id: Option<String>, url_substring: Option<String>, url_regex: Option<String>,
-    method: Option<String>, resource_type: Option<String>, status: Option<u32>,
-    include_headers: Option<bool>, include_request_body: Option<bool>,
-    include_response_body: Option<bool>, max_body_bytes: Option<usize>, decode_json: Option<bool>,
-}
-#[derive(Deserialize, JsonSchema)]
-struct AddMockParams {
-    url_substring: Option<String>, url_regex: Option<String>, method: Option<String>,
-    resource_type: Option<String>, action: Option<String>, status: Option<u32>,
-    headers: Option<Value>, body: Option<String>, error_reason: Option<String>,
-}
-#[derive(Deserialize, JsonSchema)]
-struct RemoveMockParams { mock_id: Option<String> }
-#[derive(Deserialize, JsonSchema)]
-struct SetNetworkConditionsParams {
-    offline: Option<bool>, latency_ms: Option<f64>, download_kbps: Option<f64>,
-    upload_kbps: Option<f64>, connection_type: Option<String>, reset: Option<bool>,
-}
-#[derive(Deserialize, JsonSchema)]
-struct ReplayRequestParams {
-    request_id: Option<String>, url_substring: Option<String>, url_regex: Option<String>,
-    method: Option<String>, body: Option<String>, headers: Option<Value>,
-}
-#[derive(Deserialize, JsonSchema)]
-struct ExportDebugBundleParams {
-    state_mode: Option<StateMode>, focus_ref: Option<String>, since_hash: Option<String>,
-    include_screenshot: Option<bool>, include_headers: Option<bool>, include_html: Option<bool>,
-    html_selector: Option<String>, console_max_entries: Option<usize>,
-    network_max_entries: Option<usize>, network_status_filter: Option<NetworkStatusFilter>,
-}
-#[derive(Deserialize, JsonSchema)]
-struct SetIntentParams { intent: String }
-#[derive(Deserialize, JsonSchema)]
-struct WaitForDownloadParams { expected_name: Option<String>, timeout_seconds: Option<f64> }
-#[derive(Deserialize, JsonSchema)]
-struct ClearLogsParams { console: Option<bool>, network: Option<bool> }
-#[derive(Deserialize, JsonSchema)]
-struct StartTraceParams { categories: Option<String> }
-
-#[tool_router(router = tool_router_obs, vis = "pub")]
-impl BrowserServer {
-    #[rmcp::tool(description = "Return browser console messages (log/warn/error/info). Captured via CDP — includes page-load errors.")]
-    async fn browser_get_console_logs(&self, p: rmcp::handler::server::wrapper::Parameters<ConsoleLogsParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_get_console_logs(&self.state, p.0.level, p.0.max_entries).await)
-    }
-    #[rmcp::tool(description = "Return captured network requests (XHR/Fetch, status codes, timing, optional headers). Essential for debugging SPA data flows and API failures.")]
-    async fn browser_get_network_log(&self, p: rmcp::handler::server::wrapper::Parameters<NetworkLogParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_get_network_log(&self.state, p.0.type_filter, p.0.status_filter, p.0.max_entries, p.0.include_headers).await)
-    }
-    #[rmcp::tool(description = "Inspect one captured network entry, including optional request and response bodies.")]
-    async fn browser_inspect_network_entry(&self, p: rmcp::handler::server::wrapper::Parameters<InspectNetworkParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_inspect_network_entry(&self.state, p.0.request_id, p.0.url_substring, p.0.url_regex, p.0.method, p.0.resource_type, p.0.status, p.0.include_headers, p.0.include_request_body, p.0.include_response_body, p.0.max_body_bytes, p.0.decode_json).await)
-    }
-    #[rmcp::tool(description = "Add a URL-matching network mock rule for the active tab.")]
-    async fn browser_add_network_mock(&self, p: rmcp::handler::server::wrapper::Parameters<AddMockParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_add_network_mock(&self.state, p.0.url_substring, p.0.url_regex, p.0.method, p.0.resource_type, p.0.action, p.0.status, p.0.headers, p.0.body, p.0.error_reason).await)
-    }
-    #[rmcp::tool(description = "Remove one network mock by mock_id, or all mocks when omitted.")]
-    async fn browser_remove_network_mock(&self, p: rmcp::handler::server::wrapper::Parameters<RemoveMockParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_remove_network_mock(&self.state, p.0.mock_id).await)
-    }
-    #[rmcp::tool(description = "List active network mock rules for the current browser session.")]
-    async fn browser_list_network_mocks(&self) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_list_network_mocks(&self.state).await)
-    }
-    #[rmcp::tool(description = "Apply offline or throttling conditions to the active tab.")]
-    async fn browser_set_network_conditions(&self, p: rmcp::handler::server::wrapper::Parameters<SetNetworkConditionsParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_set_network_conditions(&self.state, p.0.offline, p.0.latency_ms, p.0.download_kbps, p.0.upload_kbps, p.0.connection_type, p.0.reset).await)
-    }
-    #[rmcp::tool(description = "List active per-tab network conditions configured in this session.")]
-    async fn browser_get_network_conditions(&self) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_get_network_conditions(&self.state).await)
-    }
-    #[rmcp::tool(description = "Replay a captured request with optional header or body overrides.")]
-    async fn browser_replay_request(&self, p: rmcp::handler::server::wrapper::Parameters<ReplayRequestParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_replay_request(&self.state, p.0.request_id, p.0.url_substring, p.0.url_regex, p.0.method, p.0.body, p.0.headers).await)
-    }
-    #[rmcp::tool(description = "Return a compact debug bundle with current state, recent console logs, recent network activity, trace summary, and an optional screenshot.")]
-    async fn browser_export_debug_bundle(&self, p: rmcp::handler::server::wrapper::Parameters<ExportDebugBundleParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_export_debug_bundle(&self.state, p.0.state_mode.map(|m| m.as_str().to_string()), p.0.focus_ref, p.0.since_hash, p.0.include_screenshot, p.0.include_headers, p.0.include_html, p.0.html_selector, p.0.console_max_entries, p.0.network_max_entries, p.0.network_status_filter.map(|f| f.as_str().to_string())).await)
-    }
-    #[rmcp::tool(description = "Update the live HUD with a short human-readable intent summary. No raw chain-of-thought.")]
-    async fn browser_set_intent(&self, p: rmcp::handler::server::wrapper::Parameters<SetIntentParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_set_intent(&self.state, p.0.intent).await)
-    }
-    #[rmcp::tool(description = "List files that have been downloaded during the current browser session.")]
-    async fn browser_get_downloads(&self) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_get_downloads(&self.state).await)
-    }
-    #[rmcp::tool(description = "Wait until a download completes and return the matched file metadata as JSON.")]
-    async fn browser_wait_for_download(&self, p: rmcp::handler::server::wrapper::Parameters<WaitForDownloadParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_wait_for_download(&self.state, p.0.expected_name, p.0.timeout_seconds).await)
-    }
-    #[rmcp::tool(description = "Clear console and/or network log buffers to free memory.")]
-    async fn browser_clear_logs(&self, p: rmcp::handler::server::wrapper::Parameters<ClearLogsParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_clear_logs(&self.state, p.0.console, p.0.network).await)
-    }
-    #[rmcp::tool(description = "Start a CDP performance trace for diagnosing page performance issues.")]
-    async fn browser_start_trace(&self, p: rmcp::handler::server::wrapper::Parameters<StartTraceParams>) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_start_trace(&self.state, p.0.categories).await)
-    }
-    #[rmcp::tool(description = "Stop the active CDP performance trace and return collected data as JSON.")]
-    async fn browser_stop_trace(&self) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        tools::res(tools::observability::browser_stop_trace(&self.state).await)
-    }
-}
-
 // ── ServerHandler ─────────────────────────────────────────────────────────────
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for BrowserServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("agentyc browser automation — 77 tools")
+            .with_instructions("agentyc browser automation — 61 tools")
     }
 }
 
