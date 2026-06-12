@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use rmcp::model::CallToolResult;
 
-use crate::tools::{ok_json, ok_text, tab_id_from, SharedState, TabEntry};
+use crate::tools::{ok_json, ok_text, tab_id_from, SharedState};
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     let g = state.lock().await;
@@ -43,13 +43,6 @@ pub async fn browser_new_tab(state: &SharedState, url: Option<String>) -> Result
         let mut g = state.lock().await;
         g.session_id = Some(sid.clone());
         g.current_tab_id = Some(tid.clone());
-        g.tabs.push(TabEntry {
-            tab_id: tid.clone(),
-            target_id: target_id.clone(),
-            url: target_url.to_string(),
-            title: String::new(),
-            session_id: Some(sid),
-        });
     }
     Ok(ok_text(format!("New tab created: {tid}")))
 }
@@ -159,25 +152,38 @@ pub async fn browser_get_cookies(state: &SharedState) -> Result<CallToolResult> 
 }
 
 pub async fn browser_set_cookies(state: &SharedState, cookies: Vec<Value>) -> Result<CallToolResult> {
-    for cookie in &cookies {
-        cdp_root(state, "Network.setCookie", json!({
-            "name": cookie["name"],
-            "value": cookie["value"],
-            "domain": cookie.get("domain"),
-            "path": cookie.get("path").and_then(Value::as_str).unwrap_or("/"),
-            "secure": cookie.get("secure").and_then(Value::as_bool).unwrap_or(false),
-            "httpOnly": cookie.get("httpOnly").and_then(Value::as_bool).unwrap_or(false),
-        })).await?;
+    // Try session-level first, fall back to root
+    let r = cdp_session(state, "Network.setCookies", json!({"cookies": cookies})).await;
+    if r.is_err() {
+        cdp_root(state, "Network.setCookies", json!({"cookies": cookies})).await?;
     }
     Ok(ok_text(format!("Set {} cookie(s)", cookies.len())))
 }
 
 pub async fn browser_clear_cookies(state: &SharedState, name: Option<String>) -> Result<CallToolResult> {
     if let Some(n) = name {
-        cdp_root(state, "Network.deleteCookies", json!({"name": n})).await?;
+        let r1 = cdp_session(state, "Network.deleteCookies", json!({"name": n})).await;
+        if r1.is_err() {
+            let r2 = cdp_root(state, "Network.deleteCookies", json!({"name": n})).await;
+            if r2.is_err() {
+                let js = format!("document.cookie = {:?} + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;'", n);
+                let g = state.lock().await;
+                let sid = g.session_id.clone();
+                g.cdp()?.send::<Value>("Runtime.evaluate", json!({"expression": js}), sid.as_deref()).await.ok();
+            }
+        }
         Ok(ok_text(format!("Deleted cookie: {n}")))
     } else {
-        cdp_root(state, "Network.clearBrowserCookies", json!({})).await?;
+        let r1 = cdp_session(state, "Network.clearBrowserCookies", json!({})).await;
+        if r1.is_err() {
+            let r2 = cdp_root(state, "Network.clearBrowserCookies", json!({})).await;
+            if r2.is_err() {
+                let js = "document.cookie.split(';').forEach(c=>{const k=c.trim().split('=')[0];document.cookie=k+'=;expires=Thu,01 Jan 1970 00:00:00 UTC;path=/;';})";
+                let g = state.lock().await;
+                let sid = g.session_id.clone();
+                g.cdp()?.send::<Value>("Runtime.evaluate", json!({"expression": js}), sid.as_deref()).await.ok();
+            }
+        }
         Ok(ok_text("All cookies cleared"))
     }
 }
@@ -275,7 +281,7 @@ pub async fn browser_save_state(state: &SharedState, path: Option<String>) -> Re
             .to_string_lossy()
             .to_string()
     });
-    let cookies_resp = cdp_root(state, "Network.getAllCookies", json!({})).await?;
+    let cookies_resp = cdp_session(state, "Network.getCookies", json!({})).await.unwrap_or(Value::Null);
     let cookies = &cookies_resp["cookies"];
     let ls_resp = cdp_session(state, "Runtime.evaluate", json!({
         "expression": "(function(){const o={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);o[k]=localStorage.getItem(k);}return o;})()",
@@ -293,8 +299,8 @@ pub async fn browser_load_state(state: &SharedState, path: String) -> Result<Cal
     let content = std::fs::read_to_string(&path)?;
     let data: Value = serde_json::from_str(&content)?;
     if let Some(cookies) = data["cookies"].as_array() {
-        for c in cookies {
-            cdp_root(state, "Network.setCookie", c.clone()).await.ok();
+        if !cookies.is_empty() {
+            cdp_root(state, "Network.setCookies", json!({"cookies": cookies})).await.ok();
         }
     }
     if let Some(ls) = data["localStorage"].as_object() {
@@ -308,13 +314,11 @@ pub async fn browser_load_state(state: &SharedState, path: String) -> Result<Cal
 
 pub async fn browser_list_sessions(state: &SharedState) -> Result<CallToolResult> {
     let g = state.lock().await;
-    let sessions = json!([{
-        "session_id": "default",
-        "current_tab_id": g.current_tab_id,
-        "tab_count": g.tabs.len(),
-        "has_cdp": g.cdp.is_some(),
-    }]);
-    Ok(ok_json(&sessions))
+    let connected = g.cdp.is_some();
+    let tab = g.current_tab_id.clone();
+    drop(g);
+    let tab_str = tab.as_deref().unwrap_or("none");
+    Ok(ok_text(format!("{{\"session_id\":\"default\",\"connected\":{connected},\"current_tab_id\":\"{tab_str}\"}}")))
 }
 
 pub async fn browser_close_session(state: &SharedState, _session_id: String) -> Result<CallToolResult> {
@@ -333,7 +337,6 @@ pub async fn browser_close_all(state: &SharedState) -> Result<CallToolResult> {
         }
     }
     let mut g = state.lock().await;
-    g.tabs.clear();
     g.session_id = None;
     g.current_tab_id = None;
     g.cdp = None;
