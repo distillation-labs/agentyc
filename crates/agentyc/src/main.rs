@@ -23,9 +23,6 @@ enum Cmd {
     Mcp {
         #[arg(long)]
         cdp_url: Option<String>,
-        /// Idle timeout in minutes (0 = never, default).
-        #[arg(long, default_value = "0")]
-        session_timeout_minutes: u64,
     },
     /// Run MCP server over Streamable HTTP.
     Serve {
@@ -35,9 +32,6 @@ enum Cmd {
         port: u16,
         #[arg(long)]
         cdp_url: Option<String>,
-        /// Idle timeout in minutes (0 = never, default).
-        #[arg(long, default_value = "0")]
-        session_timeout_minutes: u64,
     },
     /// Write the agentyc skills guide to a file.
     Init {
@@ -74,10 +68,10 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => agentyc_mcp::run_stdio(None).await,
-        Some(Cmd::Mcp { cdp_url, .. }) => {
+        Some(Cmd::Mcp { cdp_url }) => {
             agentyc_mcp::run_stdio(cdp_url.as_deref()).await
         }
-        Some(Cmd::Serve { host, port, cdp_url, .. }) => {
+        Some(Cmd::Serve { host, port, cdp_url }) => {
             run_serve(&host, port, cdp_url.as_deref()).await
         }
         Some(Cmd::Init { output, print, force }) => {
@@ -100,7 +94,13 @@ async fn run_serve(host: &str, port: u16, cdp_url: Option<&str>) -> Result<()> {
         StreamableHttpService::new(
             move || {
                 let server = agentyc_mcp::BrowserServer::new();
-                let _u = &cdp_owned; // cdp_url connect is done async at first navigate
+                let cdp = cdp_owned.clone();
+                let server_clone = server.clone();
+                tokio::spawn(async move {
+                    if let Some(url) = cdp {
+                        server_clone.connect(&url).await.ok();
+                    }
+                });
                 Ok(server)
             },
             Default::default(),
