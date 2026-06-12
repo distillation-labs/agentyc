@@ -94,11 +94,8 @@ pub async fn browser_click(
     label: Option<String>,
     coordinate_x: Option<f64>,
     coordinate_y: Option<f64>,
-    _new_tab: Option<bool>,
     wait_for_url_substring: Option<String>,
     wait_for_url_regex: Option<String>,
-    _wait_for_download: Option<bool>,
-    _wait_for_tab: Option<bool>,
     url_timeout_seconds: Option<f64>,
 ) -> Result<CallToolResult> {
     let (x, y) = resolve_target(state, r#ref.as_deref(), index, coordinate_x, coordinate_y, label.as_deref()).await?;
@@ -188,20 +185,58 @@ pub async fn browser_type(
     state: &SharedState,
     r#ref: Option<String>,
     index: Option<u64>,
-    _label: Option<String>,
+    label: Option<String>,
     text: String,
 ) -> Result<CallToolResult> {
-    let (x, y) = resolve_target(state, r#ref.as_deref(), index, None, None, _label.as_deref()).await?;
-    // Click to focus
+    let (x, y) = resolve_target(state, r#ref.as_deref(), index, None, None, label.as_deref()).await?;
+
+    // Click to focus first
     mouse_event(state, "mousePressed", x, y, "left", 1).await?;
     mouse_event(state, "mouseReleased", x, y, "left", 1).await?;
-    // Select all and delete
-    dispatch_key(state, "a", true, false, false).await?;
-    cdp(state, "Input.dispatchKeyEvent", json!({"type":"keyDown","key":"Delete"})).await?;
-    // Type each char
-    for ch in text.chars() {
-        cdp(state, "Input.insertText", json!({"text": ch.to_string()})).await?;
+
+    // Get the backendNodeId for targeted value setting
+    let bid = if let Some(r) = &r#ref {
+        parse_ref(r).ok()
+    } else {
+        index
+    };
+
+    if let Some(id) = bid.filter(|&id| id > 0) {
+        // Resolve node to objectId and use React-compatible native setter
+        let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await;
+        if let Ok(rr) = resolve {
+            if let Some(obj_id) = rr["object"]["objectId"].as_str() {
+                let text_json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
+                let func = format!(
+                    r#"function(){{
+                        var v={text_json};
+                        var el=this;
+                        el.focus();
+                        var d=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')
+                            ||Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value');
+                        if(d&&d.set){{d.set.call(el,v);}}else{{el.value=v;}}
+                        el.dispatchEvent(new Event('input',{{bubbles:true}}));
+                        el.dispatchEvent(new Event('change',{{bubbles:true}}));
+                    }}"#
+                );
+                let g = state.lock().await;
+                let sid = g.session_id.clone();
+                let result = g.cdp()?.send::<serde_json::Value>("Runtime.callFunctionOn", json!({
+                    "objectId": obj_id,
+                    "functionDeclaration": func,
+                }), sid.as_deref()).await;
+                drop(g);
+                if result.is_ok() {
+                    return Ok(ok_text(format!("Typed {} chars", text.len())));
+                }
+            }
+        }
     }
+
+    // Fallback: select all + insertText (works for non-React/native inputs)
+    dispatch_key(state, "a", true, false, false).await?;
+    cdp(state, "Input.dispatchKeyEvent", json!({"type":"keyDown","key":"Delete"})).await.ok();
+    cdp(state, "Input.insertText", json!({"text": text})).await?;
     Ok(ok_text(format!("Typed {} chars", text.len())))
 }
 
@@ -334,36 +369,79 @@ pub async fn browser_select_option(
     state: &SharedState,
     r#ref: Option<String>,
     index: Option<u64>,
-    _label: Option<String>,
+    label: Option<String>,
     text: String,
 ) -> Result<CallToolResult> {
-    let id = if let Some(r) = &r#ref { parse_ref(r)? } else { index.unwrap_or(0) };
-    let js = if id > 0 {
-        format!(
+    let id = if let Some(r) = &r#ref {
+        parse_ref(r)?
+    } else if let Some(i) = index {
+        i
+    } else if let Some(lbl) = &label {
+        let js = format!(
             r#"(function(){{
-                const el = document.querySelectorAll('select')[{id}-1];
-                if(!el) return false;
+                for(const el of document.querySelectorAll('select')) {{
+                    const lbl = document.querySelector('label[for="'+el.id+'"]');
+                    if(lbl && lbl.textContent.toLowerCase().includes({:?}.toLowerCase())) return el.getAttribute('data-backend-node-id')||'0';
+                }}
+                return '0';
+            }})()"#, lbl
+        );
+        let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+        resp["result"]["value"].as_str().unwrap_or("0").parse::<u64>().unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Use CDP DOM.resolveNode to get a remote object, then call select via JS on the node
+    let js_select = if id > 0 {
+        // Resolve via backendNodeId then select by option text
+        let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await?;
+        let obj_id = resolve["object"]["objectId"].as_str().unwrap_or("").to_string();
+        if !obj_id.is_empty() {
+            // Call function on the resolved object
+            let call_resp = {
+                let g = state.lock().await;
+                let sid = g.session_id.clone();
+                g.cdp()?.send::<Value>("Runtime.callFunctionOn", json!({
+                    "objectId": obj_id,
+                    "functionDeclaration": format!(r#"function(){{
+                        for(const o of this.options) {{
+                            if(o.text === {:?}) {{
+                                this.value = o.value;
+                                this.dispatchEvent(new Event('change', {{bubbles:true}}));
+                                return true;
+                            }}
+                        }}
+                        return false;
+                    }}"#, text),
+                    "returnByValue": true,
+                }), sid.as_deref()).await?
+            };
+            if call_resp["result"]["value"].as_bool().unwrap_or(false) {
+                return Ok(ok_text(format!("Selected option: {text}")));
+            }
+        }
+        // Fallback to JS by iterating all selects
+        format!(r#"(function(){{
+            for(const el of document.querySelectorAll('select')) {{
                 for(const o of el.options) {{
                     if(o.text === {:?}) {{ el.value = o.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return true; }}
                 }}
-                return false;
-            }})()"#,
-            text
-        )
+            }}
+            return false;
+        }})()"#, text)
     } else {
-        format!(
-            r#"(function(){{
-                for(const el of document.querySelectorAll('select')) {{
-                    for(const o of el.options) {{
-                        if(o.text === {:?}) {{ el.value = o.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return true; }}
-                    }}
+        format!(r#"(function(){{
+            for(const el of document.querySelectorAll('select')) {{
+                for(const o of el.options) {{
+                    if(o.text === {:?}) {{ el.value = o.value; el.dispatchEvent(new Event('change',{{bubbles:true}})); return true; }}
                 }}
-                return false;
-            }})()"#,
-            text
-        )
+            }}
+            return false;
+        }})()"#, text)
     };
-    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+
+    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js_select, "returnByValue": true})).await?;
     if resp["result"]["value"].as_bool().unwrap_or(false) {
         Ok(ok_text(format!("Selected option: {text}")))
     } else {
@@ -375,16 +453,55 @@ pub async fn browser_get_dropdown_options(
     state: &SharedState,
     r#ref: Option<String>,
     index: Option<u64>,
-    _label: Option<String>,
+    label: Option<String>,
 ) -> Result<CallToolResult> {
-    let id = if let Some(r) = &r#ref { parse_ref(r)? } else { index.unwrap_or(1) };
-    let js = format!(
-        r#"(function(){{
-            const el = document.querySelectorAll('select')[{id}-1];
-            if(!el) return [];
-            return Array.from(el.options).map(o => ({{value:o.value,text:o.text,selected:o.selected}}));
-        }})()"#
-    );
+    let id = if let Some(r) = &r#ref {
+        parse_ref(r)?
+    } else if let Some(i) = index {
+        i
+    } else if let Some(lbl) = &label {
+        let js = format!(
+            r#"(function(){{
+                const selects = document.querySelectorAll('select');
+                for(let i=0;i<selects.length;i++) {{
+                    const lbl = document.querySelector('label[for="'+selects[i].id+'"]');
+                    if(lbl && lbl.textContent.toLowerCase().includes({:?}.toLowerCase())) return String(i+1);
+                }}
+                return '1';
+            }})()"#, lbl
+        );
+        let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+        resp["result"]["value"].as_str().unwrap_or("1").parse::<u64>().unwrap_or(1)
+    } else {
+        0
+    };
+
+    // Use CDP DOM.resolveNode + callFunctionOn for reliable option access
+    if id > 0 {
+        let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await;
+        if let Ok(r) = resolve {
+            if let Some(obj_id) = r["object"]["objectId"].as_str() {
+                let g = state.lock().await;
+                let sid = g.session_id.clone();
+                let call_resp = g.cdp()?.send::<Value>("Runtime.callFunctionOn", json!({
+                    "objectId": obj_id,
+                    "functionDeclaration": "function(){return Array.from(this.options).map(o=>({value:o.value,text:o.text,selected:o.selected}))}",
+                    "returnByValue": true,
+                }), sid.as_deref()).await;
+                drop(g);
+                if let Ok(cr) = call_resp {
+                    return Ok(ok_json(&cr["result"]["value"]));
+                }
+            }
+        }
+    }
+
+    // Fallback: get options from first select on page
+    let js = r#"(function(){
+        const el = document.querySelector('select');
+        if(!el) return [];
+        return Array.from(el.options).map(o=>({value:o.value,text:o.text,selected:o.selected}));
+    })()"#;
     let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
     Ok(ok_json(&resp["result"]["value"]))
 }
@@ -393,12 +510,34 @@ pub async fn browser_upload_file(
     state: &SharedState,
     r#ref: Option<String>,
     index: Option<u64>,
-    _label: Option<String>,
+    label: Option<String>,
     path: String,
 ) -> Result<CallToolResult> {
-    let id = if let Some(r) = &r#ref { parse_ref(r)? } else { index.unwrap_or(0) };
+    let id = if let Some(r) = &r#ref {
+        parse_ref(r)?
+    } else if let Some(i) = index {
+        i
+    } else if let Some(lbl) = &label {
+        let js = format!(
+            r#"(function(){{
+                for(const el of document.querySelectorAll('input[type=file]')) {{
+                    const lbl = document.querySelector('label[for="'+el.id+'"]');
+                    const aria = el.getAttribute('aria-label')||'';
+                    if((lbl && lbl.textContent.toLowerCase().includes({:?}.toLowerCase())) ||
+                       aria.toLowerCase().includes({:?}.toLowerCase())) {{
+                        return el.getAttribute('data-backend-node-id')||'0';
+                    }}
+                }}
+                return '0';
+            }})()"#, lbl, lbl
+        );
+        let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+        resp["result"]["value"].as_str().unwrap_or("0").parse::<u64>().unwrap_or(0)
+    } else {
+        0
+    };
     if id == 0 {
-        return Err(anyhow!("Must provide ref or index for upload_file"));
+        return Err(anyhow!("Must provide ref, index, or label for upload_file"));
     }
     // Use DOM.setFileInputFiles
     cdp(state, "DOM.setFileInputFiles", json!({
