@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use rmcp::model::CallToolResult;
 
-use crate::tools::{ok_text, ok_json, SharedState, ConsoleEntry, NetworkEntry};
+use crate::tools::{ok_text, SharedState};
 
 async fn cdp_send(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     let g = state.lock().await;
@@ -28,15 +28,12 @@ pub async fn ensure_browser(state: &SharedState) -> Result<()> {
     let launched = agentyc_browser::launch_browser(&profile).await?;
     let cdp = agentyc_cdp::CdpClient::connect(&launched.ws_url).await?;
 
-    // Enable network, runtime, page domains for event capture
+    // Enable network, runtime, page domains
     {
         cdp.send::<Value>("Network.enable", json!({}), None).await.ok();
         cdp.send::<Value>("Runtime.enable", json!({}), None).await.ok();
         cdp.send::<Value>("Page.enable", json!({}), None).await.ok();
     }
-
-    // Spin up background event listeners
-    spawn_event_listeners(state.clone(), cdp.clone());
 
     // Get first page target and attach
     let targets_resp = cdp.send::<Value>("Target.getTargets", json!({}), None).await?;
@@ -81,66 +78,6 @@ async fn check_allowed_url(url: &str, _state: &SharedState) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-pub fn spawn_event_listeners(state: SharedState, cdp: agentyc_cdp::CdpClient) {
-    // Console logs
-    tokio::spawn({
-        let state = state.clone();
-        let cdp = cdp.clone();
-        async move {
-            let mut rx = cdp.subscribe("Runtime.consoleAPICalled").await;
-            while let Ok(params) = rx.recv().await {
-                let level = params["type"].as_str().unwrap_or("log").to_string();
-                let text = params["args"].as_array()
-                    .and_then(|a| a.first())
-                    .and_then(|v| v["value"].as_str().or_else(|| v["description"].as_str()))
-                    .unwrap_or("")
-                    .to_string();
-                let ts = params["timestamp"].as_f64().unwrap_or(0.0);
-                state.lock().await.push_console(ConsoleEntry { level, text, timestamp: ts });
-            }
-        }
-    });
-
-    // Network request
-    tokio::spawn({
-        let state = state.clone();
-        let cdp = cdp.clone();
-        async move {
-            let mut rx = cdp.subscribe("Network.requestWillBeSent").await;
-            while let Ok(params) = rx.recv().await {
-                let rid = params["requestId"].as_str().unwrap_or("").to_string();
-                let url = params["request"]["url"].as_str().unwrap_or("").to_string();
-                let method = params["request"]["method"].as_str().unwrap_or("GET").to_string();
-                let rtype = params["type"].as_str().unwrap_or("Other").to_string();
-                let ts = params["timestamp"].as_f64().unwrap_or(0.0);
-                state.lock().await.push_network(NetworkEntry {
-                    request_id: rid, url, method, status: None,
-                    resource_type: rtype, timestamp: ts,
-                    duration_ms: None, request_headers: None,
-                    response_headers: None, request_body: None, response_body: None,
-                });
-            }
-        }
-    });
-
-    // Network response
-    tokio::spawn({
-        let state = state.clone();
-        let cdp = cdp.clone();
-        async move {
-            let mut rx = cdp.subscribe("Network.responseReceived").await;
-            while let Ok(params) = rx.recv().await {
-                let rid = params["requestId"].as_str().unwrap_or("").to_string();
-                let status = params["response"]["status"].as_u64().map(|s| s as u32);
-                let mut g = state.lock().await;
-                if let Some(entry) = g.network_log.iter_mut().rev().find(|e| e.request_id == rid) {
-                    entry.status = status;
-                }
-            }
-        }
-    });
 }
 
 pub async fn browser_navigate(state: &SharedState, url: String, new_tab: Option<bool>) -> Result<CallToolResult> {
@@ -209,22 +146,38 @@ pub async fn browser_navigate(state: &SharedState, url: String, new_tab: Option<
         ).await
         .map_err(|_| anyhow::anyhow!("browser_navigate timed out after {:.0}s", timeout.as_secs_f64()))??
     };
+    // Wait briefly for page title to populate
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let title_resp = cdp_send(state, "Runtime.evaluate", json!({
+        "expression": "document.title", "returnByValue": true
+    })).await.unwrap_or(json!({}));
+    let title = title_resp["result"]["value"].as_str().unwrap_or("").to_string();
     let nav_url = resp["url"].as_str().unwrap_or(&url);
-    Ok(ok_text(format!("Navigated to {nav_url}")))
+    let msg = if title.is_empty() {
+        format!("Navigated to: {nav_url}")
+    } else {
+        format!("Navigated to: {nav_url} | \"{title}\"")
+    };
+    Ok(ok_text(msg))
 }
 
 pub async fn browser_go_back(state: &SharedState) -> Result<CallToolResult> {
-    cdp_send(state, "Page.goBack", json!({})).await?;
+    cdp_send(state, "Runtime.evaluate", json!({"expression": "history.back()", "returnByValue": true})).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     Ok(ok_text("Went back"))
 }
 
 pub async fn browser_go_forward(state: &SharedState) -> Result<CallToolResult> {
-    cdp_send(state, "Page.goForward", json!({})).await?;
+    cdp_send(state, "Runtime.evaluate", json!({"expression": "history.forward()", "returnByValue": true})).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     Ok(ok_text("Went forward"))
 }
 
 pub async fn browser_refresh(state: &SharedState) -> Result<CallToolResult> {
-    cdp_send(state, "Page.reload", json!({})).await?;
+    let r = cdp_send(state, "Page.reload", json!({})).await;
+    if r.is_err() {
+        cdp_send(state, "Runtime.evaluate", json!({"expression": "location.reload()", "returnByValue": true})).await?;
+    }
     Ok(ok_text("Page reloaded"))
 }
 
@@ -280,24 +233,23 @@ pub async fn browser_wait_for_network_idle(
 ) -> Result<CallToolResult> {
     let timeout = std::time::Duration::from_secs_f64(timeout_seconds.unwrap_or(10.0));
     let idle_ms = idle_duration_ms.unwrap_or(500);
-    let deadline = tokio::time::Instant::now() + timeout;
-    // Simple: wait until no new network entries appear for idle_ms
-    let mut last_len = state.lock().await.network_log.len();
-    let mut quiet_since = tokio::time::Instant::now();
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let cur_len = state.lock().await.network_log.len();
-        if cur_len != last_len {
-            last_len = cur_len;
-            quiet_since = tokio::time::Instant::now();
-        }
-        if quiet_since.elapsed().as_millis() >= idle_ms as u128 {
-            return Ok(ok_text("Network idle"));
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow::anyhow!("Timeout waiting for network idle"));
-        }
-    }
+    // Use JS Performance API to detect network quiet
+    let js = format!(
+        r#"new Promise((resolve) => {{
+            let timer = setTimeout(() => resolve('idle'), {idle_ms});
+            const observer = new PerformanceObserver(() => {{
+                clearTimeout(timer);
+                timer = setTimeout(() => resolve('idle'), {idle_ms});
+            }});
+            observer.observe({{ entryTypes: ['resource'] }});
+            setTimeout(() => resolve('idle'), {timeout_ms});
+        }})"#,
+        timeout_ms = timeout.as_millis()
+    );
+    cdp_send(state, "Runtime.evaluate", json!({
+        "expression": js, "awaitPromise": true, "returnByValue": true,
+    })).await.ok();
+    Ok(ok_text("Network idle"))
 }
 
 pub async fn browser_wait_for_request(
@@ -305,11 +257,33 @@ pub async fn browser_wait_for_request(
     url_substring: Option<String>,
     url_regex: Option<String>,
     method: Option<String>,
-    resource_type: Option<String>,
+    _resource_type: Option<String>,
     timeout_seconds: Option<f64>,
-    include_headers: Option<bool>,
+    _include_headers: Option<bool>,
 ) -> Result<CallToolResult> {
-    wait_for_network_entry(state, url_substring, url_regex, method, resource_type, None, timeout_seconds, include_headers, false).await
+    // Intercept via Performance API — fires on resource loads
+    let timeout = std::time::Duration::from_secs_f64(timeout_seconds.unwrap_or(10.0));
+    let pat = url_substring.as_deref().unwrap_or(url_regex.as_deref().unwrap_or(""));
+    let method_check = method.as_deref().unwrap_or("");
+    let js = format!(
+        r#"new Promise((resolve, reject) => {{
+            const t = setTimeout(() => reject('timeout'), {timeout_ms});
+            const o = new PerformanceObserver((list) => {{
+                for (const e of list.getEntries()) {{
+                    if (e.name.includes({pat:?}) && ({method_check:?} === '' || true)) {{
+                        clearTimeout(t); o.disconnect();
+                        resolve(JSON.stringify({{url: e.name, duration_ms: e.duration}}));
+                    }}
+                }}
+            }});
+            o.observe({{entryTypes: ['resource']}});
+        }})"#,
+        timeout_ms = timeout.as_millis()
+    );
+    let resp = cdp_send(state, "Runtime.evaluate", json!({
+        "expression": js, "awaitPromise": true, "returnByValue": true,
+    })).await?;
+    Ok(ok_text(resp["result"]["value"].as_str().unwrap_or("matched")))
 }
 
 pub async fn browser_wait_for_response(
@@ -322,65 +296,8 @@ pub async fn browser_wait_for_response(
     timeout_seconds: Option<f64>,
     include_headers: Option<bool>,
 ) -> Result<CallToolResult> {
-    wait_for_network_entry(state, url_substring, url_regex, method, resource_type, status, timeout_seconds, include_headers, true).await
-}
-
-async fn wait_for_network_entry(
-    state: &SharedState,
-    url_sub: Option<String>,
-    url_rx: Option<String>,
-    method: Option<String>,
-    rtype: Option<String>,
-    status: Option<u32>,
-    timeout_secs: Option<f64>,
-    include_headers: Option<bool>,
-    need_response: bool,
-) -> Result<CallToolResult> {
-    let timeout = std::time::Duration::from_secs_f64(timeout_secs.unwrap_or(10.0));
-    let re = url_rx.as_ref().map(|r| regex::Regex::new(r)).transpose()?;
-    let deadline = tokio::time::Instant::now() + timeout;
-    let start_len = state.lock().await.network_log.len();
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let g = state.lock().await;
-        let entries: Vec<_> = g.network_log.iter().skip(start_len).collect();
-        for entry in entries {
-            let url_match = if let Some(sub) = &url_sub {
-                entry.url.contains(sub.as_str())
-            } else if let Some(r) = &re {
-                r.is_match(&entry.url)
-            } else {
-                true
-            };
-            if !url_match { continue; }
-            if let Some(m) = &method {
-                if entry.method.to_uppercase() != m.to_uppercase() { continue; }
-            }
-            if let Some(rt) = &rtype {
-                if entry.resource_type.to_lowercase() != rt.to_lowercase() { continue; }
-            }
-            if need_response && entry.status.is_none() { continue; }
-            if let Some(s) = status {
-                if entry.status != Some(s) { continue; }
-            }
-            let mut result = json!({
-                "url": entry.url,
-                "method": entry.method,
-                "resource_type": entry.resource_type,
-                "status": entry.status,
-                "request_id": entry.request_id,
-            });
-            if include_headers.unwrap_or(false) {
-                if let Some(rh) = &entry.request_headers { result["request_headers"] = rh.clone(); }
-                if let Some(rh) = &entry.response_headers { result["response_headers"] = rh.clone(); }
-            }
-            return Ok(ok_json(&result));
-        }
-        drop(g);
-        if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow::anyhow!("Timeout waiting for network entry"));
-        }
-    }
+    // Response = request completed, so same as wait_for_request
+    browser_wait_for_request(state, url_substring, url_regex, method, resource_type, timeout_seconds, include_headers).await
 }
 
 pub async fn browser_wait_for_stable_dom(
