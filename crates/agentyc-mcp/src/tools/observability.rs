@@ -1,8 +1,9 @@
 //! Observability tools: console logs, network log, mocks, conditions,
 #![allow(clippy::too_many_arguments, clippy::collapsible_if, clippy::collapsible_match)]
-//! replay, debug bundle, intent, downloads, trace, inspect_network_entry.
+//! replay, debug bundle, downloads, trace, inspect_network_entry.
 
 use anyhow::{anyhow, Result};
+use base64::Engine;
 use serde_json::{json, Value};
 use rmcp::model::CallToolResult;
 use uuid::Uuid;
@@ -167,9 +168,83 @@ pub async fn browser_add_network_mock(
         error_reason: error_reason.unwrap_or_else(|| "Failed".into()),
         match_count: 0,
     };
-    // Enable fetch interception
+
+    // Enable Fetch interception and spawn listener if this is the first mock
+    let is_first = state.lock().await.mocks.is_empty();
     cdp_session(state, "Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]})).await.ok();
     state.lock().await.mocks.push(mock);
+
+    if is_first {
+        // Spawn a background task that handles Fetch.requestPaused events
+        let state_clone = std::sync::Arc::clone(state);
+        let cdp_client = state.lock().await.cdp().ok().cloned();
+        if let Some(client) = cdp_client {
+            tokio::spawn(async move {
+                let mut rx = client.subscribe("Fetch.requestPaused").await;
+                while let Ok(params) = rx.recv().await {
+                    let request_id = match params["requestId"].as_str() {
+                        Some(id) => id.to_string(),
+                        None => continue,
+                    };
+                    let url = params["request"]["url"].as_str().unwrap_or("").to_string();
+                    let req_method = params["request"]["method"].as_str().unwrap_or("").to_string();
+
+                    let matched_mock = {
+                        let g = state_clone.lock().await;
+                        g.mocks.iter().find(|m| {
+                            let url_match = if let Some(sub) = &m.url_substring {
+                                url.contains(sub.as_str())
+                            } else if let Some(rx_pat) = &m.url_regex {
+                                regex::Regex::new(rx_pat).map(|r| r.is_match(&url)).unwrap_or(false)
+                            } else {
+                                true
+                            };
+                            let method_match = m.method.as_ref()
+                                .map(|m| m.to_uppercase() == req_method.to_uppercase())
+                                .unwrap_or(true);
+                            url_match && method_match
+                        }).cloned()
+                    };
+
+                    let sid = state_clone.lock().await.session_id.clone();
+                    let sid_ref = sid.as_deref();
+
+                    if let Some(mock) = matched_mock {
+                        // Increment match count
+                        if let Some(m) = state_clone.lock().await.mocks.iter_mut().find(|m| m.mock_id == mock.mock_id) {
+                            m.match_count += 1;
+                        }
+                        if mock.action == "abort" {
+                            client.send::<serde_json::Value>("Fetch.failRequest", json!({
+                                "requestId": request_id,
+                                "errorReason": mock.error_reason,
+                            }), sid_ref).await.ok();
+                        } else {
+                            // Build response headers array
+                            let resp_headers: Vec<serde_json::Value> = if let Some(obj) = mock.headers.as_object() {
+                                obj.iter().map(|(k, v)| json!({"name": k, "value": v.as_str().unwrap_or("")})).collect()
+                            } else {
+                                vec![]
+                            };
+                            let body_b64 = base64::engine::general_purpose::STANDARD.encode(mock.body.as_bytes());
+                            client.send::<serde_json::Value>("Fetch.fulfillRequest", json!({
+                                "requestId": request_id,
+                                "responseCode": mock.status,
+                                "responseHeaders": resp_headers,
+                                "body": body_b64,
+                            }), sid_ref).await.ok();
+                        }
+                    } else {
+                        // No mock matched — continue request normally
+                        client.send::<serde_json::Value>("Fetch.continueRequest", json!({
+                            "requestId": request_id,
+                        }), sid_ref).await.ok();
+                    }
+                }
+            });
+        }
+    }
+
     Ok(ok_text(format!("Mock added: {mock_id}")))
 }
 
@@ -234,7 +309,8 @@ pub async fn browser_replay_request(
     url_regex: Option<String>,
     method: Option<String>,
     body: Option<String>,
-    _headers: Option<Value>,) -> Result<CallToolResult> {
+    headers: Option<Value>,
+) -> Result<CallToolResult> {
     let re = url_regex.as_ref().map(|r| regex::Regex::new(r)).transpose()?;
     let entry = {
         let g = state.lock().await;
@@ -247,11 +323,18 @@ pub async fn browser_replay_request(
     };
     let e = entry.ok_or_else(|| anyhow!("No matching entry to replay"))?;
     let replay_method = method.as_deref().unwrap_or(&e.method);
+    // Build headers object for the fetch call
+    let headers_js = if let Some(h) = &headers {
+        format!(", headers: {}", serde_json::to_string(h).unwrap_or_else(|_| "{}".into()))
+    } else {
+        String::new()
+    };
     let js = format!(
-        r#"fetch({:?}, {{method:{:?}, body:{}}}).then(r=>r.text())"#,
+        r#"fetch({:?}, {{method:{:?}{}{}}})).then(r=>r.text())"#,
         e.url,
         replay_method,
-        body.as_deref().map(|b| format!("{b:?}")).unwrap_or_else(|| "undefined".into()),
+        headers_js,
+        body.as_deref().map(|b| format!(", body:{b:?}")).unwrap_or_default(),
     );
     let resp = cdp_session(state, "Runtime.evaluate", json!({
         "expression": js, "awaitPromise": true, "returnByValue": true,
@@ -291,7 +374,6 @@ pub async fn browser_export_debug_bundle(
         None
     };
 
-    let intent = state.lock().await.intent.clone();
     let console_data = console.and_then(|r| r.content.first().and_then(|c| {
         if let rmcp::model::RawContent::Text(t) = &c.raw { serde_json::from_str::<Value>(&t.text).ok() } else { None }
     }));
@@ -299,7 +381,6 @@ pub async fn browser_export_debug_bundle(
         if let rmcp::model::RawContent::Text(t) = &c.raw { serde_json::from_str::<Value>(&t.text).ok() } else { None }
     }));
     let bundle = json!({
-        "intent": intent,
         "console": console_data,
         "network": network_data,
         "state": browser_state.as_ref().ok().and_then(|r| {
@@ -325,11 +406,6 @@ pub async fn browser_export_debug_bundle(
     }
 
     Ok(CallToolResult::success(contents))
-}
-
-pub async fn browser_set_intent(state: &SharedState, intent: String) -> Result<CallToolResult> {
-    state.lock().await.intent = Some(intent.clone());
-    Ok(ok_text(format!("Intent: {intent}")))
 }
 
 pub async fn browser_get_downloads(state: &SharedState) -> Result<CallToolResult> {
