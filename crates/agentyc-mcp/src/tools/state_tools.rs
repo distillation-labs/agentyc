@@ -90,7 +90,7 @@ pub async fn browser_get_state(
 }
 
 async fn get_interactive_elements(state: &SharedState, vw: u32, vh: u32) -> Result<Vec<ElemSummary>> {
-    // Use Runtime.evaluate to get interactive elements from the page
+    // Step 1: get layout + visible property data via JS
     let js = r#"
     (function() {
         const INTERACTIVE = ['a','button','input','select','textarea','details','summary'];
@@ -98,22 +98,34 @@ async fn get_interactive_elements(state: &SharedState, vw: u32, vh: u32) -> Resu
         function isVisible(el) {
             const r = el.getBoundingClientRect();
             const s = window.getComputedStyle(el);
-            return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'
-                && r.width > 0 && r.height > 0;
+            return s.display !== 'none' && s.visibility !== 'hidden'
+                && parseFloat(s.opacity) > 0 && r.width > 0 && r.height > 0;
         }
         const seen = new Set();
-        document.querySelectorAll(INTERACTIVE.join(',') + ',[role],[tabindex],[onclick],[href]').forEach(el => {
+        const selector = INTERACTIVE.join(',') +
+            ',[role],[tabindex],[onclick],[href],[aria-label],[aria-expanded],[data-testid]';
+        document.querySelectorAll(selector).forEach(el => {
             if (seen.has(el)) return; seen.add(el);
             if (!isVisible(el)) return;
+            const tag = el.tagName.toLowerCase();
+            // Skip non-interactive container elements that have role but aren't actionable
+            const role = el.getAttribute('role') || '';
+            if (['form','div','section','nav','main','header','footer','article','aside'].includes(tag)
+                && !['button','link','menuitem','option','checkbox','radio','tab','combobox','listbox','spinbutton','slider','searchbox'].includes(role)) {
+                return;
+            }
             const r = el.getBoundingClientRect();
+            // Prefer aria-label as text for elements with no visible text (icons, search buttons)
+            const visText = (el.innerText || '').trim();
+            const ariaLabel = el.getAttribute('aria-label') || '';
+            const text = visText || ariaLabel;
             results.push({
-                backendNodeId: 0,
-                tag: el.tagName.toLowerCase(),
-                text: (el.innerText || el.textContent || '').trim().substring(0,200),
-                role: el.getAttribute('role') || el.getAttribute('aria-role') || null,
-                placeholder: el.getAttribute('placeholder') || null,
+                tag: tag,
+                text: text.substring(0, 200),
+                role: role || null,
+                placeholder: el.getAttribute('placeholder') || el.getAttribute('aria-label') || null,
                 href: el.getAttribute('href') || null,
-                type: el.getAttribute('type') || null,
+                type: tag === 'textarea' ? 'textarea' : (el.getAttribute('type') || null),
                 value: el.value || null,
                 disabled: el.disabled || el.hasAttribute('disabled'),
                 x: r.x, y: r.y, width: r.width, height: r.height,
@@ -127,14 +139,45 @@ async fn get_interactive_elements(state: &SharedState, vw: u32, vh: u32) -> Resu
         "returnByValue": true,
     })).await?;
     let arr = resp["result"]["value"].as_array().cloned().unwrap_or_default();
+
+    // Step 2: get real backendNodeIds via DOM.querySelectorAll
+    let selector = concat!(
+        "a,button,input,select,textarea,details,summary",
+        ",[role],[tabindex],[onclick],[href],[aria-label],[aria-expanded],[data-testid]"
+    );
+    let doc_resp = cdp(state, "DOM.getDocument", json!({"depth": 0})).await.unwrap_or(json!({}));
+    let root_id = doc_resp["root"]["nodeId"].as_u64().unwrap_or(1);
+
+    let qs_resp = cdp(state, "DOM.querySelectorAll", json!({
+        "nodeId": root_id,
+        "selector": selector,
+    })).await.unwrap_or(json!({}));
+    let node_ids: Vec<u64> = qs_resp["nodeIds"].as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_u64())
+        .collect();
+
+    // Step 3: get backendNodeId for each nodeId in batch
+    let mut backend_ids: Vec<u64> = Vec::with_capacity(node_ids.len());
+    for nid in &node_ids {
+        let desc = cdp(state, "DOM.describeNode", json!({"nodeId": nid})).await;
+        let bid = desc.ok()
+            .and_then(|v| v["node"]["backendNodeId"].as_u64())
+            .unwrap_or(0);
+        backend_ids.push(bid);
+    }
+
+    // Match JS results (by index — both querySelectorAll and JS iterate in DOM order)
     let elements: Vec<ElemSummary> = arr.iter().enumerate().map(|(i, v)| {
+        let backend_node_id = backend_ids.get(i).copied().unwrap_or((i as u64) + 1);
         let tag = v["tag"].as_str().unwrap_or("div").to_string();
         let text = v["text"].as_str().unwrap_or("").to_string();
         let disabled = v["disabled"].as_bool().unwrap_or(false);
         let input_type = v["type"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
         let score = score_element(&tag, &text, input_type.as_deref().unwrap_or(""), disabled);
         ElemSummary {
-            backend_node_id: (i as u64) + 1,
+            backend_node_id,
             tag,
             text,
             role: v["role"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
@@ -144,7 +187,6 @@ async fn get_interactive_elements(state: &SharedState, vw: u32, vh: u32) -> Resu
             value: v["value"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
             disabled,
             score,
-            order: i,
             rect_y: v["y"].as_f64(),
             off_screen: {
                 let x = v["x"].as_f64().unwrap_or(0.0);
@@ -171,7 +213,7 @@ fn score_element(tag: &str, text: &str, input_type: &str, disabled: bool) -> f64
         _ => {}
     }
     if !text.is_empty() { s += (text.len().min(40) as f64) / 3.0; }
-    if matches!(input_type, "email" | "password" | "search" | "url") { s += 10.0; }
+    if matches!(input_type, "email" | "password" | "search" | "url" | "textarea") { s += 10.0; }
     if disabled { s -= 12.0; }
     if input_type == "hidden" { s -= 100.0; }
     s
