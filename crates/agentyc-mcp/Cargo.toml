@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 agentyc-cdp = { path = "../agentyc-cdp" }
 agentyc-browser = { path = "../agentyc-browser" }
-agentyc-dom = { path = "../agentyc-dom" }
 agentyc-tools = { path = "../agentyc-tools" }
 tokio = { workspace = true }
 rmcp = { workspace = true }
