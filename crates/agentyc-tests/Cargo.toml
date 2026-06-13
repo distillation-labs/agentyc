@@ -1,9 +1,12 @@
 # agentyc integration test crate.
-# The shared harness lives in src/lib.rs; each [[test]] below is a ported suite.
+# The shared harness lives in src/lib.rs; each [[test]] below is a ported or
+# generated suite. build.rs generates the real-world battle-test cases from
+# src/scenario.rs.
 [package]
 name = "agentyc-tests"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [dependencies]
 serde_json = { workspace = true }
@@ -35,3 +38,7 @@ path = "../../tests/headed_stress.rs"
 [[test]]
 name = "agent_autonomy"
 path = "../../tests/agent_autonomy.rs"
+
+[[test]]
+name = "real_world"
+path = "../../tests/real_world.rs"
