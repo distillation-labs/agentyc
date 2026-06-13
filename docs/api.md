@@ -1,36 +1,36 @@
 # Public API Reference
 
-This document describes the current public contract implemented by the repository's MCP server and package exports.
+This document describes the public contract implemented by the `agentyc` binary:
+its CLI and its 61 MCP tools.
 
 ## CLI
 
-The console entry point is `agentyc`.
+The binary is `agentyc`. It is built with `clap` and exposes four subcommands.
 
-### Start The MCP Server
+### `agentyc` / `agentyc mcp` — run the MCP server (stdio)
 
 ```bash
-agentyc
+agentyc           # no-subcommand form, alias for `agentyc mcp`
 agentyc mcp
 ```
 
-Supported MCP CLI arguments:
-
 | Argument | Description |
 |----------|-------------|
-| `--session-timeout-minutes` | Idle timeout in minutes; `0` (default) keeps the session alive indefinitely |
-| `--hud-overlay` | Open the optional transparent desktop HUD that mirrors sanitized runtime activity |
-| `--cdp-url` | Attach to an existing Chrome or Chromium instance instead of launching a local browser |
-| `--reuse-local-browser` | Reuse the latest locally launched Agentyc browser from the shared-browser registry |
-| `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
-| `--runtime-role` | Collaboration role string for this runtime, such as `primary` or `assistant` |
-| `--parent-runtime-id` | Optional parent runtime identifier for nested collaboration flows |
-| `--shared-browser-mode` | Create a shared-browser tab or a separate runtime window on attach |
-| `--shared-browser-window-bounds` | Optional JSON window bounds applied when shared-browser mode is `window` |
-| `--shared-browser-focus-policy` | Keep the human-focused surface active or explicitly activate the runtime target |
+| `--cdp-url` | Attach to an existing Chrome/Chromium instance over CDP instead of launching a local browser. Accepts a `ws://`/`wss://` debugger URL or an HTTP endpoint. |
 
-The no-subcommand form is a backward-compatible alias for `agentyc mcp`.
+### `agentyc serve` — run the MCP server (Streamable HTTP)
 
-### Write The Skills Guide
+```bash
+agentyc serve --host 127.0.0.1 --port 8765
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--host` | `127.0.0.1` | Bind address. |
+| `--port` | `8765` | Bind port. The server is mounted at `/mcp`. |
+| `--cdp-url` | — | Attach to an existing browser over CDP. |
+
+### `agentyc init` — write the skills guide
 
 ```bash
 agentyc init
@@ -38,51 +38,49 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Copies the packaged skills guide to a destination file your coding agent can read. The default output path is `agentyc-skill.md`; `--output` writes to a custom destination, and `--print` writes the packaged guide to stdout instead of creating a file. The guide covers the `read -> ref -> act` loop, tool-selection rules, `since_hash` polling, shared-browser reuse with `--reuse-local-browser` / `AGENTYC_REUSE_LOCAL_BROWSER`, same-browser versus same-tab safety, frame listing and frame HTML inspection, storage/cookie workflows, precise network waits, network entry inspection and replay, narrow network mocks, per-tab offline/throttling controls, richer interaction recipes, debug bundles, dynamic-text waits, error recovery, long-page search patterns, multi-tab handoff, extraction routes, auth persistence, parallel agents, headless release-readiness flows (viewport, DOM stability, downloads, trace/log hygiene, PDF export), dialog acknowledgments after auto-handled prompts, and a fuller quick-reference tool list.
+Writes the bundled skills guide (`SKILL.md`, embedded in the binary) to a file
+your coding agent can read. It covers the `read -> ref -> act` loop, tool
+selection, `since_hash` polling, error recovery, multi-tab handoff, extraction
+routes, auth persistence, and a quick-reference tool list.
 
-| Argument | Description |
-|----------|-------------|
-| `--output` | Destination path (default: `agentyc-skill.md`) |
-| `--print` | Print to stdout instead of writing a file |
-| `--force` | Overwrite if the destination already exists |
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--output` | `agentyc-skill.md` | Destination path. |
+| `--print` | — | Print to stdout instead of writing a file. |
+| `--force` | — | Overwrite the destination if it already exists. |
 
-### Start A Shared Browser
+### `agentyc browser` — launch a shared browser
 
 ```bash
 agentyc browser --port 9222 --detach
 ```
 
-Supported browser subcommand arguments:
+Launches Chrome with remote debugging and prints its CDP WebSocket URL, for use
+with `--cdp-url`.
 
-| Argument | Description |
-|----------|-------------|
-| `--port` | Remote debugging port for Chrome or Chromium |
-| `--headless` | Launch shared Chrome in headless mode |
-| `--detach` | Print the CDP URL and exit without waiting on the browser process |
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--port` | `9222` | Remote debugging port. |
+| `--headless` | — | Launch headless (`--headless=new`). |
+| `--detach` | — | Print the CDP URL and exit without waiting on the process. |
 
 ## MCP Server
 
-The primary public surface is `agentyc.mcp.server.AgentycServer`.
+The server is `agentyc_mcp::BrowserServer`, run via `agentyc_mcp::run_stdio`
+(stdio) or an `axum`-hosted `StreamableHttpService` (HTTP). It implements
+`rmcp`'s `ServerHandler` and advertises tools only — no resources or prompts.
 
-```python
-from agentyc import AgentycServer
+Startup path:
 
-server = AgentycServer(session_timeout_minutes=20)
-await server.run()
-```
-
-The server exposes MCP tools only. It does not publish resources or prompts.
-
-The runtime startup path is:
-
-1. `agentyc` runs `agentyc.mcp.cli.main`.
-2. The CLI enters MCP mode directly or through `agentyc mcp`.
-3. `agentyc.mcp.server.main` constructs `AgentycServer` and serves MCP over stdio.
-4. Tool calls are routed through `agentyc.mcp.tool_dispatch._execute_tool`.
+1. `crates/agentyc/src/main.rs` parses the CLI.
+2. MCP mode calls `agentyc_mcp::run_stdio(cdp_url)`.
+3. `BrowserServer::new()` composes six tool routers (61 tools) and slims their
+   input schemas.
+4. `rmcp` routes each `tools/call` to the matching `#[rmcp::tool]` handler.
 
 ## MCP Tools
 
-### Navigation And State
+### Navigation And Waits
 
 | Tool | Arguments |
 |------|-----------|
@@ -91,298 +89,134 @@ The runtime startup path is:
 | `browser_go_forward` | none |
 | `browser_refresh` | none |
 | `browser_wait` | optional `seconds` |
+| `browser_wait_for_url` | optional `url_substring`, `url_regex`, `timeout_seconds` |
 | `browser_wait_for_network_idle` | optional `timeout_seconds`, `idle_duration_ms` |
-| `browser_wait_for_request` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `timeout_seconds`, optional `include_headers` |
-| `browser_wait_for_response` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `status`, optional `timeout_seconds`, optional `include_headers` |
-| `browser_wait_for_url` | optional `url_substring`, optional `url_regex`, optional `timeout_seconds` |
+| `browser_wait_for_request` | optional `url_substring`, `url_regex`, `method`, `resource_type`, `timeout_seconds`, `include_headers` |
+| `browser_wait_for_response` | optional `url_substring`, `url_regex`, `method`, `resource_type`, `status`, `timeout_seconds`, `include_headers` |
 | `browser_wait_for_stable_dom` | optional `timeout_seconds`, `quiet_ms` |
-| `browser_wait_for_download` | optional `expected_name`, optional `timeout_seconds` |
-| `browser_save_as_pdf` | optional `file_name`, `print_background`, `landscape`, `scale`, `paper_format` |
-| `browser_set_viewport` | `width`, `height`, optional `device_scale_factor` |
-| `browser_get_state` | optional `include_screenshot`, `mode`, `focus_ref`, `since_hash` |
-| `browser_get_html` | optional `selector` |
-| `browser_list_frames` | none |
-| `browser_get_frame_html` | `frame_id` |
-| `browser_screenshot` | optional `full_page` |
 
-### Storage And Origin State
+### Page State And Reading
 
 | Tool | Arguments |
 |------|-----------|
-| `browser_get_storage` | optional `origin`, optional `storage_type`, optional `key` |
-| `browser_set_storage` | `origin`, `storage_type`, `key`, `value` |
-| `browser_clear_storage` | `origin`, optional `storage_type`, optional `key` |
+| `browser_get_state` | optional `mode`, `focus_ref`, `since_hash`, `include_screenshot` |
+| `browser_get_html` | optional `selector` |
+| `browser_screenshot` | optional `full_page` |
+| `browser_save_as_pdf` | optional `file_name`, `print_background`, `landscape`, `scale`, `paper_format` |
+| `browser_set_viewport` | `width`, `height`, optional `device_scale_factor` |
 
 ### Interaction
 
 | Tool | Arguments |
 |------|-----------|
-| `browser_set_intent` | `intent` |
-| `browser_click` | `ref`, `index`, or `label`, or `coordinate_x` plus `coordinate_y`; optional `new_tab`, `wait_for_download`, `wait_for_tab`, `wait_for_url_substring`, `wait_for_url_regex`, `wait_for_request` object, `wait_for_response` object, `expected_download_name`, `download_timeout_seconds`, `expected_tab_url_substring`, `tab_timeout_seconds`, `url_timeout_seconds` |
-| `browser_right_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
-| `browser_double_click` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
-| `browser_hover` | `ref` or `index`, or `coordinate_x` plus `coordinate_y` |
+| `browser_click` | one of `ref` / `index` / `label` / (`coordinate_x` + `coordinate_y`); optional `wait_for_url_substring`, `wait_for_url_regex`, `url_timeout_seconds` |
+| `browser_right_click` | `ref` or `index`, or `coordinate_x` + `coordinate_y` |
+| `browser_double_click` | `ref` or `index`, or `coordinate_x` + `coordinate_y` |
+| `browser_hover` | `ref` or `index`, or `coordinate_x` + `coordinate_y` |
 | `browser_drag_to` | source and target refs or coordinates, optional `steps` |
 | `browser_type` | `text`, plus `ref`, `index`, or `label` |
-| `browser_fill_form` | `fields[]` where each item provides `ref`, `index`, or `label`, and exactly one of `text`, `option_text`, `path`, or `checked` |
+| `browser_fill_form` | `fields[]`, each with `ref`/`index`/`label` and one of `text`/`option_text`/`path`/`checked` |
 | `browser_press_key` | `key` |
 | `browser_scroll` | optional `direction`, `pages`, `ref`, `index` |
 | `browser_scroll_to_text` | `text` |
 | `browser_select_option` | `text`, plus `ref`, `index`, or `label` |
-| `browser_get_dropdown_options` | optional `ref`, optional `index`, optional `label` |
+| `browser_get_dropdown_options` | optional `ref`, `index`, `label` |
 | `browser_upload_file` | `path`, plus `ref`, `index`, or `label` |
-| `browser_handle_dialog` | optional `accept`, optional `prompt_text` |
+| `browser_handle_dialog` | optional `accept`, `prompt_text` |
 
 ### Inspection And Extraction
 
 | Tool | Arguments |
 |------|-----------|
-| `browser_extract_content` | `query`, optional `extract_links`, optional `output_schema` |
-| `browser_find_elements` | `selector`, optional `attributes`, optional `max_results` |
-| `browser_search_page` | `pattern`, optional `regex`, optional `max_results` |
-| `browser_wait_for_element` | optional `text`, optional `ref`, optional `appear`, optional `timeout_seconds` |
+| `browser_extract_content` | `query`, optional `extract_links`, `output_schema` |
+| `browser_find_elements` | `selector`, optional `attributes`, `max_results` |
+| `browser_search_page` | `pattern`, optional `regex`, `max_results` |
+| `browser_wait_for_element` | optional `text`, `ref`, `appear`, `timeout_seconds` |
 | `browser_get_focused_element` | none |
-| `browser_get_attribute` | `name`, optional `ref`, optional `index` |
+| `browser_get_attribute` | `name`, optional `ref`, `index` |
 | `browser_evaluate` | `code` |
 
-### Tabs And Tab Management
+### Frames And Storage
 
 | Tool | Arguments |
 |------|-----------|
-| `browser_new_tab` | optional `url` (string, default: `about:blank`) |
+| `browser_list_frames` | none |
+| `browser_get_frame_html` | `frame_id` |
+| `browser_get_storage` | optional `origin`, `storage_type`, `key` |
+| `browser_set_storage` | `origin`, `storage_type`, `key`, `value` |
+| `browser_clear_storage` | `origin`, optional `storage_type`, `key` |
+
+### Tabs And Session Control
+
+| Tool | Arguments |
+|------|-----------|
+| `browser_new_tab` | optional `url` |
 | `browser_list_tabs` | none |
 | `browser_switch_tab` | `tab_id` |
 | `browser_close_tab` | `tab_id` |
-| `browser_wait_for_tab` | optional `url_substring`, optional `url_regex`, optional `timeout_seconds`, optional `switch_focus` |
+| `browser_wait_for_tab` | optional `url_substring`, `url_regex`, `timeout_seconds`, `switch_focus` |
 | `browser_get_cookies` | none |
 | `browser_set_cookies` | `cookies` |
 | `browser_clear_cookies` | optional `name` |
 | `browser_grant_permissions` | `permissions[]`, optional `origin` |
 | `browser_set_geolocation` | `latitude`, `longitude`, optional `accuracy` |
 | `browser_set_extra_headers` | `headers` object; pass `{}` to clear |
-| `browser_set_user_agent` | `user_agent`, optional `accept_language`, optional `platform` |
+| `browser_set_user_agent` | `user_agent`, optional `accept_language`, `platform` |
 | `browser_set_timezone` | optional `timezone_id`; pass `""` to clear |
 | `browser_set_locale` | optional `locale`; omit or pass `""` to clear |
-| `browser_emulate_media` | optional `media`, optional `color_scheme`, optional `reduced_motion`, optional `forced_colors`; omit all to clear |
+| `browser_emulate_media` | optional `media`, `color_scheme`, `reduced_motion`, `forced_colors` |
 | `browser_save_state` | optional `path` |
 | `browser_load_state` | `path` |
-
-### Observability And Session Administration
-
-| Tool | Arguments |
-|------|-----------|
-| `browser_get_console_logs` | optional `level`, optional `max_entries` |
-| `browser_get_network_log` | optional `type_filter`, optional `status_filter`, optional `max_entries`, optional `include_headers` (boolean, default: false) |
-| `browser_inspect_network_entry` | optional `request_id`, optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `status`, optional `include_headers`, optional `include_request_body`, optional `include_response_body`, optional `max_body_bytes`, optional `decode_json` |
-| `browser_add_network_mock` | optional `url_substring`, optional `url_regex`, optional `method`, optional `resource_type`, optional `action`, optional `status`, optional `headers`, optional `body`, optional `error_reason` |
-| `browser_remove_network_mock` | optional `mock_id` |
-| `browser_list_network_mocks` | none |
-| `browser_set_network_conditions` | optional `offline`, optional `latency_ms`, optional `download_kbps`, optional `upload_kbps`, optional `connection_type`, optional `reset` |
-| `browser_get_network_conditions` | none |
-| `browser_replay_request` | optional `request_id`, optional `url_substring`, optional `url_regex`, optional `method`, optional `body`, optional `headers` |
-| `browser_export_debug_bundle` | optional `state_mode`, optional `focus_ref`, optional `since_hash`, optional `include_screenshot`, optional `include_headers`, optional `include_html`, optional `html_selector`, optional `console_max_entries`, optional `network_max_entries`, optional `network_status_filter` |
-| `browser_get_downloads` | none |
-| `browser_clear_logs` | optional `console`, optional `network` |
-| `browser_start_trace` | optional `categories` |
-| `browser_stop_trace` | none |
 | `browser_list_sessions` | none |
 | `browser_close_session` | `session_id` |
 | `browser_close_all` | none |
 
 ## Result Semantics
 
-### Logging And Timing
+### Errors
 
-The MCP server emits tool-phase log messages over the MCP logging channel for start, completion, and error events when the client enables logging.
-
-Those same browser-tool lifecycle events also feed the shipped HUD surfaces: the in-browser demo-mode panel, the optional `--hud-overlay` desktop window, and the public `browser_set_intent` operator label.
-
-Tool results also attach timing metadata on the first returned text content block through `_meta`:
-
-- `agentyc/tool_name`
-- `agentyc/tool_phase`
-- `agentyc/browser_duration_ms`
-- `agentyc/is_error`
-
-Clients can use these fields to distinguish browser work from the agent's own reasoning time.
+Tool failures are returned as `isError` tool content (not JSON-RPC errors), so
+agents can read and recover from them. Known CDP failures are prefixed with a
+structured code and a recovery hint: `[stale_ref]`, `[element_not_interactable]`,
+`[no_browser]`, `[domain_blocked]`, `[timeout]`, `[session_error]`.
 
 ### `browser_get_state`
 
-`browser_get_state` returns a JSON text payload. When `include_screenshot=true`, the server also returns an MCP image content item.
+Returns a JSON text payload. When `include_screenshot=true`, an MCP image
+content item is also returned. Key fields: `url`, `title`, `tabs`,
+`current_tab_id`, `mode`, `state_hash`, `changed`, `interactive_element_count`,
+`interactive_elements`, and `viewport`. Compact ranked payloads may add
+`interactive_elements_truncated`, `interactive_elements_remaining`, and
+`compaction_strategy`.
 
-Important fields:
-
-- `url`
-- `title`
-- `tabs`
-- `current_tab_id` and `current_tab` when the active tab can be resolved
-- `mode`
-- `effective_mode`
-- `state_hash`
-- `changed`
-- `focus_ref` when focus mode is requested
-- `interactive_element_count`
-- `interactive_elements`
-- `interactive_elements_truncated`, `interactive_elements_remaining`, and `compaction_strategy` when compact ranked state is used
-- `viewport`, `page`, and `scroll` when available
-- `screenshot_dimensions` when a screenshot is included
-
-For interactive use, prefer `mode="min"` first and pass `since_hash` on follow-up reads. Escalate to `mode="full"` only when the compact payload omitted an element you actually need.
-
-Interactive elements use stable refs such as `e123`. Those refs are the preferred public targeting contract.
-
-`tabs` and `current_tab` can include collaboration metadata when available:
-
-- `tab_id`
-- `parent_tab_id`
-- `display_title`
-- `ownership` including nested runtime metadata when available
-- `window_bounds`
-
-`browser_get_state` keeps active-tab collaboration metadata under `current_tab`. The top-level state payload does not duplicate `ownership` or `runtime` separately.
+Interactive elements use stable refs such as `e123` (derived from CDP backend
+node ids). Prefer `mode="min"` first and pass `since_hash` on follow-up reads;
+an unchanged `since_hash` returns `changed=false` with no element payload.
 
 ### `browser_screenshot`
 
-Returns JSON metadata as text and the screenshot image as a separate MCP image content item. The image format matches the `BrowserSession` `llm_screenshot_format` config (default WebP). The MCP `mimeType` is set dynamically to `image/webp`, `image/jpeg`, or `image/png`.
-
-### `browser_wait_for_request`, `browser_wait_for_response`, and `browser_inspect_network_entry`
-
-These tools return JSON text describing one matching network entry. Depending on timing and options, the payload can include:
-
-- `url`
-- `method`
-- `type`
-- `status` and `status_text`
-- `error`
-- `duration_ms`
-- `target_tab_id`
-- `req_headers` and `resp_headers` when `include_headers=true`
-- `request_body` and `response_body` when inspection is asked to include bodies
-
-Timeouts return `Error [timeout]: ...`.
-
-### `browser_add_network_mock`, `browser_list_network_mocks`, and `browser_set_network_conditions`
-
-- `browser_add_network_mock` returns the created rule with a generated `mock_id`.
-- `browser_list_network_mocks` returns active rules with `match_count` and any public match metadata.
-- `browser_remove_network_mock` returns `{removed, remaining}`.
-- `browser_set_network_conditions` returns the current tab's network condition payload plus `reset`.
-- `browser_get_network_conditions` returns the active per-tab condition list for the session.
-
-### `browser_replay_request`
-
-Returns JSON text describing the replayed `fetch()` result:
-
-- `status`
-- `ok`
-- `body`
-
-Replay uses a previously captured request as the source, applies sanitized header overrides, and executes the request from the current page context.
-
-### `browser_export_debug_bundle`
-
-Returns JSON text plus an optional screenshot image. The JSON bundle includes:
-
-- `state` — the nested `browser_get_state` payload
-- `console_logs`
-- `network_log`
-- `pending_requests`
-- `trace`
-- `summary`
-- `html` when requested
+Returns JSON metadata as text plus the screenshot as a separate MCP image
+content item.
 
 ### `browser_extract_content`
 
-The public MCP server is deterministic-only.
-
-- Compatible queries return extracted content in text.
-- Compatible `output_schema` requests return `<structured_result>` JSON.
-- Responses include `<extraction_metadata>`.
-- Unsupported requests return an explicit deterministic-route error.
+Deterministic-only. Compatible queries return extracted content as text;
+compatible `output_schema` requests return structured JSON; unsupported requests
+return an explicit deterministic-route error. There is no LLM fallback.
 
 ### `browser_evaluate`
 
-Executes JavaScript in the current page context and returns the resulting value as text. For multi-statement logic, wrap the expression in an IIFE such as `(function(){ ... })()`.
+Executes JavaScript in the current page and returns the result as text. For
+multi-statement logic, wrap in an IIFE: `(function(){ ... })()`.
 
 ## Deterministic Extraction Contract
 
-Supported deterministic route families:
-
-- Links
-- Link collections
-- Images
-- Tables
-- Lists
-- Form fields
-- Key-value panels
-
-`output_schema` is only valid when one of those routes can satisfy the query.
-
-## Tab And Session Shapes
-
-`browser_list_tabs` returns a JSON object with:
-
-- `tabs` — flat compatibility list of tab objects
-- `tab_groups` — tabs grouped by owner/runtime for the default operator view
-
-Each tab object contains:
-
-- `tab_id`
-- optional `parent_tab_id`
-- `url`
-- `title`
-- optional `display_title`
-- optional `ownership`
-- optional `window_bounds`
-
-Each `tab_groups[]` entry can contain:
-
-- `group_id`
-- `owner_kind`
-- `display_label`
-- optional `runtime_id`
-- optional `runtime_label`
-- optional `runtime_role` when the runtime uses a non-default role
-- optional `parent_runtime_id` when the runtime is attached to a parent runtime
-- `tab_count`
-- optional `current_tab_id`
-- `tab_ids` — ordered list of 4-char tab IDs in this group (cross-reference with flat `tabs` for full tab data)
-
-`browser_list_sessions` returns JSON objects with:
-
-- `session_id`
-- `created_at`
-- `last_activity`
-- `active`
-- `current_url`
-- `age_minutes`
-
-## Python Imports
-
-Public package imports available from `agentyc` include:
-
-- `AgentycServer`
-- `BrowserSession`
-- `BrowserProfile`
-- `Tools`
-- `Controller`
-- `ActionModel`
-- `ActionResult`
-
-### `BrowserSession` Constructor
-
-| Param | Default | Description |
-|-------|---------|-------------|
-| `browser_profile` | required | `BrowserProfile` instance. |
-| `llm_screenshot_size` | `(480, 270)` | Target resize for LLM screenshots. `None` = full resolution. |
-| `llm_screenshot_format` | `"webp"` | Output format: `"png"`, `"jpeg"`, or `"webp"`. |
-| `llm_screenshot_quality` | `85` | Compression quality 1–100 (JPEG/WebP). |
-| `llm_screenshot_grayscale` | `False` | Grayscale encoding (~20-30% savings). |
-| `headless` | `None` | Override headless mode from profile. |
-
-The package also contains LLM-provider integrations, but those are separate from the public deterministic MCP extraction contract described here.
+Supported deterministic route families: Links, Link collections, Images, Tables,
+Lists, Form fields, and Key-value panels. `output_schema` is only valid when one
+of those routes can satisfy the query.
 
 ## Related Docs
 
 - [Architecture](./architecture.md)
+- [Tech Stack](./tech-stack.md)
 - [Release Gate](./release-gate.md)
