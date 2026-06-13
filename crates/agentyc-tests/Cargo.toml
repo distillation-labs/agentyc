@@ -1,7 +1,12 @@
+# agentyc integration test crate.
+# The shared harness lives in src/lib.rs; each [[test]] below is a ported suite.
 [package]
 name = "agentyc-tests"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
 
 [[test]]
 name = "mcp_protocol"
@@ -15,5 +20,18 @@ path = "../../tests/benchmark.rs"
 name = "browser_automation"
 path = "../../tests/browser_automation.rs"
 
-[dev-dependencies]
-serde_json = { workspace = true }
+[[test]]
+name = "e2e_suite"
+path = "../../tests/e2e_suite.rs"
+
+[[test]]
+name = "battle_test"
+path = "../../tests/battle_test.rs"
+
+[[test]]
+name = "headed_stress"
+path = "../../tests/headed_stress.rs"
+
+[[test]]
+name = "agent_autonomy"
+path = "../../tests/agent_autonomy.rs"
