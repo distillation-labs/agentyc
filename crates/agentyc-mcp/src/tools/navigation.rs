@@ -44,6 +44,9 @@ pub async fn ensure_browser(state: &SharedState) -> Result<()> {
         g.session_id = None;
         g.current_tab_id = None;
         g.launched_browser = None;
+        // Force background handlers to re-subscribe to the new CDP client.
+        g.dialog_handler_started = false;
+        g.capture_started = false;
     }
 
     // Launch Chrome
@@ -95,11 +98,16 @@ pub async fn ensure_browser(state: &SharedState) -> Result<()> {
         }
     }
 
-    let mut g = state.lock().await;
-    g.cdp = Some(cdp);
-    g.session_id = session_id;
-    g.current_tab_id = tab_id;
-    g.launched_browser = Some(launched);
+    {
+        let mut g = state.lock().await;
+        g.cdp = Some(cdp);
+        g.session_id = session_id;
+        g.current_tab_id = tab_id;
+        g.launched_browser = Some(launched);
+    }
+    // Deterministic dialog handling + (extended) observability capture.
+    crate::tools::ensure_dialog_handler(state).await;
+    crate::tools::ensure_capture(state).await;
     Ok(())
 }
 
