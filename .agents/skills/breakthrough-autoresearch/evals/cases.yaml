@@ -23,7 +23,7 @@ suites:
         prompt: Update the changelog and README for the latest release.
         expect_trigger: false
       - id: nontrig-03
-        prompt: Fix this typo in one Python file.
+        prompt: Fix this typo in one Rust file.
         expect_trigger: false
   - name: functional
     objective: Produce a research-backed experiment loop with explicit keep/discard discipline.
