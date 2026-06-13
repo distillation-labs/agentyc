@@ -3,7 +3,7 @@
 ## Pass when the skill:
 
 - loads for requests about using Agentyc's browser MCP tools, browser workflow planning, shared-browser coordination, extraction, auth persistence, debugging, or tool choice
-- does not load for Agentyc internals work that belongs to `cdp-browser-engineer`, `pytest-async-engineer`, or non-browser tasks
+- does not load for agentyc internals work (the Rust crates) or non-browser tasks
 - explains the **smallest correct tool** to use before suggesting `browser_evaluate(...)` or screenshots
 - teaches the `read -> ref -> act -> verify` loop clearly
 - distinguishes same browser **process/profile reuse** from unsafe co-ownership of one live tab
