@@ -4,22 +4,22 @@ use std::{
     collections::HashMap,
     env,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::{
     net::TcpStream,
-    sync::{broadcast, Mutex, RwLock},
+    sync::{Mutex, RwLock, broadcast},
     time::timeout,
 };
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 use tracing::{debug, warn};
 
 type WsSink = futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -41,11 +41,17 @@ fn parse_cdp_timeout_secs(raw: &str) -> f64 {
     match raw.parse::<f64>() {
         Ok(v) if v.is_finite() && v > 0.0 => v,
         Ok(bad) => {
-            warn!("AGENTYC_CDP_TIMEOUT_S={:?} is not a finite positive number; falling back to {:.0}s", bad, CDP_TIMEOUT_FALLBACK_S);
+            warn!(
+                "AGENTYC_CDP_TIMEOUT_S={:?} is not a finite positive number; falling back to {:.0}s",
+                bad, CDP_TIMEOUT_FALLBACK_S
+            );
             CDP_TIMEOUT_FALLBACK_S
         }
         Err(_) => {
-            warn!("Invalid AGENTYC_CDP_TIMEOUT_S={:?}; falling back to {:.0}s", raw, CDP_TIMEOUT_FALLBACK_S);
+            warn!(
+                "Invalid AGENTYC_CDP_TIMEOUT_S={:?}; falling back to {:.0}s",
+                raw, CDP_TIMEOUT_FALLBACK_S
+            );
             CDP_TIMEOUT_FALLBACK_S
         }
     }
