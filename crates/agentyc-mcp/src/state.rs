@@ -2,7 +2,7 @@
 
 #![allow(clippy::collapsible_if, clippy::collapsible_match)]
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 pub const DEFAULT_MIN_ELEMENTS: usize = 9;
@@ -19,7 +19,9 @@ pub fn compute_state_hash(parts: &[&str]) -> String {
     let mut ctx = md5::Context::new();
     let mut first = true;
     for p in parts {
-        if !first { ctx.consume(b"|"); }
+        if !first {
+            ctx.consume(b"|");
+        }
         ctx.consume(p.as_bytes());
         first = false;
     }
@@ -29,7 +31,7 @@ pub fn compute_state_hash(parts: &[&str]) -> String {
     let hex = b"0123456789abcdef";
     let d = digest.0;
     for (i, &byte) in d[..8].iter().enumerate() {
-        out[i * 2]     = hex[(byte >> 4) as usize];
+        out[i * 2] = hex[(byte >> 4) as usize];
         out[i * 2 + 1] = hex[(byte & 0xf) as usize];
     }
     std::str::from_utf8(&out).unwrap().to_string()
@@ -38,14 +40,25 @@ pub fn compute_state_hash(parts: &[&str]) -> String {
 // ── text helpers ─────────────────────────────────────────────────────────────
 
 pub fn normalize_text(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 pub fn truncate_text(s: &str, max_len: usize) -> String {
     // Fast path: if no whitespace collapsing needed and fits, return early
     let trimmed = s.trim();
-    if trimmed.len() <= max_len && !trimmed.contains("  ") && !trimmed.contains('\n') && !trimmed.contains('\t') {
-        return if trimmed.len() == s.len() { s.to_string() } else { trimmed.to_string() };
+    if trimmed.len() <= max_len
+        && !trimmed.contains("  ")
+        && !trimmed.contains('\n')
+        && !trimmed.contains('\t')
+    {
+        return if trimmed.len() == s.len() {
+            s.to_string()
+        } else {
+            trimmed.to_string()
+        };
     }
     let c: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if c.len() <= max_len {
@@ -113,7 +126,13 @@ pub struct ElemSummary {
     pub value: Option<String>,
     pub disabled: bool,
     pub score: f64,
+    #[allow(dead_code)]
+    pub rect_x: Option<f64>,
     pub rect_y: Option<f64>,
+    #[allow(dead_code)]
+    pub rect_w: Option<f64>,
+    #[allow(dead_code)]
+    pub rect_h: Option<f64>,
     pub off_screen: Option<String>,
 }
 
@@ -168,7 +187,13 @@ fn compaction_sig(el: &ElemSummary) -> String {
     let sig_text = normalize_sig_text(if !ph.is_empty() { ph } else { &el.text });
     let role = el.role.as_deref().unwrap_or("");
     let itype = el.input_type.as_deref().unwrap_or("");
-    format!("{}|{}|{}|{}", normalize_text(&el.tag), normalize_text(role), normalize_text(itype), sig_text)
+    format!(
+        "{}|{}|{}|{}",
+        normalize_text(&el.tag),
+        normalize_text(role),
+        normalize_text(itype),
+        sig_text
+    )
 }
 
 // ── min-mode selection ────────────────────────────────────────────────────────
@@ -198,13 +223,20 @@ pub fn select_min_elements(
             *sig_counts.entry(sig).or_insert(0) += 1;
 
             let mut s = el.score + (16.0 - (i as f64 * 0.35)).max(0.0);
-            if dup == 0 { s += 4.0; }
+            if dup == 0 {
+                s += 4.0;
+            }
             s -= dup as f64 * 6.0;
-            if dup >= MAX_DUPS_PER_SIG { s -= 50.0; }
+            if dup >= MAX_DUPS_PER_SIG {
+                s -= 50.0;
+            }
             if let Some(y) = el.rect_y {
                 let abs_y = sy + y;
-                if abs_y <= prox_near { s += 18.0; }
-                else if abs_y <= prox_far { s += 9.0; }
+                if abs_y <= prox_near {
+                    s += 18.0;
+                } else if abs_y <= prox_far {
+                    s += 9.0;
+                }
             }
             (s, i)
         })
@@ -215,10 +247,14 @@ pub fn select_min_elements(
     let mut selected: Vec<usize> = Vec::new();
     let mut sel_sigs: HashMap<&str, usize> = HashMap::new();
     for (_, i) in &scored {
-        if selected.len() >= max { break; }
+        if selected.len() >= max {
+            break;
+        }
         let sig = sigs[*i].as_str();
         let cnt = *sel_sigs.get(sig).unwrap_or(&0);
-        if cnt >= MAX_DUPS_PER_SIG { continue; }
+        if cnt >= MAX_DUPS_PER_SIG {
+            continue;
+        }
         selected.push(*i);
         *sel_sigs.entry(sig).or_insert(0) += 1;
     }
@@ -227,8 +263,17 @@ pub fn select_min_elements(
     if selected.len() > MIN_KEEP && max <= DEFAULT_MIN_ELEMENTS {
         let top = scored.first().map(|(s, _)| *s).unwrap_or(0.0);
         let threshold = top * SCORE_FLOOR;
-        let trimmed: Vec<usize> = selected.iter().copied()
-            .filter(|&i| scored.iter().find(|(_, idx)| *idx == i).map(|(s, _)| *s).unwrap_or(0.0) >= threshold)
+        let trimmed: Vec<usize> = selected
+            .iter()
+            .copied()
+            .filter(|&i| {
+                scored
+                    .iter()
+                    .find(|(_, idx)| *idx == i)
+                    .map(|(s, _)| *s)
+                    .unwrap_or(0.0)
+                    >= threshold
+            })
             .collect();
         if trimmed.len() >= MIN_KEEP {
             selected = trimmed;
@@ -330,14 +375,18 @@ impl<'a> StateBuilder<'a> {
                 // focus_ref → find matching element
                 if let Some(fr) = self.focus_ref {
                     let id: u64 = fr.trim_start_matches('e').parse().unwrap_or(0);
-                    self.elements.iter().filter(|e| e.backend_node_id == id).collect()
+                    self.elements
+                        .iter()
+                        .filter(|e| e.backend_node_id == id)
+                        .collect()
                 } else {
                     self.elements.iter().collect()
                 }
             }
             "min" => {
                 let indices = select_min_elements(self.elements, self.max_min, scroll_y, vh);
-                let chosen: Vec<&ElemSummary> = indices.iter().map(|&i| &self.elements[i]).collect();
+                let chosen: Vec<&ElemSummary> =
+                    indices.iter().map(|&i| &self.elements[i]).collect();
                 if count > chosen.len() {
                     obj["interactive_elements_truncated"] = json!(true);
                     obj["interactive_elements_remaining"] = json!(count - chosen.len());
@@ -348,8 +397,12 @@ impl<'a> StateBuilder<'a> {
             _ => self.elements.iter().collect(),
         };
 
-        obj["interactive_elements"] =
-            json!(selected_elements.iter().map(|e| e.to_json(include_index)).collect::<Vec<_>>());
+        obj["interactive_elements"] = json!(
+            selected_elements
+                .iter()
+                .map(|e| e.to_json(include_index))
+                .collect::<Vec<_>>()
+        );
         obj
     }
 }
