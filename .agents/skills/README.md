@@ -12,8 +12,9 @@ All skill definitions live here. The platform-specific directories are derived c
 ```
 
 `dev-contextro-mcp` is distributed by the `@contextro/skills` package.
-`agentyc-browser-automation` is the canonical source for the browser-automation guide shipped by `agentyc init`,
-which is flattened into `agentyc/skills/SKILL.md` for end-user distribution.
+`agentyc-browser-automation` is the canonical source for the browser-automation guide; the
+end-user guide shipped by `agentyc init` is the repo-root `SKILL.md`, embedded into the binary
+via `include_str!`.
 The other skills in this directory are internal development skills and are not shipped to end users.
 
 ## Platform copies (SKILL.md only)
@@ -25,9 +26,7 @@ The other skills in this directory are internal development skills and are not s
 | Kiro CLI       | `.kiro/skills/`     | `.kiro/skills/<name>/SKILL.md`             |
 | OpenCode       | `.opencode/skills/` | `.opencode/skills/<name>/SKILL.md`         |
 
-In-repo derived copies may contain only `SKILL.md` for compatibility. The published
-`@contextro/skills` package distributes the full `dev-contextro-mcp` bundle, including
-`references/` and `evals/`, to each supported skill surface.
+In-repo derived copies may contain only `SKILL.md` for compatibility.
 
 ## Updating a skill
 
@@ -52,48 +51,19 @@ for platform in .claude/skills .github/skills .opencode/skills .kiro/skills; do
 done
 ```
 
-## Evaluation Standard
-
-Every active skill must ship two things:
-
-- `references/eval-rubric.md` for qualitative pass/fail review
-- `evals/cases.yaml` for concrete test prompts and success criteria
-
-Production commands:
-
-```bash
-uv run python scripts/validate_skills.py
-uv run python scripts/run_skill_evals.py
-uv run pytest tests/ci/infrastructure/test_skill_quality.py
-```
-
-`validate_skills.py` enforces structural compliance with `skills-guide.md`.
-`run_skill_evals.py` evaluates battle-readiness coverage from the manifests and reports pass/fail per skill.
-
-Each `evals/cases.yaml` must cover the three evaluation tracks from `skills-guide.md`:
-
-- triggering: obvious triggers, paraphrases, and unrelated prompts
-- functional execution: real-world prompts with expected workflow or output behavior
-- performance and robustness: expected improvement over a no-skill baseline, plus stressors
-
-Use real prompts, repo-specific tool expectations, and measurable pass thresholds. Prefer battle-test
-scenarios that reflect the actual repo surface over generic toy prompts.
-
 ## Browser Automation Operating Doctrine
 
 Skills that touch browser automation, MCP runtime design, retrieval, routing, or evals should encode
 the same defaults:
 
-- Start from Agentyc's actual architecture: deterministic CDP control, compact
+- Start from agentyc's actual architecture: a Rust workspace with deterministic CDP control, compact
   `browser_get_state(...)` reads, explicit inspection surfaces, and no hidden fallback automation
   loops.
-- Ground improvement claims in the canonical benchmark surface:
-  - `uv run python scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate --fail-on-regression`
-  - `uv run python scripts/benchmark_mcp_stdio_e2e.py --targets source --minimum-total-calls 100`
-  - `uv run pytest -vxs tests/ci`
-  - `./scripts/test.sh`
-  - `./scripts/lint.sh`
-  - `uv run pyright`
+- Ground improvement claims in the canonical cargo gates:
+  - `cargo test --workspace` — unit + integration tests (browser tests need Chrome)
+  - `AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture` — performance gate
+  - `cargo fmt --all -- --check` — formatting
+  - `cargo clippy --workspace --all-targets -- -D warnings` — lints
 - Every improvement loop must name the primary metric, baseline, breakthrough target, guardrails,
   held-out tasks or stressors, and keep/discard rule.
 - Never game the benchmark: do not weaken tests or evals, overfit one site, inflate context or
@@ -104,24 +74,12 @@ the same defaults:
 - When a skill update changes a shipped `SKILL.md`, sync the existing platform copies in the same
   change.
 
-## Consolidation Decisions
-
-- `breakthrough-researcher` and `autoresearch` were combined into `breakthrough-autoresearch`
-- `applied-ai-engineer` now focuses on productionization, harnessing, guardrails, and rollout
-- `mcp-protocol-architect` was merged into `fastmcp-server-engineer`
-
 ## Skills
 
 | Skill | Purpose |
 |---|---|
 | `applied-ai-engineer` | Turn a chosen AI direction into a benchmarked, observable, production-ready system |
-| `async-python-engineer` | Async Python patterns for agentyc: asyncio tasks, bubus EventBus, concurrency |
-| `agentyc-browser-automation` | End-to-end guidance for coding agents using Agentyc MCP browser tools effectively |
+| `agentyc-browser-automation` | End-to-end guidance for coding agents using agentyc MCP browser tools effectively |
 | `breakthrough-autoresearch` | Deep research plus ruthless metric-driven experiment loops until a target is met or disproven |
-| `cdp-browser-engineer` | CDP browser automation: cdp-use typed client, BrowserSession, watchdogs, DOM |
 | `dev-contextro-mcp` | Use Contextro MCP for codebase discovery, search, call graphs, git history, memory |
 | `docs-maintainer` | Changelogs, README updates, release notes, publication manifests, doc sync |
-| `fastmcp-server-engineer` | Design and implement FastMCP server surfaces, including protocol primitives, lifecycle, and transport |
-| `llm-provider-engineer` | LLM provider integrations: BaseChatModel Protocol, token tracking, structured output |
-| `pydantic-v2-engineer` | Pydantic v2 model design for agentyc: ConfigDict, validators, views/services split |
-| `pytest-async-engineer` | Testing patterns for agentyc: pytest-asyncio, pytest-httpserver, BrowserSession lifecycle |
