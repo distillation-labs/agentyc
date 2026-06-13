@@ -17,15 +17,15 @@ body:
         > 🚀 We ship changes every hour and we might've already fixed your issue today!
         > <a href="https://github.com/distillation-labs/agentyc/releases"><img src="https://github.com/user-attachments/assets/4cd34ee6-bafb-4f24-87e2-27a31dc5b9a4" width="500px"/></a>
         > If you are running an old version, the **first thing we will ask you to do is *upgrade to the latest version* and try again**:
-        > - 🆕 [`beta`](https://docs.agentyc.com/development/local-setup):   `uv pip install --upgrade git+https://github.com/distillation-labs/agentyc.git@main`
-        > - 📦 [`stable`](https://pypi.org/project/agentyc/#history): `uv pip install --upgrade agentyc`
+        > - 🆕 [`beta`](https://github.com/distillation-labs/agentyc): `cargo install --git https://github.com/distillation-labs/agentyc.git agentyc`
+        > - 📦 [`stable`](https://github.com/distillation-labs/agentyc/releases): download the latest binary from GitHub Releases
 
   - type: input
     id: version
     attributes:
       label: Agentyc Version
       description: |
-        What version of `agentyc` are you using? (Run `uv pip show agentyc` or `git log -n 1`)
+        What version of `agentyc` are you using? (Run `agentyc --version` or `git log -n 1`)
         **DO NOT JUST WRITE `latest release` or `main` or a very old version or we will close your issue!**
       placeholder: "e.g. 0.3.0 or 62760baaefd"
     validations:
@@ -79,32 +79,28 @@ body:
     attributes:
       label: Operating System & Browser Versions
       description: What operating system and browser are you using?
-      placeholder: "e.g. Ubuntu 24.04 + playwright chromium v136, Windows 11 + Chrome.exe v133, macOS ..."
+      placeholder: "e.g. Ubuntu 24.04 + Chrome v136, Windows 11 + Chrome v133, macOS ..."
     validations:
       required: false
 
   - type: textarea
     id: code
     attributes:
-      label: Python Code Sample
-      description: Include some python code that reproduces the issue
-      render: python
+      label: MCP Tool Sequence
+      description: Include the JSON-RPC tool calls that reproduce the issue.
+      render: json
       placeholder: |
-        from dotenv import load_dotenv
-        load_dotenv()  # tip: always load_dotenv() before other imports
-        from agentyc import BrowserSession, Tools
-
-        browser_session = BrowserSession(headless=False)
-        tools = Tools()
-        ...
+        {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"https://example.com"}}}
+        {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_get_state","arguments":{"mode":"full"}}}
+        {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_click","arguments":{"ref":"e42"}}}
 
   - type: textarea
     id: logs
     attributes:
       label: Full DEBUG Log Output
-      description: Please copy and paste the *full* log output *from the start of the run*. Make sure to set `AGENTYC_LOGGING_LEVEL=DEBUG` in your `.env` or shell environment.
+      description: Please copy and paste the *full* log output *from the start of the run*. Make sure to set `AGENTYC_LOGGING_LEVEL=debug` in your `.env` or shell environment.
       render: shell
       placeholder: |
-        $ uv run python repro.py
-        DEBUG    [browser] 🌎  Initializing new browser
-        DEBUG    [mcp] Browser session initialized
+        $ AGENTYC_LOGGING_LEVEL=debug agentyc mcp
+        DEBUG    [browser] Initializing new browser
+        DEBUG    [mcp] session initialized
