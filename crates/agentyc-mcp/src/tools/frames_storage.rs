@@ -1,11 +1,15 @@
 //! Frames & storage tools: list_frames, get_frame_html, get_storage, set_storage, clear_storage.
-#![allow(clippy::too_many_arguments, clippy::collapsible_if, clippy::collapsible_match)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::collapsible_if,
+    clippy::collapsible_match
+)]
 
 use anyhow::Result;
-use serde_json::{json, Value};
 use rmcp::model::CallToolResult;
+use serde_json::{Value, json};
 
-use crate::tools::{ok_json, ok_text, SharedState};
+use crate::tools::{SharedState, ok_json, ok_text};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     let g = state.lock().await;
@@ -39,22 +43,29 @@ fn collect_frames(node: &Value) -> Vec<Value> {
     result
 }
 
-pub async fn browser_get_frame_html(state: &SharedState, frame_id: String) -> Result<CallToolResult> {
+pub async fn browser_get_frame_html(
+    state: &SharedState,
+    frame_id: String,
+) -> Result<CallToolResult> {
     // Try to get HTML from the target frame via CDP target attach; fall back to JS for same-origin frames
-    let js = format!(
-        r#"(function(){{
+    let js = r#"(function(){
             const frames = document.querySelectorAll('iframe,frame');
-            for(const f of frames) {{
-                try {{
+            for(const f of frames) {
+                try {
                     const doc = f.contentDocument;
                     if(doc) return doc.documentElement.outerHTML;
-                }} catch(e) {{}}
-            }}
+                } catch(e) {}
+            }
             return document.documentElement.outerHTML;
-        }})()"#
-    );
+        })()"#
+        .to_string();
     let _ = frame_id; // Used for routing in future; currently falls back to first accessible frame
-    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+    let resp = cdp(
+        state,
+        "Runtime.evaluate",
+        json!({"expression": js, "returnByValue": true}),
+    )
+    .await?;
     let html = resp["result"]["value"].as_str().unwrap_or("").to_string();
     Ok(ok_text(html))
 }
@@ -78,8 +89,18 @@ pub async fn browser_get_storage(
         let g = state.lock().await;
         let sid = g.session_id.clone();
         let cdp = g.cdp()?;
-        let url_resp = cdp.send::<Value>("Runtime.evaluate", json!({"expression": "location.origin", "returnByValue": true}), sid.as_deref()).await.unwrap_or(json!({}));
-        let origin_str = url_resp["result"]["value"].as_str().unwrap_or("null").to_string();
+        let url_resp = cdp
+            .send::<Value>(
+                "Runtime.evaluate",
+                json!({"expression": "location.origin", "returnByValue": true}),
+                sid.as_deref(),
+            )
+            .await
+            .unwrap_or(json!({}));
+        let origin_str = url_resp["result"]["value"]
+            .as_str()
+            .unwrap_or("null")
+            .to_string();
         drop(g);
 
         // Try CDP DOMStorage first (works even on data: URLs)
@@ -90,18 +111,28 @@ pub async fn browser_get_storage(
         let items_resp = {
             let g = state.lock().await;
             let sid = g.session_id.clone();
-            g.cdp()?.send::<Value>("DOMStorage.getDOMStorageItems", json!({"storageId": storage_id}), sid.as_deref()).await
+            g.cdp()?
+                .send::<Value>(
+                    "DOMStorage.getDOMStorageItems",
+                    json!({"storageId": storage_id}),
+                    sid.as_deref(),
+                )
+                .await
         };
 
         if let Ok(items) = items_resp {
             if let Some(entries) = items["entries"].as_array() {
                 if let Some(k) = &key {
-                    let val = entries.iter()
-                        .find(|e| e.as_array().and_then(|a| a.first()).and_then(Value::as_str) == Some(k))
+                    let val = entries
+                        .iter()
+                        .find(|e| {
+                            e.as_array().and_then(|a| a.first()).and_then(Value::as_str) == Some(k)
+                        })
                         .and_then(|e| e.as_array()?.get(1).cloned());
                     result[st] = val.unwrap_or(Value::Null);
                 } else {
-                    let obj: serde_json::Map<String, Value> = entries.iter()
+                    let obj: serde_json::Map<String, Value> = entries
+                        .iter()
                         .filter_map(|e| {
                             let arr = e.as_array()?;
                             Some((arr.first()?.as_str()?.to_string(), arr.get(1)?.clone()))
@@ -117,11 +148,21 @@ pub async fn browser_get_storage(
         let js = if let Some(k) = &key {
             format!("{st}.getItem({:?})", k)
         } else {
-            format!(r#"(function(){{const o={{}};for(let i=0;i<{st}.length;i++){{const k={st}.key(i);o[k]={st}.getItem(k);}}return o;}})()"#)
+            format!(
+                r#"(function(){{const o={{}};for(let i=0;i<{st}.length;i++){{const k={st}.key(i);o[k]={st}.getItem(k);}}return o;}})()"#
+            )
         };
         let g = state.lock().await;
         let sid = g.session_id.clone();
-        let resp = g.cdp()?.send::<Value>("Runtime.evaluate", json!({"expression": js, "returnByValue": true}), sid.as_deref()).await.unwrap_or(json!({}));
+        let resp = g
+            .cdp()?
+            .send::<Value>(
+                "Runtime.evaluate",
+                json!({"expression": js, "returnByValue": true}),
+                sid.as_deref(),
+            )
+            .await
+            .unwrap_or(json!({}));
         drop(g);
         result[st] = resp["result"]["value"].clone();
     }
@@ -137,18 +178,38 @@ pub async fn browser_set_storage(
 ) -> Result<CallToolResult> {
     let _ = origin;
     let is_local = storage_type != "sessionStorage";
-    let st = if is_local { "localStorage" } else { "sessionStorage" };
+    let st = if is_local {
+        "localStorage"
+    } else {
+        "sessionStorage"
+    };
 
     // Try CDP DOMStorage.setDOMStorageItem
     let g = state.lock().await;
     let sid = g.session_id.clone();
     let cdp = g.cdp()?;
-    let url_resp = cdp.send::<Value>("Runtime.evaluate", json!({"expression": "location.origin", "returnByValue": true}), sid.as_deref()).await.unwrap_or(json!({}));
-    let origin_str = url_resp["result"]["value"].as_str().unwrap_or("null").to_string();
+    let url_resp = cdp
+        .send::<Value>(
+            "Runtime.evaluate",
+            json!({"expression": "location.origin", "returnByValue": true}),
+            sid.as_deref(),
+        )
+        .await
+        .unwrap_or(json!({}));
+    let origin_str = url_resp["result"]["value"]
+        .as_str()
+        .unwrap_or("null")
+        .to_string();
     let storage_id = json!({"securityOrigin": origin_str, "isLocalStorage": is_local});
-    let set_result = cdp.send::<Value>("DOMStorage.setDOMStorageItem", json!({
-        "storageId": storage_id, "key": key, "value": value,
-    }), sid.as_deref()).await;
+    let set_result = cdp
+        .send::<Value>(
+            "DOMStorage.setDOMStorageItem",
+            json!({
+                "storageId": storage_id, "key": key, "value": value,
+            }),
+            sid.as_deref(),
+        )
+        .await;
     drop(g);
 
     if set_result.is_err() {
@@ -156,7 +217,13 @@ pub async fn browser_set_storage(
         let js = format!("{st}.setItem({:?}, {:?})", key, value);
         let g = state.lock().await;
         let sid = g.session_id.clone();
-        g.cdp()?.send::<Value>("Runtime.evaluate", json!({"expression": js}), sid.as_deref()).await?;
+        g.cdp()?
+            .send::<Value>(
+                "Runtime.evaluate",
+                json!({"expression": js}),
+                sid.as_deref(),
+            )
+            .await?;
     }
     Ok(ok_text(format!("Set {st}[{key}]")))
 }
@@ -178,13 +245,33 @@ pub async fn browser_clear_storage(
         let g = state.lock().await;
         let sid = g.session_id.clone();
         let cdp = g.cdp()?;
-        let url_resp = cdp.send::<Value>("Runtime.evaluate", json!({"expression": "location.origin", "returnByValue": true}), sid.as_deref()).await.unwrap_or(json!({}));
-        let origin_str = url_resp["result"]["value"].as_str().unwrap_or("null").to_string();
+        let url_resp = cdp
+            .send::<Value>(
+                "Runtime.evaluate",
+                json!({"expression": "location.origin", "returnByValue": true}),
+                sid.as_deref(),
+            )
+            .await
+            .unwrap_or(json!({}));
+        let origin_str = url_resp["result"]["value"]
+            .as_str()
+            .unwrap_or("null")
+            .to_string();
         let storage_id = json!({"securityOrigin": origin_str, "isLocalStorage": is_local});
         let cdp_result = if let Some(k) = &key {
-            cdp.send::<Value>("DOMStorage.removeDOMStorageItem", json!({"storageId": storage_id, "key": k}), sid.as_deref()).await
+            cdp.send::<Value>(
+                "DOMStorage.removeDOMStorageItem",
+                json!({"storageId": storage_id, "key": k}),
+                sid.as_deref(),
+            )
+            .await
         } else {
-            cdp.send::<Value>("DOMStorage.clear", json!({"storageId": storage_id}), sid.as_deref()).await
+            cdp.send::<Value>(
+                "DOMStorage.clear",
+                json!({"storageId": storage_id}),
+                sid.as_deref(),
+            )
+            .await
         };
         drop(g);
 
@@ -197,7 +284,13 @@ pub async fn browser_clear_storage(
             };
             let g = state.lock().await;
             let sid = g.session_id.clone();
-            g.cdp()?.send::<Value>("Runtime.evaluate", json!({"expression": js}), sid.as_deref()).await?;
+            g.cdp()?
+                .send::<Value>(
+                    "Runtime.evaluate",
+                    json!({"expression": js}),
+                    sid.as_deref(),
+                )
+                .await?;
         }
     }
     Ok(ok_text("Storage cleared"))
