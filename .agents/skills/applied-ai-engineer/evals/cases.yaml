@@ -23,7 +23,7 @@ suites:
         prompt: Keep improving this metric until we hit 95% or prove the bottleneck is elsewhere.
         expect_trigger: false
       - id: nontrig-03
-        prompt: Fix this import error in one Python file.
+        prompt: Fix this import error in one Rust file.
         expect_trigger: false
       - id: nontrig-04
         prompt: Update the README to document a renamed CLI flag.
