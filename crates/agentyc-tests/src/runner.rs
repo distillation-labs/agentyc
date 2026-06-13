@@ -35,28 +35,44 @@ fn elements(m: &mut Mcp) -> Vec<Value> {
 }
 
 /// Find the ref of the first interactive element whose visible text/value
-/// contains `needle` (case-insensitive).
+/// matches `needle` (case-insensitive). Exact matches win over substring
+/// matches so e.g. "Confirm" does not resolve to "Native confirm".
 fn ref_by_text(m: &mut Mcp, needle: &str) -> Option<String> {
     let nl = needle.to_lowercase();
-    let scan = |els: &[Value]| -> Option<String> {
+    let pick = |els: &[Value], exact: bool| -> Option<String> {
         els.iter()
             .find(|e| {
-                let t = e["text"].as_str().unwrap_or("").to_lowercase();
-                let val = e["value"].as_str().unwrap_or("").to_lowercase();
-                let label = e["label"].as_str().unwrap_or("").to_lowercase();
-                t.contains(&nl) || val.contains(&nl) || label.contains(&nl)
+                let t = e["text"].as_str().unwrap_or("").trim().to_lowercase();
+                let val = e["value"].as_str().unwrap_or("").trim().to_lowercase();
+                if exact {
+                    t == nl || val == nl
+                } else {
+                    t.contains(&nl) || val.contains(&nl)
+                }
             })
             .and_then(|e| e["ref"].as_str())
             .map(str::to_string)
     };
     let els = elements(m);
-    if let Some(r) = scan(&els) {
+    if let Some(r) = pick(&els, true).or_else(|| pick(&els, false)) {
         return Some(r);
     }
     // One retry after a brief settle for late-rendered controls.
     m.wait(0.3);
     let els = elements(m);
-    scan(&els)
+    pick(&els, true).or_else(|| pick(&els, false))
+}
+
+/// Extract the tab list from `browser_list_tabs`, handling both the bare-array
+/// and `{"tabs": [...]}` response shapes across builds.
+fn tabs_array(v: &Value) -> Vec<Value> {
+    if let Some(a) = v.as_array() {
+        a.clone()
+    } else if let Some(a) = v["tabs"].as_array() {
+        a.clone()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Find the ref of an input by placeholder (exact match preferred).
@@ -278,10 +294,9 @@ fn run_step(m: &mut Mcp, base: &str, step: &Step) -> Result<(), String> {
             Ok(())
         }
         Step::SwitchTabIndex(i) => {
-            let tabs = Mcp::json(&m.call("browser_list_tabs", json!({})));
+            let tabs = tabs_array(&Mcp::json(&m.call("browser_list_tabs", json!({}))));
             let id = tabs
-                .as_array()
-                .and_then(|a| a.get(*i))
+                .get(*i)
                 .and_then(|t| t["tab_id"].as_str())
                 .map(str::to_string);
             match id {
@@ -290,6 +305,21 @@ fn run_step(m: &mut Mcp, base: &str, step: &Step) -> Result<(), String> {
                     Ok(())
                 }
                 None => Err(format!("no tab at index {i}")),
+            }
+        }
+        Step::SwitchTabUrl(substr) => {
+            let tabs = tabs_array(&Mcp::json(&m.call("browser_list_tabs", json!({}))));
+            let id = tabs
+                .iter()
+                .find(|t| t["url"].as_str().unwrap_or("").contains(substr.as_str()))
+                .and_then(|t| t["tab_id"].as_str())
+                .map(str::to_string);
+            match id {
+                Some(id) => {
+                    m.call("browser_switch_tab", json!({"tab_id": id}));
+                    Ok(())
+                }
+                None => Err(format!("no tab with url containing {substr:?}")),
             }
         }
         Step::SaveState(tok) => {
