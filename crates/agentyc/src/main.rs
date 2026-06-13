@@ -27,6 +27,10 @@ enum Cmd {
     Mcp {
         #[arg(long)]
         cdp_url: Option<String>,
+        /// Expose the extended tool profile (observability: console/network logs,
+        /// mocks, conditions, replay, debug bundle, downloads, trace).
+        #[arg(long)]
+        extended: bool,
     },
     /// Run MCP server over Streamable HTTP.
     Serve {
@@ -36,6 +40,9 @@ enum Cmd {
         port: u16,
         #[arg(long)]
         cdp_url: Option<String>,
+        /// Expose the extended tool profile (observability tools).
+        #[arg(long)]
+        extended: bool,
     },
     /// Write the agentyc skills guide to a file.
     Init {
@@ -72,12 +79,23 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => agentyc_mcp::run_stdio(None).await,
-        Some(Cmd::Mcp { cdp_url }) => agentyc_mcp::run_stdio(cdp_url.as_deref()).await,
+        Some(Cmd::Mcp { cdp_url, extended }) => {
+            if extended {
+                unsafe { std::env::set_var("AGENTYC_EXTENDED", "1") };
+            }
+            agentyc_mcp::run_stdio(cdp_url.as_deref()).await
+        }
         Some(Cmd::Serve {
             host,
             port,
             cdp_url,
-        }) => run_serve(&host, port, cdp_url.as_deref()).await,
+            extended,
+        }) => {
+            if extended {
+                unsafe { std::env::set_var("AGENTYC_EXTENDED", "1") };
+            }
+            run_serve(&host, port, cdp_url.as_deref()).await
+        }
         Some(Cmd::Init {
             output,
             print,
