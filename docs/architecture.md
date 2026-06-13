@@ -5,167 +5,160 @@
 ```text
 MCP client
   |
-  | stdio
+  | stdio (default)  ── or ──  Streamable HTTP (agentyc serve, via axum)
   v
-agentyc.mcp.cli.main
-  |
-  v
-agentyc.mcp.server.main
+agentyc (binary)  ── crates/agentyc/src/main.rs
   |
   v
-agentyc.mcp.server.AgentycServer
+agentyc_mcp::run_stdio / BrowserServer  ── crates/agentyc-mcp
   |
-  +--> agentyc.mcp.tool_schemas.get_tool_schemas
+  +--> rmcp ToolRouter (61 #[rmcp::tool] handlers, six routers)
   |
-  +--> agentyc.mcp.tool_dispatch._execute_tool
-  |      |
-  |      +--> agentyc.mcp.action_runtime
-  |      +--> agentyc.mcp.cdp_tools
-  |      +--> agentyc.mcp.intent_tools
-  |      +--> agentyc.mcp.session_lifecycle
-  |      +--> agentyc.mcp.tool_feedback
+  +--> tools::{navigation, state_tools, interaction,
+  |            inspection, frames_storage, tabs_session}
   |
-  +--> agentyc.tools.service.Tools
-  |      |
-  |      +--> agentyc.tools.extraction.router
+  +--> ServerState  (Arc<Mutex<ServerState>>: CdpClient, session_id, tab, browser)
   |
-  +--> agentyc.mcp.state
+  +--> agentyc_tools  ── deterministic extraction routing
   |
-  +--> agentyc.browser.hud_stream
-  |      |
-  |      +--> agentyc.browser.demo_mode
-  |      +--> agentyc.browser.hud_overlay
+  +--> agentyc_dom    ── DOM serialization, clickable detection, markdown
   |
-  +--> agentyc.browser.session.BrowserSession
+  +--> agentyc_browser ── Chrome discovery, launch, profile, session lifecycle
+  |
+  +--> agentyc_cdp     ── CdpClient
          |
-         +--> agentyc.browser.session_manager.SessionManager
-         |
-         +--> Chrome / Chromium over CDP
+         +--> Chrome / Chromium over the Chrome DevTools Protocol
 ```
 
-## Public Source Of Truth Modules
+## Workspace Crates (source of truth)
 
-These modules define the public contract that docs should follow:
+The workspace is defined in the root `Cargo.toml` (`edition = "2024"`). Each
+crate owns one concern:
 
-- `agentyc/mcp/server.py`
-- `agentyc/mcp/cli.py`
-- `agentyc/mcp/state.py`
-- `agentyc/tools/extraction/router.py`
-- `agentyc/tools/service.py`
-- `agentyc/config.py`
-- `agentyc/browser/session.py`
-- `agentyc/browser/session_manager.py`
+| Crate | Path | Responsibility |
+|-------|------|----------------|
+| `agentyc` | `crates/agentyc` | Binary + CLI (`mcp`, `serve`, `init`, `browser`). |
+| `agentyc-mcp` | `crates/agentyc-mcp` | The MCP server: tool definitions, schemas, dispatch, state serialization. |
+| `agentyc-cdp` | `crates/agentyc-cdp` | Chrome DevTools Protocol client over WebSocket / HTTP attach. |
+| `agentyc-browser` | `crates/agentyc-browser` | Chrome discovery, launch, profile/env config, session lifecycle. |
+| `agentyc-dom` | `crates/agentyc-dom` | DOM tree serialization, clickable-element heuristics, HTML→markdown. |
+| `agentyc-tools` | `crates/agentyc-tools` | Deterministic extraction route selection. |
+| `agentyc-tests` | `crates/agentyc-tests` | Integration-test harness and ported suites. |
+
+## CLI Layer
+
+`crates/agentyc/src/main.rs` parses the CLI with `clap` and dispatches:
+
+1. `agentyc` / `agentyc mcp` → `agentyc_mcp::run_stdio` (stdio JSON-RPC, the default).
+2. `agentyc serve` → a Streamable HTTP server built with `axum` and
+   `rmcp`'s `StreamableHttpService`.
+3. `agentyc init` → writes the bundled `SKILL.md` (embedded via `include_str!`).
+4. `agentyc browser` → launches Chrome with remote debugging and prints the CDP
+   WebSocket URL, for shared/attached sessions.
+
+Tracing is configured to write to stderr only — stdout is reserved for the
+JSON-RPC channel — with the level taken from `AGENTYC_LOGGING_LEVEL`.
 
 ## MCP Server Layer
 
-`agentyc.mcp.server.AgentycServer` is the public stdio server.
+`agentyc_mcp::BrowserServer` is the public server. It implements `rmcp`'s
+`ServerHandler` via `#[tool_handler]`, and its tools are declared with
+`#[rmcp::tool(...)]` grouped into six `#[tool_router]` blocks that are summed
+together in `BrowserServer::new()`:
 
-Startup path:
+- `tool_router_nav` — navigation and wait tools
+- `tool_router_state` — state, HTML, screenshot, PDF, viewport
+- `tool_router_interaction` — click, type, scroll, select, dialogs, etc.
+- `tool_router_inspection` — extraction, find, search, attributes, evaluate
+- `tool_router_frames` — frames and storage
+- `tool_router_tabs` — tabs, cookies, emulation, session control
 
-1. `agentyc.mcp.cli.main` parses the CLI.
-2. MCP mode calls `agentyc.mcp.server.main`.
-3. `main()` constructs `AgentycServer`, starts session cleanup, and runs the MCP stdio server.
-4. `AgentycServer` registers `list_tools`, `list_resources`, `list_prompts`, and `call_tool` handlers on the MCP SDK server object.
+After composition, `slim_tool_schemas()` strips verbose `schemars`-generated
+fields (`$schema`, `title`, `$defs`, per-property `format`) from every tool's
+input schema to keep the `tools/list` payload compact.
 
 Responsibilities:
 
-- Register the MCP tool list.
-- Lazily create a browser session on first browser tool use.
-- Translate MCP arguments into tool-runtime calls.
+- Register the MCP tool list (61 tools) and serve them over stdio or HTTP.
+- Lazily launch / connect a browser on first browser tool use.
+- Translate MCP arguments (typed `Deserialize` + `JsonSchema` param structs)
+  into `tools::*` calls.
 - Return text and image content in MCP response format.
-- Track recent console and network events captured from CDP.
-- Close idle sessions after the configured timeout.
+- Surface errors as `isError` tool content with structured codes so agents can
+  branch programmatically (see below).
 
-The server advertises no MCP resources and no MCP prompts.
+The server advertises tools only — no MCP resources or prompts.
 
-## HUD Event Layer
+### Shared State
 
-`agentyc.browser.hud_stream` is the shared in-process event stream for operator-visible activity.
+`tools::ServerState` (held as `Arc<Mutex<ServerState>>`) is the single runtime
+object passed to every tool function. It owns:
 
-- `agentyc.mcp.tool_feedback` publishes browser tool start/done/error events into the stream.
-- `agentyc.mcp.intent_tools` publishes explicit short-form intent labels from `browser_set_intent`.
-- `agentyc.browser.demo_mode` subscribes to that stream and forwards sanitized entries into the browser page via the `agentyc-log` event contract.
-- `agentyc.browser.hud_overlay` mirrors the same sanitized stream into the optional transparent desktop HUD window.
+- `cdp: Option<CdpClient>` — the live CDP connection.
+- `session_id: Option<String>` — the attached page target's CDP session id.
+- `current_tab_id: Option<String>` — the focused tab (last 4 chars of target id).
+- `launched_browser: Option<LaunchedBrowser>` — kept alive for the session.
 
-This layer is intentionally label-only. It is designed for operator visibility, not raw reasoning traces.
+### Structured Error Codes
 
-### Internal MCP Sub-Modules
+`tools::res` converts an `anyhow::Result<CallToolResult>` into the rmcp result
+type. Instead of propagating raw failures, it maps known CDP error strings into
+agent-readable, prefixed messages with recovery hints:
 
-`AgentycServer`'s method body is organized across five internal modules. These are not part of the public contract but are useful for navigating the source:
+- `[stale_ref]` — element id no longer valid → call `browser_get_state`.
+- `[element_not_interactable]` — off-screen / Shadow DOM → use coordinates or `browser_evaluate`.
+- `[no_browser]` — nothing connected → call `browser_navigate` to auto-launch.
+- `[domain_blocked]` — navigation outside `AGENTYC_ALLOWED_DOMAINS`.
+- `[timeout]` — increase `timeout_seconds` / verify the page loaded.
+- `[session_error]` — reconnect via `browser_navigate`.
 
-| Module | Responsibility |
-|--------|---------------|
-| `agentyc.mcp.tool_schemas` | Returns the full `list[types.Tool]` catalog passed to MCP |
-| `agentyc.mcp.tool_dispatch` | Routes each tool name to its handler via `_execute_tool` |
-| `agentyc.mcp.tool_feedback` | Formats MCP tool log metadata and publishes browser-tool HUD events |
-| `agentyc.mcp.intent_tools` | Implements `browser_set_intent` for user-visible operator status updates |
-| `agentyc.mcp.action_runtime` | Browser action implementations (navigate, click, type, extract, scroll, etc.) |
-| `agentyc.mcp.cdp_tools` | CDP-specific tool implementations (tabs, cookies, console logs, network log, hover, drag, etc.) |
-| `agentyc.mcp.session_lifecycle` | Session tracking, idle cleanup, and browser initialization via `_init_browser_session` |
+## CDP Layer
 
-Methods from those modules are bound onto `AgentycServer` at import time through `_SERVER_METHODS` in `server.py`.
+`agentyc_cdp::CdpClient` speaks the Chrome DevTools Protocol directly:
 
-## Tool Runtime Layer
+- `connect` over a `ws://` / `wss://` debugger URL (`tokio-tungstenite`).
+- `connect_via_http` to resolve a debugger URL from an HTTP endpoint (`reqwest`).
+- `send::<T>(method, params, session_id)` issues a CDP command, optionally
+  scoped to a page session, with a response timeout taken from
+  `AGENTYC_CDP_TIMEOUT_S` (default 60s).
 
-`agentyc.tools.service.Tools` is the execution layer for validated browser actions.
-
-Responsibilities:
-
-- Validate action input through Pydantic models.
-- Enforce a bounded per-action timeout.
-- Dispatch typed browser events onto the session event bus.
-- Run deterministic extraction through `agentyc.tools.extraction.router`.
-- Return `ActionResult` payloads that the MCP server formats for clients.
-
-For the public MCP server, extraction is invoked with `page_extraction_llm=None`, which keeps `browser_extract_content` on deterministic routes only.
+On connect, the server enables `Network`, `Runtime`, and `Page` domains
+browser-wide and per page session, then attaches to the first page target.
 
 ## Browser Session Layer
 
-`agentyc.browser.session.BrowserSession` owns the live browser connection.
+`agentyc_browser` owns the local browser lifecycle:
 
-Responsibilities:
+- `find_chrome_binary()` locates Chrome/Chromium across platform-specific
+  install locations and the `PLAYWRIGHT_BROWSERS_PATH` cache, honoring an
+  explicit override.
+- `BrowserProfile` reads runtime configuration from the environment
+  (`AGENTYC_HEADLESS`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_PROXY_*`).
+- `LaunchedBrowser` represents the spawned process; it is stored on
+  `ServerState` so it lives for the duration of the MCP session.
 
-- Launch a local browser or attach to an existing browser by CDP URL.
-- Maintain an event bus for browser operations.
-- Track the focused tab.
-- Provide browser state summaries, screenshots, cookies, and DOM lookup helpers.
-- Register and coordinate watchdog-style services around the CDP session.
+Defaults relevant to clients:
 
-`BrowserSession` is the long-lived runtime object underneath the MCP server.
-
-## Target And Session Tracking
-
-`agentyc.browser.session_manager.SessionManager` is the single source of truth for browser targets and CDP sessions.
-
-Responsibilities:
-
-- Observe `Target.attachedToTarget` and `Target.detachedFromTarget` events.
-- Maintain mappings between target ids and CDP session ids.
-- Initialize monitoring for page targets.
-- Recover focus when the active target detaches.
-
-This is why tab and target behavior should be documented in CDP terms rather than with older selector- or playwright-style abstractions.
+- `headless=false` (a visible browser) unless `AGENTYC_HEADLESS=1`.
+- Per-session isolated temporary profile.
+- Downloads path under `~/Downloads/agentyc-mcp`.
 
 ## Browser State Serialization
 
-`agentyc.mcp.state` shapes `BrowserStateSummary` objects into the MCP-facing payload.
+The state module shapes a page snapshot into the MCP-facing payload returned by
+`browser_get_state`:
 
-Important behavior:
-
-- Stable refs are generated as `e<backend_node_id>`.
+- Stable refs are generated as `e<backend_node_id>` and survive re-renders.
 - `state_hash` summarizes the page and interactive elements.
-- `auto` mode falls back to ranked compaction when pages are dense.
-- `focus` mode narrows the payload to one referenced element.
-- Unchanged `since_hash` responses use a metadata-only fast path.
-- Shared-browser payloads can expose nested ownership/runtime metadata for owned tabs, display titles, parent tab ids, optional runtime-group metadata, and optional window bounds.
-
-This module is the reason the public docs should talk about refs and compaction, not old integer-only element targeting.
+- Modes: `auto` (full on small pages, ranked compaction on dense pages),
+  `full`, `min` (proximity-scored budget), and `focus` (single element).
+- An unchanged `since_hash` returns `changed=false` with no element payload.
+- Shadow DOM is pierced during element discovery.
 
 ## Deterministic Extraction Pipeline
 
-`agentyc.tools.extraction.router` chooses a deterministic route from the extraction query.
-
-Supported route families:
+`agentyc_tools` chooses a deterministic extraction route from the query string
+for `browser_extract_content`. Supported route families:
 
 - Links
 - Link collections
@@ -173,84 +166,51 @@ Supported route families:
 - Tables
 - Lists
 - Form fields
-- Key-value blocks
+- Key-value / definition blocks
 
-If no deterministic route matches, the public MCP server returns an explicit error. It does not silently fall back to an LLM.
+If no deterministic route matches, the server returns an explicit error. It
+never falls back to an LLM — there is no model in the loop.
 
-## Configuration Flow
+## Shared / Attached Browser Flow
 
-`agentyc.config` merges configuration from:
+When `--cdp-url` is provided to `agentyc mcp` (or `agentyc serve`):
 
-1. Environment variables
-2. Config file
-3. Code defaults
-
-The MCP server then combines that config with its own runtime defaults when creating `BrowserProfile` instances.
-
-Publicly relevant defaults from the server include:
-
-- `downloads_path=~/Downloads/agentyc-mcp`
-- `keep_alive=False` for local browser sessions launched by the MCP server
-- `user_data_dir=~/.config/agentyc/profiles/default`
-- `headless=False` unless overridden
-- `disable_security=False`
-
-## Shared Browser Flow
-
-When `--cdp-url` is provided:
-
-- The server attaches to an already-running browser.
-- `BrowserProfile.keep_alive` is set so the shared browser is not torn down when the MCP session ends.
-- The attached runtime creates a collaboration target: a tab by default, or a separate window when `shared_browser_mode='window'`.
-- Optional `shared_browser_window_bounds` can be applied when the runtime uses a separate window.
-- The runtime updates its focused target automatically on attach and other internal new-target flows.
-- Visible browser activation is policy-driven through `shared_browser_focus_policy` rather than assumed.
-
-This is the public contract that exists today. Any richer collaboration UX should be described as directional unless it is implemented in the source-of-truth modules above.
+- The server attaches to an already-running browser instead of launching one.
+- It enables the required CDP domains browser-wide and on the first page target.
+- The attached browser is not torn down when the MCP session ends.
 
 ### Parallel Automation
 
-Multiple subagent processes can work in the same browser simultaneously using the following pattern:
+Multiple subagent processes can share one browser:
 
-1. A primary agent starts a shared browser with `agentyc browser --port 9222 --detach` and obtains a CDP URL.
-2. Each subagent spawns its own `agentyc mcp --cdp-url <url>` process, attaching to the shared browser.
-3. During attach, Agentyc claims a dedicated collaboration tab for that runtime inside the shared browser profile.
-4. Subagents then operate independently. State snapshots, stable element refs, and network logs are scoped to the tab each subagent owns, while cookies and local storage remain shared with the browser profile.
-5. The primary agent coordinates task assignment across subagents and collects results.
-
-`browser_new_tab` remains the preferred mechanism when a runtime needs an additional working surface after startup. The initial collaboration tab is created automatically during attach.
+1. A primary agent starts a shared browser with
+   `agentyc browser --port 9222 --detach` and captures the printed CDP URL.
+2. Each subagent runs its own `agentyc mcp --cdp-url <url>` process.
+3. `browser_new_tab` gives each subagent an isolated working surface; state
+   snapshots, refs, and network logs are scoped per tab while cookies and
+   storage remain shared across the profile.
 
 ## Request Flows
 
-All MCP tool calls pass through the same high-level runtime flow:
+All MCP tool calls follow the same path:
 
-1. The MCP client sends a stdio tool call.
-2. `AgentycServer.handle_call_tool` delegates to `_execute_tool`.
-3. `AgentycServer` can emit MCP `notifications/progress` for the active request when the caller provided a `progressToken`.
-4. `agentyc.mcp.tool_dispatch` routes the tool name to the appropriate action, CDP, or session-lifecycle handler.
-5. Browser tools lazily initialize `BrowserSession` if needed.
-6. The handler returns text content, or text plus image content for tools such as `browser_get_state` and `browser_screenshot`.
-7. The first text content block carries `_meta` timing fields so clients can distinguish browser execution from their own reasoning time.
+1. The MCP client sends a stdio (or HTTP) `tools/call`.
+2. `rmcp` routes it to the matching `#[rmcp::tool]` method on `BrowserServer`.
+3. The method deserializes typed params and calls the relevant `tools::*` fn.
+4. Browser tools lazily launch / attach a browser if needed.
+5. The function drives Chrome through `agentyc_cdp` and returns text — or text
+   plus image content for `browser_get_state` and `browser_screenshot`.
 
 ### `browser_get_state`
 
-1. MCP client calls `browser_get_state`.
-2. `AgentycServer` asks `BrowserSession` for a `BrowserStateSummary`.
-3. `agentyc.mcp.state` compacts and serializes that summary.
-4. The server returns JSON text plus optional MCP image content.
-5. Clients should prefer `mode="min"` and `since_hash` for follow-up polling to avoid repeated full-tree reads.
+1. The server reads the DOM and interactive elements over CDP.
+2. The state module compacts and serializes the snapshot.
+3. The server returns JSON text plus optional image content.
+4. Clients should prefer `mode="min"` + `since_hash` for follow-up polling.
 
 ### `browser_extract_content`
 
-1. MCP client sends `query`, optional `extract_links`, and optional `output_schema`.
-2. `Tools.extract` obtains clean markdown from the current page.
-3. `agentyc.tools.extraction.router` picks a deterministic route.
-4. The server returns deterministic content plus extraction metadata, or a deterministic-route error.
-
-### Navigation And Interaction
-
-1. MCP client calls a browser tool.
-2. `AgentycServer` resolves refs or indices as needed.
-3. `Tools` dispatches typed browser events.
-4. `BrowserSession` and its event handlers execute the CDP operations.
-5. The server returns a concise text result to the MCP client.
+1. The client sends `query`, optional `extract_links`, and optional `output_schema`.
+2. `agentyc_dom` produces clean markdown / structured nodes from the page.
+3. `agentyc_tools` picks a deterministic route.
+4. The server returns deterministic content, or a deterministic-route error.
