@@ -1,12 +1,16 @@
 //! Inspection tools: extract_content, find_elements, search_page,
-#![allow(clippy::too_many_arguments, clippy::collapsible_if, clippy::collapsible_match)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::collapsible_if,
+    clippy::collapsible_match
+)]
 //! wait_for_element, get_focused_element, get_attribute, evaluate.
 
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
+use anyhow::{Result, anyhow};
 use rmcp::model::CallToolResult;
+use serde_json::{Value, json};
 
-use crate::tools::{ok_json, ok_text, parse_ref, SharedState};
+use crate::tools::{SharedState, ok_json, ok_text, parse_ref};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     let g = state.lock().await;
@@ -22,21 +26,28 @@ pub async fn browser_extract_content(
     _output_schema: Option<Value>,
 ) -> Result<CallToolResult> {
     // Get page HTML first for deterministic Rust-based extraction
-    let html_resp = cdp(state, "Runtime.evaluate", json!({
-        "expression": "document.documentElement.outerHTML",
-        "returnByValue": true,
-    })).await.ok();
+    let html_resp = cdp(
+        state,
+        "Runtime.evaluate",
+        json!({
+            "expression": "document.documentElement.outerHTML",
+            "returnByValue": true,
+        }),
+    )
+    .await
+    .ok();
     let html = html_resp
         .as_ref()
         .and_then(|v| v["result"]["value"].as_str())
         .unwrap_or("");
 
     // Adjust query if extract_links flag is set
-    let effective_query = if extract_links.unwrap_or(false) && !query.to_lowercase().contains("link") {
-        format!("links {query}")
-    } else {
-        query.clone()
-    };
+    let effective_query =
+        if extract_links.unwrap_or(false) && !query.to_lowercase().contains("link") {
+            format!("links {query}")
+        } else {
+            query.clone()
+        };
 
     match agentyc_tools::extract(html, &effective_query) {
         Ok(result) => Ok(ok_json(&result)),
@@ -52,7 +63,11 @@ pub async fn browser_find_elements(
 ) -> Result<CallToolResult> {
     let max = max_results.unwrap_or(50);
     let attrs = attributes.unwrap_or_default();
-    let attrs_js = attrs.iter().map(|a| format!("{a:?}: el.getAttribute({a:?})")).collect::<Vec<_>>().join(",");
+    let attrs_js = attrs
+        .iter()
+        .map(|a| format!("{a:?}: el.getAttribute({a:?})"))
+        .collect::<Vec<_>>()
+        .join(",");
     let js = format!(
         r#"Array.from(document.querySelectorAll({:?})).slice(0,{max}).map(el=>({{
             tag: el.tagName.toLowerCase(),
@@ -61,7 +76,12 @@ pub async fn browser_find_elements(
         }}))"#,
         selector
     );
-    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+    let resp = cdp(
+        state,
+        "Runtime.evaluate",
+        json!({"expression": js, "returnByValue": true}),
+    )
+    .await?;
     Ok(ok_json(&resp["result"]["value"]))
 }
 
@@ -109,7 +129,12 @@ pub async fn browser_search_page(
             pattern
         )
     };
-    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+    let resp = cdp(
+        state,
+        "Runtime.evaluate",
+        json!({"expression": js, "returnByValue": true}),
+    )
+    .await?;
     Ok(ok_json(&resp["result"]["value"]))
 }
 
@@ -130,24 +155,46 @@ pub async fn browser_wait_for_element(
                 "document.body.innerText.toLowerCase().includes({:?}.toLowerCase())",
                 t
             );
-            let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await.ok();
-            resp.and_then(|v| v["result"]["value"].as_bool()).unwrap_or(false)
+            let resp = cdp(
+                state,
+                "Runtime.evaluate",
+                json!({"expression": js, "returnByValue": true}),
+            )
+            .await
+            .ok();
+            resp.and_then(|v| v["result"]["value"].as_bool())
+                .unwrap_or(false)
         } else if let Some(r) = &r#ref {
             let id = parse_ref(r).unwrap_or(0);
             let js = format!("document.querySelector('[data-backend-node-id=\"{id}\"]') !== null");
-            let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await.ok();
-            resp.and_then(|v| v["result"]["value"].as_bool()).unwrap_or(false)
+            let resp = cdp(
+                state,
+                "Runtime.evaluate",
+                json!({"expression": js, "returnByValue": true}),
+            )
+            .await
+            .ok();
+            resp.and_then(|v| v["result"]["value"].as_bool())
+                .unwrap_or(false)
         } else {
             false
         };
 
         if found == should_appear {
-            return Ok(ok_text(format!("Element {}",
-                if should_appear { "appeared" } else { "disappeared" })));
+            return Ok(ok_text(format!(
+                "Element {}",
+                if should_appear {
+                    "appeared"
+                } else {
+                    "disappeared"
+                }
+            )));
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow!("Timeout waiting for element to {}",
-                if should_appear { "appear" } else { "disappear" }));
+            return Err(anyhow!(
+                "Timeout waiting for element to {}",
+                if should_appear { "appear" } else { "disappear" }
+            ));
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
@@ -166,7 +213,12 @@ pub async fn browser_get_focused_element(state: &SharedState) -> Result<CallTool
             name: el.name||null,
         };
     })()"#;
-    let resp = cdp(state, "Runtime.evaluate", json!({"expression": js, "returnByValue": true})).await?;
+    let resp = cdp(
+        state,
+        "Runtime.evaluate",
+        json!({"expression": js, "returnByValue": true}),
+    )
+    .await?;
     Ok(ok_json(&resp["result"]["value"]))
 }
 
@@ -176,7 +228,11 @@ pub async fn browser_get_attribute(
     r#ref: Option<String>,
     index: Option<u64>,
 ) -> Result<CallToolResult> {
-    let id = if let Some(r) = &r#ref { parse_ref(r)? } else { index.unwrap_or(0) };
+    let id = if let Some(r) = &r#ref {
+        parse_ref(r)?
+    } else {
+        index.unwrap_or(0)
+    };
     if id == 0 {
         return Err(anyhow!("Must provide ref or index"));
     }
@@ -185,28 +241,49 @@ pub async fn browser_get_attribute(
     if let Some(obj_id) = resolve["object"]["objectId"].as_str() {
         let g = state.lock().await;
         let sid = g.session_id.clone();
-        let func = format!("function(){{return this.getAttribute({})}}", serde_json::to_string(&name).unwrap());
-        let call_resp = g.cdp()?.send::<Value>("Runtime.callFunctionOn", json!({
-            "objectId": obj_id,
-            "functionDeclaration": func,
-            "returnByValue": true,
-        }), sid.as_deref()).await?;
+        let func = format!(
+            "function(){{return this.getAttribute({})}}",
+            serde_json::to_string(&name).unwrap()
+        );
+        let call_resp = g
+            .cdp()?
+            .send::<Value>(
+                "Runtime.callFunctionOn",
+                json!({
+                    "objectId": obj_id,
+                    "functionDeclaration": func,
+                    "returnByValue": true,
+                }),
+                sid.as_deref(),
+            )
+            .await?;
         drop(g);
         let val = &call_resp["result"]["value"];
-        return Ok(ok_text(if val.is_null() { "null".to_string() } else { val.as_str().unwrap_or("null").to_string() }));
+        return Ok(ok_text(if val.is_null() {
+            "null".to_string()
+        } else {
+            val.as_str().unwrap_or("null").to_string()
+        }));
     }
     Ok(ok_text("null"))
 }
 
 pub async fn browser_evaluate(state: &SharedState, code: String) -> Result<CallToolResult> {
-    let resp = cdp(state, "Runtime.evaluate", json!({
-        "expression": code,
-        "returnByValue": true,
-        "awaitPromise": true,
-    })).await?;
+    let resp = cdp(
+        state,
+        "Runtime.evaluate",
+        json!({
+            "expression": code,
+            "returnByValue": true,
+            "awaitPromise": true,
+        }),
+    )
+    .await?;
     if let Some(exc) = resp.get("exceptionDetails") {
         return Err(anyhow!("JS exception: {exc}"));
     }
     let result = &resp["result"]["value"];
-    Ok(ok_text(serde_json::to_string(result).unwrap_or_else(|_| "null".into())))
+    Ok(ok_text(
+        serde_json::to_string(result).unwrap_or_else(|_| "null".into()),
+    ))
 }
