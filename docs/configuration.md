@@ -1,154 +1,112 @@
 # Configuration
 
-## Resolution Order
+`agentyc` is configured entirely through CLI flags and environment variables.
+There is no config file, no API key, and no LLM — the only external requirement
+is a Chrome/Chromium install.
 
-The MCP runtime resolves configuration in this order:
+## CLI
 
-1. Environment variables
-2. Config file
-3. Code defaults
-
-`agentyc.config.load_agentyc_config()` loads the effective config used by the MCP server.
-
-## Config File Location
-
-Default config path:
-
-```text
-~/.config/agentyc/config.json
-```
-
-Overrides:
-
-- `AGENTYC_CONFIG_PATH` points to a specific config file.
-- `AGENTYC_CONFIG_DIR` changes the config directory.
-- `XDG_CONFIG_HOME` changes the XDG base directory.
-
-## Config File Shape
-
-The current config file is a DB-style JSON document with top-level sections such as:
-
-- `browser_profile`
-- `llm`
-- `agent`
-
-The MCP server primarily consumes the default `browser_profile` entry and selected `llm` fields from that document.
-
-## CLI Configuration
-
-### MCP Server
+### `agentyc` / `agentyc mcp` — stdio MCP server
 
 ```bash
+agentyc
 agentyc mcp --cdp-url ws://127.0.0.1:9222/devtools/browser/...
-agentyc mcp --reuse-local-browser
-agentyc --session-timeout-minutes 30  # auto-close after 30 min idle; 0 = never (default)
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--session-timeout-minutes` | Idle timeout in minutes for the tracked browser session. `0` (default) disables automatic cleanup — sessions stay alive until the MCP server process exits. |
-| `--hud-overlay` | Show the optional transparent desktop HUD window for sanitized live activity |
-| `--cdp-url` | Attach to an existing browser instead of launching a local one |
-| `--reuse-local-browser` | Reuse the latest locally launched Agentyc browser instead of launching a new browser or manually copying a CDP URL |
-| `--runtime-label` | Human-readable ownership label for this runtime in shared-browser mode |
-| `--runtime-role` | Collaboration role string for this runtime |
-| `--parent-runtime-id` | Optional parent runtime identifier for nested collaboration flows |
-| `--shared-browser-mode` | Create a shared-browser tab or separate runtime window on attach |
-| `--shared-browser-window-bounds` | Optional JSON bounds for the runtime window when `--shared-browser-mode window` is used |
-| `--shared-browser-focus-policy` | Preserve the human-focused surface or explicitly activate the runtime target |
+| `--cdp-url` | Attach to an existing browser over CDP (a `ws://`/`wss://` debugger URL or an HTTP endpoint) instead of launching a local one. |
 
-### Shared Browser Launcher
+### `agentyc serve` — Streamable HTTP MCP server
+
+```bash
+agentyc serve --host 127.0.0.1 --port 8765
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--host` | `127.0.0.1` | Bind address. |
+| `--port` | `8765` | Bind port (server mounted at `/mcp`). |
+| `--cdp-url` | — | Attach to an existing browser over CDP. |
+
+### `agentyc init` — write the skills guide
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--output` | `agentyc-skill.md` | Destination path. |
+| `--print` | — | Print to stdout instead of writing a file. |
+| `--force` | — | Overwrite the destination if it exists. |
+
+### `agentyc browser` — launch a shared browser
 
 ```bash
 agentyc browser --port 9222 --detach
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--port` | Remote debugging port |
-| `--headless` | Start the shared browser headless |
-| `--detach` | Leave the shared browser running in the background |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port` | `9222` | Remote debugging port. |
+| `--headless` | — | Launch headless (`--headless=new`). |
+| `--detach` | — | Print the CDP URL and exit without waiting on the process. |
 
 ## Environment Variables
+
+Every variable below is read directly by the Rust binary. All are optional.
 
 ### Browser Runtime
 
 | Variable | Description |
 |----------|-------------|
-| `AGENTYC_HEADLESS` | Override `headless` in the default browser profile |
-| `AGENTYC_HUD_OVERLAY` | Override `hud_overlay` in the default browser profile |
-| `AGENTYC_ALLOWED_DOMAINS` | Comma-separated allowlist override |
-| `AGENTYC_REUSE_LOCAL_BROWSER` | Enable automatic reuse of the latest locally launched Agentyc browser when `--reuse-local-browser` is not passed explicitly |
-| `AGENTYC_DISABLE_EXTENSIONS` | Disable bundled browser extensions |
-| `AGENTYC_ACTION_TIMEOUT_S` | Per-action timeout parsed by `agentyc.tools.runtime` and enforced in `Tools.act()` |
+| `AGENTYC_HEADLESS` | `1` runs Chrome headless. Default: visible browser. |
+| `AGENTYC_ALLOWED_DOMAINS` | Comma-separated domain allowlist; navigation outside it is blocked. |
+
+### Timeouts
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENTYC_ACTION_TIMEOUT_S` | `180` | Per-action CDP timeout, in seconds. |
+| `AGENTYC_CDP_TIMEOUT_S` | `60` | CDP response timeout, in seconds. |
 
 ### Proxy
 
 | Variable | Description |
 |----------|-------------|
-| `AGENTYC_PROXY_URL` | Chromium proxy server URL |
-| `AGENTYC_NO_PROXY` | Comma-separated proxy bypass list |
-| `AGENTYC_PROXY_USERNAME` | Proxy username |
-| `AGENTYC_PROXY_PASSWORD` | Proxy password |
+| `AGENTYC_PROXY_URL` | Chromium proxy server URL. |
+| `AGENTYC_PROXY_BYPASS` | Comma-separated proxy bypass list. |
+| `AGENTYC_PROXY_USERNAME` | Proxy username. |
+| `AGENTYC_PROXY_PASSWORD` | Proxy password. |
 
-### Logging And Telemetry
-
-| Variable | Description |
-|----------|-------------|
-| `AGENTYC_LOGGING_LEVEL` | agentyc log level |
-| `CDP_LOGGING_LEVEL` | CDP log level |
-| `AGENTYC_DEBUG_LOG_FILE` | Optional debug log file path |
-| `AGENTYC_INFO_LOG_FILE` | Optional info log file path |
-| `ANONYMIZED_TELEMETRY` | Enable or disable anonymized telemetry |
-| `AGENTYC_VERSION_CHECK` | Enable or disable version checks |
-
-### Optional LLM Configuration
-
-These settings affect optional LLM integrations in the package. They do not enable an MCP extraction fallback.
+### Logging
 
 | Variable | Description |
 |----------|-------------|
-| `AGENTYC_LLM_MODEL` | Default model string in shared config |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `GOOGLE_API_KEY` | Google API key |
-| `AGENTYC_API_KEY` | API key for the optional hosted agentyc LLM provider integration |
+| `AGENTYC_LOGGING_LEVEL` | tracing `EnvFilter` directive (e.g. `warn`, `info`, `debug`). Logs go to stderr. |
 
-`AGENTYC_API_KEY` should not be treated as part of the default browser runtime contract.
+### Chrome Discovery
 
-## MCP Server Browser Defaults
+| Variable | Description |
+|----------|-------------|
+| `PLAYWRIGHT_BROWSERS_PATH` | Override where agentyc looks for a Chromium binary (e.g. an existing cache). |
 
-When the MCP server launches a local browser, it sets these public defaults in `agentyc.mcp.server`:
+## Browser Defaults
 
-- `downloads_path=~/Downloads/agentyc-mcp`
-- `keep_alive=False`
-- `user_data_dir=~/.config/agentyc/profiles/default`
-- `device_scale_factor=1.0`
-- `disable_security=False`
-- `headless=False` unless overridden by config or env
-- `hud_overlay=False` unless overridden by config, `AGENTYC_HUD_OVERLAY`, or `--hud-overlay`
+When the MCP server launches a local browser:
 
-When attaching through `--cdp-url`, the server instead sets `keep_alive=True` and creates a collaboration target in the shared browser: a tab by default, or a separate window when `--shared-browser-mode window` is selected.
+- `headless=false` (a visible browser) unless `AGENTYC_HEADLESS=1`.
+- Per-session isolated temporary profile (`--user-data-dir` is a fresh temp dir).
+- Downloads path under `~/Downloads/agentyc-mcp`.
+
+When attaching through `--cdp-url`, the server reuses the running browser and does
+not tear it down when the session ends.
 
 ## Security-Relevant Controls
 
-- `allowed_domains` from config or `AGENTYC_ALLOWED_DOMAINS`
-- `disable_security=False` by default in the public MCP server
-- IP and domain checks enforced by the browser security layer
+- `AGENTYC_ALLOWED_DOMAINS` restricts which hosts `browser_navigate` may reach;
+  blocked navigations return a `[domain_blocked]` tool error.
+- The MCP server only exposes tools — no resources or prompts — and makes no
+  network calls of its own beyond what the controlled browser does.
 
 ## Deterministic Extraction Note
 
-`browser_extract_content` in the public MCP server is deterministic-only. Supplying LLM environment variables does not change that behavior.
-
-## Shared Browser Guidance
-
-Current shared-browser behavior should be understood operationally:
-
-- The MCP server attaches to an existing CDP endpoint.
-- It creates a shared-browser tab by default, or a separate runtime window when configured.
-- Attach and `new_tab=true` flows update the runtime's focused target automatically.
-- Visible activation is policy-driven: `preserve` avoids foregrounding the runtime target, while `activate` calls into the Browser/Target domains to foreground it.
-- Shared-browser state surfaces nested ownership/runtime metadata for owned tabs, display titles, runtime-group metadata when present, and optional window bounds.
-- Chrome does not expose reliable per-tab ownership coloring.
-
-For stronger visual separation, separate windows remain more dependable than assuming tab-level ownership cues.
+`browser_extract_content` is deterministic-only (native HTML parsing). There is
+no LLM fallback and no API key to configure.
