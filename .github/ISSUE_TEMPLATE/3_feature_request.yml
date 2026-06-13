@@ -58,7 +58,7 @@ body:
     attributes:
       label: Which tool or API surface is involved?
       description: |
-        List the MCP tool names or Python APIs affected, if known.
+        List the MCP tool names or CLI flags affected, if known.
       placeholder: "Example: browser_click, browser_list_tabs"
     validations:
       required: false
