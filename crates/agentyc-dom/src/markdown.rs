@@ -1,6 +1,6 @@
 //! Markdown extraction and structure-aware chunking.
 //!
-//! Ports `markdown_extractor.py` and `markdown_chunking.py`.
+//! HTML-to-markdown extraction and structure-aware chunking.
 
 use anyhow::Result;
 use regex::Regex;
@@ -59,7 +59,7 @@ fn postprocess_markdown(content: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Structure-aware chunking (port of markdown_chunking.py)
+// Structure-aware chunking
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
