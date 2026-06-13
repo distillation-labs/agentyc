@@ -4,7 +4,7 @@
 #![allow(clippy::collapsible_if)]
 
 use scraper::{Html, Selector};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Classify a query string and extract accordingly.
 /// Returns `(route_name, data_json, error_json)` — exactly one of data/error is `Some`.
@@ -20,7 +20,11 @@ pub fn extract(html: &str, query: &str) -> Result<Value, String> {
         Ok(extract_form_fields(html))
     } else if q.contains("list") {
         Ok(extract_lists(html))
-    } else if q.contains("key") || q.contains("value") || q.contains("definition") || q.contains("property") {
+    } else if q.contains("key")
+        || q.contains("value")
+        || q.contains("definition")
+        || q.contains("property")
+    {
         Ok(extract_key_value(html))
     } else {
         Err(format!(
@@ -39,17 +43,25 @@ fn extract_tables(html: &str) -> Value {
     let th_sel = Selector::parse("th").unwrap();
     let td_sel = Selector::parse("td").unwrap();
 
-    let tables: Vec<Value> = document.select(&table_sel).map(|table| {
-        let headers: Vec<String> = table.select(&th_sel)
-            .map(|th| th.text().collect::<String>().trim().to_string())
-            .collect();
-        let rows: Vec<Vec<String>> = table.select(&tr_sel).map(|tr| {
-            tr.select(&td_sel)
-                .map(|td| td.text().collect::<String>().trim().to_string())
-                .collect()
-        }).filter(|row: &Vec<String>| !row.is_empty()).collect();
-        json!({ "headers": headers, "rows": rows })
-    }).collect();
+    let tables: Vec<Value> = document
+        .select(&table_sel)
+        .map(|table| {
+            let headers: Vec<String> = table
+                .select(&th_sel)
+                .map(|th| th.text().collect::<String>().trim().to_string())
+                .collect();
+            let rows: Vec<Vec<String>> = table
+                .select(&tr_sel)
+                .map(|tr| {
+                    tr.select(&td_sel)
+                        .map(|td| td.text().collect::<String>().trim().to_string())
+                        .collect()
+                })
+                .filter(|row: &Vec<String>| !row.is_empty())
+                .collect();
+            json!({ "headers": headers, "rows": rows })
+        })
+        .collect();
 
     json!({
         "route": "tables",
@@ -65,11 +77,14 @@ fn extract_links(html: &str) -> Value {
     let document = Html::parse_document(html);
     let a_sel = Selector::parse("a[href]").unwrap();
 
-    let links: Vec<Value> = document.select(&a_sel).map(|a| {
-        let text = a.text().collect::<String>().trim().to_string();
-        let href = a.value().attr("href").unwrap_or("").to_string();
-        json!({ "text": text, "href": href })
-    }).collect();
+    let links: Vec<Value> = document
+        .select(&a_sel)
+        .map(|a| {
+            let text = a.text().collect::<String>().trim().to_string();
+            let href = a.value().attr("href").unwrap_or("").to_string();
+            json!({ "text": text, "href": href })
+        })
+        .collect();
 
     json!({
         "route": "links",
@@ -82,15 +97,18 @@ fn extract_images(html: &str) -> Value {
     let document = Html::parse_document(html);
     let img_sel = Selector::parse("img").unwrap();
 
-    let images: Vec<Value> = document.select(&img_sel).map(|img| {
-        let v = img.value();
-        json!({
-            "src": v.attr("src").unwrap_or(""),
-            "alt": v.attr("alt").unwrap_or(""),
-            "width": v.attr("width"),
-            "height": v.attr("height"),
+    let images: Vec<Value> = document
+        .select(&img_sel)
+        .map(|img| {
+            let v = img.value();
+            json!({
+                "src": v.attr("src").unwrap_or(""),
+                "alt": v.attr("alt").unwrap_or(""),
+                "width": v.attr("width"),
+                "height": v.attr("height"),
+            })
         })
-    }).collect();
+        .collect();
 
     json!({
         "route": "images",
@@ -103,18 +121,21 @@ fn extract_form_fields(html: &str) -> Value {
     let document = Html::parse_document(html);
     let input_sel = Selector::parse("input, select, textarea").unwrap();
 
-    let fields: Vec<Value> = document.select(&input_sel).map(|el| {
-        let v = el.value();
-        json!({
-            "tag": el.value().name(),
-            "name": v.attr("name"),
-            "type": v.attr("type"),
-            "id": v.attr("id"),
-            "placeholder": v.attr("placeholder"),
-            "value": v.attr("value"),
-            "required": v.attr("required").is_some(),
+    let fields: Vec<Value> = document
+        .select(&input_sel)
+        .map(|el| {
+            let v = el.value();
+            json!({
+                "tag": el.value().name(),
+                "name": v.attr("name"),
+                "type": v.attr("type"),
+                "id": v.attr("id"),
+                "placeholder": v.attr("placeholder"),
+                "value": v.attr("value"),
+                "required": v.attr("required").is_some(),
+            })
         })
-    }).collect();
+        .collect();
 
     json!({
         "route": "form-fields",
@@ -128,14 +149,18 @@ fn extract_lists(html: &str) -> Value {
     let list_sel = Selector::parse("ul, ol").unwrap();
     let li_sel = Selector::parse("li").unwrap();
 
-    let lists: Vec<Value> = document.select(&list_sel).map(|list| {
-        let items: Vec<String> = list.select(&li_sel)
-            .map(|li| li.text().collect::<String>().trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let tag = list.value().name().to_string();
-        json!({ "type": tag, "items": items })
-    }).collect();
+    let lists: Vec<Value> = document
+        .select(&list_sel)
+        .map(|list| {
+            let items: Vec<String> = list
+                .select(&li_sel)
+                .map(|li| li.text().collect::<String>().trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let tag = list.value().name().to_string();
+            json!({ "type": tag, "items": items })
+        })
+        .collect();
 
     json!({
         "route": "lists",
@@ -192,19 +217,22 @@ pub fn apply_output_schema(data: &Value, schema: &Value) -> Value {
     if let Some(props) = schema.get("properties").and_then(Value::as_object) {
         let keys: Vec<&str> = props.keys().map(String::as_str).collect();
         match data {
-            Value::Array(arr) => {
-                Value::Array(arr.iter().map(|item| {
-                    if let Value::Object(obj) = item {
-                        let filtered: serde_json::Map<String, Value> = obj.iter()
-                            .filter(|(k, _)| keys.contains(&k.as_str()))
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                        Value::Object(filtered)
-                    } else {
-                        item.clone()
-                    }
-                }).collect())
-            }
+            Value::Array(arr) => Value::Array(
+                arr.iter()
+                    .map(|item| {
+                        if let Value::Object(obj) = item {
+                            let filtered: serde_json::Map<String, Value> = obj
+                                .iter()
+                                .filter(|(k, _)| keys.contains(&k.as_str()))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect();
+                            Value::Object(filtered)
+                        } else {
+                            item.clone()
+                        }
+                    })
+                    .collect(),
+            ),
             other => other.clone(),
         }
     } else {
