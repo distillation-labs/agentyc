@@ -48,7 +48,7 @@ Search results use compact keys:
 Implicit fields (omitted to save tokens):
 - `confidence` — omitted when high (the default)
 - `sandboxed` — omitted; presence of `sandbox_ref` implies sandboxing
-- `lang` — omitted for Python (the default)
+- `lang` — omitted for the repo's primary language (the default)
 - `indexed` — omitted from status when true; presence of `codebase_path` implies indexed
 
 ## Search Quality (research-backed improvements)
