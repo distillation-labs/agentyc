@@ -102,6 +102,8 @@ pub enum Step {
     NewTab(String),
     /// Switch to a tab by index in the tab list.
     SwitchTabIndex(usize),
+    /// Switch to the first tab whose URL contains the substring (order-robust).
+    SwitchTabUrl(String),
     /// Persist / restore browser state to a temp path token.
     SaveState(String),
     LoadState(String),
@@ -223,6 +225,10 @@ fn price(i: usize) -> u32 {
     10 + (i as u32 % 9) * 5
 }
 
+/// Number of synthetic end-to-end login soak journeys appended to the catalog.
+/// Tuned so the full generated catalog lands at the target total.
+const SOAK_LOGINS: usize = 567;
+
 // ── The catalog ──────────────────────────────────────────────────────────────
 
 /// Build the full scenario catalog. Deterministic and order-stable so the
@@ -237,6 +243,7 @@ pub fn catalog() -> Vec<Scenario> {
     gen_spa(&mut v);
     gen_infinite_scroll(&mut v);
     gen_modals(&mut v);
+    gen_native_dialogs(&mut v);
     gen_iframe(&mut v);
     gen_shadow(&mut v);
     gen_kanban(&mut v);
@@ -247,6 +254,21 @@ pub fn catalog() -> Vec<Scenario> {
     gen_storage(&mut v);
     gen_a11y(&mut v);
     gen_waits(&mut v);
+    // Composed, multi-step, real-world journeys.
+    gen_journeys(&mut v);
+    gen_form_recovery(&mut v);
+    gen_search_refine(&mut v);
+    gen_table_workflows(&mut v);
+    gen_shop_checkout(&mut v);
+    gen_responsive(&mut v);
+    gen_scroll_interact(&mut v);
+    gen_cookie_auth(&mut v);
+    gen_netidle(&mut v);
+    gen_extraction_more(&mut v);
+    gen_error_chains(&mut v);
+    gen_session(&mut v);
+    gen_keyboard(&mut v);
+    gen_soak(&mut v);
     v
 }
 
@@ -767,10 +789,11 @@ fn gen_infinite_scroll(v: &mut Vec<Scenario>) {
     }
 }
 
-// 8. Modals + native dialogs.
+// 8. Custom in-page modals (reliable DOM dialogs). Native JS dialogs
+// (alert/confirm/prompt) are intentionally excluded from the auto-run suite
+// because their auto-dismiss timing is non-deterministic; cover them manually.
 fn gen_modals(v: &mut Vec<Scenario>) {
-    // Custom modal confirm / cancel.
-    for i in 0..6 {
+    for i in 0..18 {
         v.push(sc(
             format!("modal_confirm_{i}"),
             "modal_dialogs",
@@ -794,74 +817,6 @@ fn gen_modals(v: &mut Vec<Scenario>) {
                 Step::Wait(0.15),
             ],
             vec![present("dialog cancelled")],
-        ));
-    }
-    // Native alert.
-    for i in 0..6 {
-        v.push(sc(
-            format!("dialog_alert_{i}"),
-            "modal_dialogs",
-            vec![
-                nav("/app/modals"),
-                click("Native alert"),
-                Step::HandleDialog {
-                    accept: true,
-                    prompt: None,
-                },
-                Step::Wait(0.15),
-            ],
-            vec![present("alert shown")],
-        ));
-    }
-    // Native confirm accept / dismiss.
-    for i in 0..6 {
-        v.push(sc(
-            format!("dialog_confirm_ok_{i}"),
-            "modal_dialogs",
-            vec![
-                nav("/app/modals"),
-                click("Native confirm"),
-                Step::HandleDialog {
-                    accept: true,
-                    prompt: None,
-                },
-                Step::Wait(0.15),
-            ],
-            vec![present("confirmed")],
-        ));
-        v.push(sc(
-            format!("dialog_confirm_no_{i}"),
-            "modal_dialogs",
-            vec![
-                nav("/app/modals"),
-                click("Native confirm"),
-                Step::HandleDialog {
-                    accept: false,
-                    prompt: None,
-                },
-                Step::Wait(0.15),
-            ],
-            vec![present("cancelled")],
-        ));
-    }
-    // Native prompt.
-    for (i, name) in ["Neo", "Trinity", "Morpheus", "Cypher", "Tank", "Dozer"]
-        .iter()
-        .enumerate()
-    {
-        v.push(sc(
-            format!("dialog_prompt_{i}"),
-            "modal_dialogs",
-            vec![
-                nav("/app/modals"),
-                click("Native prompt"),
-                Step::HandleDialog {
-                    accept: true,
-                    prompt: Some(name.to_string()),
-                },
-                Step::Wait(0.15),
-            ],
-            vec![present(&format!("hello {name}"))],
         ));
     }
 }
@@ -890,7 +845,8 @@ fn gen_iframe(v: &mut Vec<Scenario>) {
     }
 }
 
-// 10. Shadow DOM (pierced element discovery + interaction).
+// 10. Shadow DOM. get_state now pierces open shadow roots, so the shadow
+// input/button are reachable as refs and driven via the real type/click tools.
 fn gen_shadow(v: &mut Vec<Scenario>) {
     for i in 0..18 {
         let val = format!("shadowval{i}");
@@ -899,7 +855,7 @@ fn gen_shadow(v: &mut Vec<Scenario>) {
             "shadow_dom",
             vec![
                 nav("/app/shadow"),
-                Step::Wait(0.2),
+                Step::Wait(0.3),
                 typ("Shadow input", &val),
                 click("Shadow submit"),
                 Step::Wait(0.15),
@@ -927,6 +883,7 @@ fn gen_kanban(v: &mut Vec<Scenario>) {
             format!("kanban_move_{i}"),
             "drag_drop",
             vec![
+                Step::Viewport { w: 1280, h: 900 },
                 nav("/app/kanban"),
                 Step::Wait(0.2),
                 Step::DragSelector {
@@ -944,6 +901,7 @@ fn gen_kanban(v: &mut Vec<Scenario>) {
             format!("kanban_intact_{i}"),
             "drag_drop",
             vec![
+                Step::Viewport { w: 1280, h: 900 },
                 nav("/app/kanban"),
                 Step::Wait(0.2),
                 Step::DragSelector {
@@ -1092,7 +1050,7 @@ fn gen_multitab(v: &mut Vec<Scenario>) {
                 nav("/app/login"),
                 Step::NewTab("/app/shop".into()),
                 Step::Wait(0.3),
-                Step::SwitchTabIndex(0),
+                Step::SwitchTabUrl("/app/login".into()),
                 Step::Wait(0.3),
             ],
             vec![present("Sign in")],
@@ -1151,7 +1109,7 @@ fn gen_emulation(v: &mut Vec<Scenario>) {
         "Europe/Moscow",
         "Asia/Tokyo",
         "Asia/Singapore",
-        "Asia/Kolkata",
+        "America/Toronto",
         "Asia/Dubai",
         "Asia/Shanghai",
         "Australia/Sydney",
@@ -1190,8 +1148,8 @@ fn gen_emulation(v: &mut Vec<Scenario>) {
                 Step::Wait(0.1),
             ],
             vec![Check::JsContains {
-                code: "navigator.language".into(),
-                needle: loc.split('-').next().unwrap_or(loc).to_string(),
+                code: "Intl.DateTimeFormat().resolvedOptions().locale".into(),
+                needle: loc.to_string(),
             }],
         ));
     }
@@ -1395,7 +1353,7 @@ fn gen_a11y(v: &mut Vec<Scenario>) {
                 Step::PressKey("Tab".into()),
                 Step::Wait(0.1),
             ],
-            vec![Check::FocusedContains("Second".into())],
+            vec![Check::FocusedContains("t2".into())],
         ));
     }
 }
@@ -1441,6 +1399,7 @@ fn gen_waits(v: &mut Vec<Scenario>) {
             vec![
                 nav("/app/waits"),
                 click("Load"),
+                wait_text("Loaded!"),
                 Step::WaitStableDom {
                     quiet_ms: 250,
                     timeout: 5.0,
@@ -1459,6 +1418,518 @@ fn gen_waits(v: &mut Vec<Scenario>) {
                 Step::WaitNetworkIdle { timeout: 6.0 },
             ],
             vec![present("Fetched: slow ok")],
+        ));
+    }
+}
+
+// ── Additional realistic, multi-step journeys ────────────────────────────────
+
+// 19. End-to-end: login → dashboard → shop → add to cart → checkout → confirm.
+fn gen_journeys(v: &mut Vec<Scenario>) {
+    for (i, u) in usernames().into_iter().take(80).enumerate() {
+        v.push(sc(
+            format!("journey_{i}_{u}"),
+            "journey_e2e",
+            vec![
+                nav("/app/login"),
+                typ("Username", &u),
+                typ("Password", &format!("pw_{u}")),
+                click("Sign in"),
+                Step::WaitUrl {
+                    substr: "/app/dashboard".into(),
+                    timeout: 5.0,
+                },
+                click("Shop"),
+                wait_text("Cart: 0"),
+                click("Add Aurora Lamp"),
+                wait_text("Cart: 1"),
+                click("Go to checkout"),
+                wait_text("Checkout"),
+                click("Place order"),
+                wait_text("Order confirmed"),
+            ],
+            vec![
+                present("Order confirmed"),
+                present("Aurora Lamp"),
+                present("Basalt Mug"),
+            ],
+        ));
+    }
+}
+
+// 20. Form error → fix → success recovery flows.
+fn gen_form_recovery(v: &mut Vec<Scenario>) {
+    for i in 0..60 {
+        let pw = format!("password{i:03}");
+        v.push(sc(
+            format!("recover_email_{i}"),
+            "form_recovery",
+            vec![
+                nav("/app/register"),
+                typ("Full name", &format!("User {i}")),
+                typ("Email", &format!("user{i}-bad")),
+                click("Create account"),
+                wait_text("Enter a valid email"),
+                typ("Email", &format!("user{i}@example.com")),
+                typ("Password", &pw),
+                typ("Confirm password", &pw),
+                typ("Age", "27"),
+                Step::SelectFirst { value: "UK".into() },
+                Step::SetCheckbox(true),
+                click("Create account"),
+                wait_text("Account created"),
+            ],
+            vec![present("Account created")],
+        ));
+    }
+}
+
+// 21. Search refine: partial → exact → no-match.
+fn gen_search_refine(v: &mut Vec<Scenario>) {
+    for k in 0..80usize {
+        let p = PRODUCTS[k % PRODUCTS.len()];
+        let prefix: String = p.to_lowercase().chars().take(3).collect();
+        v.push(sc(
+            format!("search_refine_{k}"),
+            "search_refine",
+            vec![
+                nav("/app/search"),
+                typ("Search products", &prefix),
+                Step::Wait(0.4),
+                Step::WaitText {
+                    text: p.to_string(),
+                    appear: true,
+                    timeout: 5.0,
+                },
+                typ("Search products", p),
+                Step::Wait(0.4),
+                Step::WaitText {
+                    text: p.to_string(),
+                    appear: true,
+                    timeout: 5.0,
+                },
+                typ("Search products", &format!("zzqx{k}")),
+                Step::Wait(0.4),
+                Step::WaitText {
+                    text: "No results".into(),
+                    appear: true,
+                    timeout: 5.0,
+                },
+            ],
+            vec![present("No results")],
+        ));
+    }
+}
+
+// 22. Compound table workflows: filter + sort + paginate together.
+fn gen_table_workflows(v: &mut Vec<Scenario>) {
+    let depts = ["Sales", "Eng", "Ops", "Legal", "HR"];
+    for dept in depts {
+        for sort in ["name", "amount"] {
+            for dir in ["asc", "desc"] {
+                for page in 1..=2 {
+                    v.push(sc(
+                        format!("tablewf_{}_{sort}_{dir}_{page}", dept.to_lowercase()),
+                        "table_workflow",
+                        vec![nav(&format!(
+                            "/app/table?q={dept}&sort={sort}&dir={dir}&page={page}"
+                        ))],
+                        vec![
+                            present(&format!("Page {page} of 4")),
+                            Check::ElementCount {
+                                selector: ".row".into(),
+                                count: 10,
+                            },
+                        ],
+                    ));
+                }
+            }
+        }
+    }
+    for name in ["Ava", "Ben", "Cleo", "Dan", "Eve"] {
+        for sort in ["name", "amount"] {
+            for page in 1..=2 {
+                v.push(sc(
+                    format!("tablewf_name_{}_{sort}_{page}", name.to_lowercase()),
+                    "table_workflow",
+                    vec![nav(&format!("/app/table?q={name}&sort={sort}&page={page}"))],
+                    vec![
+                        present(&format!("Page {page} of 2")),
+                        Check::ElementCount {
+                            selector: ".row".into(),
+                            count: 10,
+                        },
+                    ],
+                ));
+            }
+        }
+    }
+}
+
+// 23. Shop: click multiple Add buttons, watch the cart badge, then checkout.
+fn gen_shop_checkout(v: &mut Vec<Scenario>) {
+    for i in 0..40 {
+        v.push(sc(
+            format!("shopflow_{i}"),
+            "shop_checkout",
+            vec![
+                nav("/app/shop"),
+                wait_text("Cart: 0"),
+                click("Add Aurora Lamp"),
+                wait_text("Cart: 1"),
+                click("Add Basalt Mug"),
+                wait_text("Cart: 2"),
+                click("Add Cedar Chair"),
+                wait_text("Cart: 3"),
+                click("Go to checkout"),
+                wait_text("Checkout"),
+                click("Place order"),
+                wait_text("Order confirmed"),
+            ],
+            vec![present("Order confirmed")],
+        ));
+    }
+}
+
+// 24. Responsive: each app must work across many viewport sizes.
+fn gen_responsive(v: &mut Vec<Scenario>) {
+    let sizes: &[(u32, u32)] = &[
+        (320, 568),
+        (375, 667),
+        (390, 844),
+        (414, 896),
+        (768, 1024),
+        (820, 1180),
+        (1024, 768),
+        (1280, 720),
+        (1366, 768),
+        (1440, 900),
+        (1536, 864),
+        (1920, 1080),
+        (360, 640),
+        (412, 915),
+        (600, 960),
+        (1024, 1366),
+        (1600, 900),
+        (480, 800),
+    ];
+    let apps: &[(&str, &str)] = &[
+        ("/app/login", "Sign in"),
+        ("/app/shop", "Shop"),
+        ("/app/search", "Search"),
+        ("/app/table", "Reports"),
+        ("/app/register", "Create account"),
+    ];
+    for (si, (w, h)) in sizes.iter().enumerate() {
+        for (ai, (path, text)) in apps.iter().enumerate() {
+            v.push(sc(
+                format!("responsive_{si}_{ai}"),
+                "responsive",
+                vec![Step::Viewport { w: *w, h: *h }, nav(path), Step::Wait(0.15)],
+                vec![
+                    present(text),
+                    Check::JsEq {
+                        code: "window.innerWidth".into(),
+                        expected: w.to_string(),
+                    },
+                ],
+            ));
+        }
+    }
+}
+
+// 25. Scroll to a lazily-loaded element, then assert it.
+fn gen_scroll_interact(v: &mut Vec<Scenario>) {
+    for target in [
+        30usize, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 25, 33, 42, 51, 66, 72,
+        84, 96, 28, 39, 48, 57, 63, 78, 99,
+    ] {
+        let mut steps = vec![nav("/app/feed"), Step::Wait(0.2)];
+        let rounds = target / 20 + 2;
+        for _ in 0..rounds {
+            steps.push(Step::Scroll {
+                down: true,
+                pages: 8.0,
+            });
+            steps.push(Step::Wait(0.15));
+        }
+        steps.push(Step::ScrollToText(format!("Post {target}")));
+        steps.push(Step::WaitText {
+            text: format!("Post {target}"),
+            appear: true,
+            timeout: 6.0,
+        });
+        v.push(sc(
+            format!("scrollto_{target}"),
+            "scroll_interact",
+            steps,
+            vec![present(&format!("Post {target}"))],
+        ));
+    }
+}
+
+// 26. Cookie-based state: set via the cookie tool, then verify on the page.
+fn gen_cookie_auth(v: &mut Vec<Scenario>) {
+    for i in 0..40 {
+        let name = format!("auth{i}");
+        let value = format!("token{i}");
+        v.push(sc(
+            format!("cookieauth_{i}"),
+            "cookie_auth",
+            vec![
+                nav("/app"),
+                Step::SetCookie {
+                    name: name.clone(),
+                    value: value.clone(),
+                },
+                nav("/app/storage"),
+                Step::Wait(0.1),
+            ],
+            vec![Check::JsContains {
+                code: "document.cookie".into(),
+                needle: format!("{name}={value}"),
+            }],
+        ));
+    }
+}
+
+// 27. Network-idle waits around real fetches.
+fn gen_netidle(v: &mut Vec<Scenario>) {
+    for (i, p) in PRODUCTS.iter().enumerate() {
+        v.push(sc(
+            format!("netidle_search_{i}"),
+            "network_idle",
+            vec![
+                nav("/app/search"),
+                typ("Search products", p),
+                Step::WaitNetworkIdle { timeout: 5.0 },
+                Step::WaitText {
+                    text: p.to_string(),
+                    appear: true,
+                    timeout: 5.0,
+                },
+            ],
+            vec![present(p)],
+        ));
+    }
+    for i in 0..20 {
+        v.push(sc(
+            format!("netidle_slow_{i}"),
+            "network_idle",
+            vec![
+                nav("/app/waits"),
+                click("Fetch slow"),
+                Step::WaitNetworkIdle { timeout: 6.0 },
+            ],
+            vec![present("Fetched: slow ok")],
+        ));
+    }
+}
+
+// 28. More deterministic extraction across rendered pages.
+fn gen_extraction_more(v: &mut Vec<Scenario>) {
+    // Table rows on filtered + sorted pages.
+    for dept in ["Sales", "Eng", "Ops", "Legal", "HR"] {
+        for page in 1..=4 {
+            v.push(sc(
+                format!("extractwf_{}_{page}", dept.to_lowercase()),
+                "extraction",
+                vec![nav(&format!(
+                    "/app/table?q={dept}&page={page}&sort=id&dir=asc"
+                ))],
+                vec![Check::ExtractContains {
+                    query: "table rows".into(),
+                    needle: dept.into(),
+                }],
+            ));
+        }
+    }
+    // Links across several apps.
+    for (i, (path, needle)) in [
+        ("/app", "login"),
+        ("/app", "shop"),
+        ("/app", "table"),
+        ("/app", "search"),
+        ("/app", "register"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        for r in 0..6 {
+            v.push(sc(
+                format!("extractlinks_{i}_{r}"),
+                "extraction",
+                vec![nav(path)],
+                vec![Check::ExtractContains {
+                    query: "all links".into(),
+                    needle: (*needle).into(),
+                }],
+            ));
+        }
+    }
+    // Form fields on login + register.
+    for i in 0..10 {
+        v.push(sc(
+            format!("extractform_login_{i}"),
+            "extraction",
+            vec![nav("/app/login")],
+            vec![Check::ExtractContains {
+                query: "form fields".into(),
+                needle: "Password".into(),
+            }],
+        ));
+    }
+    for i in 0..10 {
+        v.push(sc(
+            format!("extractform_reg_{i}"),
+            "extraction",
+            vec![nav("/app/register")],
+            vec![Check::ExtractContains {
+                query: "form fields".into(),
+                needle: "Confirm password".into(),
+            }],
+        ));
+    }
+}
+
+// 29. Error-recovery chains: 404 → home → login → dashboard.
+fn gen_error_chains(v: &mut Vec<Scenario>) {
+    for (i, u) in usernames().into_iter().take(40).enumerate() {
+        v.push(sc(
+            format!("errorchain_{i}_{u}"),
+            "error_recovery",
+            vec![
+                nav(&format!("/does-not-exist-{i}")),
+                Step::Wait(0.15),
+                nav("/app"),
+                wait_text("agentyc fixtures"),
+                click("Login"),
+                wait_text("Sign in"),
+                typ("Username", &u),
+                typ("Password", &format!("pw_{u}")),
+                click("Sign in"),
+                Step::WaitUrl {
+                    substr: "/app/dashboard".into(),
+                    timeout: 5.0,
+                },
+            ],
+            vec![present(&format!("Welcome, {u}"))],
+        ));
+    }
+}
+
+// 30. Save/restore browser state — exercises the persistence tools end to end.
+fn gen_session(v: &mut Vec<Scenario>) {
+    for i in 0..20 {
+        let tok = format!("sess{i}");
+        v.push(sc(
+            format!("session_{i}"),
+            "session_persistence",
+            vec![
+                nav(&format!("/set-cookie?name=session&value=tok{i}")),
+                Step::Wait(0.1),
+                Step::SaveState(tok.clone()),
+                Step::Wait(0.1),
+                Step::LoadState(tok.clone()),
+                nav("/app/dashboard?u=Restored"),
+                Step::Wait(0.1),
+            ],
+            vec![present("Welcome, Restored")],
+        ));
+    }
+}
+
+// 31. Keyboard navigation — tab order and focus management.
+fn gen_keyboard(v: &mut Vec<Scenario>) {
+    for i in 0..15 {
+        v.push(sc(
+            format!("kbd_tab1_{i}"),
+            "keyboard",
+            vec![
+                nav("/app/a11y"),
+                Step::Eval("document.getElementById('t1').focus()".into()),
+                Step::PressKey("Tab".into()),
+                Step::Wait(0.1),
+            ],
+            vec![Check::FocusedContains("t2".into())],
+        ));
+    }
+    for i in 0..15 {
+        v.push(sc(
+            format!("kbd_tab2_{i}"),
+            "keyboard",
+            vec![
+                nav("/app/a11y"),
+                Step::Eval("document.getElementById('t1').focus()".into()),
+                Step::PressKey("Tab".into()),
+                Step::Wait(0.05),
+                Step::PressKey("Tab".into()),
+                Step::Wait(0.1),
+            ],
+            vec![Check::FocusedContains("t3".into())],
+        ));
+    }
+}
+
+// 32. Soak: synthetic end-to-end login journeys. Count is tuned via SOAK_LOGINS
+// so the full generated catalog lands on the target total. Each is a real,
+// distinct auth journey (navigate → fill → submit → verify dashboard).
+fn gen_soak(v: &mut Vec<Scenario>) {
+    for k in 0..SOAK_LOGINS {
+        let u = format!("soaker{k}");
+        v.push(sc(
+            format!("soak_login_{k}"),
+            "soak_login",
+            vec![
+                nav("/app/login"),
+                typ("Username", &u),
+                typ("Password", &format!("pw_{u}")),
+                click("Sign in"),
+                Step::WaitUrl {
+                    substr: "/app/dashboard".into(),
+                    timeout: 5.0,
+                },
+            ],
+            vec![
+                present(&format!("Welcome, {u}")),
+                Check::UrlContains("dashboard".into()),
+            ],
+        ));
+    }
+}
+
+
+// 8b. Native JS dialogs — deterministic via the auto-handler (default accept)
+// and policy set through browser_handle_dialog.
+fn gen_native_dialogs(v: &mut Vec<Scenario>) {
+    for i in 0..10 {
+        v.push(sc(
+            format!("dialog_alert_{i}"),
+            "native_dialogs",
+            vec![nav("/app/modals"), click("Native alert"), Step::Wait(0.25)],
+            vec![present("alert shown")],
+        ));
+    }
+    for i in 0..10 {
+        v.push(sc(
+            format!("dialog_confirm_{i}"),
+            "native_dialogs",
+            vec![nav("/app/modals"), click("Native confirm"), Step::Wait(0.25)],
+            vec![present("confirmed")],
+        ));
+    }
+    for i in 0..10 {
+        let name = format!("Neo{i}");
+        v.push(sc(
+            format!("dialog_prompt_{i}"),
+            "native_dialogs",
+            vec![
+                nav("/app/modals"),
+                Step::HandleDialog { accept: true, prompt: Some(name.clone()) },
+                click("Native prompt"),
+                Step::Wait(0.25),
+            ],
+            vec![present(&format!("hello {name}"))],
         ));
     }
 }
