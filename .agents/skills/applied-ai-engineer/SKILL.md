@@ -94,17 +94,15 @@ You turn AI ideas into systems that can be measured, debugged, and shipped.
 
 In agentyc, prefer the existing benchmark and quality surfaces:
 
-- `./scripts/test.sh` — full test suite
-- `uv run pytest -vxs tests/ci` — CI test suite with real browser
-- `./scripts/lint.sh` — linting and formatting
-- `uv run pyright` — type checking
-- `uv run ruff check --fix` — code quality
-- `uv run ruff format` — formatting
+- `cargo test --workspace` — unit + integration tests (browser tests need Chrome)
+- `AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture` — performance gate
+- `cargo fmt --all -- --check` — formatting
+- `cargo clippy --workspace --all-targets -- -D warnings` — lints
 
 For browser automation evals, treat these additional dimensions:
 - action success rate over representative page structures (forms, modals, SPAs, infinite scroll)
 - latency under active CDP interception and network conditions
-- watchdog correctness under concurrent tab operations
+- correctness under concurrent tab operations
 - extraction quality across DOM complexity tiers
 
 ## Agentyc Browser/MCP Hardening Checklist
@@ -310,12 +308,8 @@ Result: the regression is measurable and cannot silently return
 ## Composition Rule
 
 - use `breakthrough-autoresearch` when the work is still dominated by research, hypothesis ranking, or autonomous experiment loops
-- use `cdp-browser-engineer` when the winning path depends on CDP, BrowserSession, target plumbing, or watchdog behavior
-- use `llm-provider-engineer` when the work is primarily provider mapping, token accounting, or structured output integration
-- use `pytest-async-engineer` when a repeated failure needs to be encoded as deterministic browser or integration coverage
-- use `async-python-engineer` when the bottleneck is async task lifecycle, cancellation, or event-bus wiring
+- use `agentyc-browser-automation` when you need end-to-end browser-task evidence around the change
 - use `dev-contextro-mcp` when the plan depends on codebase discovery, retrieval budgets, or impact analysis
-- use `fastmcp-server-engineer` when the implementation changes the MCP surface, tool/resource split, transport, or middleware boundaries
 - use `docs-maintainer` when benchmark claims, release notes, or public docs must stay aligned with the implementation
 
 ## References
