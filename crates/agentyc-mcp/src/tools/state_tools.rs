@@ -27,7 +27,8 @@ pub async fn browser_get_state(
     since_hash: Option<String>,
     include_screenshot: Option<bool>,
 ) -> Result<CallToolResult> {
-    let mode = mode.unwrap_or_else(|| "auto".into());
+    // Default to the compact `min` mode: smallest reliable payload for agents.
+    let mode = mode.unwrap_or_else(|| "min".into());
 
     // Get current URL + title
     let url_resp = cdp(
@@ -142,7 +143,10 @@ async fn get_interactive_elements(
             return s.display !== 'none' && s.visibility !== 'hidden'
                 && parseFloat(s.opacity) > 0 && r.width > 0 && r.height > 0;
         }
+        const visitedRoots = new Set();
         function collectFrom(root) {
+            if (visitedRoots.has(root)) return;
+            visitedRoots.add(root);
             const seen = new Set();
             const selector = INTERACTIVE.join(',') +
                 ',[role],[tabindex],[onclick],[href],[aria-label],[aria-expanded],[data-testid]';
@@ -173,6 +177,10 @@ async fn get_interactive_elements(
                     disabled: el.disabled || el.hasAttribute('disabled'),
                     x: r.x, y: r.y, width: r.width, height: r.height,
                 });
+            });
+            // Pierce open shadow roots of ALL hosts (custom elements often are
+            // not themselves interactive but contain interactive shadow content).
+            root.querySelectorAll('*').forEach(el => {
                 if (el.shadowRoot) { collectFrom(el.shadowRoot); }
             });
         }
@@ -194,55 +202,19 @@ async fn get_interactive_elements(
         .cloned()
         .unwrap_or_default();
 
-    // Resolve backendNodeId for each stamped element via DOM.querySelectorAll on the stamp attribute
+    // Resolve backendNodeId for each stamped element via a single pierced
+    // DOM.getDocument walk. This crosses shadow roots and iframes (which
+    // DOM.querySelectorAll does not) and avoids a per-node describeNode round-trip.
     let doc_resp = cdp(
         state,
         "DOM.getDocument",
-        json!({"depth": 0, "pierce": true}),
+        json!({"depth": -1, "pierce": true}),
     )
     .await
     .unwrap_or(json!({}));
-    let root_id = doc_resp["root"]["nodeId"].as_u64().unwrap_or(1);
-
-    // Query all stamped elements in one shot
-    let stamp_selector = "[data-_agtyc]".to_string();
-    let qs_resp = cdp(
-        state,
-        "DOM.querySelectorAll",
-        json!({
-            "nodeId": root_id,
-            "selector": stamp_selector,
-        }),
-    )
-    .await
-    .unwrap_or(json!({}));
-    let node_ids: Vec<u64> = qs_resp["nodeIds"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter_map(|v| v.as_u64())
-        .collect();
-
-    // Build idx -> backendNodeId map
     let mut idx_to_bid: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
-    for nid in &node_ids {
-        let desc = cdp(state, "DOM.describeNode", json!({"nodeId": nid})).await;
-        if let Ok(d) = desc {
-            let bid = d["node"]["backendNodeId"].as_u64().unwrap_or(0);
-            // Read the stamp attribute to get the idx
-            let attrs = d["node"]["attributes"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let mut it = attrs.iter();
-            while let (Some(k), Some(v)) = (it.next(), it.next()) {
-                if k.as_str() == Some("data-_agtyc") {
-                    if let Ok(idx) = v.as_str().unwrap_or("").parse::<u64>() {
-                        idx_to_bid.insert(idx, bid);
-                    }
-                }
-            }
-        }
+    if let Some(root) = doc_resp.get("root") {
+        collect_stamped(root, &mut idx_to_bid);
     }
 
     // Clean up stamps via JS
@@ -314,6 +286,35 @@ async fn get_interactive_elements(
     Ok(elements)
 }
 
+/// Recursively map stamp idx -> backendNodeId across the pierced DOM tree
+/// (children, shadow roots, and iframe content documents).
+fn collect_stamped(node: &Value, map: &mut std::collections::HashMap<u64, u64>) {
+    if let Some(bid) = node.get("backendNodeId").and_then(Value::as_u64) {
+        if let Some(attrs) = node.get("attributes").and_then(Value::as_array) {
+            let mut it = attrs.iter();
+            while let (Some(k), Some(v)) = (it.next(), it.next()) {
+                if k.as_str() == Some("data-_agtyc") {
+                    if let Some(idx) = v.as_str().and_then(|s| s.parse::<u64>().ok()) {
+                        map.insert(idx, bid);
+                    }
+                }
+            }
+        }
+    }
+    for key in ["children", "shadowRoots"] {
+        if let Some(arr) = node.get(key).and_then(Value::as_array) {
+            for c in arr {
+                collect_stamped(c, map);
+            }
+        }
+    }
+    if let Some(cd) = node.get("contentDocument") {
+        if !cd.is_null() {
+            collect_stamped(cd, map);
+        }
+    }
+}
+
 fn score_element(tag: &str, text: &str, input_type: &str, disabled: bool) -> f64 {
     let mut s = 0.0f64;
     match tag {
@@ -366,7 +367,7 @@ pub async fn browser_get_html(
     )
     .await?;
     let html = resp["result"]["value"].as_str().unwrap_or("").to_string();
-    Ok(ok_text(html))
+    Ok(ok_text(crate::tools::cap_text(&html, 40_000)))
 }
 
 pub async fn browser_screenshot(
