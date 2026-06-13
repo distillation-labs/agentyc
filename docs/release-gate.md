@@ -1,109 +1,58 @@
 # Release Gate
 
-Agentyc publish runs are blocked unless the release gate and modularity guard both pass.
+Release runs are blocked unless the cargo-based release gate passes. The gate is
+implemented in `.github/workflows/workflow.yml` as the `release-gate` job, which
+the `publish-binaries` job depends on.
 
 ## What Is Gated
 
-- `scripts/benchmark_mcp_runtime.py --release-gate` evaluates the dogfood benchmark output against explicit thresholds.
-- `scripts/check_release_guards.py` enforces a package file-size guard so very large Python modules fail before publish.
-- The file-size guard also records a watchlist for active modules above the preferred modularity target.
-- `--open-issue` remains opt-in. The benchmark gate can fail without opening GitHub issues.
+The `release-gate` job runs, in order:
 
-## Benchmark Gate
+1. `cargo fmt --all -- --check` — formatting must be clean.
+2. `cargo clippy --workspace --all-targets -- -D warnings` — zero lint warnings.
+3. `cargo build --release -p agentyc --locked` — the binary must build.
+4. `cargo test --workspace --release --locked` — the full test suite must pass.
 
-The benchmark report includes a `release_gate` section when `--release-gate` is enabled.
+A real Chrome is installed (via `browser-actions/setup-chrome`) so the
+browser-automation integration tests run against an actual browser. Tests marked
+`#[ignore]` (live network or a visible display) are not part of the gate and are
+run manually with `cargo test -- --ignored`.
 
-Example:
+## Performance Regression Gate
 
-```bash
-uv run python scripts/benchmark_mcp_runtime.py \
-  --preset dogfood \
-  --release-gate \
-  --fail-on-regression \
-  --max-import-ms 2500 \
-  --max-session-init-ms 35000 \
-  --min-avg-auto-payload-reduction-pct 8.0 \
-  --min-avg-auto-recall 0.99 \
-  --min-avg-min-recall 0.99 \
-  --min-avg-deterministic-recall 0.99 \
-  --min-avg-structured-recall 0.99 \
-  --min-avg-action-success 1.0 \
-  --min-collaboration-required-check-pass-rate 1.0
-```
+`tests/benchmark.rs` is a normal integration test that doubles as a performance
+gate. It measures cold-start, `tools/list` latency, per-call MCP overhead, and
+sustained throughput over stdio, then asserts regression ceilings:
 
-The payload-reduction threshold should be treated as a regression floor, not an aspirational Phase 7 target. The current two-run local dogfood baseline in this repository reports `avg_auto_payload_reduction_pct=10.0`, but the publish gate continues to use `8.0` as a conservative floor until a broader CI baseline is intentionally raised.
+| Metric | Assertion |
+|--------|-----------|
+| Cold-start median | `< 500 ms` |
+| MCP overhead p50 | `< 10 ms` |
+| Sustained throughput | `> 100 calls/sec` |
 
-The gate fails when either of these conditions is true:
-
-- any fixture regression is detected
-- any configured threshold is unmet
-
-Thresholds are evaluated from the generated benchmark summary and from top-level timings such as `import_ms` and `session_init_ms`.
-
-The `session_init_ms` threshold is also treated as a measured cold-start ceiling rather than an aspirational target. Recent GitHub Actions release-gate runs measured cold-start session initialization as high as `32181.6`, driven by runner bootstrap work such as browser/extension setup. The publish workflow therefore uses `35000` to absorb that startup variance while still catching materially slower regressions.
-
-## Dogfood Wrapper
-
-`scripts/dogfood.sh` forwards environment-driven gate settings to the benchmark script.
-
-Supported environment variables:
-
-- `DOGFOOD_RELEASE_GATE=1`
-- `DOGFOOD_FAIL_ON_REGRESSION=1`
-- `DOGFOOD_MAX_IMPORT_MS`
-- `DOGFOOD_MAX_SESSION_INIT_MS`
-- `DOGFOOD_MIN_AVG_AUTO_PAYLOAD_REDUCTION_PCT`
-- `DOGFOOD_MIN_AVG_AUTO_RECALL`
-- `DOGFOOD_MIN_AVG_MIN_RECALL`
-- `DOGFOOD_MIN_AVG_DETERMINISTIC_RECALL`
-- `DOGFOOD_MIN_AVG_STRUCTURED_RECALL`
-- `DOGFOOD_MIN_AVG_ACTION_SUCCESS`
-- `DOGFOOD_MIN_COLLABORATION_REQUIRED_CHECK_PASS_RATE`
-- `DOGFOOD_ARTIFACT_DIR`
-- `DOGFOOD_OPEN_ISSUES=1` and the existing issue-related variables when issue creation is explicitly desired
-
-Example:
+Run it directly to print the full report:
 
 ```bash
-DOGFOOD_RELEASE_GATE=1 \
-DOGFOOD_FAIL_ON_REGRESSION=1 \
-DOGFOOD_MIN_AVG_ACTION_SUCCESS=1.0 \
-./scripts/dogfood.sh
+AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture
 ```
 
-## Modularity And File-Size Guard
+Because it is part of `cargo test --workspace`, a performance regression fails
+the release gate automatically.
 
-The release workflow also runs:
+## Soak / Stress Coverage
+
+`tests/e2e_suite.rs` ports the original soak suite. Loop counts default low for
+CI but scale with `AGENTYC_TEST_SCALE`:
 
 ```bash
-uv run python scripts/check_release_guards.py --artifact-file .release-guard.json
+# Reproduce a heavy (~10k operation) soak run locally.
+AGENTYC_HEADLESS=1 AGENTYC_TEST_SCALE=25 \
+  cargo test -p agentyc-tests --test e2e_suite -- --nocapture
 ```
 
-Current behavior:
+## Publish Flow
 
-- scans `agentyc/**/*.py`
-- records a watchlist for files above `800` lines
-- fails if any single Python file exceeds `1000` lines
-
-This matches the roadmap policy more closely: most active files should stay under roughly `700-800` lines, while files above `1000` lines are treated as release blockers.
-
-The generated JSON artifact includes:
-
-- `watch_lines`
-- `max_lines`
-- `watchlist_count`
-- `watchlist`
-- `violations`
-
-This lets CI distinguish between modules that need continued refactor pressure and modules that are too large to ship.
-
-## Current Reference Measurements
-
-- Confirmed two-run headless runtime gate median: `import_ms=667.8`, `session_init_ms=1174.0`, `avg_auto_payload_reduction_pct=10.0`, `avg_action_success=1.0`, `collaboration_latency_ms=1302.5`, `collaboration_required_check_pass_rate=1.0`.
-- Confirmed two-run headless stdio median: `success=1.0`, `accuracy=1.0`, `precision=1.0`, `duration_ms=26233.2`, `avg_ms=50.9`, `p95_ms=174.5`.
-- Latest validated modularity guard: `watchlist_count=8`, `violations=[]`.
-- Re-run the commands above to regenerate fresh local evidence for the current tree.
-
-## CI Publish Flow
-
-`.github/workflows/workflow.yml` now has a dedicated `release-gates` job. `publish` depends on that job, so PyPI publishing is blocked until both checks pass.
+`publish-binaries` builds release binaries for the supported targets
+(`x86_64`/`aarch64` macOS, `x86_64` Linux, `x86_64` Windows), packages them as
+`.tar.gz` / `.zip`, and attaches them to the GitHub release. It only runs after
+`release-gate` succeeds.
