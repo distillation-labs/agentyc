@@ -63,7 +63,7 @@ systems.
 
 ## What This Means For Agentyc
 
-- Browser automation quality is measured by action reliability, not vibe. Use real browser tests with `pytest-httpserver` and representative page structures.
+- Browser automation quality is measured by action reliability, not vibe. Use real browser tests (`cargo test` with `data:` fixtures) and representative page structures.
 - New MCP tools should land with CI tests, deterministic extraction benchmarks, and a clear fallback story.
 - Watchdog correctness, CDP session lifecycle, and network interception behavior should each have dedicated test coverage.
 - Implementation patterns from other teams should be translated into repo-local harnesses,
