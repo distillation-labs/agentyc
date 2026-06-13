@@ -299,3 +299,60 @@ pub fn iters(base: usize) -> usize {
         .unwrap_or(1.0);
     ((base as f64) * scale).round().max(1.0) as usize
 }
+
+// ── Real-world battle-test suite ────────────────────────────────────────────
+
+pub mod fixtures;
+pub mod runner;
+pub mod scenario;
+
+use std::sync::{Mutex, OnceLock};
+
+/// Shared headless browser for the generated real-world suite. `None` means no
+/// browser is available, so cases skip instead of failing.
+static SHARED_MCP: OnceLock<Mutex<Option<Mcp>>> = OnceLock::new();
+static CATALOG: OnceLock<Vec<scenario::Scenario>> = OnceLock::new();
+
+fn shared_mcp() -> &'static Mutex<Option<Mcp>> {
+    SHARED_MCP.get_or_init(|| {
+        let mut m = Mcp::start();
+        if m.browser_available() {
+            Mutex::new(Some(m))
+        } else {
+            Mutex::new(None)
+        }
+    })
+}
+
+/// Total number of generated real-world scenarios in the catalog.
+pub fn scenario_count() -> usize {
+    CATALOG.get_or_init(scenario::catalog).len()
+}
+
+/// Execute real-world scenario `index`. Called by the generated `#[test]`
+/// wrappers. All cases in a test binary share one headless browser (serialized
+/// by a mutex) and one fixtures server. Skips when no browser is installed;
+/// panics with a descriptive message on scenario failure.
+pub fn run_index(index: usize) {
+    let catalog = CATALOG.get_or_init(scenario::catalog);
+    let scenario = match catalog.get(index) {
+        Some(s) => s.clone(),
+        None => panic!(
+            "scenario index {index} out of range ({} total)",
+            catalog.len()
+        ),
+    };
+    let base = fixtures::base_url().to_string();
+    let guard = shared_mcp();
+    let mut lock = guard.lock().unwrap_or_else(|e| e.into_inner());
+    match lock.as_mut() {
+        Some(m) => {
+            if let Err(e) = runner::run(m, &base, &scenario) {
+                panic!("{e}");
+            }
+        }
+        None => {
+            eprintln!("skipping {}: no Chrome/Chromium available", scenario.id);
+        }
+    }
+}
