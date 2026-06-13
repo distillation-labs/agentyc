@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::node::{AxNode, DomRect, EnhancedDOMTreeNode, NodeType, SnapshotData};
 
-/// Required computed styles for visibility detection (mirrors Python REQUIRED_COMPUTED_STYLES).
+/// Required computed styles for visibility detection.
 const REQUIRED_COMPUTED_STYLES: &[&str] = &[
     "display",
     "visibility",
