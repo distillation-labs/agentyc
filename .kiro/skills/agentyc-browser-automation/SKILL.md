@@ -28,12 +28,10 @@ Prefer the smallest browser tool that answers the question or performs the actio
 
 ## Benchmark Surfaces
 
-- `uv run python scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate --fail-on-regression`
-  for import/session init, payload reduction, recall, action success, and collaboration checks
-- `uv run python scripts/benchmark_mcp_stdio_e2e.py --targets source --minimum-total-calls 100`
-  for success, accuracy, precision, and average/p95 latency
-- `uv run pytest -vxs tests/ci` for representative browser flows such as forms, dialogs, SPAs,
-  downloads, iframes, auth, reuse, and infinite scroll
+- `AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture`
+  for cold-start, tools/list latency, per-call overhead, and sustained throughput
+- `AGENTYC_HEADLESS=1 cargo test --workspace` for representative browser flows such as forms,
+  dialogs, SPAs, iframes, auth, and infinite scroll (browser tests need Chrome)
 
 ## Core Workflow
 
