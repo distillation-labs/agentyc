@@ -50,7 +50,10 @@ pub async fn browser_extract_content(
         };
 
     match agentyc_tools::extract(html, &effective_query) {
-        Ok(result) => Ok(ok_json(&result)),
+        Ok(mut result) => {
+            crate::tools::bound_json(&mut result, 300);
+            Ok(ok_json(&result))
+        }
         Err(e) => Err(anyhow::anyhow!("{}", e)),
     }
 }
