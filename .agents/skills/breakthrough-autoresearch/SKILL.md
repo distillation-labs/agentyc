@@ -47,19 +47,16 @@ target is met or the bottleneck is disproven.
 
 Canonical benchmark surfaces:
 
-- `uv run python scripts/benchmark_mcp_runtime.py --preset dogfood --release-gate --fail-on-regression`
-  — release-gate runtime metrics such as import time, session init, payload reduction, recall,
-  action success, and collaboration correctness
-- `uv run python scripts/benchmark_mcp_stdio_e2e.py --targets source --minimum-total-calls 100`
-  — end-to-end stdio success, accuracy, precision, and average/p95 latency
+- `AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture`
+  — cold-start, tools/list latency, per-call MCP overhead, and sustained throughput with regression ceilings
+- `AGENTYC_HEADLESS=1 AGENTYC_TEST_SCALE=25 cargo test -p agentyc-tests --test e2e_suite`
+  — scaled end-to-end soak over the deterministic tool surface
 
 Guardrail surfaces:
 
-- `./scripts/test.sh` — full test suite
-- `uv run pytest -vxs tests/ci` — CI tests with real browser behavior
-- `./scripts/lint.sh` — linting and formatting checks
-- `uv run pyright` — type checking
-- `uv run ruff check --fix` — code quality
+- `cargo test --workspace` — unit + integration tests (browser tests need Chrome)
+- `cargo fmt --all -- --check` — formatting
+- `cargo clippy --workspace --all-targets -- -D warnings` — lints
 
 When the question is "browser excellence," name the exact metric you are moving: task completion,
 false-positive completion rate, average or p95 tool latency, token/context footprint, recall,
@@ -229,8 +226,7 @@ Return results in this order:
 ## Composition Rule
 
 - use `applied-ai-engineer` once the winning direction needs productionization, observability, and rollout safety
-- use `cdp-browser-engineer` when the hypothesis is specifically about CDP, BrowserSession, target plumbing, or watchdog logic
-- use `pytest-async-engineer` when a discovered failure mode should be locked into deterministic coverage
+- encode a discovered failure mode as a deterministic `cargo test` case under `tests/`
 - use `dev-contextro-mcp` when the bottleneck starts with codebase discovery, impact tracing, or retrieval-budget work
 - use `agentyc-browser-automation` when the experiment needs end-to-end browser-task evidence rather than subsystem analysis
 - use `llm-provider-engineer` when the hypothesis is about model routing, token accounting, or structured output stability
