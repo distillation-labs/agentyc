@@ -6,5 +6,5 @@
 pub mod launcher;
 pub mod profile;
 
-pub use launcher::{find_chrome_binary, launch_browser, wait_for_cdp, LaunchedBrowser};
+pub use launcher::{LaunchedBrowser, find_chrome_binary, launch_browser, wait_for_cdp};
 pub use profile::{BrowserProfile, OwnedUserDataDir, ProxySettings, ViewportSize};
