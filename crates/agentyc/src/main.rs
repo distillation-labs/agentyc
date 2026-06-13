@@ -4,14 +4,18 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 const SKILL_MD: &str = include_str!("../../../SKILL.md");
 
 #[derive(Parser)]
-#[command(name = "agentyc", about = "Deterministic browser automation MCP server", version)]
+#[command(
+    name = "agentyc",
+    about = "Deterministic browser automation MCP server",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -68,25 +72,28 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => agentyc_mcp::run_stdio(None).await,
-        Some(Cmd::Mcp { cdp_url }) => {
-            agentyc_mcp::run_stdio(cdp_url.as_deref()).await
-        }
-        Some(Cmd::Serve { host, port, cdp_url }) => {
-            run_serve(&host, port, cdp_url.as_deref()).await
-        }
-        Some(Cmd::Init { output, print, force }) => {
-            cmd_init(&output, print, force)
-        }
-        Some(Cmd::Browser { port, headless, detach }) => {
-            cmd_browser(port, headless, detach).await
-        }
+        Some(Cmd::Mcp { cdp_url }) => agentyc_mcp::run_stdio(cdp_url.as_deref()).await,
+        Some(Cmd::Serve {
+            host,
+            port,
+            cdp_url,
+        }) => run_serve(&host, port, cdp_url.as_deref()).await,
+        Some(Cmd::Init {
+            output,
+            print,
+            force,
+        }) => cmd_init(&output, print, force),
+        Some(Cmd::Browser {
+            port,
+            headless,
+            detach,
+        }) => cmd_browser(port, headless, detach).await,
     }
 }
 
 async fn run_serve(host: &str, port: u16, cdp_url: Option<&str>) -> Result<()> {
     use rmcp::transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService,
-        session::local::LocalSessionManager,
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
 
     let cdp_owned = cdp_url.map(str::to_string);
@@ -139,8 +146,9 @@ fn cmd_init(output: &str, print_only: bool, force: bool) -> Result<()> {
 }
 
 async fn cmd_browser(port: u16, headless: bool, detach: bool) -> Result<()> {
-    let chrome = agentyc_browser::find_chrome_binary()
-        .ok_or_else(|| anyhow!("Could not find Chrome or Chromium. Install Chrome and try again."))?;
+    let chrome = agentyc_browser::find_chrome_binary().ok_or_else(|| {
+        anyhow!("Could not find Chrome or Chromium. Install Chrome and try again.")
+    })?;
 
     let mut args = vec![
         format!("--remote-debugging-port={port}"),
@@ -173,8 +181,8 @@ async fn cmd_browser(port: u16, headless: bool, detach: bool) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    let url = cdp_url
-        .ok_or_else(|| anyhow!("Chrome did not start within 15 seconds on port {port}"))?;
+    let url =
+        cdp_url.ok_or_else(|| anyhow!("Chrome did not start within 15 seconds on port {port}"))?;
     println!("{url}");
 
     if !detach {
