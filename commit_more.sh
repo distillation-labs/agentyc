@@ -7,18 +7,9 @@ git status --porcelain | while IFS= read -r line; do
   fl="$(echo "$fl" | sed 's/^ *//;s/ *$//')"
   echo "--- [$st] $fl ---"
   case "$st" in
-    "M "|" M")
-      git add "$fl"
-      git commit -m "update: $fl"
-      ;;
-    "D "|" D")
-      git rm "$fl"
-      git commit -m "remove: $fl"
-      ;;
-    "??")
-      git add "$fl"
-      git commit -m "add: $fl"
-      ;;
+    "M "|" M") git add "$fl" && git commit -m "update: $fl" ;;
+    "D "|" D") git rm "$fl" && git commit -m "remove: $fl" ;;
+    "??") git add "$fl" && git commit -m "add: $fl" ;;
   esac
   git push origin main
   echo "Done: $fl"
