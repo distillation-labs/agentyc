@@ -20,7 +20,7 @@ suites:
         prompt: Add a new CDP watchdog class to BrowserSession and wire its events correctly.
         expect_trigger: false
       - id: nontrig-02
-        prompt: Write pytest-httpserver fixtures for a browser test and explain the no-mock constraints.
+        prompt: Design a Postgres schema for a billing service and explain normalization tradeoffs.
         expect_trigger: false
   - name: functional
     objective: Teach coding agents the real Agentyc tool surface with deterministic tool choice.
