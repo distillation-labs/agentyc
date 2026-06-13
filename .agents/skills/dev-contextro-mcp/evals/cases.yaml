@@ -17,7 +17,7 @@ suites:
         prompt: Search recent commits related to network mocking regressions.
         expect_trigger: true
       - id: nontrig-01
-        prompt: Read pyproject.toml and tell me the Ruff version.
+        prompt: Read Cargo.toml and tell me the serde version.
         expect_trigger: false
       - id: nontrig-02
         prompt: Write a new MCP tool from scratch.
