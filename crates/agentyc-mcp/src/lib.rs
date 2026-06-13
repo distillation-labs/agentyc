@@ -73,6 +73,11 @@ impl BrowserServer {
             + Self::tool_router_inspection()
             + Self::tool_router_frames()
             + Self::tool_router_tabs();
+        // Opt-in extended profile adds the observability tools. Kept out of the
+        // default set so tools/list stays small and context-cheap for agents.
+        if tools::extended_profile() {
+            tr += Self::tool_router_observability();
+        }
         // Strip verbose schemars-generated fields from every tool's inputSchema
         // to reduce tools/list payload size (~30% reduction).
         slim_tool_schemas(&mut tr);
@@ -149,6 +154,9 @@ impl BrowserServer {
             }
         }
         self.state.lock().await.cdp = Some(client);
+        // Deterministic dialog handling + (extended) observability capture.
+        tools::ensure_dialog_handler(&self.state).await;
+        tools::ensure_capture(&self.state).await;
         Ok(())
     }
 }
@@ -1251,7 +1259,310 @@ impl BrowserServer {
     }
 }
 
-// ── Observability tools ───────────────────────────────────────────────────────
+// ── Observability tools (extended profile) ────────────────────────────────────
+
+#[derive(Deserialize, JsonSchema)]
+struct GetConsoleLogsParams {
+    level: Option<String>,
+    max_entries: Option<usize>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct GetNetworkLogParams {
+    type_filter: Option<String>,
+    status_filter: Option<String>,
+    max_entries: Option<usize>,
+    include_headers: Option<bool>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct InspectNetworkEntryParams {
+    request_id: Option<String>,
+    url_substring: Option<String>,
+    url_regex: Option<String>,
+    method: Option<String>,
+    resource_type: Option<String>,
+    status: Option<u32>,
+    include_headers: Option<bool>,
+    include_request_body: Option<bool>,
+    include_response_body: Option<bool>,
+    max_body_bytes: Option<usize>,
+    decode_json: Option<bool>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct AddNetworkMockParams {
+    url_substring: Option<String>,
+    url_regex: Option<String>,
+    method: Option<String>,
+    resource_type: Option<String>,
+    action: Option<String>,
+    status: Option<u32>,
+    headers: Option<Value>,
+    body: Option<String>,
+    error_reason: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct RemoveNetworkMockParams {
+    mock_id: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct SetNetworkConditionsParams {
+    offline: Option<bool>,
+    latency_ms: Option<f64>,
+    download_kbps: Option<f64>,
+    upload_kbps: Option<f64>,
+    connection_type: Option<String>,
+    reset: Option<bool>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct ReplayRequestParams {
+    request_id: Option<String>,
+    url_substring: Option<String>,
+    url_regex: Option<String>,
+    method: Option<String>,
+    body: Option<String>,
+    headers: Option<Value>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct ExportDebugBundleParams {
+    state_mode: Option<String>,
+    focus_ref: Option<String>,
+    since_hash: Option<String>,
+    include_screenshot: Option<bool>,
+    include_headers: Option<bool>,
+    include_html: Option<bool>,
+    html_selector: Option<String>,
+    console_max_entries: Option<usize>,
+    network_max_entries: Option<usize>,
+    network_status_filter: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct WaitForDownloadParams {
+    expected_name: Option<String>,
+    timeout_seconds: Option<f64>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct ClearLogsParams {
+    console: Option<bool>,
+    network: Option<bool>,
+}
+#[derive(Deserialize, JsonSchema)]
+struct StartTraceParams {
+    categories: Option<String>,
+}
+
+#[tool_router(router = tool_router_observability, vis = "pub")]
+impl BrowserServer {
+    #[rmcp::tool(
+        description = "Return captured browser console messages (log/warn/error/info). Extended profile."
+    )]
+    async fn browser_get_console_logs(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<GetConsoleLogsParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_get_console_logs(&self.state, p.0.level, p.0.max_entries)
+                .await,
+        )
+    }
+    #[rmcp::tool(
+        description = "Return captured network requests (XHR/Fetch/doc, status, timing, optional headers). Extended profile."
+    )]
+    async fn browser_get_network_log(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<GetNetworkLogParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_get_network_log(
+                &self.state,
+                p.0.type_filter,
+                p.0.status_filter,
+                p.0.max_entries,
+                p.0.include_headers,
+            )
+            .await,
+        )
+    }
+    #[rmcp::tool(
+        description = "Inspect one captured network entry, including optional request/response bodies. Extended profile."
+    )]
+    async fn browser_inspect_network_entry(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<InspectNetworkEntryParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_inspect_network_entry(
+                &self.state,
+                p.0.request_id,
+                p.0.url_substring,
+                p.0.url_regex,
+                p.0.method,
+                p.0.resource_type,
+                p.0.status,
+                p.0.include_headers,
+                p.0.include_request_body,
+                p.0.include_response_body,
+                p.0.max_body_bytes,
+                p.0.decode_json,
+            )
+            .await,
+        )
+    }
+    #[rmcp::tool(
+        description = "Add a URL-matching network mock rule (fulfill/abort) for the active tab. Extended profile."
+    )]
+    async fn browser_add_network_mock(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<AddNetworkMockParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_add_network_mock(
+                &self.state,
+                p.0.url_substring,
+                p.0.url_regex,
+                p.0.method,
+                p.0.resource_type,
+                p.0.action,
+                p.0.status,
+                p.0.headers,
+                p.0.body,
+                p.0.error_reason,
+            )
+            .await,
+        )
+    }
+    #[rmcp::tool(
+        description = "Remove one network mock by mock_id, or all mocks when omitted. Extended profile."
+    )]
+    async fn browser_remove_network_mock(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<RemoveNetworkMockParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_remove_network_mock(&self.state, p.0.mock_id).await,
+        )
+    }
+    #[rmcp::tool(
+        description = "List active network mock rules and their match counts. Extended profile."
+    )]
+    async fn browser_list_network_mocks(
+        &self,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(tools::observability::browser_list_network_mocks(&self.state).await)
+    }
+    #[rmcp::tool(
+        description = "Apply offline or throttling conditions to the active tab. Extended profile."
+    )]
+    async fn browser_set_network_conditions(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<SetNetworkConditionsParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_set_network_conditions(
+                &self.state,
+                p.0.offline,
+                p.0.latency_ms,
+                p.0.download_kbps,
+                p.0.upload_kbps,
+                p.0.connection_type,
+                p.0.reset,
+            )
+            .await,
+        )
+    }
+    #[rmcp::tool(description = "Report active per-tab network conditions. Extended profile.")]
+    async fn browser_get_network_conditions(
+        &self,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(tools::observability::browser_get_network_conditions(&self.state).await)
+    }
+    #[rmcp::tool(
+        description = "Replay a captured request with optional header/body overrides. Extended profile."
+    )]
+    async fn browser_replay_request(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<ReplayRequestParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_replay_request(
+                &self.state,
+                p.0.request_id,
+                p.0.url_substring,
+                p.0.url_regex,
+                p.0.method,
+                p.0.body,
+                p.0.headers,
+            )
+            .await,
+        )
+    }
+    #[rmcp::tool(
+        description = "Return a compact debug bundle: state + console + network + optional HTML/screenshot. Extended profile."
+    )]
+    async fn browser_export_debug_bundle(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<ExportDebugBundleParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_export_debug_bundle(
+                &self.state,
+                p.0.state_mode,
+                p.0.focus_ref,
+                p.0.since_hash,
+                p.0.include_screenshot,
+                p.0.include_headers,
+                p.0.include_html,
+                p.0.html_selector,
+                p.0.console_max_entries,
+                p.0.network_max_entries,
+                p.0.network_status_filter,
+            )
+            .await,
+        )
+    }
+    #[rmcp::tool(
+        description = "List files downloaded during the current browser session. Extended profile."
+    )]
+    async fn browser_get_downloads(&self) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(tools::observability::browser_get_downloads(&self.state).await)
+    }
+    #[rmcp::tool(
+        description = "Wait until a download completes and return the matched file metadata. Extended profile."
+    )]
+    async fn browser_wait_for_download(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<WaitForDownloadParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_wait_for_download(
+                &self.state,
+                p.0.expected_name,
+                p.0.timeout_seconds,
+            )
+            .await,
+        )
+    }
+    #[rmcp::tool(description = "Clear console and/or network log buffers. Extended profile.")]
+    async fn browser_clear_logs(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<ClearLogsParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(
+            tools::observability::browser_clear_logs(&self.state, p.0.console, p.0.network).await,
+        )
+    }
+    #[rmcp::tool(description = "Start a CDP performance trace. Extended profile.")]
+    async fn browser_start_trace(
+        &self,
+        p: rmcp::handler::server::wrapper::Parameters<StartTraceParams>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(tools::observability::browser_start_trace(&self.state, p.0.categories).await)
+    }
+    #[rmcp::tool(
+        description = "Stop the active CDP performance trace and return collected events. Extended profile."
+    )]
+    async fn browser_stop_trace(&self) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        tools::res(tools::observability::browser_stop_trace(&self.state).await)
+    }
+}
 
 // ── ServerHandler ─────────────────────────────────────────────────────────────
 
