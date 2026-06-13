@@ -21,10 +21,9 @@ This reference combines the research and experiment-loop patterns that matter mo
 
 ## Agentyc-Specific Surfaces
 
-- `./scripts/test.sh`
-- `uv run pytest -vxs tests/ci`
-- `./scripts/lint.sh`
-- `uv run pyright`
+- `cargo test --workspace`
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
 - browser reliability and DOM extraction benchmarks
 - MCP runtime and stdio latency benchmarks
 
