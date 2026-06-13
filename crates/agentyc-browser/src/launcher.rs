@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use tokio::{process::Child, time::sleep};
 use tracing::{debug, warn};
@@ -30,7 +30,9 @@ pub fn find_chrome_binary() -> Option<PathBuf> {
     let os = std::env::consts::OS;
 
     // Check PLAYWRIGHT_BROWSERS_PATH override first
-    let playwright_base: Option<PathBuf> = std::env::var("PLAYWRIGHT_BROWSERS_PATH").ok().map(PathBuf::from);
+    let playwright_base: Option<PathBuf> = std::env::var("PLAYWRIGHT_BROWSERS_PATH")
+        .ok()
+        .map(PathBuf::from);
 
     match os {
         "macos" => find_chrome_macos(playwright_base),
@@ -60,16 +62,14 @@ fn playwright_chromium_paths(base: Option<PathBuf>, suffix: &str) -> Vec<PathBuf
 
 fn find_chrome_macos(playwright_base: Option<PathBuf>) -> Option<PathBuf> {
     // 1. System Chrome
-    let system_chrome = PathBuf::from(
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    );
+    let system_chrome =
+        PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
     if system_chrome.is_file() {
         return Some(system_chrome);
     }
 
     // 2. Playwright Chromium (newest)
-    let playwright_suffix =
-        "chrome-mac/Chromium.app/Contents/MacOS/Chromium";
+    let playwright_suffix = "chrome-mac/Chromium.app/Contents/MacOS/Chromium";
     if let Some(p) = playwright_chromium_paths(playwright_base.clone(), playwright_suffix)
         .into_iter()
         .last()
@@ -97,8 +97,7 @@ fn find_chrome_macos(playwright_base: Option<PathBuf>) -> Option<PathBuf> {
     }
 
     // 5. Playwright headless-shell fallback
-    let shell_suffix =
-        "chrome-mac/Chromium.app/Contents/MacOS/Chromium";
+    let shell_suffix = "chrome-mac/Chromium.app/Contents/MacOS/Chromium";
     if let Some(p) = playwright_chromium_paths(playwright_base, shell_suffix)
         .into_iter()
         .last()
@@ -162,8 +161,8 @@ fn find_chrome_linux(playwright_base: Option<PathBuf>) -> Option<PathBuf> {
 
 /// Find an available TCP port.
 fn find_free_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .context("Failed to bind to find a free port")?;
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").context("Failed to bind to find a free port")?;
     Ok(listener.local_addr()?.port())
 }
 
@@ -204,8 +203,8 @@ pub async fn launch_browser(profile: &BrowserProfile) -> Result<LaunchedBrowser>
     } else {
         find_chrome_binary().ok_or_else(|| {
             anyhow!(
-                "No Chrome/Chromium binary found. Install Google Chrome or Playwright Chromium \
-                 (`uvx playwright install chromium`) and try again."
+                "No Chrome/Chromium binary found. Install Google Chrome or Chromium and try again, \
+                 or set PLAYWRIGHT_BROWSERS_PATH to an existing Chromium cache."
             )
         })?
     };
@@ -227,9 +226,9 @@ pub async fn launch_browser(profile: &BrowserProfile) -> Result<LaunchedBrowser>
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
 
-    let process = cmd.spawn().with_context(|| {
-        format!("Failed to spawn Chrome from {}", binary.display())
-    })?;
+    let process = cmd
+        .spawn()
+        .with_context(|| format!("Failed to spawn Chrome from {}", binary.display()))?;
 
     let cdp_url = format!("http://127.0.0.1:{port}/");
     let ws_url = wait_for_cdp(&cdp_url, Duration::from_secs(55)).await?;
@@ -247,7 +246,10 @@ pub async fn launch_browser(profile: &BrowserProfile) -> Result<LaunchedBrowser>
 /// Poll `http://host/json/version` until Chrome reports ready.
 /// Returns the `webSocketDebuggerUrl`.
 pub async fn wait_for_cdp(base_url: &str, timeout: Duration) -> Result<String> {
-    let url = format!("{}json/version", base_url.trim_end_matches('/').to_string() + "/");
+    let url = format!(
+        "{}json/version",
+        base_url.trim_end_matches('/').to_string() + "/"
+    );
     let client = reqwest::Client::new();
     let deadline = std::time::Instant::now() + timeout;
 
@@ -263,7 +265,10 @@ pub async fn wait_for_cdp(base_url: &str, timeout: Duration) -> Result<String> {
         }
 
         if std::time::Instant::now() >= deadline {
-            return Err(anyhow!("Chrome did not become ready within {}s", timeout.as_secs()));
+            return Err(anyhow!(
+                "Chrome did not become ready within {}s",
+                timeout.as_secs()
+            ));
         }
         sleep(Duration::from_millis(100)).await;
     }
