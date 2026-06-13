@@ -16,8 +16,8 @@ fn binary_path() -> std::path::PathBuf {
     path.push("agentyc");
     // Fallback to workspace target
     if !path.exists() {
-        path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug/agentyc");
+        path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agentyc");
     }
     path
 }
@@ -42,13 +42,21 @@ impl McpProcess {
             .expect("failed to start agentyc");
         let stdin = proc.stdin.take().unwrap();
         let reader = BufReader::new(proc.stdout.take().unwrap());
-        let mut this = Self { proc, reader, stdin, id: 0 };
+        let mut this = Self {
+            proc,
+            reader,
+            stdin,
+            id: 0,
+        };
         // Do the MCP handshake
-        let r = this.send("initialize", serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "test", "version": "1"}
-        }));
+        let r = this.send(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"}
+            }),
+        );
         assert!(r.get("result").is_some(), "initialize failed: {r:?}");
         this
     }
@@ -70,11 +78,17 @@ impl McpProcess {
     }
 
     fn call(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
-        self.send("tools/call", serde_json::json!({"name": tool, "arguments": args}))
+        self.send(
+            "tools/call",
+            serde_json::json!({"name": tool, "arguments": args}),
+        )
     }
 
     fn result_text(&self, r: &serde_json::Value) -> String {
-        r["result"]["content"][0]["text"].as_str().unwrap_or("").to_string()
+        r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string()
     }
 }
 
@@ -104,24 +118,67 @@ fn test_all_tool_names_present() {
         .collect();
 
     let required = [
-        "browser_navigate", "browser_go_back", "browser_go_forward", "browser_refresh",
-        "browser_wait", "browser_wait_for_url", "browser_wait_for_network_idle",
-        "browser_wait_for_request", "browser_wait_for_response", "browser_wait_for_stable_dom",
-        "browser_get_state", "browser_get_html", "browser_screenshot", "browser_save_as_pdf",
-        "browser_set_viewport", "browser_click", "browser_right_click", "browser_double_click",
-        "browser_hover", "browser_drag_to", "browser_type", "browser_fill_form",
-        "browser_press_key", "browser_scroll", "browser_scroll_to_text", "browser_select_option",
-        "browser_get_dropdown_options", "browser_upload_file", "browser_handle_dialog",
-        "browser_extract_content", "browser_find_elements", "browser_search_page",
-        "browser_wait_for_element", "browser_get_focused_element", "browser_get_attribute",
-        "browser_evaluate", "browser_list_frames", "browser_get_frame_html",
-        "browser_get_storage", "browser_set_storage", "browser_clear_storage",
-        "browser_new_tab", "browser_list_tabs", "browser_switch_tab", "browser_close_tab",
-        "browser_wait_for_tab", "browser_get_cookies", "browser_set_cookies",
-        "browser_clear_cookies", "browser_grant_permissions", "browser_set_geolocation",
-        "browser_set_extra_headers", "browser_set_user_agent", "browser_set_timezone",
-        "browser_set_locale", "browser_emulate_media", "browser_save_state", "browser_load_state",
-        "browser_list_sessions", "browser_close_session", "browser_close_all",
+        "browser_navigate",
+        "browser_go_back",
+        "browser_go_forward",
+        "browser_refresh",
+        "browser_wait",
+        "browser_wait_for_url",
+        "browser_wait_for_network_idle",
+        "browser_wait_for_request",
+        "browser_wait_for_response",
+        "browser_wait_for_stable_dom",
+        "browser_get_state",
+        "browser_get_html",
+        "browser_screenshot",
+        "browser_save_as_pdf",
+        "browser_set_viewport",
+        "browser_click",
+        "browser_right_click",
+        "browser_double_click",
+        "browser_hover",
+        "browser_drag_to",
+        "browser_type",
+        "browser_fill_form",
+        "browser_press_key",
+        "browser_scroll",
+        "browser_scroll_to_text",
+        "browser_select_option",
+        "browser_get_dropdown_options",
+        "browser_upload_file",
+        "browser_handle_dialog",
+        "browser_extract_content",
+        "browser_find_elements",
+        "browser_search_page",
+        "browser_wait_for_element",
+        "browser_get_focused_element",
+        "browser_get_attribute",
+        "browser_evaluate",
+        "browser_list_frames",
+        "browser_get_frame_html",
+        "browser_get_storage",
+        "browser_set_storage",
+        "browser_clear_storage",
+        "browser_new_tab",
+        "browser_list_tabs",
+        "browser_switch_tab",
+        "browser_close_tab",
+        "browser_wait_for_tab",
+        "browser_get_cookies",
+        "browser_set_cookies",
+        "browser_clear_cookies",
+        "browser_grant_permissions",
+        "browser_set_geolocation",
+        "browser_set_extra_headers",
+        "browser_set_user_agent",
+        "browser_set_timezone",
+        "browser_set_locale",
+        "browser_emulate_media",
+        "browser_save_state",
+        "browser_load_state",
+        "browser_list_sessions",
+        "browser_close_session",
+        "browser_close_all",
     ];
     for name in &required {
         assert!(tools.contains(*name), "Missing tool: {name}");
@@ -132,7 +189,11 @@ fn test_all_tool_names_present() {
 fn test_browser_wait() {
     let mut mcp = McpProcess::start();
     let r = mcp.call("browser_wait", serde_json::json!({"seconds": 0.1}));
-    assert!(mcp.result_text(&r).contains("Waited"), "unexpected: {:?}", r);
+    assert!(
+        mcp.result_text(&r).contains("Waited"),
+        "unexpected: {:?}",
+        r
+    );
 }
 
 #[test]
@@ -140,7 +201,10 @@ fn test_browser_list_sessions() {
     let mut mcp = McpProcess::start();
     let r = mcp.call("browser_list_sessions", serde_json::json!({}));
     let text = mcp.result_text(&r);
-    assert!(text.contains("session_id") || text.contains("has_cdp"), "unexpected: {text}");
+    assert!(
+        text.contains("session_id") || text.contains("has_cdp"),
+        "unexpected: {text}"
+    );
 }
 
 #[test]
@@ -171,8 +235,17 @@ fn test_navigate_blocked_by_allowed_domains() {
     let mut stdin = proc.stdin.take().unwrap();
     let mut reader = BufReader::new(proc.stdout.take().unwrap());
 
-    let send = |stdin: &mut std::process::ChildStdin, reader: &mut BufReader<_>, id: u64, method: &str, params: serde_json::Value| -> serde_json::Value {
-        let msg = serde_json::to_string(&serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})).unwrap() + "\n";
+    let send = |stdin: &mut std::process::ChildStdin,
+                reader: &mut BufReader<_>,
+                id: u64,
+                method: &str,
+                params: serde_json::Value|
+     -> serde_json::Value {
+        let msg = serde_json::to_string(
+            &serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
+        )
+        .unwrap()
+            + "\n";
         stdin.write_all(msg.as_bytes()).unwrap();
         stdin.flush().unwrap();
         let mut buf = String::new();
@@ -180,13 +253,30 @@ fn test_navigate_blocked_by_allowed_domains() {
         serde_json::from_str(&buf).unwrap()
     };
 
-    send(&mut stdin, &mut reader, 1, "initialize", serde_json::json!({"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}));
-    let r = send(&mut stdin, &mut reader, 2, "tools/call", serde_json::json!({"name":"browser_navigate","arguments":{"url":"https://blocked.io"}}));
+    send(
+        &mut stdin,
+        &mut reader,
+        1,
+        "initialize",
+        serde_json::json!({"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}),
+    );
+    let r = send(
+        &mut stdin,
+        &mut reader,
+        2,
+        "tools/call",
+        serde_json::json!({"name":"browser_navigate","arguments":{"url":"https://blocked.io"}}),
+    );
     proc.kill().ok();
+    let _ = proc.wait();
 
     // Should be an error result (blocked domain) — either JSON-RPC error or tool error
     let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
     let is_jsonrpc_error = r.get("error").is_some();
-    let is_tool_error = r["result"]["isError"].as_bool().unwrap_or(false) || text.contains("blocked");
-    assert!(is_jsonrpc_error || is_tool_error, "Expected blocked navigation, got: {r:?}");
+    let is_tool_error =
+        r["result"]["isError"].as_bool().unwrap_or(false) || text.contains("blocked");
+    assert!(
+        is_jsonrpc_error || is_tool_error,
+        "Expected blocked navigation, got: {r:?}"
+    );
 }
