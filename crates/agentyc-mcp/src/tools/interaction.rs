@@ -163,7 +163,15 @@ async fn resolve_target(
     if id == 0 {
         return Err(anyhow!("Could not resolve element target"));
     }
-    scroll_and_center(state, id).await
+    // Auto-retry once on transient resolution failure (layout not settled,
+    // element briefly off-screen, or a re-render in flight).
+    match scroll_and_center(state, id).await {
+        Ok(c) => Ok(c),
+        Err(_) => {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            scroll_and_center(state, id).await
+        }
+    }
 }
 
 pub async fn browser_click(
@@ -820,14 +828,22 @@ pub async fn browser_handle_dialog(
     accept: Option<bool>,
     prompt_text: Option<String>,
 ) -> Result<CallToolResult> {
-    cdp(
-        state,
-        "Page.handleJavaScriptDialog",
-        json!({
-            "accept": accept.unwrap_or(true),
-            "promptText": prompt_text.unwrap_or_default(),
-        }),
-    )
-    .await?;
-    Ok(ok_text("Dialog handled"))
+    let accept = accept.unwrap_or(true);
+    // Set the policy the auto-handler applies to subsequent dialogs.
+    {
+        let mut g = state.lock().await;
+        g.dialog_accept = accept;
+        g.dialog_prompt = prompt_text.clone();
+    }
+    // Best-effort: handle a dialog that is open right now (it may already have
+    // been auto-handled, in which case this is a harmless no-op).
+    let mut p = json!({ "accept": accept });
+    if let Some(t) = &prompt_text {
+        p["promptText"] = json!(t);
+    }
+    cdp(state, "Page.handleJavaScriptDialog", p).await.ok();
+    Ok(ok_text(format!(
+        "Dialog policy set to {} (applies to subsequent dialogs)",
+        if accept { "accept" } else { "dismiss" }
+    )))
 }
