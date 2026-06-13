@@ -1,8 +1,8 @@
-//! Clickable/interactive element detection — port of clickable_elements.py.
+//! Clickable/interactive element detection.
 
 use crate::node::{EnhancedDOMTreeNode, NodeType};
 
-/// Heuristics that mirror Python's `ClickableElementDetector.is_interactive`.
+/// Heuristics for deciding whether an element is interactive.
 pub fn is_interactive(node: &EnhancedDOMTreeNode) -> bool {
     if node.node_type != NodeType::ElementNode {
         return false;
