@@ -7,7 +7,7 @@ Full routing table for Contextro MCP tools. Use this when the main SKILL.md tabl
 ### "Find code that does X"
 → `search("X")` — hybrid semantic+keyword+graph
 → If exact name known: `find_symbol("ExactName")`
-→ If structural pattern: `code(operation="pattern_search", pattern="...", language="python")`
+→ If structural pattern: `code(operation="pattern_search", pattern="...", language="rust")`
 
 ### "Understand how X works"
 → `explain("X")` for specific non-utility symbols
@@ -59,6 +59,6 @@ Full routing table for Contextro MCP tools. Use this when the main SKILL.md tabl
 ## When NOT to Use Contextro
 
 - Single-file edit where you already know the exact file and line → `readFile` directly
-- Reading `package.json`, `pyproject.toml`, config files → `readFile` directly
+- Reading `Cargo.toml`, `package.json`, config files → `readFile` directly
 - Writing new code from scratch → no Contextro needed
 - Answering general programming questions → no Contextro needed
