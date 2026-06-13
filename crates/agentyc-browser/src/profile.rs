@@ -23,7 +23,10 @@ pub struct ViewportSize {
 
 impl Default for ViewportSize {
     fn default() -> Self {
-        Self { width: 1280, height: 720 }
+        Self {
+            width: 1280,
+            height: 720,
+        }
     }
 }
 
@@ -38,13 +41,19 @@ pub struct OwnedUserDataDir {
 impl OwnedUserDataDir {
     /// Use a provided path without cleanup.
     pub fn from_path(p: impl Into<std::path::PathBuf>) -> Self {
-        Self { path: p.into(), _dir: None }
+        Self {
+            path: p.into(),
+            _dir: None,
+        }
     }
     /// Create a fresh temp dir owned by this value.
     pub fn temp() -> anyhow::Result<Self> {
         let dir = tempfile::Builder::new().prefix("agentyc-tmp-").tempdir()?;
         let path = dir.path().to_path_buf();
-        Ok(Self { path, _dir: Some(dir) })
+        Ok(Self {
+            path,
+            _dir: Some(dir),
+        })
     }
 }
 
@@ -73,7 +82,7 @@ pub struct BrowserProfile {
     pub downloads_path: Option<String>,
     /// Extra environment variables.
     pub env: Option<HashMap<String, String>>,
-    /// Disable sandbox (useful in Docker).
+    /// Disable sandbox (useful in containers/CI).
     pub no_sandbox: bool,
     /// Disable security features.
     pub disable_security: bool,
@@ -90,14 +99,19 @@ impl Default for BrowserProfile {
             .map(|v| !matches!(v.to_lowercase().as_str(), "0" | "false" | "no" | "off"))
             .unwrap_or(false);
         let allowed_domains = std::env::var("AGENTYC_ALLOWED_DOMAINS").ok().map(|v| {
-            v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
         });
-        let proxy = std::env::var("AGENTYC_PROXY_URL").ok().map(|server| ProxySettings {
-            server: Some(server),
-            bypass: std::env::var("AGENTYC_PROXY_BYPASS").ok(),
-            username: std::env::var("AGENTYC_PROXY_USERNAME").ok(),
-            password: std::env::var("AGENTYC_PROXY_PASSWORD").ok(),
-        });
+        let proxy = std::env::var("AGENTYC_PROXY_URL")
+            .ok()
+            .map(|server| ProxySettings {
+                server: Some(server),
+                bypass: std::env::var("AGENTYC_PROXY_BYPASS").ok(),
+                username: std::env::var("AGENTYC_PROXY_USERNAME").ok(),
+                password: std::env::var("AGENTYC_PROXY_PASSWORD").ok(),
+            });
         Self {
             headless,
             executable_path: None,
@@ -115,7 +129,7 @@ impl Default for BrowserProfile {
     }
 }
 
-// Chrome disabled features — mirror of `_profile_constants.py`
+// Chrome disabled features
 const CHROME_DISABLED_FEATURES: &str = "AcceptCHFrame,AutoExpandDetailsElement,\
 AvoidUnnecessaryBeforeUnloadCheckSync,CertificateTransparencyComponentUpdater,\
 DestroyProfileOnBrowserClose,DialMediaRouteProvider,ExtensionManifestV2Disabled,\
