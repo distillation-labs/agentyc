@@ -2,15 +2,23 @@
 name = "agentyc"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Deterministic, MCP-first browser automation for coding agents. No API key. No LLM. Just CDP, stdio MCP, and 61 tools."
+keywords = ["mcp", "browser", "automation", "cdp", "agent"]
+categories = ["web-programming", "development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "agentyc"
 path = "src/main.rs"
 
 [dependencies]
-agentyc-mcp = { path = "../agentyc-mcp" }
-agentyc-cdp = { path = "../agentyc-cdp" }
-agentyc-browser = { path = "../agentyc-browser" }
+agentyc-mcp     = { workspace = true }
+agentyc-cdp     = { workspace = true }
+agentyc-browser = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }

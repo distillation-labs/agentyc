@@ -2,11 +2,19 @@
 name = "agentyc-mcp"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "MCP server library for agentyc — 61-tool deterministic browser automation over stdio/HTTP."
+keywords = ["mcp", "browser", "automation", "cdp", "agent"]
+categories = ["web-programming", "development-tools", "command-line-utilities"]
 
 [dependencies]
-agentyc-cdp = { path = "../agentyc-cdp" }
-agentyc-browser = { path = "../agentyc-browser" }
-agentyc-tools = { path = "../agentyc-tools" }
+agentyc-cdp     = { workspace = true }
+agentyc-browser = { workspace = true }
+agentyc-tools   = { workspace = true }
 tokio = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }

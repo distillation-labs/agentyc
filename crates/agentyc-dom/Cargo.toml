@@ -2,9 +2,17 @@
 name = "agentyc-dom"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "DOM serialization, clickable element detection, and HTML-to-markdown for agentyc."
+keywords = ["dom", "html", "browser", "scraping", "automation"]
+categories = ["web-programming", "development-tools"]
 
 [dependencies]
-agentyc-cdp = { path = "../agentyc-cdp" }
+agentyc-cdp = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -2,6 +2,14 @@
 name = "agentyc-tools"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Deterministic content extraction routing for agentyc (tables, links, forms, lists, images)."
+keywords = ["extraction", "html", "scraping", "browser", "mcp"]
+categories = ["web-programming", "development-tools"]
 
 [dependencies]
 serde_json = { workspace = true }

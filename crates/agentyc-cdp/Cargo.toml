@@ -2,6 +2,14 @@
 name = "agentyc-cdp"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Chrome DevTools Protocol (CDP) WebSocket client for agentyc browser automation."
+keywords = ["cdp", "chrome", "browser", "devtools", "automation"]
+categories = ["web-programming", "development-tools"]
 
 [dependencies]
 tokio = { workspace = true }

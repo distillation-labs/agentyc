@@ -6,6 +6,7 @@
 name = "agentyc-tests"
 version.workspace = true
 edition.workspace = true
+publish = false
 build = "build.rs"
 
 [dependencies]
