@@ -303,8 +303,15 @@ fn e2e_scroll_to_text() {
         "browser_scroll_to_text",
         json!({"text": "UNIQUE_MARKER_TEXT"})
     )));
-    m.wait(0.2);
-    let sy: f64 = m.eval("window.scrollY").parse().unwrap_or(0.0);
+    // scroll_to_text uses smooth scrolling; poll until it settles.
+    let mut sy = 0.0;
+    for _ in 0..15 {
+        m.wait(0.2);
+        sy = m.eval("window.scrollY").parse().unwrap_or(0.0);
+        if sy > 100.0 {
+            break;
+        }
+    }
     assert!(sy > 100.0, "did not scroll to text: y={sy}");
 }
 

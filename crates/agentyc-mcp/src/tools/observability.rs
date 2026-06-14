@@ -15,15 +15,18 @@ use uuid::Uuid;
 use crate::tools::{NetworkMock, SharedState, ok_json, ok_text};
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let g = state.lock().await;
-    let cdp = g.cdp()?;
+    let cdp = {
+        let g = state.lock().await;
+        g.cdp()?.clone()
+    };
     cdp.send::<Value>(method, params, None).await
 }
 
 async fn cdp_session(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let g = state.lock().await;
-    let cdp = g.cdp()?;
-    let sid = g.session_id.clone();
+    let (cdp, sid) = {
+        let g = state.lock().await;
+        (g.cdp()?.clone(), g.session_id.clone())
+    };
     cdp.send::<Value>(method, params, sid.as_deref()).await
 }
 

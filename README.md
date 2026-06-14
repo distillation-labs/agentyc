@@ -18,7 +18,7 @@
 
 `agentyc` is a single native binary that runs a stdio MCP server for browser automation. It talks CDP directly to Chrome — no Playwright, no Python, no LLM in the loop. Every tool is deterministic, every response is compact, and the default path works with zero API keys.
 
-Cold start: **~3ms**. Binary: **~8MB**. Idle RSS: **~12MB**.
+Cold start: **~5ms**. Binary: **~8MB**. Idle RSS: **~3MB**.
 
 ```bash
 # Download the binary for your platform, then:
@@ -29,6 +29,25 @@ agentyc init      # writes agentyc-skill.md — point your agent at it
 ---
 
 ## Quick Start
+
+**Download the prebuilt binary (fastest — no Rust toolchain needed):**
+
+```bash
+# macOS arm64
+curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/agentyc-aarch64-apple-darwin.tar.gz | tar xz
+# macOS x86_64
+curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/agentyc-x86_64-apple-darwin.tar.gz | tar xz
+# Linux x86_64
+curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/agentyc-x86_64-unknown-linux-gnu.tar.gz | tar xz
+# Then move the binary onto your PATH and start the server:
+agentyc mcp
+```
+
+**Or build from source:**
+
+```bash
+cargo install --git https://github.com/distillation-labs/agentyc agentyc
+```
 
 **Cursor / Claude Code / any MCP client:**
 
@@ -42,6 +61,8 @@ agentyc init      # writes agentyc-skill.md — point your agent at it
   }
 }
 ```
+
+Add `"--extended"` to `args` to expose 15 additional observability tools (console/network logs, mocks, debug bundle, trace). Omit it for the lean 61-tool default.
 
 **Bootstrap your agent with the skills guide:**
 
@@ -67,8 +88,8 @@ Point your agent at that file. It explains the read→ref→act loop, tool selec
 | **Element targeting** | Stable refs (`e123`) survive re-renders | XPath/CSS selectors | Playwright locators |
 | **Browser backend** | CDP direct | Playwright | Playwright |
 | **Runtime** | Native binary (~8MB) | Python + many deps | Node + Playwright |
-| **Cold start** | ~3ms | ~300ms+ | ~200ms+ |
-| **Tool count** | 61 | ~15–20 | ~20 |
+| **Cold start** | ~5ms | ~300ms+ | ~200ms+ |
+| **Tool count** | 61 default / 76 extended | ~15–20 | ~20 |
 
 ---
 
@@ -232,12 +253,12 @@ Point your agent at that file. It explains the read→ref→act loop, tool selec
 
 | Metric | Value |
 |--------|-------|
-| Cold start (spawn → first response) | ~3ms |
-| `tools/list` p50 | ~115µs |
-| Tool call overhead p50 | ~39µs |
-| Peak throughput | ~39,000 calls/sec |
+| Cold start (spawn → first response) | ~5ms |
+| `tools/list` p50 | ~0.9ms |
+| Tool call overhead p50 | ~70µs |
+| Peak throughput | ~17,000 calls/sec |
 | Binary size | ~8MB |
-| Idle RSS | ~12MB |
+| Idle RSS | ~3MB |
 
 ---
 

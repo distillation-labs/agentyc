@@ -14,9 +14,13 @@ use serde_json::{Value, json};
 use crate::tools::{SharedState, ok_json, ok_text, parse_ref};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let g = state.lock().await;
-    let cdp = g.cdp()?;
-    let sid = g.session_id.clone();
+    // Clone the client and drop the state lock before awaiting, so background
+    // tasks (e.g. the dialog auto-handler) can take the lock while a CDP call
+    // is in flight. Holding it across the await deadlocks dialog handling.
+    let (cdp, sid) = {
+        let g = state.lock().await;
+        (g.cdp()?.clone(), g.session_id.clone())
+    };
     cdp.send::<Value>(method, params, sid.as_deref()).await
 }
 

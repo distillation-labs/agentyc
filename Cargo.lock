@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentyc"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agentyc-browser",
  "agentyc-cdp",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agentyc-browser"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agentyc-cdp",
  "anyhow",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "agentyc-cdp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "chromiumoxide_cdp",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "agentyc-mcp"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "agentyc-browser",
  "agentyc-cdp",
@@ -93,14 +93,14 @@ dependencies = [
 
 [[package]]
 name = "agentyc-tests"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "agentyc-tools"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "scraper",
  "serde_json",

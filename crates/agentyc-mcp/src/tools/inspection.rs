@@ -13,9 +13,10 @@ use serde_json::{Value, json};
 use crate::tools::{SharedState, ok_json, ok_text, parse_ref};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let g = state.lock().await;
-    let cdp = g.cdp()?;
-    let sid = g.session_id.clone();
+    let (cdp, sid) = {
+        let g = state.lock().await;
+        (g.cdp()?.clone(), g.session_id.clone())
+    };
     cdp.send::<Value>(method, params, sid.as_deref()).await
 }
 

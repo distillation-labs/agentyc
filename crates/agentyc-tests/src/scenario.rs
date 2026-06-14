@@ -1898,7 +1898,6 @@ fn gen_soak(v: &mut Vec<Scenario>) {
     }
 }
 
-
 // 8b. Native JS dialogs — deterministic via the auto-handler (default accept)
 // and policy set through browser_handle_dialog.
 fn gen_native_dialogs(v: &mut Vec<Scenario>) {
@@ -1914,7 +1913,11 @@ fn gen_native_dialogs(v: &mut Vec<Scenario>) {
         v.push(sc(
             format!("dialog_confirm_{i}"),
             "native_dialogs",
-            vec![nav("/app/modals"), click("Native confirm"), Step::Wait(0.25)],
+            vec![
+                nav("/app/modals"),
+                click("Native confirm"),
+                Step::Wait(0.25),
+            ],
             vec![present("confirmed")],
         ));
     }
@@ -1925,7 +1928,10 @@ fn gen_native_dialogs(v: &mut Vec<Scenario>) {
             "native_dialogs",
             vec![
                 nav("/app/modals"),
-                Step::HandleDialog { accept: true, prompt: Some(name.clone()) },
+                Step::HandleDialog {
+                    accept: true,
+                    prompt: Some(name.clone()),
+                },
                 click("Native prompt"),
                 Step::Wait(0.25),
             ],

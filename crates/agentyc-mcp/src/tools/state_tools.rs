@@ -14,9 +14,10 @@ use crate::state::{DEFAULT_MIN_ELEMENTS, ElemSummary, StateBuilder};
 use crate::tools::{SharedState, ok_text};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let g = state.lock().await;
-    let cdp = g.cdp()?;
-    let sid = g.session_id.clone();
+    let (cdp, sid) = {
+        let g = state.lock().await;
+        (g.cdp()?.clone(), g.session_id.clone())
+    };
     cdp.send::<Value>(method, params, sid.as_deref()).await
 }
 
