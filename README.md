@@ -24,6 +24,8 @@ Cold start: **~5ms**. Binary: **~8MB**. Idle RSS: **~3MB**.
 # Download the binary for your platform, then:
 agentyc           # starts the MCP server — that's it
 agentyc init      # writes agentyc-skill.md — point your agent at it
+# Or install the portable agent plugin bundle:
+# plugins/agentyc-browser-automation/plugin.json
 ```
 
 ---
@@ -73,7 +75,7 @@ agentyc init --print              # print to stdout
 agentyc init --force              # overwrite existing
 ```
 
-Point your agent at that file. It explains the read→ref→act loop, tool selection, error recovery, and has a full quick-reference.
+Point your agent at that file. It explains the read→ref→act→verify loop, tool selection, error recovery, frontend choice, safety, and has a full quick-reference. The canonical installable skill and plugin metadata live under `.agents/skills/agentyc-browser-automation/` and `plugins/agentyc-browser-automation/`; see `docs/skills-and-plugins.md`.
 
 ---
 
