@@ -38,10 +38,11 @@ agentyc init --output .cursor/rules/agentyc.md
 agentyc init --print
 ```
 
-Writes the bundled skills guide (`SKILL.md`, embedded in the binary) to a file
-your coding agent can read. It covers the `read -> ref -> act` loop, tool
-selection, `since_hash` polling, error recovery, multi-tab handoff, extraction
-routes, auth persistence, and a quick-reference tool list.
+Writes the bundled agent skills guide to a file your coding agent can read. It covers the
+`read -> ref -> act -> verify` loop, tool selection, frontend choice (MCP, REPL, CLI),
+`since_hash` polling, error recovery, multi-tab handoff, extraction routes, auth persistence,
+safety, and a quick-reference tool list. The canonical installable skill and portable plugin
+are documented in [`docs/skills-and-plugins.md`](skills-and-plugins.md).
 
 | Argument | Default | Description |
 |----------|---------|-------------|
