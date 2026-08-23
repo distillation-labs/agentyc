@@ -34,11 +34,18 @@ pub async fn ensure_browser(state: &SharedState) -> Result<()> {
         g.runtime = None;
         g.dialog_handler_started = false;
         g.capture_started = false;
+        g.clear_browser_scoped_state();
     }
 
-    let runtime = BrowserRuntime::launch(BrowserProfile::default()).await?;
+    let cdp_url = { state.lock().await.cdp_url.clone() };
+    let runtime = if let Some(cdp_url) = cdp_url {
+        BrowserRuntime::connect(&cdp_url).await?
+    } else {
+        BrowserRuntime::launch(BrowserProfile::default()).await?
+    };
     {
         let mut g = state.lock().await;
+        g.clear_browser_scoped_state();
         g.runtime = Some(Arc::new(runtime));
         g.dialog_handler_started = false;
         g.capture_started = false;
@@ -92,10 +99,17 @@ pub async fn browser_navigate(
     if new_tab.unwrap_or(false) {
         let runtime = runtime_handle(state).await?;
         let page = runtime.new_tab(Some(&url)).await?;
-        return Ok(ok_text(format!("Navigated to {url} in new tab ({})", page.tab_id)));
+        return Ok(ok_text(format!(
+            "Navigated to {url} in new tab ({})",
+            page.tab_id
+        )));
     }
 
-    runtime_handle(state).await?.session().ensure_active_page().await?;
+    runtime_handle(state)
+        .await?
+        .session()
+        .ensure_active_page()
+        .await?;
     let resp = cdp_send(state, "Page.navigate", json!({"url": url})).await?;
     // Wait briefly for page title to populate
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -217,19 +231,23 @@ pub async fn browser_wait_for_network_idle(
                 timer = setTimeout(() => resolve('idle'), {idle_ms});
             }});
             observer.observe({{ entryTypes: ['resource'] }});
-            setTimeout(() => resolve('idle'), {timeout_ms});
+            setTimeout(() => resolve('timeout'), {timeout_ms});
         }})"#,
         timeout_ms = timeout.as_millis()
     );
-    cdp_send(
+    let resp = cdp_send(
         state,
         "Runtime.evaluate",
         json!({
             "expression": js, "awaitPromise": true, "returnByValue": true,
         }),
     )
-    .await
-    .ok();
+    .await?;
+    let value = resp["result"]["value"].as_str();
+    if value != Some("idle") {
+        let details = resp.get("exceptionDetails").cloned().unwrap_or(Value::Null);
+        return Err(anyhow::anyhow!("Network idle wait failed: {}", details));
+    }
     Ok(ok_text("Network idle"))
 }
 
@@ -238,26 +256,38 @@ pub async fn browser_wait_for_request(
     url_substring: Option<String>,
     url_regex: Option<String>,
     method: Option<String>,
-    _resource_type: Option<String>,
+    resource_type: Option<String>,
     timeout_seconds: Option<f64>,
-    _include_headers: Option<bool>,
+    include_headers: Option<bool>,
 ) -> Result<CallToolResult> {
     let timeout = std::time::Duration::from_secs_f64(timeout_seconds.unwrap_or(10.0));
     let re = url_regex
         .as_ref()
         .map(|r| regex::Regex::new(r))
         .transpose()?;
+    let resource_filter = resource_type.map(|value| value.to_ascii_lowercase());
+    let include_headers = include_headers.unwrap_or(false);
     let deadline = tokio::time::Instant::now() + timeout;
+    let filter_description = url_substring.clone().or(url_regex.clone());
 
-    // Subscribe to Network.requestWillBeSent via CDP event channel
     let cdp = browser_client(state).await?;
     let mut rx = cdp.subscribe("Network.requestWillBeSent").await;
+    let deadline_sleep = tokio::time::sleep_until(deadline);
+    tokio::pin!(deadline_sleep);
 
     loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(params)) => {
+        tokio::select! {
+            _ = &mut deadline_sleep => {
+                return Err(anyhow::anyhow!("Timeout waiting for request matching {:?}", filter_description));
+            }
+            event = rx.recv() => {
+                let params = match event {
+                    Ok(params) => params,
+                    Err(_) => return Err(anyhow::anyhow!("Network event stream closed")),
+                };
                 let url = params["request"]["url"].as_str().unwrap_or("");
                 let req_method = params["request"]["method"].as_str().unwrap_or("");
+                let event_resource_type = params["type"].as_str().unwrap_or("");
 
                 let url_match = if let Some(sub) = &url_substring {
                     url.contains(sub.as_str())
@@ -269,25 +299,28 @@ pub async fn browser_wait_for_request(
                 if !url_match {
                     continue;
                 }
-                if let Some(m) = &method {
-                    if req_method.to_uppercase() != m.to_uppercase() {
-                        continue;
-                    }
+                if let Some(filter) = &method
+                    && !req_method.eq_ignore_ascii_case(filter)
+                {
+                    continue;
                 }
-                return Ok(ok_text(
-                    serde_json::json!({
-                        "url": url,
-                        "method": req_method,
-                        "request_id": params["requestId"].as_str().unwrap_or(""),
-                    })
-                    .to_string(),
-                ));
-            }
-            Ok(Err(_)) | Err(_) => {
-                return Err(anyhow::anyhow!(
-                    "Timeout waiting for request matching {:?}",
-                    url_substring.or(url_regex)
-                ));
+                if let Some(filter) = &resource_filter
+                    && !event_resource_type.eq_ignore_ascii_case(filter)
+                {
+                    continue;
+                }
+
+                let request_id = params["requestId"].as_str().unwrap_or("");
+                let mut result = json!({
+                    "url": url,
+                    "method": req_method,
+                    "resource_type": event_resource_type,
+                    "request_id": request_id,
+                });
+                if include_headers {
+                    result["headers"] = params["request"]["headers"].clone();
+                }
+                return Ok(ok_text(result.to_string()));
             }
         }
     }
@@ -298,28 +331,68 @@ pub async fn browser_wait_for_response(
     url_substring: Option<String>,
     url_regex: Option<String>,
     method: Option<String>,
-    _resource_type: Option<String>,
+    resource_type: Option<String>,
     status: Option<u32>,
     timeout_seconds: Option<f64>,
-    _include_headers: Option<bool>,
+    include_headers: Option<bool>,
 ) -> Result<CallToolResult> {
     let timeout = std::time::Duration::from_secs_f64(timeout_seconds.unwrap_or(10.0));
     let re = url_regex
         .as_ref()
         .map(|r| regex::Regex::new(r))
         .transpose()?;
+    let resource_filter = resource_type.map(|value| value.to_ascii_lowercase());
+    let include_headers = include_headers.unwrap_or(false);
     let deadline = tokio::time::Instant::now() + timeout;
+    let filter_description = url_substring.clone().or(url_regex.clone());
 
-    // Subscribe to Network.responseReceived via CDP event channel
+    // Response events do not carry the HTTP method. Correlate them with the
+    // request event by requestId while retaining the CDP resource type.
     let cdp = browser_client(state).await?;
-    let mut rx = cdp.subscribe("Network.responseReceived").await;
+    let mut request_rx = cdp.subscribe("Network.requestWillBeSent").await;
+    let mut response_rx = cdp.subscribe("Network.responseReceived").await;
+    let mut request_meta = std::collections::HashMap::<String, (String, String)>::new();
+    let deadline_sleep = tokio::time::sleep_until(deadline);
+    tokio::pin!(deadline_sleep);
 
     loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(params)) => {
+        tokio::select! {
+            _ = &mut deadline_sleep => {
+                return Err(anyhow::anyhow!("Timeout waiting for response matching {:?}", filter_description));
+            }
+            event = request_rx.recv() => {
+                let params = match event {
+                    Ok(params) => params,
+                    Err(_) => return Err(anyhow::anyhow!("Network event stream closed")),
+                };
+                if let Some(request_id) = params["requestId"].as_str() {
+                    request_meta.insert(
+                        request_id.to_string(),
+                        (
+                            params["request"]["method"].as_str().unwrap_or("").to_string(),
+                            params["type"].as_str().unwrap_or("").to_string(),
+                        ),
+                    );
+                }
+            }
+            event = response_rx.recv() => {
+                let params = match event {
+                    Ok(params) => params,
+                    Err(_) => return Err(anyhow::anyhow!("Network event stream closed")),
+                };
                 let url = params["response"]["url"].as_str().unwrap_or("");
-                let resp_status = params["response"]["status"].as_u64().map(|s| s as u32);
-                let req_method = params["type"].as_str().unwrap_or("");
+                let resp_status = params["response"]["status"].as_u64().map(|value| value as u32);
+                let request_id = params["requestId"].as_str().unwrap_or("");
+                let (req_method, request_resource_type) = request_meta
+                    .get(request_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let event_resource_type = params["type"].as_str().unwrap_or("");
+                let resource_kind = if request_resource_type.is_empty() {
+                    event_resource_type
+                } else {
+                    request_resource_type.as_str()
+                };
 
                 let url_match = if let Some(sub) = &url_substring {
                     url.contains(sub.as_str())
@@ -331,30 +404,33 @@ pub async fn browser_wait_for_response(
                 if !url_match {
                     continue;
                 }
-                if let Some(m) = &method {
-                    if req_method.to_uppercase() != m.to_uppercase() {
-                        continue;
-                    }
+                if let Some(filter) = &method
+                    && !req_method.eq_ignore_ascii_case(filter)
+                {
+                    continue;
                 }
-                if let Some(s) = status {
-                    if resp_status != Some(s) {
-                        continue;
-                    }
+                if let Some(filter) = &resource_filter
+                    && !resource_kind.eq_ignore_ascii_case(filter)
+                {
+                    continue;
                 }
-                return Ok(ok_text(
-                    serde_json::json!({
-                        "url": url,
-                        "status": resp_status,
-                        "request_id": params["requestId"].as_str().unwrap_or(""),
-                    })
-                    .to_string(),
-                ));
-            }
-            Ok(Err(_)) | Err(_) => {
-                return Err(anyhow::anyhow!(
-                    "Timeout waiting for response matching {:?}",
-                    url_substring.or(url_regex)
-                ));
+                if let Some(expected_status) = status
+                    && resp_status != Some(expected_status)
+                {
+                    continue;
+                }
+
+                let mut result = json!({
+                    "url": url,
+                    "method": req_method,
+                    "resource_type": resource_kind,
+                    "status": resp_status,
+                    "request_id": request_id,
+                });
+                if include_headers {
+                    result["headers"] = params["response"]["headers"].clone();
+                }
+                return Ok(ok_text(result.to_string()));
             }
         }
     }
@@ -391,7 +467,15 @@ pub async fn browser_wait_for_stable_dom(
     )
     .await;
     match result {
-        Ok(_) => Ok(ok_text("DOM stable")),
+        Ok(response) => {
+            if response["exceptionDetails"].is_object() {
+                Err(anyhow::anyhow!("Timeout waiting for stable DOM"))
+            } else if response["result"]["value"].as_str() == Some("stable") {
+                Ok(ok_text("DOM stable"))
+            } else {
+                Err(anyhow::anyhow!("Stable DOM wait returned no result"))
+            }
+        }
         Err(_) => Err(anyhow::anyhow!("Timeout waiting for stable DOM")),
     }
 }
