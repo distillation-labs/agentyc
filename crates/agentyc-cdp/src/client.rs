@@ -16,15 +16,22 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::{
     net::TcpStream,
-    sync::{Mutex, RwLock, broadcast},
+    sync::{Mutex, Notify, RwLock, broadcast},
     time::timeout,
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 use tracing::{debug, warn};
 
+#[derive(Debug, Clone)]
+pub struct CdpEvent {
+    pub session_id: Option<String>,
+    pub params: Value,
+}
+
 type WsSink = futures::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 type PendingMap = Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>;
 type EventSubs = Arc<RwLock<HashMap<String, broadcast::Sender<Value>>>>;
+type SessionEventSubs = Arc<RwLock<HashMap<String, broadcast::Sender<CdpEvent>>>>;
 
 const CDP_TIMEOUT_FALLBACK_S: f64 = 60.0;
 
@@ -68,8 +75,11 @@ pub struct CdpClient {
     sink: Arc<Mutex<WsSink>>,
     pending: PendingMap,
     event_subs: EventSubs,
+    session_event_subs: SessionEventSubs,
     next_id: Arc<AtomicU64>,
     timeout: Duration,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    closed_notify: Arc<Notify>,
 }
 
 impl CdpClient {
@@ -83,14 +93,20 @@ impl CdpClient {
             sink: Arc::new(Mutex::new(sink)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             event_subs: Arc::new(RwLock::new(HashMap::new())),
+            session_event_subs: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(AtomicU64::new(1)),
             timeout: parse_env_cdp_timeout(),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            closed_notify: Arc::new(Notify::new()),
         };
         // Spawn background reader task.
         tokio::spawn(Self::read_loop(
             stream,
             Arc::clone(&client.pending),
             Arc::clone(&client.event_subs),
+            Arc::clone(&client.session_event_subs),
+            Arc::clone(&client.closed),
+            Arc::clone(&client.closed_notify),
         ));
         Ok(client)
     }
@@ -110,6 +126,12 @@ impl CdpClient {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<T> {
+        if self
+            .closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(anyhow!("CDP connection is closed"));
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut msg = json!({ "id": id, "method": method, "params": params });
         if let Some(sid) = session_id {
@@ -150,6 +172,13 @@ impl CdpClient {
     ///
     /// Returns a `broadcast::Receiver`; dropped when the last sender is removed.
     pub async fn subscribe(&self, method: &str) -> broadcast::Receiver<Value> {
+        if self
+            .closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let (_sender, receiver) = broadcast::channel(1);
+            return receiver;
+        }
         let mut subs = self.event_subs.write().await;
         if let Some(tx) = subs.get(method) {
             tx.subscribe()
@@ -160,12 +189,60 @@ impl CdpClient {
         }
     }
 
+    /// Subscribe to CDP events while retaining the flattened target session ID.
+    pub async fn subscribe_with_session(&self, method: &str) -> broadcast::Receiver<CdpEvent> {
+        if self
+            .closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let (_sender, receiver) = broadcast::channel(1);
+            return receiver;
+        }
+        let mut subs = self.session_event_subs.write().await;
+        if let Some(tx) = subs.get(method) {
+            tx.subscribe()
+        } else {
+            let (tx, rx) = broadcast::channel(64);
+            subs.insert(method.to_string(), tx);
+            rx
+        }
+    }
+
+
+        let notified = self.closed_notify.notified();
+        if self
+            .closed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        notified.await;
+    }
+
+    /// Close the transport without affecting an externally owned browser.
+    pub async fn close(&self) {
+        if self
+            .closed
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        self.closed_notify.notify_waiters();
+        self.event_subs.write().await.clear();
+        self.session_event_subs.write().await.clear();
+        self.pending.lock().await.clear();
+        let _ = self.sink.lock().await.close().await;
+    }
+
     // Background WebSocket reader — routes responses to pending oneshots and
     // events to broadcast channels.
     async fn read_loop(
         mut stream: futures::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         pending: PendingMap,
         event_subs: EventSubs,
+        session_event_subs: SessionEventSubs,
+        closed: Arc<std::sync::atomic::AtomicBool>,
+        closed_notify: Arc<Notify>,
     ) {
         while let Some(msg) = stream.next().await {
             let text = match msg {
@@ -192,14 +269,29 @@ impl CdpClient {
                 continue;
             }
 
-            // CDP event — fan out to subscribers.
             if let Some(method) = val.get("method").and_then(Value::as_str) {
-                let subs = event_subs.read().await;
+                let params = val.get("params").cloned().unwrap_or(Value::Null);
+                let session_id = val
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| params["sessionId"].as_str().map(str::to_string));
+                {
+                    let subs = event_subs.read().await;
+                    if let Some(tx) = subs.get(method) {
+                        let _ = tx.send(params.clone());
+                    }
+                }
+                let subs = session_event_subs.read().await;
                 if let Some(tx) = subs.get(method) {
-                    let _ = tx.send(val.get("params").cloned().unwrap_or(Value::Null));
+                    let _ = tx.send(CdpEvent { session_id, params });
                 }
             }
         }
+        closed.store(true, std::sync::atomic::Ordering::Release);
+        event_subs.write().await.clear();
+        session_event_subs.write().await.clear();
+        closed_notify.notify_waiters();
     }
 }
 
