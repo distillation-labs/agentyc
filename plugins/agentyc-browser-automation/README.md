@@ -9,7 +9,7 @@ cargo install --git https://github.com/distillation-labs/agentyc agentyc
 agentyc --version
 ```
 
-Copy or register the skill at `.agents/skills/agentyc-browser-automation/SKILL.md` with your coding-agent host. Register the MCP server using the host's MCP configuration:
+Copy or register the versioned skill at `.agents/skills/agentyc-browser-automation/SKILL.md` with your coding-agent host. This plugin ships with Agentyc v2.0.0. Register the MCP server using the host's MCP configuration:
 
 ```json
 {
