@@ -6,6 +6,6 @@ pub mod node;
 pub mod service;
 
 pub use clickable::{is_interactive, is_search_entry_control};
-pub use markdown::{chunk_markdown, html_to_markdown, MarkdownChunk};
+pub use markdown::{MarkdownChunk, chunk_markdown, html_to_markdown};
 pub use node::{AxNode, DomRect, EnhancedDOMTreeNode, NodeType, SnapshotData};
 pub use service::DomService;
