@@ -1,7 +1,7 @@
 //! Core DOM node types for the agentyc DOM pipeline.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Maps to the W3C `nodeType` integer values used by CDP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
