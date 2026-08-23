@@ -239,20 +239,20 @@ pub async fn browser_get_attribute(
     // Resolve backendNodeId to objectId, then callFunctionOn
     let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await?;
     if let Some(obj_id) = resolve["object"]["objectId"].as_str() {
-        let (cdp, sid) = crate::tools::page_client(state).await?;
+        let runtime = crate::tools::runtime_handle(state).await?;
         let func = format!(
             "function(){{return this.getAttribute({})}}",
             serde_json::to_string(&name).unwrap()
         );
-        let call_resp = cdp
-            .send::<Value>(
+        let call_resp: Value = runtime
+            .session()
+            .send_page(
                 "Runtime.callFunctionOn",
                 json!({
                     "objectId": obj_id,
                     "functionDeclaration": func,
                     "returnByValue": true,
                 }),
-                Some(&sid),
             )
             .await?;
         let val = &call_resp["result"]["value"];
