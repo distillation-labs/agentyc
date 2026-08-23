@@ -5,6 +5,7 @@ members = [
     "crates/agentyc-dom",
     "crates/agentyc-tools",
     "crates/agentyc-mcp",
+    "crates/agentyc-runtime",
     "crates/agentyc",
     "crates/agentyc-tests",
 ]
@@ -28,6 +29,7 @@ agentyc-browser = { version = "0.1.0", path = "crates/agentyc-browser" }
 agentyc-dom     = { version = "0.1.0", path = "crates/agentyc-dom" }
 agentyc-tools   = { version = "0.1.0", path = "crates/agentyc-tools" }
 agentyc-mcp     = { version = "0.1.0", path = "crates/agentyc-mcp" }
+agentyc-runtime = { version = "0.1.0", path = "crates/agentyc-runtime" }
 # External dependencies
 tokio = { version = "1", features = ["full"] }
 rmcp = { version = "1.7", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "transport-streamable-http-server-session"] }
