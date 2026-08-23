@@ -140,7 +140,7 @@ impl BrowserSession {
             .ok_or_else(|| anyhow!("No page target is attached"))
     }
 
-    /// Send a command to the currently selected page without holding lifecycle locks.
+    /// Send the query to a page session while holding the lifecycle gate.
     pub async fn send_page<T: serde::de::DeserializeOwned>(
         &self,
         method: &str,
@@ -187,7 +187,7 @@ impl BrowserSession {
         let response: Value = self.send_browser("Target.getTargets", json!({})).await?;
         Ok(response["targetInfos"]
             .as_array()
-            .unwrap_or(&[])
+            .map_or(&[][..], |targets| targets.as_slice())
             .iter()
             .filter(|target| target["type"].as_str() == Some("page"))
             .map(|target| {
@@ -358,7 +358,12 @@ impl BrowserSession {
 
         // These are page-session commands. The official CDP protocol requires
         // the flattened sessionId on each command after Target.attachToTarget.
-        for domain in ["Network.enable", "Runtime.enable", "Page.enable", "Log.enable"] {
+        for domain in [
+            "Network.enable",
+            "Runtime.enable",
+            "Page.enable",
+            "Log.enable",
+        ] {
             if let Err(error) = self
                 .client
                 .send::<Value>(domain, json!({}), Some(&session_id))
@@ -370,9 +375,8 @@ impl BrowserSession {
                 )
                 .await
                 .ok();
-                return Err(error).with_context(|| {
-                    format!("failed to enable {domain} for target {target_id}")
-                });
+                return Err(error)
+                    .with_context(|| format!("failed to enable {domain} for target {target_id}"));
             }
         }
 
@@ -407,7 +411,9 @@ impl BrowserSession {
         match matches.as_slice() {
             [] => Err(anyhow!("Tab {tab_id} not found")),
             [tab] => Ok(tab.clone()),
-            _ => Err(anyhow!("Tab {tab_id} is ambiguous; use browser_list_tabs to refresh")),
+            _ => Err(anyhow!(
+                "Tab {tab_id} is ambiguous; use browser_list_tabs to refresh"
+            )),
         }
     }
 }
