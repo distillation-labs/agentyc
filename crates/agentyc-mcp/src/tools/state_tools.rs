@@ -11,14 +11,10 @@ use rmcp::model::{CallToolResult, Content};
 use serde_json::{Value, json};
 
 use crate::state::{DEFAULT_MIN_ELEMENTS, ElemSummary, StateBuilder};
-use crate::tools::{SharedState, ok_text};
+use crate::tools::{SharedState, ok_text, page_send};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = {
-        let g = state.lock().await;
-        (g.cdp()?.clone(), g.session_id.clone())
-    };
-    cdp.send::<Value>(method, params, sid.as_deref()).await
+    page_send(state, method, params).await
 }
 
 pub async fn browser_get_state(
@@ -93,7 +89,7 @@ pub async fn browser_get_state(
         })
         .collect();
 
-    let current_tab_id = state.lock().await.current_tab_id.clone();
+    let current_tab_id = crate::tools::active_tab_id(state).await;
 
     let payload = StateBuilder {
         url: &url,
