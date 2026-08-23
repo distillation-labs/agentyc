@@ -3,6 +3,10 @@
 
 #![allow(clippy::too_many_arguments, clippy::collapsible_if)]
 
+use std::sync::Arc;
+
+use agentyc_browser::BrowserProfile;
+use agentyc_runtime::BrowserRuntime;
 use anyhow::Result;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
@@ -10,103 +14,35 @@ use serde_json::{Value, json};
 use crate::tools::{SharedState, ok_text};
 
 async fn cdp_send(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = {
-        let g = state.lock().await;
-        (g.cdp()?.clone(), g.sid().map(str::to_string))
-    };
-    cdp.send::<Value>(method, params, sid.as_deref()).await
+    let (cdp, sid) = crate::tools::page_client(state).await?;
+    cdp.send::<Value>(method, params, Some(&sid)).await
 }
 
-/// Launch Chrome and connect if no CDP client exists. Reconnects if Chrome has crashed.
+/// Launch or reconnect the canonical browser session exactly once.
 pub async fn ensure_browser(state: &SharedState) -> Result<()> {
-    // Check if existing CDP connection is still alive
-    {
-        let g = state.lock().await;
-        if let Some(cdp) = &g.cdp {
-            // Ping with a lightweight CDP call
-            let alive = cdp
-                .send::<serde_json::Value>("Target.getTargets", json!({}), None)
-                .await
-                .is_ok();
-            if alive {
-                return Ok(());
-            }
-            // CDP is dead — fall through to relaunch
-            drop(g);
-        } else {
-            drop(g);
-        }
-    }
+    let initialization_lock = state.lock().await.initialization_lock.clone();
+    let _initialization = initialization_lock.lock().await;
 
-    // Clear stale state before relaunching
-    {
+    if let Some(runtime) = state.lock().await.runtime.clone() {
+        if runtime.session().is_alive().await && runtime.session().active_page().await.is_ok() {
+            crate::tools::ensure_dialog_handler(state).await;
+            crate::tools::ensure_capture(state).await;
+            return Ok(());
+        }
+        runtime.close().await.ok();
         let mut g = state.lock().await;
-        g.cdp = None;
-        g.session_id = None;
-        g.current_tab_id = None;
-        g.launched_browser = None;
-        // Force background handlers to re-subscribe to the new CDP client.
+        g.runtime = None;
         g.dialog_handler_started = false;
         g.capture_started = false;
     }
 
-    // Launch Chrome
-    let profile = agentyc_browser::BrowserProfile::default();
-    let launched = agentyc_browser::launch_browser(&profile).await?;
-    let cdp = agentyc_cdp::CdpClient::connect(&launched.ws_url).await?;
-
-    // Enable network, runtime, page domains
-    {
-        cdp.send::<Value>("Network.enable", json!({}), None)
-            .await
-            .ok();
-        cdp.send::<Value>("Runtime.enable", json!({}), None)
-            .await
-            .ok();
-        cdp.send::<Value>("Page.enable", json!({}), None).await.ok();
-    }
-
-    // Get first page target and attach
-    let targets_resp = cdp
-        .send::<Value>("Target.getTargets", json!({}), None)
-        .await?;
-    let mut session_id = None;
-    let mut tab_id = None;
-    if let Some(targets) = targets_resp["targetInfos"].as_array() {
-        if let Some(page) = targets.iter().find(|t| t["type"].as_str() == Some("page")) {
-            let tid = page["targetId"].as_str().unwrap_or("").to_string();
-            if let Ok(r) = cdp
-                .send::<Value>(
-                    "Target.attachToTarget",
-                    json!({"targetId": tid, "flatten": true}),
-                    None,
-                )
-                .await
-            {
-                let sid = r["sessionId"].as_str().unwrap_or("").to_string();
-                cdp.send::<Value>("Network.enable", json!({}), Some(&sid))
-                    .await
-                    .ok();
-                cdp.send::<Value>("Runtime.enable", json!({}), Some(&sid))
-                    .await
-                    .ok();
-                cdp.send::<Value>("Page.enable", json!({}), Some(&sid))
-                    .await
-                    .ok();
-                session_id = Some(sid);
-                tab_id = Some(crate::tools::tab_id_from(&tid));
-            }
-        }
-    }
-
+    let runtime = BrowserRuntime::launch(BrowserProfile::default()).await?;
     {
         let mut g = state.lock().await;
-        g.cdp = Some(cdp);
-        g.session_id = session_id;
-        g.current_tab_id = tab_id;
-        g.launched_browser = Some(launched);
+        g.runtime = Some(Arc::new(runtime));
+        g.dialog_handler_started = false;
+        g.capture_started = false;
     }
-    // Deterministic dialog handling + (extended) observability capture.
     crate::tools::ensure_dialog_handler(state).await;
     crate::tools::ensure_capture(state).await;
     Ok(())
@@ -114,29 +50,31 @@ pub async fn ensure_browser(state: &SharedState) -> Result<()> {
 
 /// Check URL against AGENTYC_ALLOWED_DOMAINS. Skip check if env not set.
 async fn check_allowed_url(url: &str, _state: &SharedState) -> Result<()> {
-    let allowed = match std::env::var("AGENTYC_ALLOWED_DOMAINS") {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => return Ok(()),
-    };
-    let domains: Vec<&str> = allowed
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
     let host = url::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_default();
-    let allowed = domains
-        .iter()
-        .any(|d| host == *d || host.ends_with(&format!(".{d}")));
-    if !allowed {
-        return Err(anyhow::anyhow!(
-            "Navigation to {url:?} blocked: host {host:?} is not in AGENTYC_ALLOWED_DOMAINS ({allowed_list})",
-            allowed_list = domains.join(", ")
-        ));
+    let Some(raw_allowed) = std::env::var("AGENTYC_ALLOWED_DOMAINS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let domains: Vec<&str> = raw_allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if domains.iter().any(|d| {
+        let d = d.trim_start_matches("*.");
+        host == d || host.ends_with(&format!(".{d}"))
+    }) {
+        return Ok(());
     }
-    Ok(())
+    Err(anyhow::anyhow!(
+        "Navigation to {url:?} blocked: host {host:?} is not in AGENTYC_ALLOWED_DOMAINS ({})",
+        domains.join(", ")
+    ))
 }
 
 pub async fn browser_navigate(
@@ -150,88 +88,16 @@ pub async fn browser_navigate(
     // Check allowed domains
     check_allowed_url(&url, state).await?;
 
-    // If new_tab requested, create target first
+    // If new_tab requested, use the canonical target owner.
     if new_tab.unwrap_or(false) {
-        let resp = {
-            let g = state.lock().await;
-            let cdp = g.cdp()?;
-            cdp.send::<Value>("Target.createTarget", json!({"url": "about:blank"}), None)
-                .await?
-        };
-        let target_id = resp["targetId"].as_str().unwrap_or("").to_string();
-        // Get session for new target
-        let resp2 = {
-            let g = state.lock().await;
-            let cdp = g.cdp()?;
-            cdp.send::<Value>(
-                "Target.attachToTarget",
-                json!({"targetId": target_id, "flatten": true}),
-                None,
-            )
-            .await?
-        };
-        let sid = resp2["sessionId"].as_str().unwrap_or("").to_string();
-        {
-            let mut g = state.lock().await;
-            g.session_id = Some(sid.clone());
-            g.current_tab_id = Some(crate::tools::tab_id_from(&target_id));
-        }
-        let sid_opt = Some(sid.as_str());
-        let g = state.lock().await;
-        let cdp = g.cdp()?;
-        cdp.send::<Value>("Page.navigate", json!({"url": url}), sid_opt)
-            .await?;
-        return Ok(ok_text(format!("Navigated to {url} in new tab")));
+        let runtime = state.lock().await.runtime()?;
+        let page = runtime.new_tab(Some(&url)).await?;
+        return Ok(ok_text(format!("Navigated to {url} in new tab ({})", page.tab_id)));
     }
 
-    // Auto-connect: if no session, try to get the first target
-    {
-        let mut g = state.lock().await;
-        if g.cdp.is_some() && g.session_id.is_none() {
-            // list targets and attach to the first page
-            let cdp = g.cdp.as_ref().unwrap();
-            if let Ok(resp) = cdp
-                .send::<Value>("Target.getTargets", json!({}), None)
-                .await
-            {
-                if let Some(targets) = resp["targetInfos"].as_array() {
-                    let page = targets.iter().find(|t| t["type"].as_str() == Some("page"));
-                    if let Some(p) = page {
-                        let tid = p["targetId"].as_str().unwrap_or("").to_string();
-                        if let Ok(r2) = cdp
-                            .send::<Value>(
-                                "Target.attachToTarget",
-                                json!({"targetId": tid, "flatten": true}),
-                                None,
-                            )
-                            .await
-                        {
-                            g.session_id = Some(r2["sessionId"].as_str().unwrap_or("").to_string());
-                            g.current_tab_id = Some(crate::tools::tab_id_from(&tid));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let sid_str = state.lock().await.session_id.clone();
-    let resp = {
-        let g = state.lock().await;
-        let cdp = g.cdp()?;
-        let timeout = crate::tools::action_timeout();
-        tokio::time::timeout(
-            timeout,
-            cdp.send::<Value>("Page.navigate", json!({"url": url}), sid_str.as_deref()),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "browser_navigate timed out after {:.0}s",
-                timeout.as_secs_f64()
-            )
-        })??
-    };
+    let runtime = state.lock().await.runtime()?;
+    runtime.session().ensure_active_page().await?;
+    let resp = cdp_send(state, "Page.navigate", json!({"url": url})).await?;
     // Wait briefly for page title to populate
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     let title_resp = cdp_send(
