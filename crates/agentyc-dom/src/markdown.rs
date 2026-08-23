@@ -188,7 +188,10 @@ fn parse_atomic_blocks(content: &str) -> Vec<AtomicBlock> {
             while i < lines.len() {
                 let nl = lines[i];
                 let nl_len = nl.len() + 1;
-                if list_item_re.is_match(nl) || (nl.trim().starts_with(|c: char| !c.is_whitespace()) && list_cont_re.is_match(nl)) {
+                if list_item_re.is_match(nl)
+                    || (nl.trim().starts_with(|c: char| !c.is_whitespace())
+                        && list_cont_re.is_match(nl))
+                {
                     ll.push(nl.to_string());
                     le += nl_len;
                     i += 1;
@@ -234,7 +237,8 @@ fn parse_atomic_blocks(content: &str) -> Vec<AtomicBlock> {
     }
 
     if let Some(last) = blocks.last_mut()
-        && !content.is_empty() && !content.ends_with('\n')
+        && !content.is_empty()
+        && !content.ends_with('\n')
     {
         last.char_end = content.len();
     }
@@ -293,7 +297,10 @@ pub fn chunk_markdown(
             }
             raw_chunks.push(current[..best_split].to_vec());
             current = current[best_split..].to_vec();
-            current_size = current.iter().map(|&k| blocks[k].char_end.saturating_sub(blocks[k].char_start)).sum();
+            current_size = current
+                .iter()
+                .map(|&k| blocks[k].char_end.saturating_sub(blocks[k].char_start))
+                .sum();
         }
         current.push(idx);
         current_size += bsize;
@@ -308,13 +315,21 @@ pub fn chunk_markdown(
 
     for (idx, chunk_indices) in raw_chunks.iter().enumerate() {
         let chunk_blocks: Vec<&AtomicBlock> = chunk_indices.iter().map(|&k| &blocks[k]).collect();
-        let chunk_text = chunk_blocks.iter().map(|b| block_text(b)).collect::<Vec<_>>().join("\n");
+        let chunk_text = chunk_blocks
+            .iter()
+            .map(|b| block_text(b))
+            .collect::<Vec<_>>()
+            .join("\n");
         let char_start = chunk_blocks.first().map(|b| b.char_start).unwrap_or(0);
         let char_end = chunk_blocks.last().map(|b| b.char_end).unwrap_or(0);
 
         let overlap = if idx > 0 {
             let prev_indices = &raw_chunks[idx - 1];
-            let prev_text = prev_indices.iter().map(|&k| block_text(&blocks[k])).collect::<Vec<_>>().join("\n");
+            let prev_text = prev_indices
+                .iter()
+                .map(|&k| block_text(&blocks[k]))
+                .collect::<Vec<_>>()
+                .join("\n");
             let prev_lines: Vec<&str> = prev_text.lines().collect();
             let first_block = chunk_blocks.first().unwrap();
             if first_block.block_type == BlockType::Table {
@@ -345,7 +360,8 @@ pub fn chunk_markdown(
 
         // Track table header for next chunk
         for b in &chunk_blocks {
-            if b.block_type == BlockType::Table && b.lines.len() >= 2 && b.lines[1].contains("---") {
+            if b.block_type == BlockType::Table && b.lines.len() >= 2 && b.lines[1].contains("---")
+            {
                 prev_table_header = Some(format!("{}\n{}", b.lines[0], b.lines[1]));
             }
         }
