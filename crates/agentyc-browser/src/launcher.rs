@@ -242,7 +242,15 @@ pub async fn launch_browser(profile: &BrowserProfile) -> Result<LaunchedBrowser>
         .with_context(|| format!("Failed to spawn Chrome from {}", binary.display()))?;
 
     let cdp_url = format!("http://127.0.0.1:{port}/");
-    let ws_url = wait_for_cdp(&cdp_url, Duration::from_secs(55)).await?;
+    let ws_url = match wait_for_cdp(&cdp_url, Duration::from_secs(55)).await {
+        Ok(ws_url) => ws_url,
+        Err(error) => {
+            // `Child` does not kill the process when dropped. Clean up a
+            // process that started but never exposed a usable CDP endpoint.
+            process.kill().await.ok();
+            return Err(error);
+        }
+    };
 
     debug!(%ws_url, "Chrome CDP ready");
 
