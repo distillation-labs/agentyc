@@ -21,7 +21,8 @@ pub fn is_interactive(node: &EnhancedDOMTreeNode) -> bool {
     if (tag == "iframe" || tag == "frame")
         && let Some(s) = &node.snapshot
         && let Some(b) = s.bounds
-        && b.width > 100.0 && b.height > 100.0
+        && b.width > 100.0
+        && b.height > 100.0
     {
         return true;
     }
@@ -53,7 +54,11 @@ pub fn is_interactive(node: &EnhancedDOMTreeNode) -> bool {
                 "disabled" | "hidden" if v.as_bool() == Some(true) => return false,
                 "focusable" | "editable" | "settable" if v.as_bool() == Some(true) => return true,
                 "checked" | "expanded" | "pressed" | "selected" | "required" | "autocomplete"
-                | "keyshortcuts" if v != &serde_json::Value::Null => return true,
+                | "keyshortcuts"
+                    if v != &serde_json::Value::Null =>
+                {
+                    return true;
+                }
                 _ => {}
             }
         }
@@ -69,7 +74,12 @@ pub fn is_interactive(node: &EnhancedDOMTreeNode) -> bool {
 
     // Event handler or tabindex attributes
     const EVENT_ATTRS: &[&str] = &[
-        "onclick", "onmousedown", "onmouseup", "onkeydown", "onkeyup", "tabindex",
+        "onclick",
+        "onmousedown",
+        "onmouseup",
+        "onkeydown",
+        "onkeyup",
+        "tabindex",
     ];
     for attr in EVENT_ATTRS {
         if node.attributes.contains_key(*attr) {
@@ -95,7 +105,8 @@ pub fn is_interactive(node: &EnhancedDOMTreeNode) -> bool {
     // Icon-sized element with interactive attributes
     if let Some(s) = &node.snapshot
         && let Some(b) = s.bounds
-        && (10.0..=50.0).contains(&b.width) && (10.0..=50.0).contains(&b.height)
+        && (10.0..=50.0).contains(&b.width)
+        && (10.0..=50.0).contains(&b.height)
     {
         const ICON_ATTRS: &[&str] = &["class", "role", "onclick", "data-action", "aria-label"];
         if ICON_ATTRS.iter().any(|a| node.attributes.contains_key(*a)) {
@@ -134,8 +145,16 @@ fn has_form_control_descendant(node: &EnhancedDOMTreeNode, max_depth: u32) -> bo
 }
 
 const SEARCH_INDICATORS: &[&str] = &[
-    "search", "magnify", "glass", "lookup", "find", "query",
-    "search-icon", "search-btn", "search-button", "searchbox",
+    "search",
+    "magnify",
+    "glass",
+    "lookup",
+    "find",
+    "query",
+    "search-icon",
+    "search-btn",
+    "search-button",
+    "searchbox",
 ];
 
 fn has_search_indicator(node: &EnhancedDOMTreeNode) -> bool {
@@ -164,9 +183,23 @@ fn has_search_indicator(node: &EnhancedDOMTreeNode) -> bool {
 
 fn is_interactive_role(role: &str) -> bool {
     const ROLES: &[&str] = &[
-        "button", "link", "menuitem", "option", "radio", "checkbox", "tab", "textbox",
-        "combobox", "slider", "spinbutton", "search", "searchbox", "row", "cell",
-        "gridcell", "listbox",
+        "button",
+        "link",
+        "menuitem",
+        "option",
+        "radio",
+        "checkbox",
+        "tab",
+        "textbox",
+        "combobox",
+        "slider",
+        "spinbutton",
+        "search",
+        "searchbox",
+        "row",
+        "cell",
+        "gridcell",
+        "listbox",
     ];
     ROLES.contains(&role)
 }
