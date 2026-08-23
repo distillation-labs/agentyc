@@ -110,3 +110,11 @@ not tear it down when the session ends.
 
 `browser_extract_content` is deterministic-only (native HTML parsing). There is
 no LLM fallback and no API key to configure.
+
+
+## Agent skills and plugin
+
+The installable agent guidance and portable plugin metadata are documented in
+[`docs/skills-and-plugins.md`](skills-and-plugins.md). The canonical skill is
+`.agents/skills/agentyc-browser-automation/SKILL.md`; the plugin bundle is under
+`plugins/agentyc-browser-automation/`.
