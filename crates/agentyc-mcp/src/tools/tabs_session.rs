@@ -12,126 +12,38 @@ use anyhow::{Result, anyhow};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::tools::{SharedState, ok_json, ok_text, tab_id_from};
+use crate::tools::{SharedState, active_tab_id, browser_client, ok_json, ok_text, page_client, tab_id_from};
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let g = state.lock().await;
-    let cdp = g.cdp()?;
+    let cdp = browser_client(state).await?;
     cdp.send::<Value>(method, params, None).await
 }
 
 async fn cdp_session(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let g = state.lock().await;
-    let cdp = g.cdp()?;
-    let sid = g.session_id.clone();
-    cdp.send::<Value>(method, params, sid.as_deref()).await
+    let (cdp, sid) = page_client(state).await?;
+    cdp.send::<Value>(method, params, Some(&sid)).await
 }
 
 pub async fn browser_new_tab(state: &SharedState, url: Option<String>) -> Result<CallToolResult> {
-    let target_url = url.as_deref().unwrap_or("about:blank");
-    let resp = cdp_root(state, "Target.createTarget", json!({"url": target_url})).await?;
-    let target_id = resp["targetId"].as_str().unwrap_or("").to_string();
-    let r2 = cdp_root(
-        state,
-        "Target.attachToTarget",
-        json!({"targetId": target_id, "flatten": true}),
-    )
-    .await?;
-    let sid = r2["sessionId"].as_str().unwrap_or("").to_string();
-    // Enable domains on new session
-    {
-        let g = state.lock().await;
-        if let Some(cdp) = &g.cdp {
-            cdp.send::<serde_json::Value>("Network.enable", json!({}), Some(&sid))
-                .await
-                .ok();
-            cdp.send::<serde_json::Value>("Runtime.enable", json!({}), Some(&sid))
-                .await
-                .ok();
-            cdp.send::<serde_json::Value>("Page.enable", json!({}), Some(&sid))
-                .await
-                .ok();
-        }
-    }
-    let tid = tab_id_from(&target_id);
-    {
-        let mut g = state.lock().await;
-        g.session_id = Some(sid.clone());
-        g.current_tab_id = Some(tid.clone());
-    }
-    Ok(ok_text(format!("New tab created: {tid}")))
+    let browser = state.lock().await.browser()?;
+    let page = browser.new_tab(url.as_deref()).await?;
+    Ok(ok_text(format!("New tab created: {}", page.tab_id)))
 }
 
 pub async fn browser_list_tabs(state: &SharedState) -> Result<CallToolResult> {
-    let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-    let tabs: Vec<Value> = resp["targetInfos"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .filter(|t| t["type"].as_str() == Some("page"))
-        .map(|t| {
-            let tid = t["targetId"].as_str().unwrap_or("");
-            json!({
-                "tab_id": tab_id_from(tid),
-                "url": t["url"],
-                "title": t["title"],
-            })
-        })
-        .collect();
-    Ok(ok_json(&json!(tabs)))
+    let browser = state.lock().await.browser()?;
+    Ok(ok_json(&serde_json::to_value(browser.list_tabs().await?)?))
 }
 
 pub async fn browser_switch_tab(state: &SharedState, tab_id: String) -> Result<CallToolResult> {
-    // Find target by tab_id suffix
-    let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-    let target = resp["targetInfos"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .find(|t| {
-            t["type"].as_str() == Some("page")
-                && tab_id_from(t["targetId"].as_str().unwrap_or("")) == tab_id
-        })
-        .cloned();
-    let target = target.ok_or_else(|| anyhow!("Tab {tab_id} not found"))?;
-    let target_id = target["targetId"].as_str().unwrap_or("").to_string();
-    let r2 = cdp_root(
-        state,
-        "Target.attachToTarget",
-        json!({"targetId": target_id, "flatten": true}),
-    )
-    .await?;
-    let sid = r2["sessionId"].as_str().unwrap_or("").to_string();
-    {
-        let mut g = state.lock().await;
-        g.session_id = Some(sid);
-        g.current_tab_id = Some(tab_id.clone());
-    }
-    cdp_session(
-        state,
-        "Target.activateTarget",
-        json!({"targetId": target_id}),
-    )
-    .await
-    .ok();
-    Ok(ok_text(format!("Switched to tab {tab_id}")))
+    let browser = state.lock().await.browser()?;
+    let page = browser.switch_tab(&tab_id).await?;
+    Ok(ok_text(format!("Switched to tab {}", page.tab_id)))
 }
 
 pub async fn browser_close_tab(state: &SharedState, tab_id: String) -> Result<CallToolResult> {
-    let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-    let target = resp["targetInfos"]
-        .as_array()
-        .unwrap_or(&vec![])
-        .iter()
-        .find(|t| {
-            t["type"].as_str() == Some("page")
-                && tab_id_from(t["targetId"].as_str().unwrap_or("")) == tab_id
-        })
-        .cloned();
-    if let Some(t) = target {
-        let tid = t["targetId"].as_str().unwrap_or("").to_string();
-        cdp_root(state, "Target.closeTarget", json!({"targetId": tid})).await?;
-    }
+    let browser = state.lock().await.browser()?;
+    browser.close_tab(&tab_id).await?;
     Ok(ok_text(format!("Closed tab {tab_id}")))
 }
 
@@ -179,17 +91,8 @@ pub async fn browser_wait_for_tab(
             };
             if url_match {
                 if switch_focus.unwrap_or(true) {
-                    let r2 = cdp_root(
-                        state,
-                        "Target.attachToTarget",
-                        json!({"targetId": tid, "flatten": true}),
-                    )
-                    .await?;
-                    let sid = r2["sessionId"].as_str().unwrap_or("").to_string();
-                    let new_tab_id = tab_id_from(&tid);
-                    let mut g = state.lock().await;
-                    g.session_id = Some(sid);
-                    g.current_tab_id = Some(new_tab_id.clone());
+                    let browser = state.lock().await.browser()?;
+                    browser.switch_tab(&tab_id_from(&tid)).await?;
                 }
                 return Ok(ok_text(format!("New tab found: {url}")));
             }
@@ -443,10 +346,13 @@ pub async fn browser_load_state(state: &SharedState, path: String) -> Result<Cal
 }
 
 pub async fn browser_list_sessions(state: &SharedState) -> Result<CallToolResult> {
-    let g = state.lock().await;
-    let connected = g.cdp.is_some();
-    let tab = g.current_tab_id.clone();
-    drop(g);
+    let runtime = state.lock().await.runtime.clone();
+    let connected = runtime.is_some();
+    let tab = if let Some(runtime) = runtime {
+        runtime.session().active_page().await.ok().map(|page| page.tab_id)
+    } else {
+        None
+    };
     let tab_str = tab.as_deref().unwrap_or("none");
     Ok(ok_text(format!(
         "{{\"session_id\":\"default\",\"connected\":{connected},\"current_tab_id\":\"{tab_str}\"}}"
@@ -457,28 +363,17 @@ pub async fn browser_close_session(
     state: &SharedState,
     _session_id: String,
 ) -> Result<CallToolResult> {
-    // In single-session mode, this closes all tabs
     browser_close_all(state).await
 }
 
 pub async fn browser_close_all(state: &SharedState) -> Result<CallToolResult> {
-    let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-    if let Some(targets) = resp["targetInfos"].as_array() {
-        for t in targets {
-            if t["type"].as_str() == Some("page") {
-                let tid = t["targetId"].as_str().unwrap_or("");
-                cdp_root(state, "Target.closeTarget", json!({"targetId": tid}))
-                    .await
-                    .ok();
-            }
-        }
+    let runtime = state.lock().await.runtime.clone();
+    if let Some(runtime) = runtime {
+        runtime.close_all().await?;
     }
     let mut g = state.lock().await;
-    g.session_id = None;
-    g.current_tab_id = None;
-    g.cdp = None;
-    if let Some(launched) = g.launched_browser.take() {
-        launched.kill().await;
-    }
+    g.runtime = None;
+    g.dialog_handler_started = false;
+    g.capture_started = false;
     Ok(ok_text("All sessions closed"))
 }
