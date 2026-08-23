@@ -6,7 +6,7 @@ description: >
   network debugging, and browser-mediated verification. It teaches the read-ref-act-verify
   loop, the narrowest-tool routing strategy, and when to use MCP, REPL, or CLI.
 metadata:
-  version: "1.1.0"
+  version: "2.0.0"
   category: browser-automation
   mcp-server: agentyc
   tags: [agentyc, mcp, browser, automation, qa, extraction, debugging, tabs]
