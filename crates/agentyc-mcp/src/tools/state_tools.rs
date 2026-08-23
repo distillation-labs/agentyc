@@ -11,7 +11,7 @@ use rmcp::model::{CallToolResult, Content};
 use serde_json::{Value, json};
 
 use crate::state::{DEFAULT_MIN_ELEMENTS, ElemSummary, StateBuilder};
-use crate::tools::{SharedState, ok_text, page_send};
+use crate::tools::{SharedState, browser_send, ok_text, page_send};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     page_send(state, method, params).await
@@ -71,7 +71,7 @@ pub async fn browser_get_state(
         .unwrap_or_default();
 
     // Get tabs
-    let tabs_resp = cdp(state, "Target.getTargets", json!({}))
+    let tabs_resp = browser_send(state, "Target.getTargets", json!({}))
         .await
         .unwrap_or(Value::Null);
     let tabs: Vec<Value> = tabs_resp["targetInfos"]
