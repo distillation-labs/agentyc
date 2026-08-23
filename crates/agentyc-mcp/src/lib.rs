@@ -4,8 +4,8 @@
 mod state;
 mod tools;
 
-use anyhow::Result;
 use agentyc_runtime::BrowserRuntime;
+use anyhow::Result;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::router::tool::ToolRouter,
@@ -67,7 +67,11 @@ pub struct BrowserServer {
 
 impl BrowserServer {
     pub fn new() -> Self {
-        let state = Arc::new(Mutex::new(ServerState::new()));
+        Self::with_cdp_url(None)
+    }
+
+    pub fn with_cdp_url(cdp_url: Option<String>) -> Self {
+        let state = Arc::new(Mutex::new(ServerState::with_cdp_url(cdp_url)));
         let mut tr = Self::tool_router_nav()
             + Self::tool_router_state()
             + Self::tool_router_interaction()
@@ -97,6 +101,8 @@ impl BrowserServer {
         }
         {
             let mut g = self.state.lock().await;
+            g.clear_browser_scoped_state();
+            g.cdp_url = Some(cdp_url.to_string());
             g.runtime = Some(runtime);
             g.dialog_handler_started = false;
             g.capture_started = false;
