@@ -12,22 +12,15 @@ use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::tools::{NetworkMock, SharedState, ok_json, ok_text};
+use crate::tools::{NetworkMock, SharedState, browser_client, ok_json, ok_text, page_client};
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let cdp = {
-        let g = state.lock().await;
-        g.cdp()?.clone()
-    };
-    cdp.send::<Value>(method, params, None).await
+    browser_client(state).await?.send::<Value>(method, params, None).await
 }
 
 async fn cdp_session(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = {
-        let g = state.lock().await;
-        (g.cdp()?.clone(), g.session_id.clone())
-    };
-    cdp.send::<Value>(method, params, sid.as_deref()).await
+    let (cdp, sid) = page_client(state).await?;
+    cdp.send::<Value>(method, params, Some(&sid)).await
 }
 
 pub async fn browser_get_console_logs(
@@ -155,7 +148,6 @@ pub async fn browser_inspect_network_entry(
             true
         })
         .cloned();
-    drop(g);
 
     let e = entry.ok_or_else(|| anyhow!("No matching network entry found"))?;
     let max_bytes = max_body_bytes.unwrap_or(2048);
@@ -240,7 +232,7 @@ pub async fn browser_add_network_mock(
     if is_first {
         // Spawn a background task that handles Fetch.requestPaused events
         let state_clone = std::sync::Arc::clone(state);
-        let cdp_client = state.lock().await.cdp().ok().cloned();
+        let cdp_client = crate::tools::browser_client(state).await.ok();
         if let Some(client) = cdp_client {
             tokio::spawn(async move {
                 let mut rx = client.subscribe("Fetch.requestPaused").await;
@@ -279,8 +271,10 @@ pub async fn browser_add_network_mock(
                             .cloned()
                     };
 
-                    let sid = state_clone.lock().await.session_id.clone();
-                    let sid_ref = sid.as_deref();
+                    let (client, sid) = match crate::tools::page_client(&state_clone).await {
+                        Ok((client, sid)) => (client, sid),
+                        Err(_) => continue,
+                    };
 
                     if let Some(mock) = matched_mock {
                         // Increment match count
@@ -301,7 +295,7 @@ pub async fn browser_add_network_mock(
                                         "requestId": request_id,
                                         "errorReason": mock.error_reason,
                                     }),
-                                    sid_ref,
+                                    Some(&sid),
                                 )
                                 .await
                                 .ok();
@@ -325,7 +319,7 @@ pub async fn browser_add_network_mock(
                                         "responseHeaders": resp_headers,
                                         "body": body_b64,
                                     }),
-                                    sid_ref,
+                                    Some(&sid),
                                 )
                                 .await
                                 .ok();
@@ -338,7 +332,7 @@ pub async fn browser_add_network_mock(
                                 json!({
                                     "requestId": request_id,
                                 }),
-                                sid_ref,
+                                Some(&sid),
                             )
                             .await
                             .ok();
