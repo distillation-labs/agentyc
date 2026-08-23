@@ -11,17 +11,10 @@ use anyhow::{Result, anyhow};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::tools::{SharedState, ok_json, ok_text, parse_ref};
+use crate::tools::{SharedState, ok_json, ok_text, page_send, parse_ref};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    // Clone the client and drop the state lock before awaiting, so background
-    // tasks (e.g. the dialog auto-handler) can take the lock while a CDP call
-    // is in flight. Holding it across the await deadlocks dialog handling.
-    let (cdp, sid) = {
-        let g = state.lock().await;
-        (g.cdp()?.clone(), g.session_id.clone())
-    };
-    cdp.send::<Value>(method, params, sid.as_deref()).await
+    page_send(state, method, params).await
 }
 
 /// Resolve an element to a (x, y) viewport coordinate via DOM.getBoxModel.
@@ -69,14 +62,12 @@ async fn element_center_with_fallback(
     )
     .await?;
     if let Some(obj_id) = resolve["object"]["objectId"].as_str() {
-        let g = state.lock().await;
-        let sid = g.session_id.clone();
-        let resp = g.cdp()?.send::<serde_json::Value>("Runtime.callFunctionOn", json!({
+        let (cdp, sid) = crate::tools::page_client(state).await?;
+        let resp = cdp.send::<serde_json::Value>("Runtime.callFunctionOn", json!({
             "objectId": obj_id,
             "functionDeclaration": "function(){var r=this.getBoundingClientRect();return [r.x+r.width/2, r.y+r.height/2];}",
             "returnByValue": true,
-        }), sid.as_deref()).await?;
-        drop(g);
+        }), Some(&sid)).await?;
         if let Some(arr) = resp["result"]["value"].as_array() {
             let cx = arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
             let cy = arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -352,10 +343,8 @@ pub async fn browser_type(
                         return el.value;
                     }}"#
                 );
-                let g = state.lock().await;
-                let sid = g.session_id.clone();
-                let result = g
-                    .cdp()?
+                let (cdp, sid) = crate::tools::page_client(state).await?;
+                let result = cdp
                     .send::<serde_json::Value>(
                         "Runtime.callFunctionOn",
                         json!({
@@ -363,10 +352,9 @@ pub async fn browser_type(
                             "functionDeclaration": func,
                             "returnByValue": true,
                         }),
-                        sid.as_deref(),
+                        Some(&sid),
                     )
                     .await;
-                drop(g);
                 if let Ok(r) = result {
                     let returned = r["result"]["value"].as_str().unwrap_or("");
                     if !returned.is_empty() {
@@ -633,14 +621,12 @@ pub async fn browser_select_option(
         if !obj_id.is_empty() {
             // Call function on the resolved object
             let call_resp = {
-                let g = state.lock().await;
-                let sid = g.session_id.clone();
-                g.cdp()?
-                    .send::<Value>(
-                        "Runtime.callFunctionOn",
-                        json!({
-                            "objectId": obj_id,
-                            "functionDeclaration": format!(r#"function(){{
+                let (cdp, sid) = crate::tools::page_client(state).await?;
+                cdp.send::<Value>(
+                    "Runtime.callFunctionOn",
+                    json!({
+                        "objectId": obj_id,
+                        "functionDeclaration": format!(r#"function(){{
                         for(const o of this.options) {{
                             if(o.text === {:?}) {{
                                 this.value = o.value;
@@ -650,11 +636,11 @@ pub async fn browser_select_option(
                         }}
                         return false;
                     }}"#, text),
-                            "returnByValue": true,
-                        }),
-                        sid.as_deref(),
-                    )
-                    .await?
+                        "returnByValue": true,
+                    }),
+                    Some(&sid),
+                )
+                .await?
             };
             if call_resp["result"]["value"].as_bool().unwrap_or(false) {
                 return Ok(ok_text(format!("Selected option: {text}")));
@@ -741,14 +727,12 @@ pub async fn browser_get_dropdown_options(
         let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await;
         if let Ok(r) = resolve {
             if let Some(obj_id) = r["object"]["objectId"].as_str() {
-                let g = state.lock().await;
-                let sid = g.session_id.clone();
-                let call_resp = g.cdp()?.send::<Value>("Runtime.callFunctionOn", json!({
+                let (cdp, sid) = crate::tools::page_client(state).await?;
+                let call_resp = cdp.send::<Value>("Runtime.callFunctionOn", json!({
                     "objectId": obj_id,
                     "functionDeclaration": "function(){return Array.from(this.options).map(o=>({value:o.value,text:o.text,selected:o.selected}))}",
                     "returnByValue": true,
-                }), sid.as_deref()).await;
-                drop(g);
+                }), Some(&sid)).await;
                 if let Ok(cr) = call_resp {
                     return Ok(ok_json(&cr["result"]["value"]));
                 }
