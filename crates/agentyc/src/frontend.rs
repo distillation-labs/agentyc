@@ -69,8 +69,7 @@ pub fn parse_line(input: &str) -> std::result::Result<Action, String> {
     if tokens.is_empty() {
         return Err(String::new());
     }
-    let mut argv = Vec::with_capacity(tokens.len() + 1);
-    argv.push("agentyc".to_string());
+    let mut argv = Vec::with_capacity(tokens.len());
     argv.extend(tokens);
     ActionCli::try_parse_from(argv)
         .map(|parsed| parsed.action)
@@ -141,6 +140,7 @@ fn tokenize(input: &str) -> std::result::Result<Vec<String>, String> {
                     current.push(ch);
                 }
             }
+            Some(_) => current.push(ch),
             None if ch == '\'' || ch == '"' => quote = Some(ch),
             None if ch.is_whitespace() => {
                 if !current.is_empty() {
@@ -184,4 +184,3 @@ pub fn render_json(value: &Value) -> String {
 pub fn render_error(error: impl std::fmt::Display) -> String {
     render_json(&json!({"error": error.to_string()}))
 }
-
