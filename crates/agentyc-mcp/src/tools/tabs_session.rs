@@ -12,7 +12,9 @@ use anyhow::{Result, anyhow};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::tools::{SharedState, active_tab_id, browser_client, ok_json, ok_text, page_client, tab_id_from};
+use crate::tools::{
+    SharedState, browser_client, ok_json, ok_text, page_client, runtime_handle, tab_id_from,
+};
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     let cdp = browser_client(state).await?;
@@ -25,25 +27,25 @@ async fn cdp_session(state: &SharedState, method: &str, params: Value) -> Result
 }
 
 pub async fn browser_new_tab(state: &SharedState, url: Option<String>) -> Result<CallToolResult> {
-    let browser = state.lock().await.browser()?;
-    let page = browser.new_tab(url.as_deref()).await?;
+    let runtime = runtime_handle(state).await?;
+    let page = runtime.new_tab(url.as_deref()).await?;
     Ok(ok_text(format!("New tab created: {}", page.tab_id)))
 }
 
 pub async fn browser_list_tabs(state: &SharedState) -> Result<CallToolResult> {
-    let browser = state.lock().await.browser()?;
-    Ok(ok_json(&serde_json::to_value(browser.list_tabs().await?)?))
+    let runtime = runtime_handle(state).await?;
+    Ok(ok_json(&serde_json::to_value(runtime.list_tabs().await?)?))
 }
 
 pub async fn browser_switch_tab(state: &SharedState, tab_id: String) -> Result<CallToolResult> {
-    let browser = state.lock().await.browser()?;
-    let page = browser.switch_tab(&tab_id).await?;
+    let runtime = runtime_handle(state).await?;
+    let page = runtime.switch_tab(&tab_id).await?;
     Ok(ok_text(format!("Switched to tab {}", page.tab_id)))
 }
 
 pub async fn browser_close_tab(state: &SharedState, tab_id: String) -> Result<CallToolResult> {
-    let browser = state.lock().await.browser()?;
-    browser.close_tab(&tab_id).await?;
+    let runtime = runtime_handle(state).await?;
+    runtime.close_tab(&tab_id).await?;
     Ok(ok_text(format!("Closed tab {tab_id}")))
 }
 
@@ -64,7 +66,7 @@ pub async fn browser_wait_for_tab(
         let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
         resp["targetInfos"]
             .as_array()
-            .unwrap_or(&vec![])
+            .unwrap_or(&[])
             .iter()
             .filter(|t| t["type"].as_str() == Some("page"))
             .filter_map(|t| t["targetId"].as_str().map(str::to_string))
@@ -73,26 +75,28 @@ pub async fn browser_wait_for_tab(
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-        for t in resp["targetInfos"].as_array().unwrap_or(&vec![]) {
-            if t["type"].as_str() != Some("page") {
+        for target in resp["targetInfos"].as_array().unwrap_or(&[]) {
+            if target["type"].as_str() != Some("page") {
                 continue;
             }
-            let tid = t["targetId"].as_str().unwrap_or("").to_string();
-            if initial_tabs.contains(&tid) {
+            let target_id = target["targetId"].as_str().unwrap_or("").to_string();
+            if initial_tabs.contains(&target_id) {
                 continue;
             }
-            let url = t["url"].as_str().unwrap_or("");
-            let url_match = if let Some(sub) = &url_substring {
+            let url = target["url"].as_str().unwrap_or("");
+            let matches = if let Some(sub) = &url_substring {
                 url.contains(sub.as_str())
-            } else if let Some(r) = &re {
-                r.is_match(url)
+            } else if let Some(regex) = &re {
+                regex.is_match(url)
             } else {
                 true
             };
-            if url_match {
+            if matches {
                 if switch_focus.unwrap_or(true) {
-                    let browser = state.lock().await.browser()?;
-                    browser.switch_tab(&tab_id_from(&tid)).await?;
+                    runtime_handle(state)
+                        .await?
+                        .switch_tab(&tab_id_from(&target_id))
+                        .await?;
                 }
                 return Ok(ok_text(format!("New tab found: {url}")));
             }
@@ -112,9 +116,11 @@ pub async fn browser_set_cookies(
     state: &SharedState,
     cookies: Vec<Value>,
 ) -> Result<CallToolResult> {
-    // Try session-level first, fall back to root
-    let r = cdp_session(state, "Network.setCookies", json!({"cookies": cookies})).await;
-    if r.is_err() {
+    // Try session-level first, fall back to root for older Chrome versions.
+    if cdp_session(state, "Network.setCookies", json!({"cookies": cookies}))
+        .await
+        .is_err()
+    {
         cdp_root(state, "Network.setCookies", json!({"cookies": cookies})).await?;
     }
     Ok(ok_text(format!("Set {} cookie(s)", cookies.len())))
@@ -124,48 +130,38 @@ pub async fn browser_clear_cookies(
     state: &SharedState,
     name: Option<String>,
 ) -> Result<CallToolResult> {
-    if let Some(n) = name {
-        let r1 = cdp_session(state, "Network.deleteCookies", json!({"name": n})).await;
-        if r1.is_err() {
-            let r2 = cdp_root(state, "Network.deleteCookies", json!({"name": n})).await;
-            if r2.is_err() {
-                let js = format!(
-                    "document.cookie = {:?} + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;'",
-                    n
-                );
-                let g = state.lock().await;
-                let sid = g.session_id.clone();
-                g.cdp()?
-                    .send::<Value>(
-                        "Runtime.evaluate",
-                        json!({"expression": js}),
-                        sid.as_deref(),
-                    )
-                    .await
-                    .ok();
-            }
+    if let Some(name) = name {
+        if cdp_session(state, "Network.deleteCookies", json!({"name": name}))
+            .await
+            .is_err()
+            && cdp_root(state, "Network.deleteCookies", json!({"name": name}))
+                .await
+                .is_err()
+        {
+            let expression = format!(
+                "document.cookie = {:?} + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;'",
+                name
+            );
+            cdp_session(state, "Runtime.evaluate", json!({"expression": expression}))
+                .await
+                .ok();
         }
-        Ok(ok_text(format!("Deleted cookie: {n}")))
-    } else {
-        let r1 = cdp_session(state, "Network.clearBrowserCookies", json!({})).await;
-        if r1.is_err() {
-            let r2 = cdp_root(state, "Network.clearBrowserCookies", json!({})).await;
-            if r2.is_err() {
-                let js = "document.cookie.split(';').forEach(c=>{const k=c.trim().split('=')[0];document.cookie=k+'=;expires=Thu,01 Jan 1970 00:00:00 UTC;path=/;';})";
-                let g = state.lock().await;
-                let sid = g.session_id.clone();
-                g.cdp()?
-                    .send::<Value>(
-                        "Runtime.evaluate",
-                        json!({"expression": js}),
-                        sid.as_deref(),
-                    )
-                    .await
-                    .ok();
-            }
-        }
-        Ok(ok_text("All cookies cleared"))
+        return Ok(ok_text(format!("Deleted cookie: {name}")));
     }
+
+    if cdp_session(state, "Network.clearBrowserCookies", json!({}))
+        .await
+        .is_err()
+        && cdp_root(state, "Network.clearBrowserCookies", json!({}))
+            .await
+            .is_err()
+    {
+        let expression = "document.cookie.split(';').forEach(c=>{const k=c.trim().split('=')[0];document.cookie=k+'=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;';})";
+        cdp_session(state, "Runtime.evaluate", json!({"expression": expression}))
+            .await
+            .ok();
+    }
+    Ok(ok_text("All cookies cleared"))
 }
 
 pub async fn browser_grant_permissions(
@@ -174,8 +170,8 @@ pub async fn browser_grant_permissions(
     origin: Option<String>,
 ) -> Result<CallToolResult> {
     let mut params = json!({"permissions": permissions});
-    if let Some(o) = origin {
-        params["origin"] = json!(o);
+    if let Some(origin) = origin {
+        params["origin"] = json!(origin);
     }
     cdp_root(state, "Browser.grantPermissions", params).await?;
     Ok(ok_text(format!("Granted permissions: {permissions:?}")))
@@ -197,9 +193,7 @@ pub async fn browser_set_geolocation(
         }),
     )
     .await?;
-    Ok(ok_text(format!(
-        "Geolocation set to ({latitude},{longitude})"
-    )))
+    Ok(ok_text(format!("Geolocation set to ({latitude},{longitude})")))
 }
 
 pub async fn browser_set_extra_headers(
@@ -222,11 +216,11 @@ pub async fn browser_set_user_agent(
     platform: Option<String>,
 ) -> Result<CallToolResult> {
     let mut params = json!({"userAgent": user_agent});
-    if let Some(al) = accept_language {
-        params["acceptLanguage"] = json!(al);
+    if let Some(language) = accept_language {
+        params["acceptLanguage"] = json!(language);
     }
-    if let Some(p) = platform {
-        params["platform"] = json!(p);
+    if let Some(platform) = platform {
+        params["platform"] = json!(platform);
     }
     cdp_session(state, "Network.setUserAgentOverride", params).await?;
     Ok(ok_text("User agent set"))
@@ -236,17 +230,17 @@ pub async fn browser_set_timezone(
     state: &SharedState,
     timezone_id: Option<String>,
 ) -> Result<CallToolResult> {
-    let tz = timezone_id.unwrap_or_default();
+    let timezone = timezone_id.unwrap_or_default();
     cdp_session(
         state,
         "Emulation.setTimezoneOverride",
-        json!({"timezoneId": tz}),
+        json!({"timezoneId": timezone}),
     )
     .await?;
-    Ok(ok_text(if tz.is_empty() {
+    Ok(ok_text(if timezone.is_empty() {
         "Timezone cleared".into()
     } else {
-        format!("Timezone set to {tz}")
+        format!("Timezone set to {timezone}")
     }))
 }
 
@@ -254,12 +248,17 @@ pub async fn browser_set_locale(
     state: &SharedState,
     locale: Option<String>,
 ) -> Result<CallToolResult> {
-    let lc = locale.unwrap_or_default();
-    cdp_session(state, "Emulation.setLocaleOverride", json!({"locale": lc})).await?;
-    Ok(ok_text(if lc.is_empty() {
+    let locale = locale.unwrap_or_default();
+    cdp_session(
+        state,
+        "Emulation.setLocaleOverride",
+        json!({"locale": locale}),
+    )
+    .await?;
+    Ok(ok_text(if locale.is_empty() {
         "Locale cleared".into()
     } else {
-        format!("Locale set to {lc}")
+        format!("Locale set to {locale}")
     }))
 }
 
@@ -271,22 +270,19 @@ pub async fn browser_emulate_media(
     forced_colors: Option<String>,
 ) -> Result<CallToolResult> {
     let mut features = Vec::new();
-    if let Some(cs) = color_scheme {
-        features.push(json!({"name":"prefers-color-scheme","value":cs}));
+    if let Some(value) = color_scheme {
+        features.push(json!({"name":"prefers-color-scheme","value":value}));
     }
-    if let Some(rm) = reduced_motion {
-        features.push(json!({"name":"prefers-reduced-motion","value":rm}));
+    if let Some(value) = reduced_motion {
+        features.push(json!({"name":"prefers-reduced-motion","value":value}));
     }
-    if let Some(fc) = forced_colors {
-        features.push(json!({"name":"forced-colors","value":fc}));
+    if let Some(value) = forced_colors {
+        features.push(json!({"name":"forced-colors","value":value}));
     }
     cdp_session(
         state,
         "Emulation.setEmulatedMedia",
-        json!({
-            "media": media.unwrap_or_default(),
-            "features": features,
-        }),
+        json!({"media": media.unwrap_or_default(), "features": features}),
     )
     .await?;
     Ok(ok_text("Media emulation set"))
@@ -307,12 +303,20 @@ pub async fn browser_save_state(
     let cookies_resp = cdp_session(state, "Network.getCookies", json!({}))
         .await
         .unwrap_or(Value::Null);
-    let cookies = &cookies_resp["cookies"];
-    let ls_resp = cdp_session(state, "Runtime.evaluate", json!({
-        "expression": "(function(){const o={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);o[k]=localStorage.getItem(k);}return o;})()",
-        "returnByValue": true,
-    })).await.unwrap_or(Value::Null);
-    let data = json!({"cookies": cookies, "localStorage": ls_resp["result"]["value"]});
+    let local_storage_resp = cdp_session(
+        state,
+        "Runtime.evaluate",
+        json!({
+            "expression": "(function(){const o={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);o[k]=localStorage.getItem(k);}return o;})()",
+            "returnByValue": true,
+        }),
+    )
+    .await
+    .unwrap_or(Value::Null);
+    let data = json!({
+        "cookies": cookies_resp["cookies"],
+        "localStorage": local_storage_resp["result"]["value"],
+    });
     if let Some(parent) = std::path::Path::new(&save_path).parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -323,21 +327,20 @@ pub async fn browser_save_state(
 pub async fn browser_load_state(state: &SharedState, path: String) -> Result<CallToolResult> {
     let content = std::fs::read_to_string(&path)?;
     let data: Value = serde_json::from_str(&content)?;
-    if let Some(cookies) = data["cookies"].as_array() {
-        if !cookies.is_empty() {
-            cdp_root(state, "Network.setCookies", json!({"cookies": cookies}))
-                .await
-                .ok();
-        }
+    if let Some(cookies) = data["cookies"].as_array()
+        && !cookies.is_empty()
+    {
+        cdp_root(state, "Network.setCookies", json!({"cookies": cookies}))
+            .await
+            .ok();
     }
-    if let Some(ls) = data["localStorage"].as_object() {
-        for (k, v) in ls {
-            let js = format!(
-                "localStorage.setItem({:?}, {:?})",
-                k,
-                v.as_str().unwrap_or("")
+    if let Some(local_storage) = data["localStorage"].as_object() {
+        for (key, value) in local_storage {
+            let expression = format!(
+                "localStorage.setItem({key:?}, {:?})",
+                value.as_str().unwrap_or("")
             );
-            cdp_session(state, "Runtime.evaluate", json!({"expression": js}))
+            cdp_session(state, "Runtime.evaluate", json!({"expression": expression}))
                 .await
                 .ok();
         }
@@ -346,16 +349,16 @@ pub async fn browser_load_state(state: &SharedState, path: String) -> Result<Cal
 }
 
 pub async fn browser_list_sessions(state: &SharedState) -> Result<CallToolResult> {
-    let runtime = state.lock().await.runtime.clone();
+    let runtime = { state.lock().await.runtime.clone() };
     let connected = runtime.is_some();
     let tab = if let Some(runtime) = runtime {
         runtime.session().active_page().await.ok().map(|page| page.tab_id)
     } else {
         None
     };
-    let tab_str = tab.as_deref().unwrap_or("none");
+    let tab = tab.as_deref().unwrap_or("none");
     Ok(ok_text(format!(
-        "{{\"session_id\":\"default\",\"connected\":{connected},\"current_tab_id\":\"{tab_str}\"}}"
+        "{{\"session_id\":\"default\",\"connected\":{connected},\"current_tab_id\":\"{tab}\"}}"
     )))
 }
 
@@ -367,13 +370,13 @@ pub async fn browser_close_session(
 }
 
 pub async fn browser_close_all(state: &SharedState) -> Result<CallToolResult> {
-    let runtime = state.lock().await.runtime.clone();
+    let runtime = { state.lock().await.runtime.clone() };
     if let Some(runtime) = runtime {
         runtime.close_all().await?;
     }
-    let mut g = state.lock().await;
-    g.runtime = None;
-    g.dialog_handler_started = false;
-    g.capture_started = false;
+    let mut state = state.lock().await;
+    state.runtime = None;
+    state.dialog_handler_started = false;
+    state.capture_started = false;
     Ok(ok_text("All sessions closed"))
 }
