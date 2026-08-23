@@ -1,5 +1,52 @@
 # Changelog
 
+## [2.0.0] - 2026-08-23
+
+### Added
+
+- **Agent superpower skill** — added the canonical `agentyc-browser-automation` skill with
+  frontend selection guidance, the read → ref → act → verify operating loop, deterministic
+  tool routing, stale-reference recovery, iframe/tab workflows, safety rules, and proof standards.
+- **Portable plugin bundle** — added `plugins/agentyc-browser-automation/plugin.json` and
+  installation documentation for MCP clients and coding-agent hosts.
+- **Agent evaluation cases and playbook** — added trigger, functional, performance, and safety
+  cases plus a workflow/tool-selection reference for consistent agent behavior.
+- **Shared runtime frontends** — added the frontend-neutral `BrowserRuntime` and shared command
+  dispatch used by MCP, one-shot CLI, and REPL workflows.
+- **Streamable HTTP MCP** — added `agentyc serve` with the MCP endpoint mounted at `/mcp`.
+
+### Changed
+
+- **Native Rust browser architecture** — browser/CDP lifecycle, target attachment, active-tab
+  semantics, state inspection, interaction, extraction, storage, frames, tabs, and sessions now
+  use the canonical Rust browser session and runtime boundaries.
+- **MCP compatibility** — preserved the existing browser tool names, schemas, response shapes, and
+  active-tab behavior while adding the shared runtime underneath.
+- **Agent-facing guidance** — synchronized the embedded `agentyc init` guide with the installable
+  skill and documented MCP, REPL, and CLI usage in the public docs.
+- **Observability and deterministic waits** — retained bounded state snapshots, `since_hash`
+  polling, explicit network/DOM waits, extraction routes, and optional extended diagnostics.
+
+### Fixed
+
+- **Chrome process ownership** — isolated browser profiles and cleanup now terminate owned Chrome
+  browser/helper/renderer processes without touching the user's normal Chrome profile.
+- **CDP session routing** — flattened attached page sessions now route page-domain commands through
+  the correct session while browser-level target commands remain root-scoped.
+- **Lifecycle reliability** — serialized initialization, tab switching, replacement, cleanup, and
+  failed-launch recovery to prevent duplicate windows, stale attachments, and leaked browsers.
+- **CLI/REPL parsing and state** — fixed shared command parsing, quote handling, tab lifecycle,
+  deterministic scrolling, network mocks, stable-DOM/network-idle waits, and browser-scoped state.
+
+### Validation
+
+- Full workspace formatting, Clippy, build, and test gates pass.
+- 50 real-Chrome browser automation tests pass.
+- 29 runnable end-to-end tests pass; network/live-site cases remain intentionally ignored.
+- MCP protocol, stdio, Streamable HTTP, CLI, and REPL smoke tests pass.
+- Release performance benchmark passes: MCP overhead p50 ~0.03 ms and sustained no-op throughput
+  above 43,000 calls/sec in the optimized local benchmark.
+
 ## [Unreleased]
 
 ## [0.4.1] - 2026-06-13
