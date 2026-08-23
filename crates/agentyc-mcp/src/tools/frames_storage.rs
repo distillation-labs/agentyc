@@ -9,7 +9,7 @@ use anyhow::Result;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::tools::{SharedState, ok_json, ok_text, page_client, page_send};
+use crate::tools::{SharedState, ok_json, ok_text, page_send};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     page_send(state, method, params).await
@@ -27,15 +27,8 @@ async fn current_origin(state: &SharedState) -> String {
     .unwrap_or_else(|| "null".to_string())
 }
 
-async fn dom_storage_command(
-    state: &SharedState,
-    method: &str,
-    params: Value,
-) -> Result<Value> {
-    let (client, session_id) = page_client(state).await?;
-    client
-        .send::<Value>(method, params, Some(&session_id))
-        .await
+async fn dom_storage_command(state: &SharedState, method: &str, params: Value) -> Result<Value> {
+    page_send(state, method, params).await
 }
 
 pub async fn browser_list_frames(state: &SharedState) -> Result<CallToolResult> {
@@ -137,10 +130,7 @@ pub async fn browser_get_storage(
                         .iter()
                         .filter_map(|entry| {
                             let array = entry.as_array()?;
-                            Some((
-                                array.first()?.as_str()?.to_string(),
-                                array.get(1)?.clone(),
-                            ))
+                            Some((array.first()?.as_str()?.to_string(), array.get(1)?.clone()))
                         })
                         .collect();
                     result[storage_name] = Value::Object(object);
@@ -222,12 +212,7 @@ pub async fn browser_clear_storage(
             )
             .await
         } else {
-            dom_storage_command(
-                state,
-                "DOMStorage.clear",
-                json!({"storageId": storage_id}),
-            )
-            .await
+            dom_storage_command(state, "DOMStorage.clear", json!({"storageId": storage_id})).await
         };
 
         if cdp_result.is_err() {
