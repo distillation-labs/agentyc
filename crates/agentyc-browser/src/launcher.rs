@@ -178,30 +178,39 @@ pub struct LaunchedBrowser {
 }
 
 impl LaunchedBrowser {
-    fn cleanup_owned_processes(&mut self) {
+    fn signal_owned_processes(&self, signal: &str) {
         let profile_path = self.user_data_dir.path.to_string_lossy().to_string();
         let current_pid = std::process::id().to_string();
-        let output = std::process::Command::new("ps")
+        let Ok(output) = std::process::Command::new("ps")
             .args(["-axo", "pid=,command="])
-            .output();
-        if let Ok(output) = output {
-            let text = String::from_utf8_lossy(&output.stdout);
-            for line in text.lines() {
-                if !line.contains(&profile_path) {
-                    continue;
-                }
-                let Some(pid) = line.split_whitespace().next() else {
-                    continue;
-                };
-                if pid == current_pid {
-                    continue;
-                }
+            .output()
+        else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if !line.contains(&profile_path) {
+                continue;
+            }
+            let Some(pid) = line.split_whitespace().next() else {
+                continue;
+            };
+            if pid != current_pid {
                 let _ = std::process::Command::new("kill")
-                    .args(["-TERM", pid])
+                    .args([signal, pid])
                     .status();
             }
         }
+    }
+
+    fn cleanup_owned_processes(&mut self) {
+        // Chrome forks renderer/helper processes, so killing only Child is
+        // insufficient. Every process carrying this unique profile path is
+        // owned by this launch; TERM first allows normal cleanup, while KILL
+        // prevents a stuck helper from leaking after the runtime exits.
+        self.signal_owned_processes("-TERM");
         let _ = self.process.start_kill();
+        self.signal_owned_processes("-KILL");
     }
 
     /// Kill the subprocess tree and clean up.
