@@ -155,6 +155,12 @@ pub async fn browser_client(state: &SharedState) -> Result<CdpClient> {
     Ok(runtime.session().client())
 }
 
+/// Snapshot the shared runtime without exposing mutable lifecycle state.
+pub async fn runtime_handle(state: &SharedState) -> Result<Arc<BrowserRuntime>> {
+    let g = state.lock().await;
+    g.runtime()
+}
+
 /// Snapshot the active tab ID without exposing mutable lifecycle state.
 pub async fn active_tab_id(state: &SharedState) -> Option<String> {
     let runtime = {
@@ -164,6 +170,17 @@ pub async fn active_tab_id(state: &SharedState) -> Option<String> {
     runtime.session().active_page().await.ok().map(|page| page.tab_id)
 }
 
+/// Send a page-scoped CDP command after cloning the transport and session ID.
+pub async fn page_send(state: &SharedState, method: &str, params: Value) -> Result<Value> {
+    let (cdp, sid) = page_client(state).await?;
+    cdp.send::<Value>(method, params, Some(&sid)).await
+}
+
+/// Send a browser-scoped CDP command after cloning the transport.
+pub async fn browser_send(state: &SharedState, method: &str, params: Value) -> Result<Value> {
+    let cdp = browser_client(state).await?;
+    cdp.send::<Value>(method, params, None).await
+}
 
 /// Current epoch milliseconds (for log timestamps).
 pub fn now_ms() -> u64 {
@@ -302,12 +319,6 @@ pub async fn ensure_dialog_handler(state: &SharedState) {
         runtime
     };
     let client = runtime.session().client();
-    let initial_sid = runtime
-        .session()
-        .active_page()
-        .await
-        .ok()
-        .map(|page| page.session_id);
     let state = Arc::clone(state);
     tokio::spawn(async move {
         let mut rx = client.subscribe("Page.javascriptDialogOpening").await;
@@ -323,10 +334,28 @@ pub async fn ensure_dialog_handler(state: &SharedState) {
             if let Some(t) = prompt {
                 p["promptText"] = serde_json::json!(t);
             }
-            client
-                .send::<Value>("Page.handleJavaScriptDialog", p, initial_sid.as_deref())
-                .await
-                .ok();
+            let session_id = params["__agentyc_session_id"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| {
+                    runtime
+                        .session()
+                        .active_page()
+                        .await
+                        .ok()
+                        .map(|page| page.session_id)
+                });
+            if let Some(session_id) = session_id {
+                runtime
+                    .session()
+                    .send_page_with_session(
+                        &session_id,
+                        "Page.handleJavaScriptDialog",
+                        p,
+                    )
+                    .await
+                    .ok();
+            }
         }
     });
 }
