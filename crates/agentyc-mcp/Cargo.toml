@@ -14,6 +14,7 @@ categories = ["web-programming", "development-tools", "command-line-utilities"]
 [dependencies]
 agentyc-cdp     = { workspace = true }
 agentyc-browser = { workspace = true }
+agentyc-runtime = { workspace = true }
 agentyc-tools   = { workspace = true }
 tokio = { workspace = true }
 rmcp = { workspace = true }
