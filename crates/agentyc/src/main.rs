@@ -8,6 +8,10 @@ use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod frontend;
+
+use frontend::{Action, dispatch, render_error, render_json, runtime_config};
+
 const SKILL_MD: &str = include_str!("../../../SKILL.md");
 
 #[derive(Parser)]
@@ -62,6 +66,22 @@ enum Cmd {
         #[arg(long)]
         detach: bool,
     },
+    /// Run shared browser automation commands.
+    Run {
+        #[arg(long)]
+        cdp_url: Option<String>,
+        #[arg(long)]
+        headless: Option<bool>,
+        #[command(subcommand)]
+        action: Action,
+    },
+    /// Run the shared browser automation command REPL.
+    Repl {
+        #[arg(long)]
+        cdp_url: Option<String>,
+        #[arg(long)]
+        headless: Option<bool>,
+    },
 }
 
 #[tokio::main]
@@ -106,7 +126,63 @@ async fn main() -> Result<()> {
             headless,
             detach,
         }) => cmd_browser(port, headless, detach).await,
+        Some(Cmd::Run {
+            cdp_url,
+            headless,
+            action,
+        }) => run_action(cdp_url, headless, action).await,
+        Some(Cmd::Repl { cdp_url, headless }) => run_repl(cdp_url, headless).await,
     }
+}
+
+async fn run_action(
+    cdp_url: Option<String>,
+    headless: Option<bool>,
+    action: Action,
+) -> Result<()> {
+    let runtime = agentyc_runtime::BrowserRuntime::open(runtime_config(cdp_url, headless)).await?;
+    match dispatch(&runtime, action).await {
+        Ok(value) => println!("{}", render_json(&value)),
+        Err(error) => {
+            println!("{}", render_error(&error));
+            runtime.close().await.ok();
+            return Err(anyhow!("command failed: {error}"));
+        }
+    }
+    runtime.close().await.ok();
+    Ok(())
+}
+
+async fn run_repl(cdp_url: Option<String>, headless: Option<bool>) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let runtime = agentyc_runtime::BrowserRuntime::open(runtime_config(cdp_url, headless)).await?;
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut lines = stdin.lines();
+    eprintln!("agentyc REPL — type 'help' for commands, 'exit' to close");
+    while let Some(line) = lines.next_line().await? {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if matches!(line, "exit" | "quit") {
+            break;
+        }
+        if line == "help" {
+            println!("navigate <url> [--new-tab] | state | evaluate <javascript> | tabs list|new|switch|close | close");
+            continue;
+        }
+        match frontend::parse_line(line) {
+            Ok(action) => match dispatch(&runtime, action).await {
+                Ok(value) => println!("{}", render_json(&value)),
+                Err(error) => println!("{}", render_error(error)),
+            },
+            Err(error) if error.is_empty() => {}
+            Err(error) => println!("{}", render_error(error)),
+        }
+    }
+    runtime.close().await.ok();
+    Ok(())
 }
 
 async fn run_serve(host: &str, port: u16, cdp_url: Option<&str>) -> Result<()> {
