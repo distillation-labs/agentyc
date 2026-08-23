@@ -71,7 +71,13 @@ impl DomService {
             .get("root")
             .context("DOM.getDocument missing 'root'")?;
 
-        let tree = build_node(root_node, &snapshot_lookup, &ax_lookup, target_id, session_id);
+        let tree = build_node(
+            root_node,
+            &snapshot_lookup,
+            &ax_lookup,
+            target_id,
+            session_id,
+        );
         Ok(tree)
     }
 }
@@ -98,7 +104,9 @@ fn build_snapshot_lookup(snapshot: &Value) -> HashMap<u64, SnapshotData> {
         let backend_ids = int_arr(nodes, "backendNodeId");
         let bounds_arr = arr_of_quads(doc, "nodes", "boundingBox");
         let layout = doc.get("layout");
-        let paint_orders = layout.and_then(|l| l.get("paintOrders")).and_then(Value::as_array);
+        let paint_orders = layout
+            .and_then(|l| l.get("paintOrders"))
+            .and_then(Value::as_array);
         let computed_styles_index = nodes.get("currentStyle").and_then(Value::as_array);
         let style_strings = doc.get("strings").and_then(Value::as_array);
         let computed_style_decls = doc.get("computedStyles").and_then(Value::as_array);
@@ -118,7 +126,8 @@ fn build_snapshot_lookup(snapshot: &Value) -> HashMap<u64, SnapshotData> {
                 if let Some(node_style_indices) = style_idx_arr.get(i).and_then(Value::as_array) {
                     for (si, idx_val) in node_style_indices.iter().enumerate() {
                         if let Some(str_idx) = idx_val.as_u64()
-                            && let Some(val_str) = strings.get(str_idx as usize).and_then(Value::as_str)
+                            && let Some(val_str) =
+                                strings.get(str_idx as usize).and_then(Value::as_str)
                         {
                             // style name from computedStyles declaration at position si
                             if let Some(prop_name) = REQUIRED_COMPUTED_STYLES.get(si) {
@@ -129,10 +138,14 @@ fn build_snapshot_lookup(snapshot: &Value) -> HashMap<u64, SnapshotData> {
                 }
                 // Also resolve cursor from named styles
                 for decl in style_decls {
-                    if let (Some(name), Some(val)) = (decl.get("name").and_then(Value::as_str), decl.get("value").and_then(Value::as_str))
-                        && name == "cursor"
+                    if let (Some(name), Some(val)) = (
+                        decl.get("name").and_then(Value::as_str),
+                        decl.get("value").and_then(Value::as_str),
+                    ) && name == "cursor"
                     {
-                        computed.entry("cursor".to_string()).or_insert_with(|| val.to_string());
+                        computed
+                            .entry("cursor".to_string())
+                            .or_insert_with(|| val.to_string());
                     }
                 }
             }
@@ -159,11 +172,7 @@ fn int_arr(nodes: &Value, key: &str) -> Vec<u64> {
     nodes
         .get(key)
         .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .map(|v| v.as_u64().unwrap_or(0))
-                .collect()
-        })
+        .map(|a| a.iter().map(|v| v.as_u64().unwrap_or(0)).collect())
         .unwrap_or_default()
 }
 
@@ -271,7 +280,10 @@ fn build_node(
     session_id: Option<&str>,
 ) -> EnhancedDOMTreeNode {
     let node_id = raw.get("nodeId").and_then(Value::as_u64).unwrap_or(0);
-    let backend_node_id = raw.get("backendNodeId").and_then(Value::as_u64).unwrap_or(0);
+    let backend_node_id = raw
+        .get("backendNodeId")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let node_type_int = raw.get("nodeType").and_then(Value::as_u64).unwrap_or(0);
     let node_name = raw
         .get("nodeName")
@@ -283,7 +295,10 @@ fn build_node(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let frame_id = raw.get("frameId").and_then(Value::as_str).map(str::to_string);
+    let frame_id = raw
+        .get("frameId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let is_scrollable = raw.get("isScrollable").and_then(Value::as_bool);
     let shadow_root_type = raw
         .get("shadowRootType")
@@ -308,9 +323,21 @@ fn build_node(
 
     // Determine basic visibility from computed styles
     let is_visible = snapshot.as_ref().map(|s| {
-        let display = s.computed_styles.get("display").map(|s| s.as_str()).unwrap_or("");
-        let visibility = s.computed_styles.get("visibility").map(|s| s.as_str()).unwrap_or("");
-        let opacity_str = s.computed_styles.get("opacity").map(|s| s.as_str()).unwrap_or("1");
+        let display = s
+            .computed_styles
+            .get("display")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let visibility = s
+            .computed_styles
+            .get("visibility")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let opacity_str = s
+            .computed_styles
+            .get("opacity")
+            .map(|s| s.as_str())
+            .unwrap_or("1");
         let opacity: f64 = opacity_str.parse().unwrap_or(1.0);
         display != "none" && visibility != "hidden" && opacity > 0.0
     });
@@ -343,7 +370,15 @@ fn build_node(
     let content_document = raw
         .get("contentDocument")
         .filter(|v| !v.is_null())
-        .map(|c| Box::new(build_node(c, snapshot_lookup, ax_lookup, target_id, session_id)));
+        .map(|c| {
+            Box::new(build_node(
+                c,
+                snapshot_lookup,
+                ax_lookup,
+                target_id,
+                session_id,
+            ))
+        });
 
     EnhancedDOMTreeNode {
         node_id,
