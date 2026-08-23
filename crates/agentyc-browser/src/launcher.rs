@@ -187,6 +187,17 @@ impl LaunchedBrowser {
     }
 }
 
+impl Drop for LaunchedBrowser {
+    fn drop(&mut self) {
+        // Tokio's Child does not terminate the process when dropped. The
+        // synchronous kill keeps failed launch/replacement paths from leaking
+        // Chrome; explicit async `kill` remains the preferred shutdown path.
+        if let Err(error) = self.process.start_kill() {
+            debug!("Failed to start Chrome cleanup on drop: {error}");
+        }
+    }
+}
+
 impl std::fmt::Debug for LaunchedBrowser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "LaunchedBrowser(cdp_url={})", self.cdp_url)
