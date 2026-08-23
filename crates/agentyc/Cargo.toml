@@ -19,6 +19,7 @@ path = "src/main.rs"
 agentyc-mcp     = { workspace = true }
 agentyc-cdp     = { workspace = true }
 agentyc-browser = { workspace = true }
+agentyc-runtime = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
