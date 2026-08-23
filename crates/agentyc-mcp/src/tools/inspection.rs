@@ -10,14 +10,10 @@ use anyhow::{Result, anyhow};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::tools::{SharedState, ok_json, ok_text, parse_ref};
+use crate::tools::{SharedState, ok_json, ok_text, page_send, parse_ref};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = {
-        let g = state.lock().await;
-        (g.cdp()?.clone(), g.session_id.clone())
-    };
-    cdp.send::<Value>(method, params, sid.as_deref()).await
+    page_send(state, method, params).await
 }
 
 pub async fn browser_extract_content(
@@ -243,14 +239,12 @@ pub async fn browser_get_attribute(
     // Resolve backendNodeId to objectId, then callFunctionOn
     let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await?;
     if let Some(obj_id) = resolve["object"]["objectId"].as_str() {
-        let g = state.lock().await;
-        let sid = g.session_id.clone();
+        let (cdp, sid) = crate::tools::page_client(state).await?;
         let func = format!(
             "function(){{return this.getAttribute({})}}",
             serde_json::to_string(&name).unwrap()
         );
-        let call_resp = g
-            .cdp()?
+        let call_resp = cdp
             .send::<Value>(
                 "Runtime.callFunctionOn",
                 json!({
@@ -258,10 +252,9 @@ pub async fn browser_get_attribute(
                     "functionDeclaration": func,
                     "returnByValue": true,
                 }),
-                sid.as_deref(),
+                Some(&sid),
             )
             .await?;
-        drop(g);
         let val = &call_resp["result"]["value"];
         return Ok(ok_text(if val.is_null() {
             "null".to_string()
