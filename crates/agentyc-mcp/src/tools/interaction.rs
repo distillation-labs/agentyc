@@ -62,12 +62,15 @@ async fn element_center_with_fallback(
     )
     .await?;
     if let Some(obj_id) = resolve["object"]["objectId"].as_str() {
-        let (cdp, sid) = crate::tools::page_client(state).await?;
-        let resp = cdp.send::<serde_json::Value>("Runtime.callFunctionOn", json!({
-            "objectId": obj_id,
-            "functionDeclaration": "function(){var r=this.getBoundingClientRect();return [r.x+r.width/2, r.y+r.height/2];}",
-            "returnByValue": true,
-        }), Some(&sid)).await?;
+        let runtime = crate::tools::runtime_handle(state).await?;
+        let resp: Value = runtime
+            .session()
+            .send_page("Runtime.callFunctionOn", json!({
+                "objectId": obj_id,
+                "functionDeclaration": "function(){var r=this.getBoundingClientRect();return [r.x+r.width/2, r.y+r.height/2];}",
+                "returnByValue": true,
+            }))
+            .await?;
         if let Some(arr) = resp["result"]["value"].as_array() {
             let cx = arr.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
             let cy = arr.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -343,16 +346,16 @@ pub async fn browser_type(
                         return el.value;
                     }}"#
                 );
-                let (cdp, sid) = crate::tools::page_client(state).await?;
-                let result = cdp
-                    .send::<serde_json::Value>(
+                let runtime = crate::tools::runtime_handle(state).await?;
+                let result = runtime
+                    .session()
+                    .send_page::<Value>(
                         "Runtime.callFunctionOn",
                         json!({
                             "objectId": obj_id,
                             "functionDeclaration": func,
                             "returnByValue": true,
                         }),
-                        Some(&sid),
                     )
                     .await;
                 if let Ok(r) = result {
@@ -534,10 +537,12 @@ pub async fn browser_scroll(
     } else {
         cdp(
             state,
-            "Input.dispatchMouseEvent",
+            "Runtime.evaluate",
             json!({
-                "type": "mouseWheel", "x": 640, "y": 360,
-                "deltaX": 0, "deltaY": delta_y,
+                "expression": format!(
+                    "window.scrollTo(0, Math.max(0, window.scrollY + ({delta_y}))); window.scrollY"
+                ),
+                "returnByValue": true,
             }),
         )
         .await?;
@@ -620,13 +625,15 @@ pub async fn browser_select_option(
             .to_string();
         if !obj_id.is_empty() {
             // Call function on the resolved object
-            let call_resp = {
-                let (cdp, sid) = crate::tools::page_client(state).await?;
-                cdp.send::<Value>(
-                    "Runtime.callFunctionOn",
-                    json!({
-                        "objectId": obj_id,
-                        "functionDeclaration": format!(r#"function(){{
+            let call_resp: Value = {
+                let runtime = crate::tools::runtime_handle(state).await?;
+                runtime
+                    .session()
+                    .send_page(
+                        "Runtime.callFunctionOn",
+                        json!({
+                            "objectId": obj_id,
+                            "functionDeclaration": format!(r#"function(){{
                         for(const o of this.options) {{
                             if(o.text === {:?}) {{
                                 this.value = o.value;
@@ -636,11 +643,10 @@ pub async fn browser_select_option(
                         }}
                         return false;
                     }}"#, text),
-                        "returnByValue": true,
-                    }),
-                    Some(&sid),
-                )
-                .await?
+                            "returnByValue": true,
+                        }),
+                    )
+                    .await?
             };
             if call_resp["result"]["value"].as_bool().unwrap_or(false) {
                 return Ok(ok_text(format!("Selected option: {text}")));
@@ -727,12 +733,15 @@ pub async fn browser_get_dropdown_options(
         let resolve = cdp(state, "DOM.resolveNode", json!({"backendNodeId": id})).await;
         if let Ok(r) = resolve {
             if let Some(obj_id) = r["object"]["objectId"].as_str() {
-                let (cdp, sid) = crate::tools::page_client(state).await?;
-                let call_resp = cdp.send::<Value>("Runtime.callFunctionOn", json!({
-                    "objectId": obj_id,
-                    "functionDeclaration": "function(){return Array.from(this.options).map(o=>({value:o.value,text:o.text,selected:o.selected}))}",
-                    "returnByValue": true,
-                }), Some(&sid)).await;
+                let runtime = crate::tools::runtime_handle(state).await?;
+                let call_resp = runtime
+                    .session()
+                    .send_page::<Value>("Runtime.callFunctionOn", json!({
+                        "objectId": obj_id,
+                        "functionDeclaration": "function(){return Array.from(this.options).map(o=>({value:o.value,text:o.text,selected:o.selected}))}",
+                        "returnByValue": true,
+                    }))
+                    .await;
                 if let Ok(cr) = call_resp {
                     return Ok(ok_json(&cr["result"]["value"]));
                 }
