@@ -1,0 +1,717 @@
+{
+  "skill_name": "high-level-plan",
+  "description": "Evidence-saturated planning for features, architecture, migrations, and technical work. Explores meaningful open decisions through isolated divergent frames, verifies mechanisms with repository evidence, official sources, Firecrawl MCP, and authenticated browser research when needed, then produces a bounded recommendation and phase-gated execution plan with coding-agent-ready tasks, validation, handoffs, rollout, and rollback.",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Plan a new feature following best practices, compare the architecture options, and leave an execution plan another coding agent can implement.",
+      "should_trigger": true,
+      "expected_output": "Loads high-level-plan, classifies the work, inspects the repository, explores meaningful decisions, verifies evidence, and writes a phase-gated plan.",
+      "files": [],
+      "expectations": ["Classifies plan tier", "Names owner and outcome", "Defines scope and non-goals", "Uses evidence and explicit decisions", "Creates coding-agent-ready phases"]
+    },
+    {
+      "id": 2,
+      "prompt": "I need to implement a plan in our project codebase, but first pressure-test the direction and identify what we might be missing.",
+      "should_trigger": true,
+      "expected_output": "Triggers planning with decision exploration before implementation and records alternatives, risks, and a recommendation.",
+      "files": [],
+      "expectations": ["Does not jump directly to coding", "Builds a decision inventory", "Runs ADHD exploration where warranted", "Closes decisions before phase writing"]
+    },
+    {
+      "id": 3,
+      "prompt": "How do I set up an execution plan correctly for a cross-module feature?",
+      "should_trigger": true,
+      "expected_output": "Explains the durable plan structure, phase handoffs, task format, validation, and exit gates.",
+      "files": [],
+      "expectations": ["Uses execution-plan-standard", "Requires phase tasks and handoffs", "Requires 100% exit gates", "Keeps one active phase"]
+    },
+    {
+      "id": 4,
+      "prompt": "Walk me through the standard workflow for planning a provider integration before anyone writes code.",
+      "should_trigger": true,
+      "expected_output": "Runs reconnaissance, decision exploration, source verification, contracts, integration, hardening, validation, and rollout planning.",
+      "files": [],
+      "expectations": ["Requires provider abstraction", "Researches official docs and limits", "Defines auth/retry/error/webhook behavior", "Includes rollout and rollback"]
+    },
+    {
+      "id": 5,
+      "prompt": "Review this existing execution plan for planning compliance and tell me whether a fresh coding agent could continue it.",
+      "should_trigger": true,
+      "expected_output": "Audits plan status, decision closure, source ledger, phase checklists, task specificity, blockers, and handoff readiness.",
+      "files": [],
+      "expectations": ["Checks actual active phase", "Preserves landed work", "Finds vague tasks", "Runs coding-agent readiness audit"]
+    },
+    {
+      "id": 6,
+      "prompt": "What are the critical rules and patterns for making a feature plan implementation-ready?",
+      "should_trigger": true,
+      "expected_output": "Explains evidence, alternatives, architecture boundaries, phase gates, validation, and operational ownership.",
+      "files": [],
+      "expectations": ["Separates facts and assumptions", "Requires server/client ownership", "Requires exact validation", "Requires stop rationale"]
+    },
+    {
+      "id": 7,
+      "prompt": "Help me troubleshoot an incomplete plan that keeps reopening architecture decisions during implementation.",
+      "should_trigger": true,
+      "expected_output": "Finds missing decision closure, evidence gaps, or changed constraints and restores phase discipline.",
+      "files": [],
+      "expectations": ["Identifies why decisions reopen", "Records revisit triggers", "Does not silently rewrite history", "Restores one active phase"]
+    },
+    {
+      "id": 8,
+      "prompt": "Optimize the way we plan a large migration for maximum implementation confidence, including rollback and support handoff.",
+      "should_trigger": true,
+      "expected_output": "Triggers Initiative-level planning with migration, stakeholder, cohort, rollback, support, and enterprise-readiness controls.",
+      "files": [],
+      "expectations": ["Escalates to Initiative", "Defines migration/backfill", "Defines stakeholder gates", "Defines rollback and support ownership"]
+    },
+    {
+      "id": 9,
+      "prompt": "Write a robust plan for a feature that crosses the client, Convex backend, and an external API.",
+      "should_trigger": true,
+      "expected_output": "Produces explicit client/server/Convex/provider ownership, contracts, tenancy, retries, tests, and phases.",
+      "files": [],
+      "expectations": ["Chooses Convex function types", "Defines provider adapter", "Defines org scoping", "Includes end-to-end validation"]
+    },
+    {
+      "id": 10,
+      "prompt": "Explain how a good planning workflow handles edge cases, failure modes, and errors before implementation.",
+      "should_trigger": true,
+      "expected_output": "Uses discovery, adversarial decision exploration, hardening, state machines, and failure-path validation.",
+      "files": [],
+      "expectations": ["Runs a pre-mortem", "Names state transitions", "Surfaces traps", "Defines visible error behavior"]
+    },
+    {
+      "id": 11,
+      "prompt": "Refactor our legacy workflow, but first decide whether to modularize, replace, or incrementally strangle it.",
+      "should_trigger": true,
+      "expected_output": "Explores structurally different alternatives, verifies constraints, and chooses an executable migration path.",
+      "files": [],
+      "expectations": ["Explores alternatives", "Researches implementation evidence", "Defines reversible phases", "Records rejected approaches"]
+    },
+    {
+      "id": 12,
+      "prompt": "What security and tenancy considerations apply when planning this feature?",
+      "should_trigger": true,
+      "expected_output": "Makes auth, authorization, org scope, webhook, secret, logging, and cross-tenant boundaries explicit.",
+      "files": [],
+      "expectations": ["Checks every data boundary", "Avoids secrets in logs", "Defines permission tests", "Researches authoritative security constraints"]
+    },
+    {
+      "id": 13,
+      "prompt": "Set up a production-ready plan for a new route with metrics, rollout, rollback, and support documentation.",
+      "should_trigger": true,
+      "expected_output": "Creates architecture, implementation, hardening, validation, and rollout handoffs with operational ownership.",
+      "files": [],
+      "expectations": ["Names release posture", "Defines metrics and alerts", "Defines rollback trigger", "Defines support handoff"]
+    },
+    {
+      "id": 14,
+      "prompt": "How do I verify that a coding agent can execute each phase of the plan without asking me questions?",
+      "should_trigger": true,
+      "expected_output": "Uses the coding-agent readiness audit and requires self-contained context, exact files, done conditions, validation, and handoff state.",
+      "files": [],
+      "expectations": ["Checks exact symbols/files", "Checks what not to change", "Checks validation paths", "Checks blockers and next condition"]
+    },
+    {
+      "id": 15,
+      "prompt": "Use a wide exploration process to compare options before committing to a product architecture.",
+      "should_trigger": true,
+      "expected_output": "Runs bounded ADHD-style exploration and then closes with one recommendation rather than dumping options.",
+      "files": [],
+      "expectations": ["Uses isolated frames", "Separates generation and critique", "Includes traps", "Includes stop rationale"]
+    },
+    {
+      "id": 16,
+      "prompt": "Before planning this feature, explore the alternatives using independent cognitive frames so we do not anchor on the first answer.",
+      "should_trigger": true,
+      "expected_output": "Uses parallel isolated branch exploration and records the candidate space and critic results.",
+      "files": [],
+      "expectations": ["Branches run in parallel", "Branches do not see sibling output", "Scores before deepening", "Archives full exploration"]
+    },
+    {
+      "id": 17,
+      "prompt": "I am worried there may be a much better design. Help me explore the options without carrying every possibility into the final plan.",
+      "should_trigger": true,
+      "expected_output": "Uses exploration plus an attention-safe summary/archive split and explicit permission to stop.",
+      "files": [],
+      "expectations": ["Leads with recommendation", "Archives rejected options", "Names what would change the decision", "Avoids unbounded search"]
+    },
+    {
+      "id": 18,
+      "prompt": "Plan a feature after researching official docs, implementation examples, issue discussions, and operational failure modes.",
+      "should_trigger": true,
+      "expected_output": "Builds a source map, uses the source ladder, records evidence, checks counterevidence, and writes a plan.",
+      "files": [],
+      "expectations": ["Uses multiple source classes", "Reads beyond snippets", "Records version/freshness", "Checks negative evidence"]
+    },
+    {
+      "id": 19,
+      "prompt": "Search the web extensively with Firecrawl MCP and use authenticated browser research where public docs are insufficient, then make the plan.",
+      "should_trigger": true,
+      "expected_output": "Requires actual Firecrawl MCP and/or Aside retrieval, records outputs, and documents MCP recovery or access limits.",
+      "files": [],
+      "expectations": ["Uses Firecrawl MCP search/scrape/map/crawl appropriately", "Uses Aside for authenticated evidence", "Maintains source ledger", "Never uses Firecrawl CLI", "Does not claim research without retrieval"]
+    },
+    {
+      "id": 20,
+      "prompt": "How do we know when research is exhaustive enough to stop planning?",
+      "should_trigger": true,
+      "expected_output": "Explains source-map coverage, high-value reading, counterevidence, candidate verification, and two no-new-facts passes.",
+      "files": [],
+      "expectations": ["Uses saturation rule", "Distinguishes saturated from bounded", "Records final discovery passes", "Carries uncertainty forward"]
+    },
+    {
+      "id": 21,
+      "prompt": "Create a plan that keeps the full research archive available but gives me a short decision brief first.",
+      "should_trigger": true,
+      "expected_output": "Creates a front-loaded README and linked research/decision archive.",
+      "files": [],
+      "expectations": ["Uses summary plus archive", "Includes stop rationale", "Links source ledger", "Does not dump every idea upfront"]
+    },
+    {
+      "id": 22,
+      "prompt": "Plan this new provider integration and make sure the next agent knows the exact contracts, retry behavior, and first files to edit.",
+      "should_trigger": true,
+      "expected_output": "Uses contracts/integration phases and task-level file/symbol/done/validation fields.",
+      "files": [],
+      "expectations": ["Defines provider adapter", "Defines retry and error mapping", "Names exact files", "Includes handoff out"]
+    },
+    {
+      "id": 23,
+      "prompt": "Write phase-based coding tasks for a feature, with proper todos and an explicit gate before each next phase.",
+      "should_trigger": true,
+      "expected_output": "Creates concrete checkable tasks and 100% phase exit gates.",
+      "files": [],
+      "expectations": ["Tasks are atomic", "Tasks have done conditions", "Tasks have validation", "Blocks phase advancement until complete"]
+    },
+    {
+      "id": 24,
+      "prompt": "Plan a feature, but do not settle for an MVP that leaves error handling, observability, or rollback for later.",
+      "should_trigger": true,
+      "expected_output": "Defines the complete GA-ready capability and places hardening and rollout work in explicit phases.",
+      "files": [],
+      "expectations": ["Does not hide incomplete work", "Includes hardening", "Includes validation", "Includes rollout/rollback"]
+    },
+    {
+      "id": 25,
+      "prompt": "Review our architecture decision and tell me what alternatives we rejected and why.",
+      "should_trigger": true,
+      "expected_output": "Reads decision exploration/closure and reports evidence-linked alternatives and accepted trade-offs.",
+      "files": [],
+      "expectations": ["Reports rejected alternatives", "Reports trap mechanisms", "Reports confidence", "Reports revisit triggers"]
+    },
+    {
+      "id": 26,
+      "prompt": "A feature plan is blocked by one product decision. Research everything else and compile the questions for me in one document.",
+      "should_trigger": true,
+      "expected_output": "Creates a batch open-questions document and continues all non-blocked work.",
+      "files": [],
+      "expectations": ["Does not drip questions one at a time", "Includes research already done", "Names options/trade-offs", "Continues non-blocked planning"]
+    },
+    {
+      "id": 27,
+      "prompt": "Plan an initiative with a data backfill, multiple teams, compliance review, staged rollout, and support handoff.",
+      "should_trigger": true,
+      "expected_output": "Escalates to Initiative and applies enterprise-readiness and migration gates.",
+      "files": [],
+      "expectations": ["Defines migration safety", "Defines compliance evidence", "Defines stakeholder gates", "Defines operational ownership"]
+    },
+    {
+      "id": 28,
+      "prompt": "Compare build versus buy for this external capability before we commit.",
+      "should_trigger": true,
+      "expected_output": "Researches options, cost, lock-in, switching cost, maintenance, and evidence before recommending.",
+      "files": [],
+      "expectations": ["Compares internal capability", "Checks pricing/limits", "Documents alternatives", "States accepted trade-offs"]
+    },
+    {
+      "id": 29,
+      "prompt": "Plan a migration with a reversible rollout and a rollback path that still works after partial progress.",
+      "should_trigger": true,
+      "expected_output": "Defines compatibility window, idempotent restart, partial migration handling, promotion gates, and rollback/forward-fix.",
+      "files": [],
+      "expectations": ["Defines partial failure behavior", "Defines rollback trigger", "Defines data compatibility", "Tests recovery"]
+    },
+    {
+      "id": 30,
+      "prompt": "What should a phase handoff contain so an isolated coding agent can start immediately?",
+      "should_trigger": true,
+      "expected_output": "Explains objective, context, handoff in/out, facts, assumptions, blockers, scope, tasks, validation, and exit gate.",
+      "files": [],
+      "expectations": ["Lists required handoff sections", "Requires exact files/symbols", "Requires validation evidence", "Requires next starting condition"]
+    },
+    {
+      "id": 31,
+      "prompt": "Plan an API change and specify request, response, error, serialization, and compatibility contracts before implementation.",
+      "should_trigger": true,
+      "expected_output": "Selects Contracts & Schema and defines all success/error/compatibility surfaces.",
+      "files": [],
+      "expectations": ["Defines exact types", "Defines validation", "Defines error responses", "Defines compatibility/migration"]
+    },
+    {
+      "id": 32,
+      "prompt": "Plan a UI workflow and make every loading, empty, error, retry, permission, and success state explicit.",
+      "should_trigger": true,
+      "expected_output": "Selects UI Implementation and includes all user-visible states and feedback.",
+      "files": [],
+      "expectations": ["Defines state handling", "Defines validation/submission", "Defines responsive behavior", "Defines test coverage"]
+    },
+    {
+      "id": 33,
+      "prompt": "Pressure-test this feature direction with a pre-mortem before architecture starts.",
+      "should_trigger": true,
+      "expected_output": "Runs adversarial exploration and risk registration before architecture.",
+      "files": [],
+      "expectations": ["Names concrete failure modes", "Adds mitigations", "Checks attacker/support/regression risks", "Records accepted risk"]
+    },
+    {
+      "id": 34,
+      "prompt": "Plan this server/client boundary and explain the user-visible reason for putting each flow on that side.",
+      "should_trigger": true,
+      "expected_output": "Makes ownership explicit and ties it to latency, security, consistency, or UX behavior.",
+      "files": [],
+      "expectations": ["Decides server ownership", "Decides client ownership", "Explains user-visible rationale", "Includes authorization boundaries"]
+    },
+    {
+      "id": 35,
+      "prompt": "Create a plan that includes exact commands and evidence for final validation rather than just saying 'test it'.",
+      "should_trigger": true,
+      "expected_output": "Adds exact validation commands, environments, outputs, and acceptance evidence to phases.",
+      "files": [],
+      "expectations": ["Uses exact commands", "Records environment/date", "Covers regression", "Defines acceptance sign-off"]
+    },
+    {
+      "id": 36,
+      "prompt": "Plan this feature with a strict 400-line file-size discipline and explicit extraction points.",
+      "should_trigger": true,
+      "expected_output": "Includes a modularity plan and extraction targets in architecture and implementation phases.",
+      "files": [],
+      "expectations": ["Names extraction points", "Keeps touched files bounded", "Avoids hiding complexity", "Links modules to contracts"]
+    },
+    {
+      "id": 37,
+      "prompt": "Research how comparable products handle this workflow, then use that evidence without copying their marketing claims as facts.",
+      "should_trigger": true,
+      "expected_output": "Uses named comparable sources, distinguishes observed behavior from claims, and records product decisions affected.",
+      "files": [],
+      "expectations": ["Uses Firecrawl MCP for public sources", "Names direct versus adjacent products", "Records evidence locations", "Separates claims from facts"]
+    },
+    {
+      "id": 38,
+      "prompt": "We have an active plan with stale research and an unclear current phase. Normalize it without losing progress.",
+      "should_trigger": true,
+      "expected_output": "Audits actual progress, preserves landed work, reconciles status, and restores one active phase.",
+      "files": [],
+      "expectations": ["Audits existing plan", "Preserves research", "Moves misplaced proof", "Updates README status"]
+    },
+    {
+      "id": 39,
+      "prompt": "Plan a change that touches Clerk, Convex, Next.js, webhooks, and org permissions; verify every framework behavior from current docs.",
+      "should_trigger": true,
+      "expected_output": "Requires official version-matched docs, explicit ownership, org scope, webhook verification, and contract decisions.",
+      "files": [],
+      "expectations": ["Uses official docs", "Defines auth boundaries", "Defines Convex ownership", "Defines Next.js mutation surface"]
+    },
+    {
+      "id": 40,
+      "prompt": "Plan this feature and include the infrastructure, provider, maintenance, migration, and opportunity costs that materially affect the choice.",
+      "should_trigger": true,
+      "expected_output": "Adds a proportional cost/resource analysis tied to evidence and trade-offs.",
+      "files": [],
+      "expectations": ["Checks provider pricing/quotas", "Checks operational burden", "Checks migration cost", "Avoids immaterial ceremony"]
+    },
+    {
+      "id": 41,
+      "prompt": "Run a decision exploration for a rate limiter design, then verify the unusual candidates before recommending one.",
+      "should_trigger": true,
+      "expected_output": "Uses isolated frames, scores candidates, verifies load-bearing mechanisms, and closes with a recommendation.",
+      "files": [],
+      "expectations": ["Does not treat brainstorms as facts", "Checks official/implementation evidence", "Flags traps", "States stop rationale"]
+    },
+    {
+      "id": 42,
+      "prompt": "Explore architecture alternatives, but keep the user-facing answer short enough that I can actually make a decision.",
+      "should_trigger": true,
+      "expected_output": "Uses the summary-plus-archive pattern and front-loads recommendation, trade-offs, and stop rationale.",
+      "files": [],
+      "expectations": ["Keeps brief short", "Archives full detail", "Makes a commitment", "Names revisit triggers"]
+    },
+    {
+      "id": 43,
+      "prompt": "Plan a feature that needs a webhook, retry handling, rate limits, and provider error mapping.",
+      "should_trigger": true,
+      "expected_output": "Selects Integration and Contracts phases with provider auth, verification, retry, quota, and error mapping tasks.",
+      "files": [],
+      "expectations": ["Defines webhook verification", "Defines retries/backoff", "Defines rate-limit handling", "Defines application errors"]
+    },
+    {
+      "id": 44,
+      "prompt": "Make the plan complete enough for an agent in a fresh workspace with no access to our planning conversation.",
+      "should_trigger": true,
+      "expected_output": "Writes self-contained phase context and coding-agent readiness checks.",
+      "files": [],
+      "expectations": ["Includes context in each phase", "Includes decisions and sources", "Includes exact tasks", "Includes handoff state"]
+    },
+    {
+      "id": 45,
+      "prompt": "Research a framework migration, check deprecations and migration notes, and decide whether to adopt it now or defer.",
+      "should_trigger": true,
+      "expected_output": "Uses official versioned docs, alternatives, operational risk, decision closure, and a revisit trigger.",
+      "files": [],
+      "expectations": ["Checks deprecations", "Checks migration constraints", "Checks repo compatibility", "Documents defer rationale"]
+    },
+    {
+      "id": 46,
+      "prompt": "Plan a feature but do not ask me questions that you could answer by reading the repo or official docs.",
+      "should_trigger": true,
+      "expected_output": "Performs reconnaissance and evidence preflight first, then batches only user-specific blockers.",
+      "files": [],
+      "expectations": ["Researches before asking", "Batches open questions", "Labels remaining blockers", "Continues non-blocked work"]
+    },
+    {
+      "id": 47,
+      "prompt": "Plan a rollout with a feature flag, canary cohort, promotion thresholds, monitoring, and rollback triggers.",
+      "should_trigger": true,
+      "expected_output": "Selects Rollout and defines executable release and rollback controls.",
+      "files": [],
+      "expectations": ["Defines cohort", "Defines numerical/observable gates", "Defines dashboards/alerts", "Names owner"]
+    },
+    {
+      "id": 48,
+      "prompt": "Tell me whether this is a Tweak, Small, Feature, or Initiative and what planning artifact it needs.",
+      "should_trigger": true,
+      "expected_output": "Classifies tier with escalation rules and chooses proportional output.",
+      "files": [],
+      "expectations": ["Uses tier table", "Checks provider/auth/migration boundaries", "Avoids over-planning", "States validation path"]
+    },
+    {
+      "id": 49,
+      "prompt": "Plan a feature where the provider's docs are partially inaccessible and the issue tracker is behind login.",
+      "should_trigger": true,
+      "expected_output": "Uses fallback ladder, Aside where needed, marks partial evidence, and keeps dependent claims unresolved.",
+      "files": [],
+      "expectations": ["Tries alternate official sources", "Uses Aside for authenticated evidence", "Records access limits", "Does not infer missing facts"]
+    },
+    {
+      "id": 50,
+      "prompt": "Plan a public API and make sure future agents cannot accidentally reopen a closed contract decision.",
+      "should_trigger": true,
+      "expected_output": "Creates decision records with revisit triggers and explicit do-not-reopen handoff instructions.",
+      "files": [],
+      "expectations": ["Records contract rationale", "Records alternatives", "Defines supersession process", "Carries decision into phases"]
+    },
+    {
+      "id": 51,
+      "prompt": "Plan a feature with a hard compliance requirement and a third-party service.",
+      "should_trigger": true,
+      "expected_output": "Preserves immutable compliance constraints, verifies provider behavior, and includes security and rollout evidence.",
+      "files": [],
+      "expectations": ["Separates immutable constraints", "Checks provider compliance claims", "Defines auditability", "Defines fallback/rollback"]
+    },
+    {
+      "id": 52,
+      "prompt": "Research the alternatives for this queue design, including failure modes and cost, then give me permission to stop worrying about the rest.",
+      "should_trigger": true,
+      "expected_output": "Uses bounded exploration, evidence saturation, decision closure, and explicit stop rationale.",
+      "files": [],
+      "expectations": ["Names stop condition", "Archives candidates", "States what changes decision", "Does not keep all options active"]
+    },
+    {
+      "id": 53,
+      "prompt": "Create a phase plan for backend and UI work with dependencies between the phases.",
+      "should_trigger": true,
+      "expected_output": "Selects and orders phases with dependency-aware tasks and gates.",
+      "files": [],
+      "expectations": ["Orders architecture before implementation", "Orders hardening before validation", "Maps dependencies", "Defines phase exits"]
+    },
+    {
+      "id": 54,
+      "prompt": "Plan this feature with explicit loading, empty, error, success, and permission-denied states.",
+      "should_trigger": true,
+      "expected_output": "Includes UI state specification and visible feedback in the UI phase and validation.",
+      "files": [],
+      "expectations": ["Defines all states", "Defines retry behavior", "Defines accessible feedback", "Tests edge states"]
+    },
+    {
+      "id": 55,
+      "prompt": "Plan a data model change with indexes, migration, backfill, authorization, and rollback.",
+      "should_trigger": true,
+      "expected_output": "Uses Architecture/Contracts and Initiative migration controls as appropriate.",
+      "files": [],
+      "expectations": ["Designs indexes", "Defines backfill", "Defines tenancy/auth", "Defines rollback"]
+    },
+    {
+      "id": 56,
+      "prompt": "Plan this feature using a provider interface so we can switch vendors later.",
+      "should_trigger": true,
+      "expected_output": "Defines internal contract, adapter, error mapping, switching cost, and provider-specific tests.",
+      "files": [],
+      "expectations": ["Defines adapter shape", "Defines portability boundary", "Documents lock-in", "Tests provider failures"]
+    },
+    {
+      "id": 57,
+      "prompt": "Review whether the architecture plan has enough observability to debug production failures.",
+      "should_trigger": true,
+      "expected_output": "Audits lifecycle logs, safe context, metrics, alerts, dashboards, and runbook coverage.",
+      "files": [],
+      "expectations": ["Uses structured logging", "Avoids secrets/sensitive payloads", "Defines metrics", "Defines support diagnosis"]
+    },
+    {
+      "id": 58,
+      "prompt": "Plan the complete feature instead of shipping a partial prototype with known missing error paths.",
+      "should_trigger": true,
+      "expected_output": "Defines the complete GA-ready capability and includes hardening, validation, rollout, and follow-up ownership.",
+      "files": [],
+      "expectations": ["Defines full capability set", "Does not defer required correctness", "Includes release readiness", "Makes deferrals explicit"]
+    },
+    {
+      "id": 59,
+      "prompt": "Can you pressure-test our chosen architecture against what happens at ten times the current volume?",
+      "should_trigger": true,
+      "expected_output": "Includes scale analysis, performance guardrails, resource implications, and discriminating validation.",
+      "files": [],
+      "expectations": ["Analyzes 10x behavior", "Defines bottlenecks", "Defines performance tests", "Records accepted limits"]
+    },
+    {
+      "id": 60,
+      "prompt": "Plan an internal-only feature with no migration or external provider.",
+      "should_trigger": true,
+      "expected_output": "Uses proportional planning and skips irrelevant provider/migration ceremony while retaining scope, decisions, tasks, and validation.",
+      "files": [],
+      "expectations": ["Does not over-plan", "Defines internal release posture", "Includes exact tasks", "Includes validation"]
+    },
+    {
+      "id": 61,
+      "prompt": "Fix a typo in a button label.",
+      "should_trigger": false,
+      "expected_output": "Does not create a full planning workflow; edits directly and verifies.",
+      "files": [],
+      "expectations": ["Uses Tweak handling", "Avoids research and phase ceremony"]
+    },
+    {
+      "id": 62,
+      "prompt": "What is the canonical syntax for a JavaScript array map?",
+      "should_trigger": false,
+      "expected_output": "Answers the lookup directly without planning.",
+      "files": [],
+      "expectations": ["Does not trigger planning", "Does not browse broadly"]
+    },
+    {
+      "id": 63,
+      "prompt": "Fix the TypeScript error where string is not assignable to number.",
+      "should_trigger": false,
+      "expected_output": "Handles the known-root-cause code fix directly.",
+      "files": [],
+      "expectations": ["Does not run decision exploration", "Does not create an execution plan"]
+    },
+    {
+      "id": 64,
+      "prompt": "What is the weather forecast in San Francisco today?",
+      "should_trigger": false,
+      "expected_output": "Responds without loading planning guidance.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 65,
+      "prompt": "Write a Python script to scrape a website using BeautifulSoup.",
+      "should_trigger": false,
+      "expected_output": "Uses the appropriate Python workflow, not high-level planning.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 66,
+      "prompt": "How do I configure git sparse checkout?",
+      "should_trigger": false,
+      "expected_output": "Answers the git lookup directly.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 67,
+      "prompt": "Explain the difference between SQL INNER JOIN and LEFT JOIN.",
+      "should_trigger": false,
+      "expected_output": "Answers the database concept directly.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 68,
+      "prompt": "Write a React Native component using the Animated API for spring physics.",
+      "should_trigger": false,
+      "expected_output": "Uses React/Expo guidance rather than planning.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 69,
+      "prompt": "What are Docker multi-stage build best practices?",
+      "should_trigger": false,
+      "expected_output": "Answers the technical lookup without a phase plan.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 70,
+      "prompt": "Write a Bash one-liner to find logs modified in the last seven days.",
+      "should_trigger": false,
+      "expected_output": "Answers the shell request directly.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 71,
+      "prompt": "Run an optimization loop until retrieval recall reaches 90% without latency regression.",
+      "should_trigger": false,
+      "expected_output": "Routes measurable experimentation to autonomous-experimentation.",
+      "files": [],
+      "expectations": ["Does not own the benchmark loop", "Routes to autonomous-experimentation"]
+    },
+    {
+      "id": 72,
+      "prompt": "Benchmark candidate algorithms and keep the fastest one under a p95 target.",
+      "should_trigger": false,
+      "expected_output": "Routes measurable benchmarking and optimization to autonomous-experimentation.",
+      "files": [],
+      "expectations": ["Does not substitute planning for experiments"]
+    },
+    {
+      "id": 73,
+      "prompt": "Create a GitHub issue for this feature with acceptance criteria.",
+      "should_trigger": false,
+      "expected_output": "Routes issue authoring to issue-writing rather than creating a plan.",
+      "files": [],
+      "expectations": ["Does not create phase files", "Routes to issue-writing"]
+    },
+    {
+      "id": 74,
+      "prompt": "Open a browser and click through the authenticated workflow in our app.",
+      "should_trigger": false,
+      "expected_output": "Routes browser interaction to Aside/browser tooling; planning is not primary unless requested.",
+      "files": [],
+      "expectations": ["Does not invent a plan", "Uses browser skill"]
+    },
+    {
+      "id": 75,
+      "prompt": "Read this one official API page and tell me what parameter it accepts.",
+      "should_trigger": false,
+      "expected_output": "Scrapes or reads the page directly without invoking full planning.",
+      "files": [],
+      "expectations": ["Does not run saturation workflow", "Answers the lookup"]
+    },
+    {
+      "id": 76,
+      "prompt": "Fix a bug with a known root cause and add the missing unit test.",
+      "should_trigger": false,
+      "expected_output": "Uses direct implementation and testing workflow.",
+      "files": [],
+      "expectations": ["Does not run divergent exploration", "Does not create plan ceremony"]
+    },
+    {
+      "id": 77,
+      "prompt": "Just give me the standard answer for this configuration setting.",
+      "should_trigger": false,
+      "expected_output": "Answers directly because the user explicitly requests a standard answer.",
+      "files": [],
+      "expectations": ["Does not run ADHD exploration", "Does not create a plan"]
+    },
+    {
+      "id": 78,
+      "prompt": "Quickly rename this variable and run the formatter.",
+      "should_trigger": false,
+      "expected_output": "Handles the quick edit directly.",
+      "files": [],
+      "expectations": ["Does not browse or plan broadly"]
+    },
+    {
+      "id": 79,
+      "prompt": "What does HTTP 404 mean?",
+      "should_trigger": false,
+      "expected_output": "Answers the canonical concept directly.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 80,
+      "prompt": "Add a missing semicolon to this file.",
+      "should_trigger": false,
+      "expected_output": "Makes the trivial correction directly.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 81,
+      "prompt": "Use ADHD mode to brainstorm names, but do not plan an implementation.",
+      "should_trigger": false,
+      "expected_output": "Routes to the explicitly requested ADHD ideation behavior rather than high-level-plan.",
+      "files": [],
+      "expectations": ["Does not own standalone ideation", "Does not create phase files"]
+    },
+    {
+      "id": 82,
+      "prompt": "Summarize these papers on vector databases without inspecting our repository or proposing implementation.",
+      "should_trigger": false,
+      "expected_output": "Provides or routes a research-only summary without creating an execution plan.",
+      "files": [],
+      "expectations": ["Does not force planning", "Does not invent implementation phases"]
+    },
+    {
+      "id": 83,
+      "prompt": "Take a screenshot of the current browser page.",
+      "should_trigger": false,
+      "expected_output": "Uses browser tooling directly.",
+      "files": [],
+      "expectations": ["Does not trigger planning"]
+    },
+    {
+      "id": 84,
+      "prompt": "Run go test ./... and fix the failing assertion.",
+      "should_trigger": false,
+      "expected_output": "Uses Go/testing workflow rather than planning.",
+      "files": [],
+      "expectations": ["Does not create a phase plan"]
+    },
+    {
+      "id": 85,
+      "prompt": "Add a TanStack form field with Zod validation to this existing screen.",
+      "should_trigger": false,
+      "expected_output": "Uses form-validation guidance for the contained implementation.",
+      "files": [],
+      "expectations": ["Does not invoke broad planning unless scope expands"]
+    }
+  ],
+  "functional_scenarios": [
+    {
+      "id": "decision-exploration-and-closure",
+      "given": "A Feature request has three plausible architecture options, a user is worried about missing a better option, and the repository includes existing auth and data boundaries.",
+      "when": "The agent prepares the plan.",
+      "then": ["Creates a decision card", "Runs isolated parallel divergent frames", "Runs a separate critic that scores and clusters candidates", "Flags traps with mechanisms", "Verifies shortlisted load-bearing claims with repository and external evidence", "Writes a recommendation, accepted trade-offs, revisit triggers, and stop rationale", "Archives the full exploration without dumping it into the main brief"]
+    },
+    {
+      "id": "research-saturation-tool-ladder",
+      "given": "A provider integration depends on versioned public docs, an authenticated issue tracker, and operational limitations.",
+      "when": "The agent performs planning research.",
+      "then": ["Creates a source map for applicable source classes", "Uses Firecrawl MCP for public discovery/extraction", "Uses Aside for authenticated or interactive evidence", "Checks official limits/errors/deprecations and counterevidence", "Records source IDs, versions, retrieval methods, and evidence locations", "Completes two no-new-decision-fact discovery passes or records an explicit access/budget ceiling", "Does not call unverified provider behavior a fact"]
+    },
+    {
+      "id": "phase-handoff-readiness",
+      "given": "Architecture is closed and implementation must be handed to a fresh coding agent.",
+      "when": "The agent writes the execution phases.",
+      "then": ["Creates only the needed phases in dependency order", "Includes self-contained context and handoff-in state", "Lists exact files/modules/symbols and server/client ownership", "Writes atomic tasks with done conditions, owners, and exact validation", "Includes blockers, assumptions, decisions, and residuals", "Requires 100% completion before phase advancement", "Includes handoff-out artifacts and the next starting condition"]
+    },
+    {
+      "id": "bounded-and-attention-safe-plan",
+      "given": "Research finds many alternatives and the user is prone to overwhelm from keeping every possibility open.",
+      "when": "The plan is presented.",
+      "then": ["Leads with one recommendation and decisive reasons", "Lists only the important trade-offs and traps in the brief", "Links the complete candidate set and source ledger in an archive", "States what evidence would reopen the decision", "Records a stop rationale instead of continuing indefinitely", "Does not claim certainty beyond the evidence"]
+    }
+  ],
+  "baseline_comparison": {
+    "without_skill": "A general planning agent may jump to the first familiar architecture, search one or two pages, mix assumptions with facts, leave alternatives and traps implicit, and produce broad phase labels such as 'update backend' without exact files, done conditions, validation, or handoff state. For a user prone to over-exploration, an unstructured research dump can also increase decision paralysis.",
+    "with_skill": "The enhanced workflow inspects the repository first, runs isolated divergent exploration only at meaningful decision points, verifies surviving mechanisms through a Firecrawl MCP/Aside source ladder and local evidence, closes each decision with one recommendation and a stop rationale, and writes dependency-ordered phases with atomic tasks, exact validation, blockers, owners, and handoff-in/out state. The full evidence remains available without keeping every option active in the main brief.",
+    "metrics": ["relevant-query trigger rate", "unrelated-query false-positive rate", "plans with explicit owner/outcome/scope", "decision cards with alternatives and traps", "source-map coverage", "source-ledger completeness", "saturation records with final two passes", "plans with exact file/symbol/done/validation tasks", "phases with complete handoff-in/out", "plans with stop rationale and revisit triggers", "fresh-agent execution success without clarification", "user correction and decision-overwhelm rate"]
+  }
+}
