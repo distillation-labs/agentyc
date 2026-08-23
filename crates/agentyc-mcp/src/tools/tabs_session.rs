@@ -13,7 +13,7 @@ use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
 use crate::tools::{
-    SharedState, browser_client, ok_json, ok_text, page_client, runtime_handle, tab_id_from,
+    SharedState, browser_client, ok_json, ok_text, page_send, runtime_handle, tab_id_from,
 };
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
@@ -22,8 +22,7 @@ async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Va
 }
 
 async fn cdp_session(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = page_client(state).await?;
-    cdp.send::<Value>(method, params, Some(&sid)).await
+    page_send(state, method, params).await
 }
 
 pub async fn browser_new_tab(state: &SharedState, url: Option<String>) -> Result<CallToolResult> {
@@ -66,7 +65,7 @@ pub async fn browser_wait_for_tab(
         let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
         resp["targetInfos"]
             .as_array()
-            .unwrap_or(&[])
+            .map_or(&[][..], |targets| targets.as_slice())
             .iter()
             .filter(|t| t["type"].as_str() == Some("page"))
             .filter_map(|t| t["targetId"].as_str().map(str::to_string))
@@ -75,7 +74,10 @@ pub async fn browser_wait_for_tab(
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-        for target in resp["targetInfos"].as_array().unwrap_or(&[]) {
+        for target in resp["targetInfos"]
+            .as_array()
+            .map_or(&[][..], |targets| targets.as_slice())
+        {
             if target["type"].as_str() != Some("page") {
                 continue;
             }
@@ -193,7 +195,9 @@ pub async fn browser_set_geolocation(
         }),
     )
     .await?;
-    Ok(ok_text(format!("Geolocation set to ({latitude},{longitude})")))
+    Ok(ok_text(format!(
+        "Geolocation set to ({latitude},{longitude})"
+    )))
 }
 
 pub async fn browser_set_extra_headers(
@@ -352,7 +356,12 @@ pub async fn browser_list_sessions(state: &SharedState) -> Result<CallToolResult
     let runtime = { state.lock().await.runtime.clone() };
     let connected = runtime.is_some();
     let tab = if let Some(runtime) = runtime {
-        runtime.session().active_page().await.ok().map(|page| page.tab_id)
+        runtime
+            .session()
+            .active_page()
+            .await
+            .ok()
+            .map(|page| page.tab_id)
     } else {
         None
     };
@@ -378,5 +387,6 @@ pub async fn browser_close_all(state: &SharedState) -> Result<CallToolResult> {
     state.runtime = None;
     state.dialog_handler_started = false;
     state.capture_started = false;
+    state.clear_browser_scoped_state();
     Ok(ok_text("All sessions closed"))
 }
