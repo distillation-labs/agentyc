@@ -157,7 +157,7 @@ impl BrowserRuntime {
 
     /// Read current URL/title and all open page tabs.
     pub async fn page_info(&self) -> Result<PageInfo> {
-        let page = self.session.active_page().await.ok();
+        let page = self.session.ensure_active_page().await?;
         let info: Value = self
             .session
             .send_page(
@@ -174,7 +174,7 @@ impl BrowserRuntime {
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
-            tab_id: page.map(|p| p.tab_id),
+            tab_id: Some(page.tab_id),
             tabs: self.session.list_tabs().await?,
         })
     }
