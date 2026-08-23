@@ -15,6 +15,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use agentyc_cdp::CdpClient;
+use agentyc_runtime::BrowserRuntime;
 
 /// Max entries kept in the console/network ring buffers (bounded memory).
 pub const RING_CAP: usize = 500;
@@ -71,11 +72,10 @@ pub struct DownloadEntry {
 }
 
 pub struct ServerState {
-    pub cdp: Option<CdpClient>,
-    pub session_id: Option<String>,
-    pub current_tab_id: Option<String>,
-    /// Launched browser process — kept alive for session lifetime.
-    pub launched_browser: Option<agentyc_browser::LaunchedBrowser>,
+    /// Canonical browser/session owner. All frontends and tools use this
+    /// handle; target/session/process state is intentionally private to it.
+    pub runtime: Option<Arc<BrowserRuntime>>,
+    pub initialization_lock: Arc<Mutex<()>>,
 
     // ── Deterministic dialog policy ──
     /// Whether JS dialogs are accepted (true) or dismissed (false) by default.
@@ -101,10 +101,8 @@ pub struct ServerState {
 impl ServerState {
     pub fn new() -> Self {
         Self {
-            cdp: None,
-            session_id: None,
-            current_tab_id: None,
-            launched_browser: None,
+            runtime: None,
+            initialization_lock: Arc::new(Mutex::new(())),
             dialog_accept: true,
             dialog_prompt: None,
             last_dialog: None,
@@ -119,14 +117,11 @@ impl ServerState {
         }
     }
 
-    pub fn cdp(&self) -> Result<&CdpClient> {
-        self.cdp
+    pub fn runtime(&self) -> Result<Arc<BrowserRuntime>> {
+        self.runtime
             .as_ref()
+            .cloned()
             .ok_or_else(|| anyhow!("No browser connected. Use browser_navigate first."))
-    }
-
-    pub fn sid(&self) -> Option<&str> {
-        self.session_id.as_deref()
     }
 
     /// Push a console entry, keeping the ring buffer bounded.
@@ -140,6 +135,35 @@ impl ServerState {
 }
 
 pub type SharedState = Arc<Mutex<ServerState>>;
+
+/// Snapshot the canonical browser and active page session before awaiting CDP.
+pub async fn page_client(state: &SharedState) -> Result<(CdpClient, String)> {
+    let runtime = {
+        let g = state.lock().await;
+        g.runtime()?
+    };
+    let page = runtime.session().active_page().await?;
+    Ok((runtime.session().client(), page.session_id))
+}
+
+/// Snapshot the canonical browser client for a browser-level command.
+pub async fn browser_client(state: &SharedState) -> Result<CdpClient> {
+    let runtime = {
+        let g = state.lock().await;
+        g.runtime()?
+    };
+    Ok(runtime.session().client())
+}
+
+/// Snapshot the active tab ID without exposing mutable lifecycle state.
+pub async fn active_tab_id(state: &SharedState) -> Option<String> {
+    let runtime = {
+        let g = state.lock().await;
+        g.runtime.clone()?
+    };
+    runtime.session().active_page().await.ok().map(|page| page.tab_id)
+}
+
 
 /// Current epoch milliseconds (for log timestamps).
 pub fn now_ms() -> u64 {
@@ -266,40 +290,41 @@ pub fn res(r: Result<CallToolResult>) -> std::result::Result<CallToolResult, rmc
 /// accept). This guarantees dialogs never hang the page and that
 /// `browser_handle_dialog` can set the policy for subsequent dialogs.
 pub async fn ensure_dialog_handler(state: &SharedState) {
-    let client = {
+    let runtime = {
         let mut g = state.lock().await;
         if g.dialog_handler_started {
             return;
         }
-        match g.cdp.clone() {
-            Some(c) => {
-                g.dialog_handler_started = true;
-                c
-            }
-            None => return,
-        }
+        let Some(runtime) = g.runtime.clone() else {
+            return;
+        };
+        g.dialog_handler_started = true;
+        runtime
     };
+    let client = runtime.session().client();
+    let initial_sid = runtime
+        .session()
+        .active_page()
+        .await
+        .ok()
+        .map(|page| page.session_id);
     let state = Arc::clone(state);
     tokio::spawn(async move {
         let mut rx = client.subscribe("Page.javascriptDialogOpening").await;
         while let Ok(params) = rx.recv().await {
             let dtype = params["type"].as_str().unwrap_or("alert").to_string();
             let msg = params["message"].as_str().unwrap_or("").to_string();
-            let (accept, prompt, sid) = {
+            let (accept, prompt) = {
                 let mut g = state.lock().await;
                 g.last_dialog = Some((dtype, msg));
-                (
-                    g.dialog_accept,
-                    g.dialog_prompt.clone(),
-                    g.session_id.clone(),
-                )
+                (g.dialog_accept, g.dialog_prompt.clone())
             };
             let mut p = serde_json::json!({ "accept": accept });
             if let Some(t) = prompt {
                 p["promptText"] = serde_json::json!(t);
             }
             client
-                .send::<Value>("Page.handleJavaScriptDialog", p, sid.as_deref())
+                .send::<Value>("Page.handleJavaScriptDialog", p, initial_sid.as_deref())
                 .await
                 .ok();
         }
@@ -321,19 +346,24 @@ pub async fn ensure_capture(state: &SharedState) {
     if !extended_profile() {
         return;
     }
-    let (client, sid) = {
+    let runtime = {
         let mut g = state.lock().await;
         if g.capture_started {
             return;
         }
-        match g.cdp.clone() {
-            Some(c) => {
-                g.capture_started = true;
-                (c, g.session_id.clone())
-            }
-            None => return,
-        }
+        let Some(runtime) = g.runtime.clone() else {
+            return;
+        };
+        g.capture_started = true;
+        runtime
     };
+    let client = runtime.session().client();
+    let sid = runtime
+        .session()
+        .active_page()
+        .await
+        .ok()
+        .map(|page| page.session_id);
     // Browser log entries (network errors, CSP, etc.) need the Log domain.
     client
         .send::<Value>("Log.enable", serde_json::json!({}), sid.as_deref())
