@@ -91,6 +91,10 @@ impl BrowserServer {
     /// Connect to an existing browser via CDP URL.
     pub async fn connect(&self, cdp_url: &str) -> Result<()> {
         let runtime = Arc::new(BrowserRuntime::connect(cdp_url).await?);
+        let previous = { self.state.lock().await.runtime.clone() };
+        if let Some(previous) = previous {
+            previous.close().await.ok();
+        }
         {
             let mut g = self.state.lock().await;
             g.runtime = Some(runtime);
