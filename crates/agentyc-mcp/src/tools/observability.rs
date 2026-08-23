@@ -12,15 +12,17 @@ use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::tools::{NetworkMock, SharedState, browser_client, ok_json, ok_text, page_client};
+use crate::tools::{NetworkMock, SharedState, browser_client, ok_json, ok_text, page_send};
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    browser_client(state).await?.send::<Value>(method, params, None).await
+    browser_client(state)
+        .await?
+        .send::<Value>(method, params, None)
+        .await
 }
 
 async fn cdp_session(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = page_client(state).await?;
-    cdp.send::<Value>(method, params, Some(&sid)).await
+    page_send(state, method, params).await
 }
 
 pub async fn browser_get_console_logs(
@@ -230,54 +232,54 @@ pub async fn browser_add_network_mock(
     state.lock().await.mocks.push(mock);
 
     if is_first {
-        // Spawn a background task that handles Fetch.requestPaused events
         let state_clone = std::sync::Arc::clone(state);
-        let cdp_client = crate::tools::browser_client(state).await.ok();
-        if let Some(client) = cdp_client {
+        let runtime = crate::tools::runtime_handle(state).await.ok();
+        if let Some(runtime) = runtime {
+            let client = runtime.session().client();
+            let session = runtime.session();
             tokio::spawn(async move {
-                let mut rx = client.subscribe("Fetch.requestPaused").await;
-                while let Ok(params) = rx.recv().await {
-                    let request_id = match params["requestId"].as_str() {
-                        Some(id) => id.to_string(),
-                        None => continue,
+                let mut rx = client.subscribe_with_session("Fetch.requestPaused").await;
+                while let Ok(event) = rx.recv().await {
+                    let Some(session_id) = event.session_id else {
+                        continue;
                     };
-                    let url = params["request"]["url"].as_str().unwrap_or("").to_string();
-                    let req_method = params["request"]["method"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
-
+                    let params = event.params;
+                    let Some(request_id) = params["requestId"].as_str().map(str::to_string) else {
+                        continue;
+                    };
+                    let url = params["request"]["url"].as_str().unwrap_or("");
+                    let req_method = params["request"]["method"].as_str().unwrap_or("");
+                    let resource_type = params["resourceType"].as_str().unwrap_or("");
                     let matched_mock = {
                         let g = state_clone.lock().await;
                         g.mocks
                             .iter()
                             .find(|m| {
-                                let url_match = if let Some(sub) = &m.url_substring {
-                                    url.contains(sub.as_str())
-                                } else if let Some(rx_pat) = &m.url_regex {
-                                    regex::Regex::new(rx_pat)
-                                        .map(|r| r.is_match(&url))
-                                        .unwrap_or(false)
-                                } else {
-                                    true
-                                };
+                                let url_match = m
+                                    .url_substring
+                                    .as_ref()
+                                    .map(|s| url.contains(s))
+                                    .or_else(|| {
+                                        m.url_regex.as_ref().and_then(|p| {
+                                            regex::Regex::new(p).ok().map(|r| r.is_match(url))
+                                        })
+                                    })
+                                    .unwrap_or(true);
                                 let method_match = m
                                     .method
                                     .as_ref()
-                                    .map(|m| m.to_uppercase() == req_method.to_uppercase())
+                                    .map(|v| v.eq_ignore_ascii_case(req_method))
                                     .unwrap_or(true);
-                                url_match && method_match
+                                let type_match = m
+                                    .resource_type
+                                    .as_ref()
+                                    .map(|v| v.eq_ignore_ascii_case(resource_type))
+                                    .unwrap_or(true);
+                                url_match && method_match && type_match
                             })
                             .cloned()
                     };
-
-                    let (client, sid) = match crate::tools::page_client(&state_clone).await {
-                        Ok((client, sid)) => (client, sid),
-                        Err(_) => continue,
-                    };
-
-                    if let Some(mock) = matched_mock {
-                        // Increment match count
+                    let command = if let Some(mock) = matched_mock {
                         if let Some(m) = state_clone
                             .lock()
                             .await
@@ -288,55 +290,27 @@ pub async fn browser_add_network_mock(
                             m.match_count += 1;
                         }
                         if mock.action == "abort" {
-                            client
-                                .send::<serde_json::Value>(
-                                    "Fetch.failRequest",
-                                    json!({
-                                        "requestId": request_id,
-                                        "errorReason": mock.error_reason,
-                                    }),
-                                    Some(&sid),
-                                )
-                                .await
-                                .ok();
+                            (
+                                "Fetch.failRequest",
+                                json!({"requestId": request_id, "errorReason": mock.error_reason}),
+                            )
                         } else {
-                            // Build response headers array
-                            let resp_headers: Vec<serde_json::Value> = if let Some(obj) =
-                                mock.headers.as_object()
-                            {
-                                obj.iter().map(|(k, v)| json!({"name": k, "value": v.as_str().unwrap_or("")})).collect()
-                            } else {
-                                vec![]
-                            };
-                            let body_b64 = base64::engine::general_purpose::STANDARD
+                            let headers: Vec<Value> = mock.headers.as_object().map(|obj| obj.iter()
+                                .map(|(k, v)| json!({"name": k, "value": v.as_str().unwrap_or("")})).collect()).unwrap_or_default();
+                            let body = base64::engine::general_purpose::STANDARD
                                 .encode(mock.body.as_bytes());
-                            client
-                                .send::<serde_json::Value>(
-                                    "Fetch.fulfillRequest",
-                                    json!({
-                                        "requestId": request_id,
-                                        "responseCode": mock.status,
-                                        "responseHeaders": resp_headers,
-                                        "body": body_b64,
-                                    }),
-                                    Some(&sid),
-                                )
-                                .await
-                                .ok();
+                            (
+                                "Fetch.fulfillRequest",
+                                json!({"requestId": request_id, "responseCode": mock.status, "responseHeaders": headers, "body": body}),
+                            )
                         }
                     } else {
-                        // No mock matched — continue request normally
-                        client
-                            .send::<serde_json::Value>(
-                                "Fetch.continueRequest",
-                                json!({
-                                    "requestId": request_id,
-                                }),
-                                Some(&sid),
-                            )
-                            .await
-                            .ok();
-                    }
+                        ("Fetch.continueRequest", json!({"requestId": request_id}))
+                    };
+                    session
+                        .send_page_with_session::<Value>(&session_id, command.0, command.1)
+                        .await
+                        .ok();
                 }
             });
         }
