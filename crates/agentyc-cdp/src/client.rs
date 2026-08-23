@@ -126,10 +126,7 @@ impl CdpClient {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<T> {
-        if self
-            .closed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
             return Err(anyhow!("CDP connection is closed"));
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -142,24 +139,30 @@ impl CdpClient {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        self.sink
+        if let Err(error) = self
+            .sink
             .lock()
             .await
             .send(Message::Text(text.into()))
             .await
-            .context("CDP WebSocket send failed")?;
+        {
+            self.pending.lock().await.remove(&id);
+            return Err(error).context("CDP WebSocket send failed");
+        }
 
-        let response = timeout(self.timeout, rx)
-            .await
-            .map_err(|_| {
-                anyhow!(
+        let response = match timeout(self.timeout, rx).await {
+            Ok(result) => result
+                .map_err(|_| anyhow!("CDP response channel dropped for method {:?}", method))?,
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                return Err(anyhow!(
                     "CDP method {:?} did not respond within {:.0}s. \
                      The browser may be unresponsive.",
                     method,
                     self.timeout.as_secs_f64()
-                )
-            })?
-            .map_err(|_| anyhow!("CDP response channel dropped for method {:?}", method))?;
+                ));
+            }
+        };
 
         if let Some(err) = response.get("error") {
             return Err(anyhow!("CDP error for {:?}: {}", method, err));
@@ -172,10 +175,7 @@ impl CdpClient {
     ///
     /// Returns a `broadcast::Receiver`; dropped when the last sender is removed.
     pub async fn subscribe(&self, method: &str) -> broadcast::Receiver<Value> {
-        if self
-            .closed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
             let (_sender, receiver) = broadcast::channel(1);
             return receiver;
         }
@@ -191,10 +191,7 @@ impl CdpClient {
 
     /// Subscribe to CDP events while retaining the flattened target session ID.
     pub async fn subscribe_with_session(&self, method: &str) -> broadcast::Receiver<CdpEvent> {
-        if self
-            .closed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
             let (_sender, receiver) = broadcast::channel(1);
             return receiver;
         }
@@ -208,12 +205,10 @@ impl CdpClient {
         }
     }
 
-
+    /// Wait until the underlying WebSocket reader has terminated.
+    pub async fn wait_closed(&self) {
         let notified = self.closed_notify.notified();
-        if self
-            .closed
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
         notified.await;
@@ -221,10 +216,7 @@ impl CdpClient {
 
     /// Close the transport without affecting an externally owned browser.
     pub async fn close(&self) {
-        if self
-            .closed
-            .swap(true, std::sync::atomic::Ordering::AcqRel)
-        {
+        if self.closed.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return;
         }
         self.closed_notify.notify_waiters();
@@ -291,6 +283,7 @@ impl CdpClient {
         closed.store(true, std::sync::atomic::Ordering::Release);
         event_subs.write().await.clear();
         session_event_subs.write().await.clear();
+        pending.lock().await.clear();
         closed_notify.notify_waiters();
     }
 }
