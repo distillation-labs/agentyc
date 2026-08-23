@@ -15,19 +15,10 @@ use tokio::time::sleep;
 use agentyc_browser::{BrowserProfile, BrowserSession, PageSession, TabInfo};
 
 /// Configuration for a frontend-neutral browser runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RuntimeConfig {
     pub cdp_url: Option<String>,
     pub profile: BrowserProfile,
-}
-
-impl Default for RuntimeConfig {
-    fn default() -> Self {
-        Self {
-            cdp_url: None,
-            profile: BrowserProfile::default(),
-        }
-    }
 }
 
 /// Result of a navigation operation.
