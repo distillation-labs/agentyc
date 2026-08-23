@@ -15,6 +15,7 @@ dependencies = [
  "agentyc-browser",
  "agentyc-cdp",
  "agentyc-mcp",
+ "agentyc-runtime",
  "anyhow",
  "axum",
  "clap",
@@ -22,6 +23,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -90,6 +92,7 @@ version = "0.1.0"
 dependencies = [
  "agentyc-browser",
  "agentyc-cdp",
+ "agentyc-runtime",
  "agentyc-tools",
  "anyhow",
  "base64",
@@ -106,6 +109,18 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "agentyc-runtime"
+version = "0.1.0"
+dependencies = [
+ "agentyc-browser",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]
