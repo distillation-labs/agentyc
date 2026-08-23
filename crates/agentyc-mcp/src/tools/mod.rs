@@ -75,6 +75,7 @@ pub struct ServerState {
     /// Canonical browser/session owner. All frontends and tools use this
     /// handle; target/session/process state is intentionally private to it.
     pub runtime: Option<Arc<BrowserRuntime>>,
+    pub cdp_url: Option<String>,
     pub initialization_lock: Arc<Mutex<()>>,
 
     // ── Deterministic dialog policy ──
@@ -99,8 +100,29 @@ pub struct ServerState {
 }
 
 impl ServerState {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
+            runtime: None,
+            cdp_url: None,
+            initialization_lock: Arc::new(Mutex::new(())),
+            dialog_accept: true,
+            dialog_prompt: None,
+            last_dialog: None,
+            dialog_handler_started: false,
+            console_logs: Vec::new(),
+            network_log: Vec::new(),
+            mocks: Vec::new(),
+            downloads: Vec::new(),
+            tracing: false,
+            trace_events: Vec::new(),
+            capture_started: false,
+        }
+    }
+
+    pub fn with_cdp_url(cdp_url: Option<String>) -> Self {
+        Self {
+            cdp_url,
             runtime: None,
             initialization_lock: Arc::new(Mutex::new(())),
             dialog_accept: true,
@@ -115,6 +137,16 @@ impl ServerState {
             trace_events: Vec::new(),
             capture_started: false,
         }
+    }
+
+    pub fn clear_browser_scoped_state(&mut self) {
+        self.last_dialog = None;
+        self.console_logs.clear();
+        self.network_log.clear();
+        self.mocks.clear();
+        self.downloads.clear();
+        self.tracing = false;
+        self.trace_events.clear();
     }
 
     pub fn runtime(&self) -> Result<Arc<BrowserRuntime>> {
@@ -136,7 +168,8 @@ impl ServerState {
 
 pub type SharedState = Arc<Mutex<ServerState>>;
 
-/// Snapshot the canonical browser and active page session before awaiting CDP.
+#[allow(dead_code)]
+/// Snapshot the canonical browser client and active page session.
 pub async fn page_client(state: &SharedState) -> Result<(CdpClient, String)> {
     let runtime = {
         let g = state.lock().await;
@@ -167,13 +200,18 @@ pub async fn active_tab_id(state: &SharedState) -> Option<String> {
         let g = state.lock().await;
         g.runtime.clone()?
     };
-    runtime.session().active_page().await.ok().map(|page| page.tab_id)
+    runtime
+        .session()
+        .active_page()
+        .await
+        .ok()
+        .map(|page| page.tab_id)
 }
 
 /// Send a page-scoped CDP command after cloning the transport and session ID.
 pub async fn page_send(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = page_client(state).await?;
-    cdp.send::<Value>(method, params, Some(&sid)).await
+    let runtime = runtime_handle(state).await?;
+    runtime.session().send_page(method, params).await
 }
 
 /// Send a browser-scoped CDP command after cloning the transport.
@@ -230,6 +268,7 @@ pub fn bound_json(v: &mut Value, max: usize) {
 }
 
 /// Read AGENTYC_ACTION_TIMEOUT_S env var (default 180s).
+#[allow(dead_code)]
 pub fn action_timeout() -> std::time::Duration {
     let secs: f64 = std::env::var("AGENTYC_ACTION_TIMEOUT_S")
         .ok()
@@ -321,8 +360,11 @@ pub async fn ensure_dialog_handler(state: &SharedState) {
     let client = runtime.session().client();
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        let mut rx = client.subscribe("Page.javascriptDialogOpening").await;
-        while let Ok(params) = rx.recv().await {
+        let mut rx = client
+            .subscribe_with_session("Page.javascriptDialogOpening")
+            .await;
+        while let Ok(event) = rx.recv().await {
+            let params = event.params;
             let dtype = params["type"].as_str().unwrap_or("alert").to_string();
             let msg = params["message"].as_str().unwrap_or("").to_string();
             let (accept, prompt) = {
@@ -334,25 +376,20 @@ pub async fn ensure_dialog_handler(state: &SharedState) {
             if let Some(t) = prompt {
                 p["promptText"] = serde_json::json!(t);
             }
-            let session_id = params["__agentyc_session_id"]
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| {
-                    runtime
-                        .session()
-                        .active_page()
-                        .await
-                        .ok()
-                        .map(|page| page.session_id)
-                });
+            let session_id = if let Some(session_id) = event.session_id {
+                Some(session_id)
+            } else {
+                runtime
+                    .session()
+                    .active_page()
+                    .await
+                    .ok()
+                    .map(|page| page.session_id)
+            };
             if let Some(session_id) = session_id {
                 runtime
                     .session()
-                    .send_page_with_session(
-                        &session_id,
-                        "Page.handleJavaScriptDialog",
-                        p,
-                    )
+                    .send_page_with_session::<Value>(&session_id, "Page.handleJavaScriptDialog", p)
                     .await
                     .ok();
             }
@@ -387,15 +424,10 @@ pub async fn ensure_capture(state: &SharedState) {
         runtime
     };
     let client = runtime.session().client();
-    let sid = runtime
+    // BrowserSession enables Log for the active page during attachment.
+    runtime
         .session()
-        .active_page()
-        .await
-        .ok()
-        .map(|page| page.session_id);
-    // Browser log entries (network errors, CSP, etc.) need the Log domain.
-    client
-        .send::<Value>("Log.enable", serde_json::json!({}), sid.as_deref())
+        .send_page::<Value>("Log.enable", serde_json::json!({}))
         .await
         .ok();
 
