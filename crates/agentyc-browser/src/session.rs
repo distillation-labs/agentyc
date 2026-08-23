@@ -4,8 +4,6 @@
 //! the currently selected page target. Frontends should use this type instead
 //! of managing target/session IDs themselves.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -57,6 +55,8 @@ pub struct BrowserSession {
     client: CdpClient,
     active_page: Mutex<Option<PageSession>>,
     launched_browser: Mutex<Option<LaunchedBrowser>>,
+    /// Serializes attach, switch, close, and process cleanup operations.
+    lifecycle: Mutex<()>,
 }
 
 impl std::fmt::Debug for BrowserSession {
@@ -87,6 +87,7 @@ impl BrowserSession {
             client,
             active_page: Mutex::new(None),
             launched_browser: Mutex::new(Some(launched)),
+            lifecycle: Mutex::new(()),
         };
         if let Err(error) = session.initialize().await {
             session.close().await.ok();
@@ -107,26 +108,19 @@ impl BrowserSession {
             client,
             active_page: Mutex::new(None),
             launched_browser: Mutex::new(None),
+            lifecycle: Mutex::new(()),
         };
-        session.initialize().await?;
+        if let Err(error) = session.initialize().await {
+            session.close().await.ok();
+            return Err(error);
+        }
         Ok(session)
     }
 
     async fn initialize(&self) -> Result<()> {
-        // Enable browser-level domains where Chrome accepts them. Page-level
-        // domains are enabled after the target is attached.
-        self.send_browser::<Value>("Network.enable", json!({}))
-            .await
-            .ok();
-        self.send_browser::<Value>("Runtime.enable", json!({}))
-            .await
-            .ok();
-        self.send_browser::<Value>("Page.enable", json!({}))
-            .await
-            .ok();
-
-        // A browser may be connected before it has a page. Keep the session
-        // valid and attach lazily when the first page operation is requested.
+        // Target discovery and attachment are browser-level operations. Page
+        // domains are enabled only after attach_target_locked has returned a
+        // flattened page session; issuing them at the browser root is invalid.
         let _ = self.attach_first_page().await?;
         Ok(())
     }
@@ -152,10 +146,31 @@ impl BrowserSession {
         method: &str,
         params: Value,
     ) -> Result<T> {
+        // Keep a page command and target replacement from interleaving. The
+        // browser-level state mutex is never held here; only this session's
+        // lifecycle gate spans the transport await.
+        let _lifecycle = self.lifecycle.lock().await;
         let page = self.active_page().await?;
         self.client
             .send(method, params, Some(&page.session_id))
             .await
+    }
+
+    /// Send a command to a specific flattened page session, provided it is
+    /// still the active session. This is used for event replies where the
+    /// originating session ID is part of the event envelope.
+    pub async fn send_page_with_session<T: serde::de::DeserializeOwned>(
+        &self,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<T> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let page = self.active_page().await?;
+        if page.session_id != session_id {
+            return Err(anyhow!("Page session {session_id} is no longer active"));
+        }
+        self.client.send(method, params, Some(session_id)).await
     }
 
     /// Send a browser-level command without holding lifecycle locks.
@@ -187,8 +202,9 @@ impl BrowserSession {
             .collect())
     }
 
-    /// Attach to a new page target and make it active.
+    /// Create a page target, attach to it, and make it active.
     pub async fn new_tab(&self, url: Option<&str>) -> Result<PageSession> {
+        let _lifecycle = self.lifecycle.lock().await;
         let target_url = url.unwrap_or("about:blank");
         let response: Value = self
             .send_browser("Target.createTarget", json!({"url": target_url}))
@@ -196,13 +212,23 @@ impl BrowserSession {
         let target_id = response["targetId"]
             .as_str()
             .ok_or_else(|| anyhow!("Target.createTarget returned no targetId"))?;
-        self.attach_target(target_id).await
+        self.attach_target_locked(target_id).await
     }
 
     /// Switch to a unique compatibility tab ID.
     pub async fn switch_tab(&self, tab_id: &str) -> Result<PageSession> {
+        let _lifecycle = self.lifecycle.lock().await;
         let tab = self.resolve_tab(tab_id).await?;
-        let page = self.attach_target(&tab.target_id).await?;
+        let active = self.active_page.lock().await.clone();
+        if let Some(active) = active
+            && active.target_id == tab.target_id
+        {
+            self.send_browser::<Value>("Target.activateTarget", json!({"targetId": tab.target_id}))
+                .await
+                .ok();
+            return Ok(active);
+        }
+        let page = self.attach_target_locked(&tab.target_id).await?;
         self.send_browser::<Value>("Target.activateTarget", json!({"targetId": tab.target_id}))
             .await
             .ok();
@@ -211,17 +237,27 @@ impl BrowserSession {
 
     /// Close a tab and select another live page if the closed tab was active.
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
+        let _lifecycle = self.lifecycle.lock().await;
         let tab = self.resolve_tab(tab_id).await?;
+        let was_active = self
+            .active_page
+            .lock()
+            .await
+            .as_ref()
+            .map(|page| page.target_id.as_str())
+            == Some(tab.target_id.as_str());
+
         self.send_browser::<Value>("Target.closeTarget", json!({"targetId": tab.target_id}))
             .await?;
 
-        let active_target = self.active_page.lock().await.clone();
-        if active_target.as_ref().map(|page| page.target_id.as_str()) == Some(tab.target_id.as_str()) {
+        if was_active {
+            // Chrome detaches a session when its target closes. Clear our
+            // snapshot before selecting a replacement so a failed replacement
+            // cannot leave a stale session ID exposed to callers.
+            *self.active_page.lock().await = None;
             let replacement = self.list_tabs().await?.into_iter().next();
             if let Some(next) = replacement {
-                self.attach_target(&next.target_id).await?;
-            } else {
-                *self.active_page.lock().await = None;
+                self.attach_target_locked(&next.target_id).await?;
             }
         }
         Ok(())
@@ -244,38 +280,71 @@ impl BrowserSession {
             .is_ok()
     }
 
-    /// Close the owned browser process and clear the active page.
+    /// Close the active attachment and any locally owned browser process.
     ///
     /// Attached external browsers are never killed. This method is idempotent.
     pub async fn close(&self) -> Result<()> {
-        *self.active_page.lock().await = None;
+        let _lifecycle = self.lifecycle.lock().await;
+        self.detach_active_locked().await;
         let launched = self.launched_browser.lock().await.take();
         if let Some(launched) = launched {
             launched.kill().await;
         }
+        self.client.close().await;
         Ok(())
     }
 
     /// Close all page targets and then release any locally owned browser.
     pub async fn close_all(&self) -> Result<()> {
+        let _lifecycle = self.lifecycle.lock().await;
         let tabs = self.list_tabs().await.unwrap_or_default();
         for tab in tabs {
             self.send_browser::<Value>("Target.closeTarget", json!({"targetId": tab.target_id}))
                 .await
                 .ok();
         }
-        self.close().await
+        *self.active_page.lock().await = None;
+        let launched = self.launched_browser.lock().await.take();
+        if let Some(launched) = launched {
+            launched.kill().await;
+        }
+        self.client.close().await;
+        Ok(())
     }
 
     async fn attach_first_page(&self) -> Result<Option<PageSession>> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.attach_first_page_locked().await
+    }
+
+    async fn attach_first_page_locked(&self) -> Result<Option<PageSession>> {
         let tabs = self.list_tabs().await?;
         if let Some(tab) = tabs.first() {
-            return self.attach_target(&tab.target_id).await.map(Some);
+            return self.attach_target_locked(&tab.target_id).await.map(Some);
         }
         Ok(None)
     }
 
-    async fn attach_target(&self, target_id: &str) -> Result<PageSession> {
+    async fn attach_target_locked(&self, target_id: &str) -> Result<PageSession> {
+        // Keep exactly one page session attached. This avoids accumulating
+        // flattened sessions as the active tab changes and prevents page-domain
+        // events from mixing multiple tabs.
+        if let Some(active) = self.active_page.lock().await.clone()
+            && active.target_id == target_id
+        {
+            return Ok(active);
+        }
+
+        let previous = self.active_page.lock().await.take();
+        if let Some(previous) = previous {
+            self.send_browser::<Value>(
+                "Target.detachFromTarget",
+                json!({"sessionId": previous.session_id}),
+            )
+            .await
+            .ok();
+        }
+
         let response: Value = self
             .send_browser(
                 "Target.attachToTarget",
@@ -287,11 +356,24 @@ impl BrowserSession {
             .ok_or_else(|| anyhow!("Target.attachToTarget returned no sessionId"))?
             .to_string();
 
-        for domain in ["Network.enable", "Runtime.enable", "Page.enable"] {
-            self.client
+        // These are page-session commands. The official CDP protocol requires
+        // the flattened sessionId on each command after Target.attachToTarget.
+        for domain in ["Network.enable", "Runtime.enable", "Page.enable", "Log.enable"] {
+            if let Err(error) = self
+                .client
                 .send::<Value>(domain, json!({}), Some(&session_id))
                 .await
-                .with_context(|| format!("failed to enable {domain} for target {target_id}"))?;
+            {
+                self.send_browser::<Value>(
+                    "Target.detachFromTarget",
+                    json!({"sessionId": session_id}),
+                )
+                .await
+                .ok();
+                return Err(error).with_context(|| {
+                    format!("failed to enable {domain} for target {target_id}")
+                });
+            }
         }
 
         let page = PageSession {
@@ -301,6 +383,18 @@ impl BrowserSession {
         };
         *self.active_page.lock().await = Some(page.clone());
         Ok(page)
+    }
+
+    async fn detach_active_locked(&self) {
+        let active = self.active_page.lock().await.take();
+        if let Some(active) = active {
+            self.send_browser::<Value>(
+                "Target.detachFromTarget",
+                json!({"sessionId": active.session_id}),
+            )
+            .await
+            .ok();
+        }
     }
 
     async fn resolve_tab(&self, tab_id: &str) -> Result<TabInfo> {
