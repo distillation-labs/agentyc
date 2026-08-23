@@ -1,0 +1,20 @@
+[package]
+name = "agentyc-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Frontend-neutral browser operations built on agentyc's canonical browser session."
+keywords = ["browser", "automation", "cdp", "agent"]
+categories = ["web-programming", "development-tools"]
+
+[dependencies]
+agentyc-browser = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
