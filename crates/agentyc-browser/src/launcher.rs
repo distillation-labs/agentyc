@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use tokio::{process::Child, time::sleep};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::profile::{BrowserProfile, OwnedUserDataDir};
 
@@ -178,23 +178,45 @@ pub struct LaunchedBrowser {
 }
 
 impl LaunchedBrowser {
-    /// Kill the subprocess and clean up.
-    pub async fn kill(mut self) {
-        if let Err(e) = self.process.kill().await {
-            warn!("Failed to kill Chrome subprocess: {e}");
+    fn cleanup_owned_processes(&mut self) {
+        let profile_path = self.user_data_dir.path.to_string_lossy().to_string();
+        let current_pid = std::process::id().to_string();
+        let output = std::process::Command::new("ps")
+            .args(["-axo", "pid=,command="])
+            .output();
+        if let Ok(output) = output {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                if !line.contains(&profile_path) {
+                    continue;
+                }
+                let Some(pid) = line.split_whitespace().next() else {
+                    continue;
+                };
+                if pid == current_pid {
+                    continue;
+                }
+                let _ = std::process::Command::new("kill")
+                    .args(["-TERM", pid])
+                    .status();
+            }
         }
+        let _ = self.process.start_kill();
+    }
+
+    /// Kill the subprocess tree and clean up.
+    pub async fn kill(mut self) {
+        self.cleanup_owned_processes();
+        let _ = self.process.wait().await;
         // user_data_dir drops here → TempDir cleaned up automatically
     }
 }
 
 impl Drop for LaunchedBrowser {
     fn drop(&mut self) {
-        // Tokio's Child does not terminate the process when dropped. The
-        // synchronous kill keeps failed launch/replacement paths from leaking
-        // Chrome; explicit async `kill` remains the preferred shutdown path.
-        if let Err(error) = self.process.start_kill() {
-            debug!("Failed to start Chrome cleanup on drop: {error}");
-        }
+        // Tokio's Child does not terminate the process when dropped, and
+        // Chrome forks helpers. Clean up the uniquely owned profile tree.
+        self.cleanup_owned_processes();
     }
 }
 
@@ -236,8 +258,11 @@ pub async fn launch_browser(profile: &BrowserProfile) -> Result<LaunchedBrowser>
     // Redirect stdout/stderr to avoid polluting agent stdio.
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
+    if let Some(env) = &profile.env {
+        cmd.envs(env);
+    }
 
-    let process = cmd
+    let mut process = cmd
         .spawn()
         .with_context(|| format!("Failed to spawn Chrome from {}", binary.display()))?;
 
