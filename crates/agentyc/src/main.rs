@@ -135,11 +135,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_action(
-    cdp_url: Option<String>,
-    headless: Option<bool>,
-    action: Action,
-) -> Result<()> {
+async fn run_action(cdp_url: Option<String>, headless: Option<bool>, action: Action) -> Result<()> {
     let runtime = agentyc_runtime::BrowserRuntime::open(runtime_config(cdp_url, headless)).await?;
     match dispatch(&runtime, action).await {
         Ok(value) => println!("{}", render_json(&value)),
@@ -169,7 +165,9 @@ async fn run_repl(cdp_url: Option<String>, headless: Option<bool>) -> Result<()>
             break;
         }
         if line == "help" {
-            println!("navigate <url> [--new-tab] | state | evaluate <javascript> | tabs list|new|switch|close | close");
+            println!(
+                "navigate <url> [--new-tab] | state | evaluate <javascript> | tabs list|new|switch|close | close"
+            );
             continue;
         }
         match frontend::parse_line(line) {
@@ -193,17 +191,7 @@ async fn run_serve(host: &str, port: u16, cdp_url: Option<&str>) -> Result<()> {
     let cdp_owned = cdp_url.map(str::to_string);
     let service: StreamableHttpService<agentyc_mcp::BrowserServer, LocalSessionManager> =
         StreamableHttpService::new(
-            move || {
-                let server = agentyc_mcp::BrowserServer::new();
-                let cdp = cdp_owned.clone();
-                let server_clone = server.clone();
-                tokio::spawn(async move {
-                    if let Some(url) = cdp {
-                        server_clone.connect(&url).await.ok();
-                    }
-                });
-                Ok(server)
-            },
+            move || Ok(agentyc_mcp::BrowserServer::with_cdp_url(cdp_owned.clone())),
             Default::default(),
             StreamableHttpServerConfig::default(),
         );
@@ -243,9 +231,11 @@ async fn cmd_browser(port: u16, headless: bool, detach: bool) -> Result<()> {
     let chrome = agentyc_browser::find_chrome_binary().ok_or_else(|| {
         anyhow!("Could not find Chrome or Chromium. Install Chrome and try again.")
     })?;
+    let user_data_dir = tempfile::Builder::new().prefix("agentyc-cli-").tempdir()?;
 
     let mut args = vec![
         format!("--remote-debugging-port={port}"),
+        format!("--user-data-dir={}", user_data_dir.path().display()),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-background-networking".to_string(),
@@ -275,12 +265,24 @@ async fn cmd_browser(port: u16, headless: bool, detach: bool) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    let url =
-        cdp_url.ok_or_else(|| anyhow!("Chrome did not start within 15 seconds on port {port}"))?;
+    let url = match cdp_url {
+        Some(url) => url,
+        None => {
+            let _ = child.kill().await;
+            return Err(anyhow!(
+                "Chrome did not start within 15 seconds on port {port}"
+            ));
+        }
+    };
     println!("{url}");
 
     if !detach {
         let _ = child.wait().await;
+    } else {
+        // Detached mode intentionally transfers ownership to the caller. The
+        // caller can terminate the browser using the printed CDP endpoint.
+        std::mem::forget(user_data_dir);
+        std::mem::forget(child);
     }
     Ok(())
 }
