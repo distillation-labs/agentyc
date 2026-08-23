@@ -11,11 +11,10 @@ use anyhow::Result;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::tools::{SharedState, ok_text};
+use crate::tools::{SharedState, browser_client, ok_text, page_send, runtime_handle};
 
 async fn cdp_send(state: &SharedState, method: &str, params: Value) -> Result<Value> {
-    let (cdp, sid) = crate::tools::page_client(state).await?;
-    cdp.send::<Value>(method, params, Some(&sid)).await
+    page_send(state, method, params).await
 }
 
 /// Launch or reconnect the canonical browser session exactly once.
@@ -23,7 +22,8 @@ pub async fn ensure_browser(state: &SharedState) -> Result<()> {
     let initialization_lock = state.lock().await.initialization_lock.clone();
     let _initialization = initialization_lock.lock().await;
 
-    if let Some(runtime) = state.lock().await.runtime.clone() {
+    let existing = { state.lock().await.runtime.clone() };
+    if let Some(runtime) = existing {
         if runtime.session().is_alive().await && runtime.session().active_page().await.is_ok() {
             crate::tools::ensure_dialog_handler(state).await;
             crate::tools::ensure_capture(state).await;
@@ -90,13 +90,12 @@ pub async fn browser_navigate(
 
     // If new_tab requested, use the canonical target owner.
     if new_tab.unwrap_or(false) {
-        let runtime = state.lock().await.runtime()?;
+        let runtime = runtime_handle(state).await?;
         let page = runtime.new_tab(Some(&url)).await?;
         return Ok(ok_text(format!("Navigated to {url} in new tab ({})", page.tab_id)));
     }
 
-    let runtime = state.lock().await.runtime()?;
-    runtime.session().ensure_active_page().await?;
+    runtime_handle(state).await?.session().ensure_active_page().await?;
     let resp = cdp_send(state, "Page.navigate", json!({"url": url})).await?;
     // Wait briefly for page title to populate
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -176,23 +175,15 @@ pub async fn browser_wait_for_url(
         .transpose()?;
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let current = {
-            let g = state.lock().await;
-            let sid = g.session_id.clone();
-            if let Some(cdp) = &g.cdp {
-                cdp.send::<Value>(
-                    "Runtime.evaluate",
-                    json!({"expression": "location.href", "returnByValue": true}),
-                    sid.as_deref(),
-                )
-                .await
-                .ok()
-                .and_then(|v| v["result"]["value"].as_str().map(str::to_string))
-                .unwrap_or_default()
-            } else {
-                String::new()
-            }
-        };
+        let current = page_send(
+            state,
+            "Runtime.evaluate",
+            json!({"expression": "location.href", "returnByValue": true}),
+        )
+        .await
+        .ok()
+        .and_then(|v| v["result"]["value"].as_str().map(str::to_string))
+        .unwrap_or_default();
         let matched = if let Some(sub) = &url_substring {
             current.contains(sub.as_str())
         } else if let Some(r) = &re {
@@ -259,11 +250,8 @@ pub async fn browser_wait_for_request(
     let deadline = tokio::time::Instant::now() + timeout;
 
     // Subscribe to Network.requestWillBeSent via CDP event channel
-    let mut rx = {
-        let g = state.lock().await;
-        let cdp = g.cdp()?;
-        cdp.subscribe("Network.requestWillBeSent").await
-    };
+    let cdp = browser_client(state).await?;
+    let mut rx = cdp.subscribe("Network.requestWillBeSent").await;
 
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
@@ -323,11 +311,8 @@ pub async fn browser_wait_for_response(
     let deadline = tokio::time::Instant::now() + timeout;
 
     // Subscribe to Network.responseReceived via CDP event channel
-    let mut rx = {
-        let g = state.lock().await;
-        let cdp = g.cdp()?;
-        cdp.subscribe("Network.responseReceived").await
-    };
+    let cdp = browser_client(state).await?;
+    let mut rx = cdp.subscribe("Network.responseReceived").await;
 
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
