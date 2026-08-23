@@ -5,6 +5,7 @@ mod state;
 mod tools;
 
 use anyhow::Result;
+use agentyc_runtime::BrowserRuntime;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::router::tool::ToolRouter,
@@ -89,71 +90,13 @@ impl BrowserServer {
 
     /// Connect to an existing browser via CDP URL.
     pub async fn connect(&self, cdp_url: &str) -> Result<()> {
-        #[allow(clippy::collapsible_if)]
-        let client = if cdp_url.starts_with("ws://") || cdp_url.starts_with("wss://") {
-            agentyc_cdp::CdpClient::connect(cdp_url).await?
-        } else {
-            agentyc_cdp::CdpClient::connect_via_http(cdp_url).await?
-        };
-        // Enable domains browser-wide then per first page session
-        client
-            .send::<serde_json::Value>("Network.enable", serde_json::json!({}), None)
-            .await
-            .ok();
-        client
-            .send::<serde_json::Value>("Runtime.enable", serde_json::json!({}), None)
-            .await
-            .ok();
-        client
-            .send::<serde_json::Value>("Page.enable", serde_json::json!({}), None)
-            .await
-            .ok();
-        // Attach to first page and enable per-session
-        if let Ok(resp) = client
-            .send::<serde_json::Value>("Target.getTargets", serde_json::json!({}), None)
-            .await
+        let runtime = Arc::new(BrowserRuntime::connect(cdp_url).await?);
         {
-            if let Some(page) = resp["targetInfos"]
-                .as_array()
-                .and_then(|a| a.iter().find(|t| t["type"] == "page"))
-                .and_then(|p| p["targetId"].as_str().map(str::to_string))
-            {
-                if let Ok(r) = client
-                    .send::<serde_json::Value>(
-                        "Target.attachToTarget",
-                        serde_json::json!({"targetId": page, "flatten": true}),
-                        None,
-                    )
-                    .await
-                {
-                    let sid = r["sessionId"].as_str().unwrap_or("").to_string();
-                    client
-                        .send::<serde_json::Value>(
-                            "Network.enable",
-                            serde_json::json!({}),
-                            Some(&sid),
-                        )
-                        .await
-                        .ok();
-                    client
-                        .send::<serde_json::Value>(
-                            "Runtime.enable",
-                            serde_json::json!({}),
-                            Some(&sid),
-                        )
-                        .await
-                        .ok();
-                    client
-                        .send::<serde_json::Value>("Page.enable", serde_json::json!({}), Some(&sid))
-                        .await
-                        .ok();
-                    let mut g = self.state.lock().await;
-                    g.session_id = Some(sid);
-                    g.current_tab_id = Some(tools::tab_id_from(&page));
-                }
-            }
+            let mut g = self.state.lock().await;
+            g.runtime = Some(runtime);
+            g.dialog_handler_started = false;
+            g.capture_started = false;
         }
-        self.state.lock().await.cdp = Some(client);
         // Deterministic dialog handling + (extended) observability capture.
         tools::ensure_dialog_handler(&self.state).await;
         tools::ensure_capture(&self.state).await;
