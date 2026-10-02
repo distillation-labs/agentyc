@@ -1536,7 +1536,11 @@ impl ServerHandler for BrowserServer {
     }
 }
 
-/// Run the MCP server over stdio.
+/// Run the explicit legacy direct-CDP MCP server over stdio.
+///
+/// When selected explicitly by the CLI, a missing endpoint uses the legacy
+/// managed-test browser lifecycle. The host-backed product path never calls
+/// this function as a fallback.
 pub async fn run_stdio(cdp_url: Option<&str>) -> Result<()> {
     let server = BrowserServer::new();
     if let Some(url) = cdp_url {
