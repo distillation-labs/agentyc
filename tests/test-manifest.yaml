@@ -1,0 +1,582 @@
+schema_version: 1
+phase: 0
+name: "Existing-Chrome feasibility bootstrap"
+owner: "Japneet Kalkat"
+
+toolchain:
+  rust:
+    floor: "1.85.0"
+    pinned: "rust-toolchain.toml"
+  node:
+    floor: "20.0.0"
+  npm:
+    floor: "10.0.0"
+  chrome:
+    floor: "125"
+    ceiling: "record-at-run"
+
+artifact_policy:
+  root: "artifacts/"
+  write_mode: "redacted-only"
+  network: "forbidden"
+  required_fields:
+    [
+      "schema_version",
+      "build_tuple",
+      "environment",
+      "timestamp",
+      "command",
+      "result",
+      "redaction_status",
+    ]
+  redaction_keys:
+    [
+      "token",
+      "secret",
+      "password",
+      "cookie",
+      "authorization",
+      "raw_id",
+      "cdp_id",
+      "target_id",
+      "session_id",
+    ]
+  ignored_globs: ["artifacts/*", "!artifacts/.gitkeep"]
+
+commands:
+  - id: "python-compile"
+    status: "required"
+    layer: "tooling"
+    environment: ["local"]
+    fixture: "none"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "-m",
+        "py_compile",
+        "scripts/check_exec_plan.py",
+        "scripts/check_test_manifest.py",
+        "tests/harness/deterministic.py",
+        "tests/harness/test_deterministic.py",
+        "tests/replay/replay.py",
+      ]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "harness-tests"
+    status: "required"
+    layer: "unit"
+    environment: ["local"]
+    fixture: "none"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/harness",
+        "-p",
+        "test_*.py",
+      ]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "exec-plan-check"
+    status: "required"
+    layer: "tooling"
+    environment: ["local"]
+    fixture: "execution-plan"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/check_exec_plan.py",
+        "docs/exec-plans/active/agentyc-browser-task-spaces",
+      ]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "manifest-check"
+    status: "required"
+    layer: "tooling"
+    environment: ["local"]
+    fixture: "test-manifest"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      ["python3", "scripts/check_test_manifest.py", "tests/test-manifest.yaml"]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "replay-self-test"
+    status: "required"
+    layer: "component"
+    environment: ["local"]
+    fixture: "smoke-trace"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["python3", "tests/replay/replay.py", "--self-test"]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "cargo-metadata"
+    status: "required"
+    layer: "tooling"
+    environment: ["local"]
+    fixture: "workspace"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]
+    cwd: "."
+    timeout_seconds: 120
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "cargo-build"
+    status: "required"
+    layer: "process"
+    environment: ["local"]
+    fixture: "workspace"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["cargo", "build", "-p", "agentyc", "--locked"]
+    cwd: "."
+    timeout_seconds: 600
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "cargo-mcp-protocol"
+    status: "required"
+    layer: "process"
+    environment: ["local"]
+    fixture: "legacy-mcp"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "cargo",
+        "test",
+        "-p",
+        "agentyc-tests",
+        "--test",
+        "mcp_protocol",
+        "--locked",
+      ]
+    cwd: "."
+    timeout_seconds: 600
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "node-version"
+    status: "required"
+    layer: "tooling"
+    environment: ["local"]
+    fixture: "none"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["node", "--version"]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "npm-version"
+    status: "required"
+    layer: "tooling"
+    environment: ["local"]
+    fixture: "none"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["npm", "--version"]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "artifact-ignore-check"
+    status: "required"
+    layer: "tooling"
+    environment: ["local"]
+    fixture: "artifact-policy"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["git", "check-ignore", "artifacts/p0-current/secret.log"]
+    cwd: "."
+    timeout_seconds: 30
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "chrome-probe-offline"
+    status: "required"
+    layer: "component"
+    environment: ["local"]
+    fixture: "extension-probe"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["python3", "scripts/run_chrome_probe.py"]
+    cwd: "."
+    timeout_seconds: 60
+    prerequisites: []
+    artifacts: ["artifacts/p0-extension/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "chrome-probe-live-required"
+    status: "optional"
+    layer: "component"
+    environment: ["headed-chrome"]
+    fixture: "extension-probe-live"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_chrome_probe.py",
+        "--headed",
+        "--require-live",
+        "--profile-dir",
+        "artifacts/p0-extension/profile",
+      ]
+    cwd: "."
+    timeout_seconds: 120
+    prerequisites: ["user-approved headed Chrome and an isolated probe profile"]
+    artifacts: ["artifacts/p0-extension/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "native-probe-offline"
+    status: "required"
+    layer: "component"
+    environment: ["local"]
+    fixture: "native-messaging-protocol"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["python3", "scripts/run_native_messaging_probe.py"]
+    cwd: "."
+    timeout_seconds: 60
+    prerequisites: []
+    artifacts: ["artifacts/p0-native-protocol/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "native-probe-live-required"
+    status: "optional"
+    layer: "component"
+    environment: ["headed-chrome"]
+    fixture: "native-messaging-protocol-live"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["python3", "scripts/run_native_messaging_probe.py", "--live-host"]
+    cwd: "."
+    timeout_seconds: 60
+    prerequisites:
+      [
+        "installed platform Native Messaging host manifest and approved Chrome profile",
+      ]
+    artifacts: ["artifacts/p0-native-protocol/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "capability-matrix-offline"
+    status: "required"
+    layer: "component"
+    environment: ["local"]
+    fixture: "capability-catalog"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_capability_matrix.py",
+        "--mode",
+        "offline",
+        "--matrix",
+        "artifacts/p0-capabilities.json",
+      ]
+    cwd: "."
+    timeout_seconds: 60
+    prerequisites: []
+    artifacts: ["artifacts/p0-capabilities.json"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "capability-matrix-live-required"
+    status: "optional"
+    layer: "component"
+    environment: ["headed-chrome"]
+    fixture: "capability-catalog-live"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command: ["python3", "scripts/run_capability_matrix.py", "--mode", "target"]
+    cwd: "."
+    timeout_seconds: 120
+    prerequisites: ["existing user-approved headed Chrome and extension probe"]
+    artifacts: ["artifacts/p0-capabilities-live/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "direct-benchmark-offline"
+    status: "required"
+    layer: "performance"
+    environment: ["local"]
+    fixture: "browser-task-space-fixtures"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_direct_benchmark.py",
+        "--mode",
+        "offline",
+        "--warmups",
+        "10",
+        "--min-samples-p95",
+        "200",
+        "--min-samples-p99",
+        "1000",
+        "--fixtures",
+        "small-form,dense-admin-table,dynamic-feed,nested-frame",
+        "--cache-states",
+        "cold,clean,dirty,resync",
+        "--spaces",
+        "1,2,4,8",
+        "--artifact-dir",
+        "artifacts/p0-performance",
+      ]
+    cwd: "."
+    timeout_seconds: 600
+    prerequisites: []
+    artifacts: ["artifacts/p0-performance/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "existing-chrome-coexistence"
+    status: "planned"
+    layer: "e2e"
+    environment: ["headed-chrome"]
+    fixture: "coexistence-scenarios"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_existing_chrome.py",
+        "--headed",
+        "--spaces",
+        "2",
+        "--agents",
+        "2",
+        "--artifact-dir",
+        "artifacts/p0-coexistence",
+      ]
+    cwd: "."
+    timeout_seconds: 900
+    prerequisites:
+      ["P0-T2 live extension probe", "headed existing-Chrome harness"]
+    artifacts: ["artifacts/p0-coexistence/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "installation-drill"
+    status: "planned"
+    layer: "release"
+    environment: ["isolated-platform-profile"]
+    fixture: "installation-rollback"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_install_drill.py",
+        "--clean-profile",
+        "--artifact-dir",
+        "artifacts/p0-installation",
+      ]
+    cwd: "."
+    timeout_seconds: 900
+    prerequisites:
+      [
+        "P0-T2 extension package",
+        "platform Native Messaging registration fixtures",
+      ]
+    artifacts: ["artifacts/p0-installation/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "baseline-addendum-review"
+    status: "planned"
+    layer: "review"
+    environment: ["local"]
+    fixture: "phase-0-evidence"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/check_phase_0_baseline.py",
+        "research/phase-0-baseline.md",
+      ]
+    cwd: "."
+    timeout_seconds: 120
+    prerequisites:
+      [
+        "P0-T1 baseline evidence",
+        "P0-T2 through P0-T7 evidence",
+        "fresh-agent phase-gate review",
+      ]
+    artifacts: ["artifacts/p0-baseline-review/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+
+test_targets:
+  - id: "p0-t0-python-compile"
+    status: "required"
+    command_id: "python-compile"
+  - id: "p0-t0-harness"
+    status: "required"
+    command_id: "harness-tests"
+  - id: "p0-t0-exec-plan"
+    status: "required"
+    command_id: "exec-plan-check"
+  - id: "p0-t0-manifest"
+    status: "required"
+    command_id: "manifest-check"
+  - id: "p0-t0-replay"
+    status: "required"
+    command_id: "replay-self-test"
+  - id: "p0-t0-artifact-policy"
+    status: "required"
+    command_id: "artifact-ignore-check"
+  - id: "p0-t1-cargo-metadata"
+    status: "required"
+    command_id: "cargo-metadata"
+  - id: "p0-t1-cargo-build"
+    status: "required"
+    command_id: "cargo-build"
+  - id: "p0-t1-mcp-protocol"
+    status: "required"
+    command_id: "cargo-mcp-protocol"
+  - id: "p0-t1-node"
+    status: "required"
+    command_id: "node-version"
+  - id: "p0-t1-npm"
+    status: "required"
+    command_id: "npm-version"
+  - id: "p0-t2-offline"
+    status: "required"
+    command_id: "chrome-probe-offline"
+  - id: "p0-t2-live-required"
+    status: "optional"
+    command_id: "chrome-probe-live-required"
+    prerequisite: "user-approved headed Chrome and an isolated probe profile"
+  - id: "p0-t3-offline"
+    status: "required"
+    command_id: "native-probe-offline"
+  - id: "p0-t3-live-required"
+    status: "optional"
+    command_id: "native-probe-live-required"
+    prerequisite: "installed platform Native Messaging host manifest"
+  - id: "p0-t4-offline"
+    status: "required"
+    command_id: "capability-matrix-offline"
+  - id: "p0-t4-live-required"
+    status: "optional"
+    command_id: "capability-matrix-live-required"
+    prerequisite: "existing user-approved headed Chrome and extension probe"
+  - id: "p0-t5-coexistence"
+    status: "planned"
+    command_id: "existing-chrome-coexistence"
+    prerequisite: "headed existing-Chrome harness"
+  - id: "p0-t6-direct-benchmark"
+    status: "required"
+    command_id: "direct-benchmark-offline"
+  - id: "p0-t7-installation"
+    status: "planned"
+    command_id: "installation-drill"
+    prerequisite: "platform installation fixtures"
+  - id: "p0-t8-baseline-review"
+    status: "planned"
+    command_id: "baseline-addendum-review"
+    prerequisite: "fresh-agent phase-gate review"
