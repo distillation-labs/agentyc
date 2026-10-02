@@ -30,6 +30,7 @@ PROBE_MODULE = ROOT / "tests" / "probes" / "native_messaging.py"
 HOST_PATH = ROOT / "tests" / "probes" / "native_probe"
 DEFAULT_ORIGIN = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 ORIGIN_PATTERN = re.compile(r"^chrome-extension://[a-p]{32}$")
+HOST_ARGUMENT_ORIGIN_PATTERN = re.compile(r"^chrome-extension://[a-p]{32}/?$")
 _spec = importlib.util.spec_from_file_location("agentyc_p0_native_messaging", PROBE_MODULE)
 if _spec is None or _spec.loader is None:
     raise RuntimeError("cannot load the local native messaging probe")
@@ -145,17 +146,27 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant: {value}")
 
 
-def framed_host_smoke(host_path: Path, extension_origin: str, timeout: float) -> dict[str, Any]:
+def framed_host_smoke(
+    host_path: Path,
+    extension_origin: str,
+    timeout: float,
+    *,
+    host_argument_origin: str | None = None,
+    keep_stdin_open: bool = False,
+) -> dict[str, Any]:
     """Run a bounded direct host handshake; this is not a Chrome-mediated test."""
     if not ORIGIN_PATTERN.fullmatch(extension_origin):
         return {"status": "rejected", "reason": "invalid_extension_origin"}
+    host_argument_origin = host_argument_origin or extension_origin
+    if not HOST_ARGUMENT_ORIGIN_PATTERN.fullmatch(host_argument_origin):
+        return {"status": "rejected", "reason": "invalid_host_argument_origin"}
     if not host_path.is_file() or not os.access(host_path, os.X_OK):
         return {"status": "unavailable", "reason": "host_missing_or_not_executable"}
     wire = encode_json(envelope("m-hello", "n-live", "hello", extension_origin))
     wire += encode_json(envelope("m-probe", "n-live", "probe", extension_origin))
     try:
         process = subprocess.Popen(
-            [str(host_path), extension_origin],
+            [str(host_path), host_argument_origin],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -182,7 +193,7 @@ def framed_host_smoke(host_path: Path, extension_origin: str, timeout: float) ->
         except (BrokenPipeError, OSError):
             input_write_ok = False
         finally:
-            if process.stdin is not None:
+            if not keep_stdin_open and process.stdin is not None:
                 try:
                     process.stdin.close()
                 except OSError:
@@ -241,6 +252,11 @@ def framed_host_smoke(host_path: Path, extension_origin: str, timeout: float) ->
                         terminate = True
                         return {"status": "rejected", "reason": "handshake_response_mismatch"}
                     response_count += 1
+                    if keep_stdin_open and response_count == len(expected) and process.stdin is not None:
+                        try:
+                            process.stdin.close()
+                        except OSError:
+                            pass
 
         try:
             decoder.finish()
