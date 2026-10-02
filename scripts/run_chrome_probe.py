@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import hashlib
 import hmac
 import ipaddress
@@ -47,6 +48,9 @@ REQUIRED_PERMISSIONS = {"debugger", "nativeMessaging", "storage", "tabGroups", "
 EXPECTED_EXTENSION_NAME = "agentyc Phase 0 Probe"
 EXPECTED_SERVICE_WORKER = "service_worker.js"
 EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
+MAX_WORKER_DIAGNOSTICS = 8
+MAX_DIAGNOSTIC_STRING = 128
+CHROME_LOAD_EXTENSION_REFUSAL = "--load-extension is not allowed in Google Chrome, ignoring."
 WEBSOCKET_HEADER_LIMIT = 16 * 1024
 WEBSOCKET_FRAME_LIMIT = 64 * 1024
 RESULT_HANDOFF_LIMIT = 16 * 1024
@@ -60,12 +64,32 @@ def _contains_control(value: str) -> bool:
     return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
 
 
+def _manifest_extension_id(manifest: dict[str, Any]) -> str | None:
+    """Derive the pinned unpacked-extension ID without exposing the key or ID."""
+    key = manifest.get("key")
+    if key is None:
+        return None
+    if not isinstance(key, str) or not key or _contains_control(key):
+        return ""
+    try:
+        public_key = base64.b64decode(key, validate=True)
+    except (binascii.Error, ValueError):
+        return ""
+    if not public_key:
+        return ""
+    digest = hashlib.sha256(public_key).digest()
+    alphabet = "abcdefghijklmnop"
+    return "".join(alphabet[byte >> 4] + alphabet[byte & 0x0F] for byte in digest[:16])
+
+
 def load_manifest() -> dict[str, Any]:
     manifest = json.loads((EXTENSION_DIR / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("manifest_version") != 3:
         raise ValueError("probe manifest is not MV3")
     if manifest.get("name") != EXPECTED_EXTENSION_NAME:
         raise ValueError("probe manifest is not the expected extension")
+    if manifest.get("key") is not None and _manifest_extension_id(manifest) == "":
+        raise ValueError("probe manifest key is invalid")
     background = manifest.get("background")
     if not isinstance(background, dict) or background.get("service_worker") != EXPECTED_SERVICE_WORKER:
         raise ValueError("probe manifest does not name the expected service worker")
@@ -512,10 +536,12 @@ def _expected_extension_manifest(manifest: dict[str, Any] | None) -> dict[str, A
 def _is_expected_worker(identity: Any, extension_id: str, manifest: dict[str, Any]) -> bool:
     background = manifest.get("background")
     service_worker = background.get("service_worker") if isinstance(background, dict) else None
+    expected_extension_id = _manifest_extension_id(manifest)
     if not isinstance(service_worker, str) or service_worker != EXPECTED_SERVICE_WORKER:
         return False
     return (
         isinstance(identity, dict)
+        and (expected_extension_id is None or expected_extension_id == extension_id)
         and identity.get("runtime_id") == extension_id
         and identity.get("manifest_version") == manifest.get("manifest_version")
         and identity.get("name") == manifest.get("name")
@@ -526,16 +552,54 @@ def _is_expected_worker(identity: Any, extension_id: str, manifest: dict[str, An
     )
 
 
-def _cleanup_owned_profile(profile: Path | None) -> None:
+def _bounded_diagnostic_string(value: Any) -> str | None:
+    if not isinstance(value, str) or _contains_control(value):
+        return None
+    return value[:MAX_DIAGNOSTIC_STRING]
+
+
+def _worker_identity_evidence(
+    identity: Any,
+    extension_id: str,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    background = manifest.get("background")
+    service_worker = background.get("service_worker") if isinstance(background, dict) else None
+    expected_extension_id = _manifest_extension_id(manifest)
+    evidence: dict[str, Any] = {
+        "status": "identity_mismatch",
+        "runtime_id_matches_target": isinstance(identity, dict) and identity.get("runtime_id") == extension_id,
+        "manifest_version_matches": isinstance(identity, dict) and identity.get("manifest_version") == manifest.get("manifest_version"),
+        "name_matches": isinstance(identity, dict) and identity.get("name") == manifest.get("name"),
+        "version_matches": isinstance(identity, dict) and identity.get("version") == manifest.get("version"),
+        "service_worker_matches": isinstance(identity, dict) and identity.get("service_worker") == service_worker,
+        "origin_matches": isinstance(identity, dict) and identity.get("origin") == f"chrome-extension://{extension_id}",
+        "pathname_matches": isinstance(identity, dict) and identity.get("pathname") == f"/{service_worker}",
+    }
+    if expected_extension_id is not None:
+        evidence["manifest_key_id_matches_target"] = expected_extension_id == extension_id
+    if isinstance(identity, dict):
+        for field in ("name", "version", "service_worker"):
+            value = _bounded_diagnostic_string(identity.get(field))
+            if value is not None:
+                evidence[f"observed_{field}"] = value
+    return evidence
+
+
+def _cleanup_owned_profile(profile: Path | None) -> bool:
     global _LAST_CLEANUP_OK
     if profile is None or not profile.exists():
-        return
+        return True
+    success = True
     try:
         shutil.rmtree(profile)
     except OSError:
-        _LAST_CLEANUP_OK = False
+        success = False
     if profile.exists():
+        success = False
+    if not success:
         _LAST_CLEANUP_OK = False
+    return success
 
 
 def _safe_stop_process(process: subprocess.Popen[bytes]) -> bool:
@@ -576,6 +640,7 @@ def extension_probe_result(
     port: int,
     targets: list[dict[str, Any]],
     expected_manifest: dict[str, Any] | None = None,
+    fixture_path: Path | None = None,
 ) -> dict[str, Any]:
     """Run the probe only after selecting one identity-verified worker."""
     request_id = new_request_id()
@@ -583,9 +648,15 @@ def extension_probe_result(
     candidates = [_worker_candidate(target, port) for target in targets]
     candidates = [candidate for candidate in candidates if candidate is not None]
     if not candidates:
-        return {"status": "live_unavailable", "limitation": "the expected probe service worker was not observed"}
+        return {
+            "status": "live_unavailable",
+            "candidate_worker_count": 0,
+            "verified_worker_count": 0,
+            "limitation": "the expected probe service worker was not observed",
+        }
 
     verified: list[DevToolsSocket] = []
+    worker_diagnostics: list[dict[str, Any]] = []
     for extension_id, websocket_url in candidates:
         client: DevToolsSocket | None = None
         try:
@@ -602,8 +673,16 @@ def extension_probe_result(
             if _is_expected_worker(identity, extension_id, manifest):
                 verified.append(client)
                 client = None
+            elif len(worker_diagnostics) < MAX_WORKER_DIAGNOSTICS:
+                worker_diagnostics.append(_worker_identity_evidence(identity, extension_id, manifest))
         except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, struct.error):
-            pass
+            if len(worker_diagnostics) < MAX_WORKER_DIAGNOSTICS:
+                worker_diagnostics.append(
+                    {
+                        "status": "identity_probe_failed",
+                        "reason": "worker identity could not be verified",
+                    }
+                )
         finally:
             if client is not None:
                 client.close()
@@ -611,15 +690,27 @@ def extension_probe_result(
     if len(verified) != 1:
         for client in verified:
             client.close()
+        if len(verified) == 0 and worker_diagnostics:
+            limitation = (
+                "the expected probe extension worker was not identity-verified; "
+                "service_worker.js-shaped target(s) failed the exact probe manifest checks"
+            )
+        elif len(verified) == 0:
+            limitation = "the expected probe extension worker was not observed"
+        else:
+            limitation = "the expected probe extension worker was ambiguous after exact identity verification"
         return {
             "status": "live_unavailable",
-            "limitation": "the expected probe extension worker was absent or ambiguous",
+            "candidate_worker_count": len(candidates),
+            "verified_worker_count": len(verified),
+            "worker_diagnostics": worker_diagnostics,
+            "limitation": limitation,
         }
 
     socket_client = verified[0]
     try:
         request_literal = json.dumps(request_id)
-        fixture_literal = json.dumps((EXTENSION_DIR / "fixture.html").resolve().as_uri())
+        fixture_literal = json.dumps((fixture_path or EXTENSION_DIR / "fixture.html").resolve().as_uri())
         trigger = socket_client.command(
             "Runtime.evaluate",
             {
@@ -648,6 +739,8 @@ def extension_probe_result(
             if len(encoded) > RESULT_HANDOFF_LIMIT:
                 return {
                     "status": "live_unavailable",
+                    "candidate_worker_count": len(candidates),
+                    "verified_worker_count": len(verified),
                     "limitation": "extension result handoff exceeded the probe bound",
                 }
             if not isinstance(value, dict) or value.get("request_id") != request_id:
@@ -672,6 +765,8 @@ def extension_probe_result(
             if value.get("ok") is True and all(required.values()) and transcript_valid:
                 return {
                     "status": "live_passed",
+                    "candidate_worker_count": len(candidates),
+                    "verified_worker_count": len(verified),
                     **required,
                     "chrome_mediated_native_messaging": True,
                     "screenshot_captured": True,
@@ -680,16 +775,25 @@ def extension_probe_result(
                 }
             return {
                 "status": "live_unavailable",
+                "candidate_worker_count": len(candidates),
+                "verified_worker_count": len(verified),
                 **required,
                 "handshake_transcript": transcript if isinstance(transcript, list) else [],
                 "limitation": "extension probe returned incomplete evidence",
             }
         return {
             "status": "live_unavailable",
+            "candidate_worker_count": len(candidates),
+            "verified_worker_count": len(verified),
             "limitation": "extension probe result was not received before the deadline",
         }
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, TimeoutError, struct.error):
-        return {"status": "live_unavailable", "limitation": "extension result handoff failed closed"}
+        return {
+            "status": "live_unavailable",
+            "candidate_worker_count": len(candidates),
+            "verified_worker_count": len(verified),
+            "limitation": "extension result handoff failed closed",
+        }
     finally:
         socket_client.close()
 
@@ -723,6 +827,24 @@ def chrome_binary(value: str | None) -> str | None:
         if resolved:
             return resolved
     return None
+
+
+def _chrome_load_extension_evidence(log_path: Path | None, log_handle: Any | None = None) -> dict[str, str] | None:
+    if log_path is None:
+        return None
+    try:
+        if log_handle is not None:
+            log_handle.flush()
+        log = log_path.read_bytes()[-64 * 1024 :].decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    if CHROME_LOAD_EXTENSION_REFUSAL not in log:
+        return None
+    return {
+        "status": "refused",
+        "reason": "branded_google_chrome_rejected_load_extension",
+        "message": CHROME_LOAD_EXTENSION_REFUSAL,
+    }
 
 
 def _endpoint_belongs_to_process(port: int, process: subprocess.Popen[bytes]) -> bool:
@@ -804,6 +926,9 @@ def inspect_live(
             _cleanup_owned_profile(owned_profile)
             return {"status": "live_unavailable", "limitation": f"debug port {port} is already in use; refusing to attach or launch ambiguously."}
     process: subprocess.Popen[bytes] | None = None
+    stderr_log_path: Path | None = None
+    stderr_log: Any | None = None
+    fixture_path: Path | None = None
     launched = False
     try:
         if launch:
@@ -817,22 +942,29 @@ def inspect_live(
             if profile_dir.exists() and any(profile_dir.iterdir()):
                 return {"status": "live_unavailable", "limitation": "the supplied disposable Chrome profile is not empty"}
             profile_dir.mkdir(parents=True, exist_ok=True)
-            fixture = (EXTENSION_DIR / "fixture.html").resolve().as_uri()
+            loaded_extension_dir = profile_dir / "extension" / "probes"
+            shutil.copytree(EXTENSION_DIR, loaded_extension_dir)
+            fixture_path = loaded_extension_dir / "fixture.html"
+            fixture = fixture_path.resolve().as_uri()
+            stderr_log_path = profile_dir / "chrome.stderr.log"
+            stderr_log = stderr_log_path.open("wb")
             command = [
                 executable,
                 f"--user-data-dir={profile_dir}",
-                f"--load-extension={EXTENSION_DIR}",
+                f"--load-extension={loaded_extension_dir}",
                 f"--remote-debugging-port={port}",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--enable-automation",
                 "--disable-background-networking",
+                "--enable-logging=stderr",
                 "--new-window",
                 fixture,
             ]
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_log,
                 start_new_session=True,
             )
             launched = True
@@ -841,17 +973,35 @@ def inspect_live(
             return {"status": "live_unavailable", "limitation": "Chrome did not expose the requested debug endpoint."}
         if process is None or not _endpoint_belongs_to_process(port, process):
             return {"status": "live_unavailable", "limitation": "the debug endpoint owner could not be bound to the probe-launched Chrome process"}
+        load_evidence = _chrome_load_extension_evidence(stderr_log_path, stderr_log)
         targets = wait_for_probe_worker(port, process)
-        target_count = len(targets) if isinstance(targets, list) else None
+        if targets is None:
+            try:
+                observed_targets = chrome_endpoint(port, "/json/list")
+            except (OSError, urllib.error.URLError, ValueError):
+                observed_targets = []
+            targets = observed_targets if isinstance(observed_targets, list) else []
+        target_count = len(targets)
         extension = extension_probe_result(
             port,
-            targets if isinstance(targets, list) else [],
+            targets,
             expected_manifest=manifest,
+            fixture_path=fixture_path,
         )
+        if load_evidence is not None:
+            extension["extension_load_evidence"] = load_evidence
+            if extension.get("status") != "live_passed":
+                extension["limitation"] = (
+                    "branded Google Chrome refused --load-extension; the isolated probe extension "
+                    "was not loaded; "
+                    f"{extension.get('limitation', 'no complete extension evidence was observed')}"
+                )
         return {
             "status": extension.get("status", "live_unavailable"),
             "chrome_version": version.get("Browser", "unknown"),
             "target_count": target_count,
+            "candidate_worker_count": extension.get("candidate_worker_count", 0),
+            "verified_worker_count": extension.get("verified_worker_count", 0),
             "launched_by_probe": launched,
             "extension_loaded": extension.get("extension_loaded", False),
             "extension_identity_passed": extension.get("extension_identity_passed", False),
@@ -867,6 +1017,8 @@ def inspect_live(
             "screenshot_captured": extension.get("screenshot_captured", False),
             "screenshots": extension.get("screenshots", []),
             "handshake_transcript": extension.get("handshake_transcript", []),
+            "worker_diagnostics": extension.get("worker_diagnostics", []),
+            "extension_load_evidence": extension.get("extension_load_evidence"),
             "permission_prompts": {"status": "not_recorded", "required_manual_review": True},
             "limitation": extension.get("limitation"),
         }
@@ -875,6 +1027,11 @@ def inspect_live(
     finally:
         if process is not None and not _safe_stop_process(process):
             _LAST_CLEANUP_OK = False
+        if stderr_log is not None:
+            try:
+                stderr_log.close()
+            except OSError:
+                _LAST_CLEANUP_OK = False
         _cleanup_owned_profile(owned_profile)
 
 
@@ -932,7 +1089,13 @@ def main() -> int:
     if args.headed:
         live = inspect_live(args.debug_port, profile_dir, args.launch_chrome, args.chrome_binary, artifact_dir, manifest)
         if not _LAST_CLEANUP_OK:
-            live = {"status": "live_unavailable", "limitation": "live probe cleanup failed; process or disposable profile may remain"}
+            live = {
+                "status": "live_unavailable",
+                "disposable_cleanup_passed": False,
+                "limitation": "live probe cleanup failed; process or disposable profile may remain",
+            }
+        else:
+            live["disposable_cleanup_passed"] = True
         report["live"] = {"requested": True, "required": live_required, **live}
         report["handshake_transcript"] = live.get("handshake_transcript", [])
         report["screenshots"] = live.get("screenshots", [])
