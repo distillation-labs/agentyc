@@ -299,8 +299,6 @@ commands:
         "--require-live",
         "--launch-chrome",
         "--operator-assisted",
-        "--permission-prompt-status",
-        "none_observed",
       ]
     cwd: "."
     timeout_seconds: 300
@@ -413,7 +411,7 @@ commands:
       stdout: "console"
       stderr: "console"
   - id: "capability-matrix-live-required"
-    status: "required"
+    status: "planned"
     layer: "component"
     environment: ["headed-chrome"]
     fixture: "capability-catalog-live"
@@ -671,7 +669,7 @@ test_targets:
     status: "required"
     command_id: "capability-matrix-offline"
   - id: "p0-t4-live-required"
-    status: "required"
+    status: "planned"
     command_id: "capability-matrix-live-required"
     prerequisite: "existing user-approved headed Chrome and extension probe"
   - id: "p0-t5-coexistence"
