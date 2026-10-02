@@ -156,13 +156,15 @@ The following deterministic implementation surfaces now exist and pass their foc
 - `extension/`: production MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests.
 - Direct CLI/SDK, rollout evidence tooling, and the host-backed MCP compatibility adapter.
 
-The live isolated probe was rerun with the installed branded Chrome `154.0.8037.93`. It launched only a disposable profile and recorded the exact refusal `--load-extension is not allowed in Google Chrome, ignoring.`. `/json/list` exposed one service-worker-shaped built-in Google Network Speech target; exact manifest/name/version/runtime identity checks rejected it. The probe removed its disposable profile and reported `disposable_cleanup_passed: true`. It did not weaken identity checks, attach to an existing endpoint, mutate user tabs, or claim Native Messaging evidence.
+The live isolated probe was rerun with the installed branded Chrome `154.0.8037.93`. Its command-line lane launched only a disposable profile and recorded the exact refusal `--load-extension is not allowed in Google Chrome, ignoring.`. `/json/list` exposed one service-worker-shaped built-in Google Network Speech target; exact manifest/name/version/runtime identity checks rejected it. The probe removed its disposable profile and reported `disposable_cleanup_passed: true`. It did not weaken identity checks, attach to an existing endpoint, mutate user tabs, or claim Native Messaging evidence.
+
+A separate disposable-profile run used Chrome's supported `chrome://extensions` Load unpacked flow through the browser UI. That run loaded the pinned probe extension and passed extension identity, fixture identity, one debugger command, debugger event, tab-group create/cleanup, screenshot, and debugger cleanup. It is recorded as a bounded partial artifact in `artifacts/p0-extension/ui-install-partial.json`; Native Messaging was intentionally not registered in the user profile, so this artifact is not a live-pass marker.
 
 Current Phase 0 status remains **blocked/active** for these evidence gates:
 
-- branded-Chrome MV3 extension load and Chrome-mediated Native Messaging;
+- Chrome-mediated Native Messaging and the complete installation/permission flow;
 - two-space enrolled existing-Chrome coexistence and user-tab safety;
 - real installation/update/uninstall/downgrade/rollback;
 - live performance/resource/token/context measurements.
 
-Offline and deterministic tests are not substitutes for those gates. The next live action is to supply an already-installed supported unbranded/Chromium test binary or an operator-captured enrolled existing-Chrome harness; no browser download is implied by this record.
+Offline, partial headed, and deterministic tests are not substitutes for those gates. The next live action is to supply an already-installed supported unbranded/Chromium test binary or an operator-captured enrolled existing-Chrome harness; no browser download is implied by this record.
