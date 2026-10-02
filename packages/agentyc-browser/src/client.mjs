@@ -2,13 +2,40 @@ import { TaskSpace } from "./space.mjs";
 import { actionStatus, reconcileAction, submitAction } from "./actions.mjs";
 import { readEvents } from "./events.mjs";
 import { waitFor } from "./waits.mjs";
-import { makeBatch, makeRequest } from "./transport.mjs";
+import {
+  createLocalProtocolTransport,
+  createLocalTransport,
+  makeBatch,
+  makeRequest,
+} from "./transport.mjs";
 import {
   AgentycError,
+  BatchError,
+  CapabilityUnavailableError,
+  CancelledError,
+  UnknownOutcomeError,
   assertLogicalId,
   mapTransportError,
   mapWireError,
+  withRequestIdentity,
 } from "./errors.mjs";
+
+const SIDE_EFFECTING_METHODS = new Set([
+  "space.create",
+  "space.claim",
+  "space.renew",
+  "space.takeover",
+  "space.return",
+  "space.finish",
+  "space.release",
+  "page.create",
+  "page.close",
+  "action.execute",
+  "action.cancel",
+  "action.reconcile",
+  "page.navigate",
+  "page.adopt",
+]);
 
 function responseItems(response) {
   if (Array.isArray(response)) return response;
@@ -17,19 +44,177 @@ function responseItems(response) {
   return [response];
 }
 
-function responseFor(response, requestId, expectedCount) {
-  const items = responseItems(response);
-  if (items.length === 1 && expectedCount === 1 && !items[0]?.request_id)
-    return items[0];
-  return items.find((item) => item?.request_id === requestId) ?? items[0];
+function protocolError(message, details = undefined) {
+  return new AgentycError({
+    code: "invalid_json",
+    message,
+    retryable: false,
+    guidance: "none",
+    details,
+    transportFailure: true,
+  });
+}
+
+function correlateResponses(response, requestIds) {
+  if (new Set(requestIds).size !== requestIds.length) {
+    throw protocolError("request IDs must be unique before dispatch", {
+      request_ids: requestIds,
+    });
+  }
+  const expected = new Set(requestIds);
+  const byId = new Map();
+  for (const item of responseItems(response)) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      typeof item.request_id !== "string"
+    ) {
+      throw protocolError("host response is missing request_id");
+    }
+    if (!expected.has(item.request_id)) {
+      throw protocolError("host response contains an unexpected request_id", {
+        request_id: item.request_id,
+      });
+    }
+    if (byId.has(item.request_id)) {
+      throw protocolError("host response contains a duplicate request_id", {
+        request_id: item.request_id,
+      });
+    }
+    byId.set(item.request_id, item);
+  }
+  const missing = requestIds.filter((requestId) => !byId.has(requestId));
+  if (missing.length > 0) {
+    throw protocolError("host response is missing request IDs", {
+      request_ids: missing,
+    });
+  }
+  return requestIds.map((requestId) => byId.get(requestId));
+}
+
+function requestIdentity(entry) {
+  const params = entry.request.params ?? {};
+  return {
+    request_id: entry.request.request_id,
+    ...(typeof params.action_id === "string"
+      ? { action_id: params.action_id }
+      : {}),
+    ...(typeof entry.request.idempotency_key === "string"
+      ? { idempotency_key: entry.request.idempotency_key }
+      : {}),
+  };
 }
 
 function unwrap(response) {
-  if (!response || typeof response !== "object") return response;
+  if (!response || typeof response !== "object") {
+    throw protocolError("host response must be an object");
+  }
+  if (response.kind && response.kind !== "response") {
+    throw protocolError("host response has an invalid envelope kind", {
+      kind: response.kind,
+    });
+  }
+  if (response.protocol !== undefined && response.protocol !== 1) {
+    throw protocolError("host response has an unsupported protocol version", {
+      protocol: response.protocol,
+    });
+  }
   if (response.ok === false) throw mapWireError(response.error);
   if (response.ok === true) return response.result;
   if (response.error) throw mapWireError(response.error);
   return response.result === undefined ? response : response.result;
+}
+
+function sideEffectDetails(entries) {
+  const requests = entries.map(requestIdentity);
+  return {
+    requests,
+    ...(requests.length === 1 ? requests[0] : {}),
+  };
+}
+
+function isAbortError(error) {
+  return Boolean(error?.cancelled) || error?.name === "AbortError";
+}
+
+function dispatchSignal(entries, signal) {
+  const signals = [signal, ...entries.map((entry) => entry.signal)].filter(
+    Boolean,
+  );
+  if (signals.length <= 1) return signals[0];
+  if (
+    typeof AbortSignal !== "undefined" &&
+    typeof AbortSignal.any === "function"
+  ) {
+    return AbortSignal.any(signals);
+  }
+  const controller = new AbortController();
+  const abort = (event) => controller.abort(event.target?.reason);
+  for (const candidate of signals) {
+    if (candidate.aborted) {
+      controller.abort(candidate.reason);
+      break;
+    }
+    candidate.addEventListener("abort", abort, { once: true });
+  }
+  return controller.signal;
+}
+
+function bindSubscription(unsubscribe, signal) {
+  if (!signal) return unsubscribe;
+  if (signal.aborted) {
+    unsubscribe();
+    throw new CancelledError("the event subscription was cancelled");
+  }
+  const abort = () => unsubscribe();
+  signal.addEventListener("abort", abort, { once: true });
+  return () => {
+    signal.removeEventListener("abort", abort);
+    return unsubscribe();
+  };
+}
+
+function abortable(promise, signal, onAbort) {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    onAbort?.();
+    return Promise.reject(
+      Object.assign(new Error("the request was cancelled"), {
+        name: "AbortError",
+        cancelled: true,
+      }),
+    );
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const abort = () => {
+      onAbort?.();
+      finish(
+        reject,
+        Object.assign(new Error("the request was cancelled"), {
+          name: "AbortError",
+          cancelled: true,
+        }),
+      );
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error),
+    );
+  });
+}
+
+/** Return whether a method is conservatively treated as side-effecting. */
+export function methodMayHaveSideEffects(method, requested = false) {
+  return Boolean(requested) || SIDE_EFFECTING_METHODS.has(method);
 }
 
 /** Typed client over one generic local transport. */
@@ -41,7 +226,7 @@ export class BrowserClient {
     this.transport = transport;
     this.reconnectEnabled = reconnect;
     this.maxReconnects = Math.max(0, maxReconnects);
-    this.connected = true;
+    this.connected = transport.connected !== false;
   }
 
   taskSpace(spaceId) {
@@ -49,10 +234,11 @@ export class BrowserClient {
   }
 
   async createSpace(label, options = {}) {
-    const result = await this.request("space.create", {
-      label,
-      retention: options.retention,
-    });
+    const result = await this.request(
+      "space.create",
+      { label, retention: options.retention },
+      { signal: options.signal },
+    );
     const record = result?.space ?? result;
     return new TaskSpace(
       this,
@@ -65,20 +251,71 @@ export class BrowserClient {
     );
   }
 
-  async hostStatus() {
-    return this.request("host.status", {});
+  async hostStatus(options = {}) {
+    return this.request("host.status", {}, { signal: options.signal });
   }
 
   async events(options = {}) {
     return readEvents(this, options);
   }
 
-  async actionStatus(actionId) {
-    return actionStatus(this, actionId);
+  async resumeEvents(options = {}) {
+    if (options.signal?.aborted) {
+      throw new CancelledError("the event resume was cancelled");
+    }
+    if (typeof this.transport.resume !== "function") {
+      throw new CapabilityUnavailableError(
+        "event resume requires a local protocol transport",
+        { capability: "resume" },
+      );
+    }
+    try {
+      return await this.transport.resume(options);
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new CancelledError("the event resume was cancelled", {
+          cause: error.message,
+        });
+      }
+      throw error;
+    }
   }
 
-  async reconcileAction(actionId, leaseEpoch, now) {
-    return reconcileAction(this, actionId, leaseEpoch, now);
+  async subscribeEvents(listener, options = {}) {
+    if (options.signal?.aborted) {
+      throw new CancelledError("the event subscription was cancelled");
+    }
+    if (typeof this.transport.subscribe === "function") {
+      const unsubscribe = await this.transport.subscribe(listener, options);
+      return bindSubscription(unsubscribe, options.signal);
+    }
+    if (typeof this.transport.onEvent === "function") {
+      const unsubscribe = this.transport.onEvent(listener);
+      if (
+        options.afterEpoch !== undefined ||
+        options.afterSequence !== undefined
+      ) {
+        try {
+          await this.resumeEvents(options);
+        } catch (error) {
+          unsubscribe();
+          throw error;
+        }
+      }
+      return bindSubscription(unsubscribe, options.signal);
+    }
+    throw new CapabilityUnavailableError(
+      "event subscription requires a local protocol transport",
+      { capability: "events" },
+    );
+  }
+
+  async actionStatus(actionId, options = {}) {
+    return actionStatus(this, actionId, options);
+  }
+
+  async reconcileAction(actionId, leaseEpoch, now, options = {}) {
+    return reconcileAction(this, actionId, leaseEpoch, now, options);
   }
 
   async submitAction(request) {
@@ -90,22 +327,46 @@ export class BrowserClient {
   }
 
   async request(method, params = {}, options = {}) {
-    const [result] = await this._send([
-      {
-        request: makeRequest(method, params, options),
-        mayHaveSideEffects: Boolean(options.mayHaveSideEffects),
-      },
-    ]);
+    const [result] = await this._send(
+      [
+        {
+          request: makeRequest(method, params, options),
+          mayHaveSideEffects: methodMayHaveSideEffects(
+            method,
+            options.mayHaveSideEffects,
+          ),
+          signal: options.signal,
+        },
+      ],
+      options.signal,
+    );
     return result;
   }
 
-  async batch(requests) {
+  async batch(requests, options = {}) {
     if (!Array.isArray(requests) || requests.length === 0) return [];
     const entries = requests.map((entry) => ({
       request: makeRequest(entry.method, entry.params ?? {}, entry),
-      mayHaveSideEffects: Boolean(entry.mayHaveSideEffects),
+      mayHaveSideEffects: methodMayHaveSideEffects(
+        entry.method,
+        entry.mayHaveSideEffects,
+      ),
+      signal: entry.signal ?? options.signal,
     }));
-    return this._send(entries);
+    return this._send(entries, options.signal);
+  }
+
+  async cancel(requestId, reason) {
+    if (typeof this.transport.cancel !== "function") {
+      throw new CapabilityUnavailableError(
+        "request cancellation requires a local protocol transport",
+        { capability: "cancel" },
+      );
+    }
+    return this.transport.cancel(
+      Array.isArray(requestId) ? requestId : [requestId],
+      reason,
+    );
   }
 
   async reconnect() {
@@ -128,21 +389,94 @@ export class BrowserClient {
     this.connected = false;
   }
 
-  async _send(entries) {
+  async _cancelTransport(entries, reason) {
+    if (typeof this.transport.cancel !== "function") return;
+    try {
+      await this.transport.cancel(
+        entries.map((entry) => entry.request.request_id),
+        reason,
+      );
+    } catch {
+      // Cancellation is advisory once dispatch has crossed the transport boundary.
+    }
+  }
+
+  async _send(entries, signal) {
+    const requestIds = entries.map((entry) => entry.request.request_id);
+    if (new Set(requestIds).size !== requestIds.length) {
+      throw protocolError("request IDs must be unique before dispatch", {
+        request_ids: requestIds,
+      });
+    }
     const payload = makeBatch(entries.map((entry) => entry.request));
     const hasSideEffects = entries.some((entry) => entry.mayHaveSideEffects);
+    const identities = entries.map(requestIdentity);
+    const requestSignal = dispatchSignal(entries, signal);
+    if (requestSignal?.aborted) {
+      throw new CancelledError("the request was cancelled before dispatch", {
+        requests: identities,
+      });
+    }
     let reconnects = 0;
     while (true) {
       try {
-        const response = await this.transport.request(payload);
-        this.connected = true;
-        return entries.map((entry) =>
-          unwrap(
-            responseFor(response, entry.request.request_id, entries.length),
-          ),
+        const responsePromise = this.transport.request(payload, {
+          signal: requestSignal,
+        });
+        const response = await abortable(responsePromise, requestSignal, () =>
+          this._cancelTransport(entries, requestSignal?.reason?.message),
         );
+        this.connected = true;
+        const correlated = correlateResponses(response, requestIds);
+        const results = new Array(entries.length).fill(undefined);
+        const failures = [];
+        for (let index = 0; index < entries.length; index += 1) {
+          try {
+            results[index] = unwrap(correlated[index]);
+          } catch (error) {
+            const identified = withRequestIdentity(error, identities[index]);
+            failures.push({
+              index,
+              request_id: identities[index].request_id,
+              action_id: identities[index].action_id,
+              error: identified,
+            });
+          }
+        }
+        if (failures.length > 0) {
+          if (entries.length === 1) throw failures[0].error;
+          throw new BatchError({ failures, results });
+        }
+        return results;
       } catch (error) {
+        if (error instanceof BatchError) throw error;
+        if (isAbortError(error) || signal?.aborted) {
+          this.connected = this.transport.connected !== false;
+          if (hasSideEffects) {
+            throw new UnknownOutcomeError(
+              "a side-effecting request was cancelled after dispatch",
+              { ...sideEffectDetails(entries), cause: error.message },
+            );
+          }
+          throw new CancelledError("the request was cancelled", {
+            requests: identities,
+            cause: error.message,
+          });
+        }
+
+        const knownResponseError =
+          error instanceof AgentycError && !error.transportFailure;
+        const protocolFailure =
+          error instanceof AgentycError &&
+          ["invalid_json", "protocol_mismatch", "message_too_large"].includes(
+            error.code,
+          );
+        const transportFailure =
+          !knownResponseError &&
+          !protocolFailure &&
+          (error instanceof AgentycError ? error.transportFailure : true);
         if (
+          transportFailure &&
           this.reconnectEnabled &&
           !hasSideEffects &&
           reconnects < this.maxReconnects &&
@@ -157,28 +491,31 @@ export class BrowserClient {
             this.connected = false;
             throw mapTransportError(reconnectError, {
               mayHaveSideEffects: false,
+              details: sideEffectDetails(entries),
+              transportFailure: true,
             });
           }
         }
-        this.connected = false;
+        if (knownResponseError) throw error;
+        if (protocolFailure && !hasSideEffects) throw error;
+        this.connected = this.transport.connected !== false;
         throw mapTransportError(error, {
           mayHaveSideEffects: hasSideEffects,
-          details:
-            hasSideEffects && entries.length === 1
-              ? { action_id: entries[0].request.params?.action_id }
-              : undefined,
+          details: sideEffectDetails(entries),
+          transportFailure: true,
         });
       }
     }
   }
 }
 
-/** Connect a client to an injected local transport or handler. */
+/** Connect to an injected transport or to the bounded local host protocol. */
 export async function connect(options = {}) {
   const transport = options.transport ?? options.handler;
-  if (!transport) throw new TypeError("connect requires transport or handler");
-  const normalized =
-    typeof transport === "function" ? { request: transport } : transport;
+  const normalized = transport
+    ? createLocalTransport(transport)
+    : createLocalProtocolTransport(options);
+  if (typeof normalized.connect === "function") await normalized.connect();
   return new BrowserClient({
     transport: normalized,
     reconnect: options.reconnect ?? true,
