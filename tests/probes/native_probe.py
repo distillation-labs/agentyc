@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""stdio Native Messaging host fixture for the Phase 0 live probe.
+
+Chrome supplies the exact extension origin as argv[1]. The host binds the
+session to that value and requires a hello frame before the probe frame.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_messaging import (  # noqa: E402
+    RESPONSE_KIND,
+    EnvelopeSession,
+    FrameDecoder,
+    ProtocolError,
+    RejectCode,
+    encode_json,
+)
+
+
+def write_message(message: dict[str, object]) -> None:
+    sys.stdout.buffer.write(encode_json(message))
+    sys.stdout.buffer.flush()
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or not sys.argv[1]:
+        print("native probe requires Chrome's exact extension origin in argv[1]", file=sys.stderr)
+        return 2
+    # Chrome launches the host with GURL::spec(), which includes the trailing
+    # slash for an extension origin; protocol envelopes carry the origin form.
+    raw_origin = sys.argv[1]
+    expected_origin = raw_origin[:-1] if raw_origin.endswith("/") else raw_origin
+    session = EnvelopeSession(expected_origin=expected_origin)
+    decoder = FrameDecoder()
+    expected_kinds = ("hello", "probe")
+    received = 0
+    try:
+        while True:
+            # Chrome keeps the Native Messaging pipe open for the port lifetime;
+            # use an unbuffered read so one available frame is processed without
+            # waiting for the buffer size or EOF.
+            chunk = os.read(sys.stdin.fileno(), 4096)
+            if not chunk:
+                decoder.finish()
+                if received != len(expected_kinds):
+                    raise ProtocolError(RejectCode.INVALID_ENVELOPE, "incomplete hello then probe handshake")
+                return 0
+            for frame in decoder.feed(chunk):
+                envelope = session.accept(frame)
+                kind = envelope.get("kind")
+                if received >= len(expected_kinds) or kind != expected_kinds[received]:
+                    raise ProtocolError(RejectCode.INVALID_ENVELOPE, "expected hello followed by probe")
+                if envelope.get("payload", {}).get("fixture") != "agentyc P0 probe fixture":
+                    raise ProtocolError(RejectCode.INVALID_ENVELOPE, "unexpected fixture identity")
+                received += 1
+                write_message({
+                    "accepted": True,
+                    "kind": RESPONSE_KIND,
+                    "message_id": envelope["message_id"],
+                    "phase": kind,
+                    "nonce": envelope["nonce"],
+                    "version": envelope["version"],
+                })
+    except ProtocolError as error:
+        print(f"native probe rejected input: {error.code.value}", file=sys.stderr)
+        return 2
+    except (BrokenPipeError, OSError):
+        return 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
