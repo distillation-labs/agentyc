@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import re
+import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ NONCE_RE = re.compile(r"^[0-9a-f]{16,128}$")
 GENERATION_MANIFEST_NAME = "generation-manifest.json"
 COMMIT_MARKER_NAME = "COMMIT"
 PRIVATE_ARTIFACT_NAMES = {".install-owner", ".install-journal", ".install-lock"}
+MAX_EXTENSION_FILES = 64
+MAX_EXTENSION_BYTES = 8 * 1024 * 1024
 
 
 REQUIRED_BASELINE_HEADINGS = (
@@ -155,6 +158,39 @@ class Checker:
             self.add("invalid-json", "JSON artifact is not valid JSON", path, gate=gate)
             return None
 
+
+
+def extension_tree_sha256(directory: Path) -> str:
+    root = Path(directory)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("probe extension tree is not a real directory")
+    files: list[tuple[str, bytes]] = []
+    total = 0
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        if path.is_symlink():
+            raise ValueError("probe extension tree contains a symlink")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise ValueError("probe extension tree contains a non-file")
+        size = path.stat().st_size
+        if len(files) >= MAX_EXTENSION_FILES or total + size > MAX_EXTENSION_BYTES:
+            raise ValueError("probe extension tree exceeds the bounded limit")
+        data = path.read_bytes()
+        if len(data) != size:
+            raise ValueError("probe extension tree changed while being hashed")
+        total += len(data)
+        files.append((path.relative_to(root).as_posix(), data))
+    if not files:
+        raise ValueError("probe extension tree is empty")
+    digest = hashlib.sha256()
+    for relative, data in files:
+        encoded = relative.encode("utf-8")
+        digest.update(struct.pack(">I", len(encoded)))
+        digest.update(encoded)
+        digest.update(struct.pack(">Q", len(data)))
+        digest.update(data)
+    return digest.hexdigest()
 
 
 def nested(data: Any, *keys: str) -> Any:
@@ -380,6 +416,7 @@ def validate_extension_gate(checker: Checker) -> str:
     required_fields = (
         "extension_loaded",
         "extension_identity_passed",
+        "extension_build_binding_passed",
         "fixture_identity_passed",
         "debugger_command_passed",
         "debugger_event_received",
@@ -418,12 +455,28 @@ def validate_extension_gate(checker: Checker) -> str:
         if not isinstance(live, dict) or not SHA256_RE.fullmatch(str(live.get(hash_name, ""))):
             checker.add("live-chrome-build-binding-missing", "live extension evidence lacks a bounded runner or staged-tree hash", path, gate="live_chrome")
             break
+    if isinstance(live, dict):
+        runner_path = checker.safe_path(Path("scripts/run_chrome_probe.py"))
+        extension_path = checker.safe_path(Path("extension/probes"))
+        try:
+            runner_hash = hashlib.sha256(runner_path.read_bytes()).hexdigest() if runner_path is not None else None
+            source_hash = extension_tree_sha256(extension_path) if extension_path is not None else None
+        except (OSError, ValueError):
+            runner_hash = None
+            source_hash = None
+        if live.get("runner_sha256") != runner_hash or live.get("source_extension_tree_sha256") != source_hash:
+            checker.add(
+                "live-chrome-build-binding-mismatch",
+                "live extension evidence is not bound to the current probe runner and source tree",
+                path,
+                gate="live_chrome",
+            )
     if not isinstance(safety, dict) or any(safety.get(key) is not False for key in ("default_chrome_launch", "default_profile_mutation", "raw_ids_logged", "secrets_logged")) or safety.get("fixture_only_mutation") is not True:
         checker.add("live-chrome-safety-schema", "extension report lacks the required safety assertions", path, gate="live_chrome")
     return "passed" if not any(issue.gate == "live_chrome" for issue in checker.issues) else "missing"
 
 
-def validate_native_protocol_gate(checker: Checker) -> str:
+def validate_native_protocol_gate(checker: Checker, *, extension_gate_passed: bool = False) -> str:
     directory = checker.safe_path(ARTIFACT_ROOT_REL / "p0-native-protocol")
     if directory is None or not directory.is_dir():
         checker.add("native-protocol-dir-missing", "Native Messaging artifact directory is missing", directory, gate="live_native")
@@ -434,6 +487,20 @@ def validate_native_protocol_gate(checker: Checker) -> str:
         return "missing"
     live_required = False
     offline_schema = False
+    preflight_path = checker.safe_path(ARTIFACT_ROOT_REL / "p0-installation-preflight" / "report.json")
+    preflight = checker.read_json(preflight_path, gate="live_native") if preflight_path is not None and preflight_path.is_file() else None
+    if (
+        not isinstance(preflight, dict)
+        or preflight.get("kind") != "installation-preflight"
+        or preflight.get("status") != "ready"
+        or preflight.get("evidence_mode") != "offline"
+    ):
+        checker.add(
+            "native-protocol-install-preflight-missing",
+            "Chrome-mediated Native Messaging evidence requires the separate installation preflight artifact",
+            preflight_path,
+            gate="live_native",
+        )
     for path in reports:
         data = checker.read_json(path, gate="live_native")
         if not isinstance(data, dict):
@@ -442,15 +509,6 @@ def validate_native_protocol_gate(checker: Checker) -> str:
         if isinstance(offline, dict) and isinstance(offline.get("cases"), dict) and isinstance(offline.get("limits"), dict):
             offline_schema = True
         # A direct host smoke is intentionally not Chrome-mediated evidence.
-        live = data.get("live")
-        if (
-            data.get("status") == "live_passed"
-            and isinstance(live, dict)
-            and live.get("required") is True
-            and live.get("status") == "passed"
-            and live.get("chrome_mediated") is True
-        ):
-            live_required = True
 
     # P0-T2 drives chrome.runtime.connectNative through the MV3 extension. It
     # is the authoritative Chrome-mediated Native Messaging lane; P0-T3's
@@ -459,7 +517,8 @@ def validate_native_protocol_gate(checker: Checker) -> str:
     extension_report = checker.read_json(extension_path, gate="live_native") if extension_path is not None and extension_path.is_file() else None
     extension_live = extension_report.get("live") if isinstance(extension_report, dict) else None
     if (
-        isinstance(extension_report, dict)
+        extension_gate_passed
+        and isinstance(extension_report, dict)
         and extension_report.get("status") == "live_passed"
         and isinstance(extension_live, dict)
         and extension_live.get("required") is True
@@ -467,13 +526,18 @@ def validate_native_protocol_gate(checker: Checker) -> str:
         and extension_live.get("chrome_mediated_native_messaging") is True
         and extension_live.get("handshake_transcript") == ["hello_accepted", "probe_accepted"]
         and extension_live.get("native_messaging_passed") is True
+        and extension_live.get("extension_build_binding_passed") is True
+        and isinstance(extension_live.get("permission_prompts"), dict)
+        and extension_live["permission_prompts"].get("status") in {"recorded", "none_observed"}
     ):
         live_required = True
 
     if not offline_schema:
         checker.add("native-protocol-schema", "Native Messaging offline case and limit schema is missing", directory, gate="evidence")
+    if not extension_gate_passed:
+        live_required = False
     if not live_required:
-        checker.add("native-protocol-live-missing", "required Chrome-mediated Native Messaging handshake evidence is absent", directory, gate="live_native")
+        checker.add("native-protocol-live-missing", "required Chrome-mediated Native Messaging handshake evidence is absent from a passing Chrome extension probe", directory, gate="live_native")
     return "passed" if live_required else "missing"
 
 
@@ -1174,9 +1238,13 @@ def run(root: Path) -> dict[str, Any]:
     validate_current_artifacts(checker)
     validate_artifact_safety(checker)
     validate_artifact_envelope(checker)
+    live_chrome_status = validate_extension_gate(checker)
     gates = {
-        "live_chrome": validate_extension_gate(checker),
-        "live_native_messaging": validate_native_protocol_gate(checker),
+        "live_chrome": live_chrome_status,
+        "live_native_messaging": validate_native_protocol_gate(
+            checker,
+            extension_gate_passed=live_chrome_status == "passed",
+        ),
         "coexistence": validate_coexistence_gate(checker),
         "installation": validate_installation_gate(checker),
         "performance": validate_performance_gate(checker),
