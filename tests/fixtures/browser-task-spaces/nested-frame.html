@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Nested frame</title></head>
+<body>
+  <main>
+    <h1>Outer document</h1>
+    <button id="outer-action" type="button">Outer action</button>
+    <iframe title="inner fixture" srcdoc="<!doctype html><html lang='en'><body><h2>Inner document</h2><button id='inner-action' type='button'>Inner action</button></body></html>"></iframe>
+  </main>
+</body>
+</html>
