@@ -9,17 +9,19 @@ Run the read-only preflight with no action flag:
 ```bash
 python3 scripts/run_install_drill.py \
   --clean-profile \
-  --artifact-dir artifacts/p0-installation
+  --artifact-dir artifacts/p0-installation-preflight
 ```
 
 `--clean-profile` is a required-drill request. The path defaults to
-`artifacts/p0-installation/clean-profile`; pass a path when needed, but it must
+`artifacts/p0-installation-preflight/clean-profile`; pass a path when needed, but it must
 be inside `--artifact-dir`. The path may be absent or empty. The script only
 checks it and never creates, cleans, or populates it.
 
-The artifact directory must be inside the repository `artifacts/` directory,
-may not be a symlink, and is the only location where the report and drill
-record can be written. A required preflight exits nonzero unless actual
+The preflight artifact directory is `artifacts/p0-installation-preflight/`; an
+explicit installation/rollback drill uses the separate
+`artifacts/p0-installation/` directory. Each artifact directory must be inside
+the repository `artifacts/` directory, may not be a symlink, and is the only
+location where that run's report and private drill record can be written. A required preflight exits nonzero unless actual
 installation and rollback evidence exists. This is intentional: a clean local
 fixture or a detected Chrome executable is not proof that an extension loaded,
 Native Messaging connected, or rollback preserved the user's browser state.
@@ -27,10 +29,10 @@ Native Messaging connected, or rollback preserved the user's browser state.
 To inspect static inputs without making the run required:
 
 ```bash
-python3 scripts/run_install_drill.py --artifact-dir artifacts/p0-installation
+python3 scripts/run_install_drill.py --artifact-dir artifacts/p0-installation-preflight
 ```
 
-The report is `artifacts/p0-installation/report.json`. It contains statuses,
+The preflight report is `artifacts/p0-installation-preflight/report.json`. It contains statuses,
 counts, byte sizes, and short SHA-256 prefixes only. It does not contain
 absolute paths, extension IDs, browser/tab IDs, cookies, tokens, page bodies,
 or screenshots.
@@ -65,7 +67,6 @@ validation lane is operator-assisted:
 ```bash
 python3 scripts/run_chrome_probe.py \
   --headed --require-live --launch-chrome --operator-assisted \
-  --permission-prompt-status none_observed \
   --artifact-dir artifacts/p0-extension
 ```
 
@@ -74,9 +75,10 @@ The runner opens an owned disposable Chrome window, navigates to
 operator to enable Developer mode and click **Load unpacked**. It does not pass
 `--load-extension`, call `chrome.developerPrivate`, inspect the internal
 extensions page DOM, or automate the native file picker. Native Messaging must
-be installed separately before this run, and the operator must record whether a
-permission/policy prompt was observed. If a different manifest is already
-present, the script refuses to replace it. Use `--install` or `--rollback`
+be installed separately before this run. After the exact extension worker is
+observed, the runner asks the operator for a post-load permission/policy
+acknowledgement; missing or non-interactive input cannot pass the gate. If a
+different manifest is already present, the script refuses to replace it. Use `--install` or `--rollback`
 separately only for an explicit, operator-controlled action:
 
 ```bash
