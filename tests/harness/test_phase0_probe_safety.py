@@ -399,6 +399,79 @@ setTimeout(() => {
             ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", base["webSocketDebuggerUrl"]),
         )
 
+    def test_websocket_resolution_accepts_loopback_and_rejects_rebinding(self) -> None:
+        fake_socket = mock.Mock()
+        with (
+            mock.patch.object(
+                _chrome.socket,
+                "getaddrinfo",
+                return_value=[
+                    (
+                        _chrome.socket.AF_INET,
+                        _chrome.socket.SOCK_STREAM,
+                        6,
+                        "",
+                        ("127.0.0.1", 9222),
+                    )
+                ],
+            ),
+            mock.patch.object(_chrome.socket, "create_connection", return_value=fake_socket),
+            mock.patch.object(_chrome.DevToolsSocket, "_read_http_headers", return_value=b""),
+            mock.patch.object(_chrome.DevToolsSocket, "_validate_handshake"),
+        ):
+            client = _chrome.DevToolsSocket("ws://127.0.0.1:9222/devtools/page/worker")
+            client.close()
+
+        for resolved_host in ("192.0.2.1", "::ffff:192.0.2.1"):
+            with self.subTest(resolved_host=resolved_host):
+                family = _chrome.socket.AF_INET6 if ":" in resolved_host else _chrome.socket.AF_INET
+                sockaddr = (resolved_host, 9222, 0, 0) if family == _chrome.socket.AF_INET6 else (resolved_host, 9222)
+                with mock.patch.object(
+                    _chrome.socket,
+                    "getaddrinfo",
+                    return_value=[(family, _chrome.socket.SOCK_STREAM, 6, "", sockaddr)],
+                ):
+                    with self.assertRaisesRegex(ValueError, "hostname is not loopback"):
+                        _chrome.DevToolsSocket("ws://localhost:9222/devtools/page/worker")
+
+    def test_worker_discovery_polls_until_ready_and_fails_closed_at_deadline(self) -> None:
+        process = object()
+        worker = {
+            "type": "service_worker",
+            "url": "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/service_worker.js",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/worker",
+        }
+        clock = [0.0]
+
+        def monotonic() -> float:
+            return clock[0]
+
+        def sleep(duration: float) -> None:
+            clock[0] += duration
+
+        with (
+            mock.patch.object(_chrome, "_endpoint_belongs_to_process", return_value=True) as ownership,
+            mock.patch.object(_chrome, "chrome_endpoint", side_effect=[[], [worker]]) as endpoint,
+            mock.patch.object(_chrome.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(_chrome.time, "sleep", side_effect=sleep),
+        ):
+            self.assertEqual(_chrome.wait_for_probe_worker(9222, process, timeout=0.25), [worker])
+
+        self.assertEqual(endpoint.call_count, 2)
+        self.assertEqual(ownership.call_count, 2)
+        endpoint.assert_has_calls([mock.call(9222, "/json/list"), mock.call(9222, "/json/list")])
+        ownership.assert_called_with(9222, process)
+
+        clock[0] = 0.0
+        with (
+            mock.patch.object(_chrome, "_endpoint_belongs_to_process", return_value=True),
+            mock.patch.object(_chrome, "chrome_endpoint", return_value=[]),
+            mock.patch.object(_chrome.time, "monotonic", side_effect=monotonic),
+            mock.patch.object(_chrome.time, "sleep", side_effect=sleep),
+        ):
+            self.assertIsNone(_chrome.wait_for_probe_worker(9222, process, timeout=0.25))
+            self.assertEqual(clock[0], 0.25)
+
     def test_websocket_handshake_accept_and_server_frame_validation(self) -> None:
         key = base64.b64encode(b"0123456789abcdef").decode("ascii")
         accept = base64.b64encode(
