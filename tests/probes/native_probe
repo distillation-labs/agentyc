@@ -7,8 +7,6 @@ session to that value and requires a hello frame before the probe frame.
 
 from __future__ import annotations
 
-import json
-import struct
 import sys
 from pathlib import Path
 
@@ -18,12 +16,13 @@ from native_messaging import (  # noqa: E402
     FrameDecoder,
     ProtocolError,
     RejectCode,
+    encode_json,
+    RESPONSE_KIND,
 )
 
 
 def write_message(message: dict[str, object]) -> None:
-    payload = json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    sys.stdout.buffer.write(struct.pack("<I", len(payload)) + payload)
+    sys.stdout.buffer.write(encode_json(message))
     sys.stdout.buffer.flush()
 
 
@@ -54,6 +53,7 @@ def main() -> int:
                 received += 1
                 write_message({
                     "accepted": True,
+                    "kind": RESPONSE_KIND,
                     "message_id": envelope["message_id"],
                     "phase": kind,
                     "nonce": envelope["nonce"],
