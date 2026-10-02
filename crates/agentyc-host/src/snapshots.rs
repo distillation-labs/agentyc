@@ -73,6 +73,89 @@ pub struct SnapshotRead {
     pub scan_performed: bool,
 }
 
+impl SnapshotRead {
+    /// Return only cache/provenance metadata without exposing the snapshot body.
+    pub fn metadata(&self) -> SnapshotMetadataRead {
+        SnapshotMetadataRead {
+            metadata: SnapshotMetadata::from_envelope(&self.envelope),
+            cache_state: self.cache_state,
+            scan_performed: self.scan_performed,
+        }
+    }
+}
+
+/// Body-free snapshot metadata suitable for adapter-facing clean-cache reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotMetadata {
+    /// Owning logical space.
+    pub space_id: SpaceId,
+    /// Owning logical page.
+    pub page_id: PageId,
+    /// Snapshot version and content identity.
+    pub snapshot_version: SnapshotVersion,
+    /// Content hash of the snapshot result.
+    pub snapshot_hash: ContentHash,
+    /// Result hash repeated for delta-aware consumers.
+    pub result_hash: ContentHash,
+    /// Logical frame topology version.
+    pub topology_version: TopologyVersion,
+    /// Navigation generation.
+    pub navigation_generation: Generation,
+    /// Document generation.
+    pub document_generation: Generation,
+    /// Exact per-frame version vector.
+    pub frame_versions: BTreeMap<agentyc_core::FrameId, FrameVersion>,
+    /// Representation mode without its body.
+    pub mode: SnapshotMode,
+    /// Operation count reported by the producer.
+    pub operation_count: u32,
+    /// Whether all frame versions were coherent.
+    pub coherent: bool,
+    /// Coverage status.
+    pub coverage: SnapshotCoverage,
+    /// Cache freshness.
+    pub cache_state: CacheState,
+    /// Whether a consumer must resync before using a body.
+    pub resync_required: bool,
+    /// Ref epoch associated with this result.
+    pub refs_epoch: RefEpoch,
+}
+
+impl SnapshotMetadata {
+    /// Copy the non-body fields from a validated snapshot envelope.
+    pub fn from_envelope(envelope: &SnapshotEnvelope) -> Self {
+        Self {
+            space_id: envelope.space_id.clone(),
+            page_id: envelope.page_id.clone(),
+            snapshot_version: envelope.snapshot_version,
+            snapshot_hash: envelope.snapshot_hash.clone(),
+            result_hash: envelope.result_hash.clone(),
+            topology_version: envelope.topology_version,
+            navigation_generation: envelope.navigation_generation,
+            document_generation: envelope.document_generation,
+            frame_versions: envelope.frame_versions.clone(),
+            mode: envelope.mode,
+            operation_count: envelope.operation_count,
+            coherent: envelope.coherent,
+            coverage: envelope.coverage,
+            cache_state: envelope.cache_state,
+            resync_required: envelope.resync_required,
+            refs_epoch: envelope.refs_epoch,
+        }
+    }
+}
+
+/// Public metadata-only result for a broker snapshot read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotMetadataRead {
+    /// Snapshot metadata without DOM or delta body.
+    pub metadata: SnapshotMetadata,
+    /// Whether the result came from a clean cache or a bridge scan.
+    pub cache_state: CacheState,
+    /// Whether the bridge was queried for this read.
+    pub scan_performed: bool,
+}
+
 /// Errors raised by the standalone bounded cache.
 #[derive(Debug, Error)]
 pub enum SnapshotCacheError {
