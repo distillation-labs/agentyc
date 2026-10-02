@@ -38,6 +38,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +64,9 @@ WEBSOCKET_FRAME_LIMIT = 64 * 1024
 RESULT_HANDOFF_LIMIT = 16 * 1024
 WORKER_DISCOVERY_TIMEOUT = 8.0
 WORKER_DISCOVERY_INTERVAL = 0.1
-WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+CONTROL_PAGE_IDENTITY_TIMEOUT = 5.0
+CONTROL_PAGE_RETRY_INTERVAL = 0.1
+WEBSOCKET_GUID = "258EA5-E914-47DA-95CA-C5AB0DC85B11"
 _LAST_CLEANUP_OK = True
 
 
@@ -619,6 +622,7 @@ def _expected_extension_manifest(manifest: dict[str, Any] | None) -> dict[str, A
 
 
 def _is_expected_worker(identity: Any, extension_id: str, manifest: dict[str, Any]) -> bool:
+    """Retained for offline negative tests; live probing does not attach to workers."""
     background = manifest.get("background")
     service_worker = background.get("service_worker") if isinstance(background, dict) else None
     expected_extension_id = _manifest_extension_id(manifest)
@@ -635,6 +639,98 @@ def _is_expected_worker(identity: Any, extension_id: str, manifest: dict[str, An
         and identity.get("origin") == f"chrome-extension://{extension_id}"
         and identity.get("pathname") == f"/{service_worker}"
     )
+
+
+def _extension_page_candidate(
+    target: Any,
+    expected_port: int | None = None,
+    expected_path: str = "/probe.html",
+) -> tuple[str, str] | None:
+    """Select only the exact stable extension control-page target."""
+    if not isinstance(target, dict) or target.get("type") != "page":
+        return None
+    target_url = target.get("url")
+    websocket_url = target.get("webSocketDebuggerUrl")
+    if not isinstance(target_url, str) or not isinstance(websocket_url, str):
+        return None
+    try:
+        parsed = urllib.parse.urlparse(target_url)
+        websocket = urllib.parse.urlparse(websocket_url)
+        extension_id = parsed.hostname
+        websocket_port = websocket.port
+    except ValueError:
+        return None
+    expected_url = f"chrome-extension://{extension_id}{expected_path}"
+    if (
+        parsed.scheme != "chrome-extension"
+        or not isinstance(extension_id, str)
+        or not EXTENSION_ID_PATTERN.fullmatch(extension_id)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != expected_path
+        or target_url != expected_url
+        or websocket.scheme != "ws"
+        or websocket.hostname not in {"127.0.0.1", "localhost"}
+        or websocket_port is None
+        or expected_port is not None and websocket_port != expected_port
+        or websocket.username is not None
+        or websocket.password is not None
+        or websocket.fragment
+    ):
+        return None
+    return extension_id, websocket_url
+
+
+def _is_expected_extension_page(
+    identity: Any,
+    extension_id: str,
+    manifest: dict[str, Any],
+) -> bool:
+    background = manifest.get("background")
+    service_worker = background.get("service_worker") if isinstance(background, dict) else None
+    expected_extension_id = _manifest_extension_id(manifest)
+    return (
+        isinstance(identity, dict)
+        and (expected_extension_id is None or expected_extension_id == extension_id)
+        and identity.get("runtime_id") == extension_id
+        and identity.get("manifest_version") == manifest.get("manifest_version")
+        and identity.get("name") == manifest.get("name")
+        and identity.get("version") == manifest.get("version")
+        and identity.get("service_worker") == service_worker
+        and identity.get("origin") == f"chrome-extension://{extension_id}"
+        and identity.get("pathname") == "/probe.html"
+    )
+
+
+def _extension_page_identity_evidence(
+    identity: Any,
+    extension_id: str,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    background = manifest.get("background")
+    service_worker = background.get("service_worker") if isinstance(background, dict) else None
+    expected_extension_id = _manifest_extension_id(manifest)
+    evidence: dict[str, Any] = {
+        "status": "identity_mismatch",
+        "runtime_id_matches_target": isinstance(identity, dict) and identity.get("runtime_id") == extension_id,
+        "manifest_version_matches": isinstance(identity, dict) and identity.get("manifest_version") == manifest.get("manifest_version"),
+        "name_matches": isinstance(identity, dict) and identity.get("name") == manifest.get("name"),
+        "version_matches": isinstance(identity, dict) and identity.get("version") == manifest.get("version"),
+        "service_worker_matches": isinstance(identity, dict) and identity.get("service_worker") == service_worker,
+        "origin_matches": isinstance(identity, dict) and identity.get("origin") == f"chrome-extension://{extension_id}",
+        "pathname_matches": isinstance(identity, dict) and identity.get("pathname") == "/probe.html",
+    }
+    if expected_extension_id is not None:
+        evidence["manifest_key_id_matches_target"] = expected_extension_id == extension_id
+    if isinstance(identity, dict):
+        for field in ("name", "version", "service_worker"):
+            value = _bounded_worker_diagnostic(field, identity.get(field))
+            if value is not None:
+                evidence[f"observed_{field}"] = value
+    return evidence
 
 
 def _bounded_diagnostic_string(value: Any) -> str | None:
@@ -682,6 +778,15 @@ def _worker_identity_evidence(
             if value is not None:
                 evidence[f"observed_{field}"] = value
     return evidence
+
+
+def _identity_probe_failure(phase: str) -> dict[str, str]:
+    """Return bounded diagnostics for a transient worker-lifecycle failure."""
+    return {
+        "status": "identity_probe_failed",
+        "phase": phase,
+        "reason": "worker identity could not be verified",
+    }
 
 
 def _cleanup_owned_profile(profile: Path | None) -> bool:
@@ -773,76 +878,133 @@ def extension_probe_result(
     *,
     binding_nonce: str | None = None,
     source_extension_hash: str | None = None,
+    target_provider: Callable[[], list[dict[str, Any]] | None] | None = None,
 ) -> dict[str, Any]:
-    """Run the probe only after selecting one identity-verified worker."""
+    """Run the probe through an identity-verified extension control page.
+
+    The live path deliberately does not attach to an MV3 service-worker target.
+    Chrome documents service workers as restartable, and a worker-shaped CDP
+    target can disappear between discovery and evaluation. The control page is
+    a stable extension context; its documented ``chrome.storage`` call wakes
+    the worker, which then performs the debugger, tab-group, and Native
+    Messaging checks.
+    """
     request_id = new_request_id()
     manifest = _expected_extension_manifest(expected_manifest)
-    candidates = [_worker_candidate(target, port) for target in targets]
-    candidates = [candidate for candidate in candidates if candidate is not None]
-    if not candidates:
+    current_targets = targets if isinstance(targets, list) else []
+    candidate_count = 0
+    identity_diagnostics: list[dict[str, Any]] = []
+    identity_deadline = (
+        time.monotonic() + CONTROL_PAGE_IDENTITY_TIMEOUT
+        if target_provider is not None
+        else None
+    )
+
+    def unavailable(limitation: str, verified_count: int = 0) -> dict[str, Any]:
         return {
             "status": "live_unavailable",
-            "candidate_worker_count": 0,
-            "verified_worker_count": 0,
-            "limitation": "the expected probe service worker was not observed",
-        }
-
-    verified: list[DevToolsSocket] = []
-    worker_diagnostics: list[dict[str, Any]] = []
-    for extension_id, websocket_url in candidates:
-        client: DevToolsSocket | None = None
-        try:
-            client = DevToolsSocket(websocket_url)
-            client.command("Runtime.enable")
-            identity_result = client.command(
-                "Runtime.evaluate",
-                {
-                    "expression": "(() => { const manifest = chrome.runtime.getManifest(); return { runtime_id: chrome.runtime.id, manifest_version: manifest.manifest_version, name: manifest.name, version: manifest.version, service_worker: manifest.background?.service_worker ?? null, origin: location.origin, pathname: location.pathname }; })()",
-                    "returnByValue": True,
-                },
-            )
-            identity = _runtime_value(identity_result)
-            if _is_expected_worker(identity, extension_id, manifest):
-                verified.append(client)
-                client = None
-            elif len(worker_diagnostics) < MAX_WORKER_DIAGNOSTICS:
-                worker_diagnostics.append(_worker_identity_evidence(identity, extension_id, manifest))
-        except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, struct.error):
-            if len(worker_diagnostics) < MAX_WORKER_DIAGNOSTICS:
-                worker_diagnostics.append(
-                    {
-                        "status": "identity_probe_failed",
-                        "reason": "worker identity could not be verified",
-                    }
-                )
-        finally:
-            if client is not None:
-                client.close()
-
-    if len(verified) != 1:
-        for client in verified:
-            client.close()
-        if len(verified) == 0 and worker_diagnostics:
-            limitation = (
-                "the expected probe extension worker was not identity-verified; "
-                "service_worker.js-shaped target(s) failed the exact probe manifest checks"
-            )
-        elif len(verified) == 0:
-            limitation = "the expected probe extension worker was not observed"
-        else:
-            limitation = "the expected probe extension worker was ambiguous after exact identity verification"
-        return {
-            "status": "live_unavailable",
-            "candidate_worker_count": len(candidates),
-            "verified_worker_count": len(verified),
-            "worker_diagnostics": worker_diagnostics,
+            "candidate_extension_page_count": candidate_count,
+            "verified_extension_page_count": verified_count,
+            "identity_diagnostics": identity_diagnostics,
+            "control_page_identity_passed": False,
             "limitation": limitation,
         }
 
-    socket_client = verified[0]
+    while True:
+        candidates = [
+            _extension_page_candidate(target, port)
+            for target in current_targets
+        ]
+        candidates = [candidate for candidate in candidates if candidate is not None]
+        candidate_count = max(candidate_count, len(candidates))
+        if not candidates:
+            if target_provider is None or identity_deadline is None:
+                return unavailable("the exact probe extension control page was not observed")
+            remaining = identity_deadline - time.monotonic()
+            if remaining <= 0:
+                return unavailable("the exact probe extension control page was not observed")
+            try:
+                refreshed_targets = target_provider()
+            except (OSError, ValueError, TypeError):
+                refreshed_targets = None
+            current_targets = refreshed_targets if isinstance(refreshed_targets, list) else []
+            remaining = identity_deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(CONTROL_PAGE_RETRY_INTERVAL, remaining))
+            continue
+
+        verified: list[DevToolsSocket] = []
+        transient_failure = False
+        for extension_id, websocket_url in candidates:
+            client: DevToolsSocket | None = None
+            try:
+                try:
+                    client = DevToolsSocket(websocket_url)
+                    client.command("Runtime.enable")
+                except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+                    transient_failure = True
+                    if len(identity_diagnostics) < MAX_WORKER_DIAGNOSTICS:
+                        identity_diagnostics.append(_identity_probe_failure("control_page_connect"))
+                    continue
+                try:
+                    identity_result = client.command(
+                        "Runtime.evaluate",
+                        {
+                            "expression": "(() => { const manifest = chrome.runtime.getManifest(); return { runtime_id: chrome.runtime.id, manifest_version: manifest.manifest_version, name: manifest.name, version: manifest.version, service_worker: manifest.background?.service_worker ?? null, origin: location.origin, pathname: location.pathname }; })()",
+                            "returnByValue": True,
+                        },
+                    )
+                    identity = _runtime_value(identity_result)
+                except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, TimeoutError, struct.error):
+                    transient_failure = True
+                    if len(identity_diagnostics) < MAX_WORKER_DIAGNOSTICS:
+                        identity_diagnostics.append(_identity_probe_failure("control_page_evaluate"))
+                    continue
+                if _is_expected_extension_page(identity, extension_id, manifest):
+                    verified.append(client)
+                    client = None
+                elif len(identity_diagnostics) < MAX_WORKER_DIAGNOSTICS:
+                    identity_diagnostics.append(
+                        _extension_page_identity_evidence(identity, extension_id, manifest)
+                    )
+            finally:
+                if client is not None:
+                    client.close()
+
+        if len(verified) == 1:
+            socket_client = verified[0]
+            break
+        if len(verified) > 1:
+            for client in verified:
+                client.close()
+            return unavailable(
+                "the exact probe extension control page was ambiguous after identity verification",
+                len(verified),
+            )
+        if not transient_failure or target_provider is None or identity_deadline is None:
+            limitation = (
+                "the exact probe extension control page was not identity-verified"
+                if identity_diagnostics
+                else "the exact probe extension control page was not observed"
+            )
+            return unavailable(limitation)
+        remaining = identity_deadline - time.monotonic()
+        if remaining <= 0:
+            return unavailable(
+                "the exact probe extension control page was not identity-verified before the retry deadline"
+            )
+        time.sleep(min(CONTROL_PAGE_RETRY_INTERVAL, remaining))
+        try:
+            refreshed_targets = target_provider()
+        except (OSError, ValueError, TypeError):
+            refreshed_targets = None
+        current_targets = refreshed_targets if isinstance(refreshed_targets, list) else []
+
     try:
         request_literal = json.dumps(request_id)
-        fixture_literal = json.dumps((fixture_path or EXTENSION_DIR / "fixture.html").resolve().as_uri())
+        fixture_literal = json.dumps(
+            (fixture_path or EXTENSION_DIR / "fixture.html").resolve().as_uri()
+        )
         trigger = socket_client.command(
             "Runtime.evaluate",
             {
@@ -871,8 +1033,9 @@ def extension_probe_result(
             if len(encoded) > RESULT_HANDOFF_LIMIT:
                 return {
                     "status": "live_unavailable",
-                    "candidate_worker_count": len(candidates),
-                    "verified_worker_count": len(verified),
+                    "candidate_extension_page_count": candidate_count,
+                    "verified_extension_page_count": len(verified),
+                    "control_page_identity_passed": True,
                     "limitation": "extension result handoff exceeded the probe bound",
                 }
             if not isinstance(value, dict) or value.get("request_id") != request_id:
@@ -900,37 +1063,39 @@ def extension_probe_result(
                 "cleanup_passed": value.get("cleanup_passed") is True,
                 "screenshot_captured": value.get("screenshot_captured") is True,
                 "extension_identity_passed": value.get("extension_version") == manifest.get("version") and permissions_match,
+                "control_page_identity_passed": True,
             }
             if value.get("ok") is True and all(required.values()) and transcript_valid:
                 return {
                     "status": "live_passed",
-                    "candidate_worker_count": len(candidates),
-                    "verified_worker_count": len(verified),
+                    "candidate_extension_page_count": candidate_count,
+                    "verified_extension_page_count": len(verified),
                     **required,
                     "chrome_mediated_native_messaging": True,
-                    "screenshot_captured": True,
                     "screenshots": [{"captured": True, "format": "png"}],
                     "handshake_transcript": transcript,
                 }
             return {
                 "status": "live_unavailable",
-                "candidate_worker_count": len(candidates),
-                "verified_worker_count": len(verified),
+                "candidate_extension_page_count": candidate_count,
+                "verified_extension_page_count": len(verified),
                 **required,
                 "handshake_transcript": transcript if isinstance(transcript, list) else [],
                 "limitation": "extension probe returned incomplete evidence",
             }
         return {
             "status": "live_unavailable",
-            "candidate_worker_count": len(candidates),
-            "verified_worker_count": len(verified),
+            "candidate_extension_page_count": candidate_count,
+            "verified_extension_page_count": len(verified),
+            "control_page_identity_passed": True,
             "limitation": "extension probe result was not received before the deadline",
         }
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, TimeoutError, struct.error):
         return {
             "status": "live_unavailable",
-            "candidate_worker_count": len(candidates),
-            "verified_worker_count": len(verified),
+            "candidate_extension_page_count": candidate_count,
+            "verified_extension_page_count": len(verified),
+            "control_page_identity_passed": True,
             "limitation": "extension result handoff failed closed",
         }
     finally:
@@ -1040,6 +1205,78 @@ def navigate_owned_page(port: int, process: subprocess.Popen[bytes], url: str) -
     websocket_url = target["webSocketDebuggerUrl"]
     navigate_page_target(websocket_url, url)
     return websocket_url
+
+
+def create_owned_target(port: int, process: subprocess.Popen[bytes], url: str) -> str:
+    """Create one background target in the probe-owned browser only."""
+    if not _endpoint_belongs_to_process(port, process):
+        raise OSError("probe-owned browser endpoint was not observed")
+    version = chrome_endpoint(port, "/json/version")
+    websocket_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
+    if not isinstance(websocket_url, str):
+        raise OSError("probe-owned browser websocket was not observed")
+    client = DevToolsSocket(websocket_url)
+    try:
+        result = client.command(
+            "Target.createTarget",
+            {"url": url, "background": True},
+        )
+    finally:
+        client.close()
+    target_id = result.get("targetId") if isinstance(result, dict) else None
+    if not isinstance(target_id, str) or not target_id:
+        raise OSError("probe-owned extension control target was not created")
+    return target_id
+
+
+def close_owned_target(port: int, process: subprocess.Popen[bytes], target_id: str) -> bool:
+    """Close only a target created by this disposable probe."""
+    if not isinstance(target_id, str) or not target_id:
+        return False
+    if not _endpoint_belongs_to_process(port, process):
+        return False
+    try:
+        version = chrome_endpoint(port, "/json/version")
+        websocket_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
+        if not isinstance(websocket_url, str):
+            return False
+        client = DevToolsSocket(websocket_url)
+        try:
+            result = client.command("Target.closeTarget", {"targetId": target_id})
+        finally:
+            client.close()
+        return isinstance(result, dict) and result.get("success") is True
+    except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+        return False
+
+
+def wait_for_extension_control_page(
+    port: int,
+    process: subprocess.Popen[bytes],
+    extension_id: str,
+    timeout: float = WORKER_DISCOVERY_TIMEOUT,
+) -> bool:
+    """Wait for the exact extension control page, not a worker-shaped target."""
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("control-page discovery timeout must be positive and finite")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _endpoint_belongs_to_process(port, process):
+            return False
+        try:
+            targets = chrome_endpoint(port, "/json/list")
+        except (OSError, urllib.error.URLError, ValueError):
+            targets = None
+        if isinstance(targets, list):
+            for target in targets:
+                candidate = _extension_page_candidate(target, port)
+                if candidate is not None and candidate[0] == extension_id:
+                    return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(WORKER_DISCOVERY_INTERVAL, remaining))
+    return False
 
 
 def wait_for_fixture_page(
@@ -1241,6 +1478,11 @@ def inspect_live(
             "required_manual_review": operator_assisted,
             "collection": "post_load_operator_ack" if operator_assisted else "not_requested",
         },
+        "instrumentation": {
+            "service_worker_cdp": False,
+            "owned_page_cdp": True,
+            "product_transport": "extension_chrome_apis",
+        },
     }
     if not launch:
         return {
@@ -1271,10 +1513,12 @@ def inspect_live(
     stderr_log_path: Path | None = None
     stderr_log: Any | None = None
     fixture_path: Path | None = None
+    fixture: str | None = None
     source_extension_hash: str | None = None
     staged_extension_hash: str | None = None
     binding_nonce = new_request_id()
     operator_page_websocket: str | None = None
+    control_target_id: str | None = None
     launched = False
     try:
         if launch:
@@ -1314,43 +1558,60 @@ def inspect_live(
             return {**common_evidence, "status": "live_unavailable", "limitation": "Chrome did not expose the requested debug endpoint."}
         if process is None or not _endpoint_belongs_to_process(port, process):
             return {**common_evidence, "status": "live_unavailable", "limitation": "the debug endpoint owner could not be bound to the probe-launched Chrome process"}
+        if profile_dir is None or fixture_path is None or fixture is None:
+            raise OSError("owned probe state is incomplete")
         expected_extension_id = _manifest_extension_id(manifest or {})
+        if not isinstance(expected_extension_id, str):
+            raise OSError("probe manifest does not have a pinned extension identity")
 
         if operator_assisted:
             operator_page_websocket = navigate_owned_page(port, process, "chrome://extensions/")
             loaded_extension_dir = profile_dir / "extension" / "probes"
             print_operator_instructions(loaded_extension_dir, operator_timeout)
-            targets = wait_for_probe_worker(
-                port,
-                process,
-                timeout=operator_timeout,
-                expected_extension_id=expected_extension_id,
-            )
-            if targets is not None:
-                common_evidence["permission_prompts"]["status"] = collect_operator_permission_status()
-                if operator_page_websocket is None:
-                    raise OSError("probe-owned operator page was lost")
-                navigate_page_target(operator_page_websocket, fixture)
-                if not wait_for_fixture_page(port, process, fixture, timeout=WORKER_DISCOVERY_TIMEOUT):
-                    return {
-                        **common_evidence,
-                        "status": "live_unavailable",
-                        "source_extension_tree_sha256": source_extension_hash,
-                        "staged_extension_tree_sha256": staged_extension_hash,
-                        "limitation": "operator-loaded extension was observed, but the owned fixture tab did not become ready",
-                    }
-        else:
-            targets = wait_for_probe_worker(
-                port,
-                process,
-                expected_extension_id=expected_extension_id,
-            )
-        if targets is None:
-            try:
-                observed_targets = chrome_endpoint(port, "/json/list")
-            except (OSError, urllib.error.URLError, ValueError):
-                observed_targets = []
-            targets = observed_targets if isinstance(observed_targets, list) else []
+            common_evidence["permission_prompts"]["status"] = collect_operator_permission_status()
+            if operator_page_websocket is None:
+                raise OSError("probe-owned operator page was lost")
+            navigate_page_target(operator_page_websocket, fixture)
+
+        if not wait_for_fixture_page(port, process, fixture, timeout=operator_timeout if operator_assisted else WORKER_DISCOVERY_TIMEOUT):
+            return {
+                **common_evidence,
+                "status": "live_unavailable",
+                "source_extension_tree_sha256": source_extension_hash,
+                "staged_extension_tree_sha256": staged_extension_hash,
+                "limitation": "the owned fixture tab did not become ready",
+            }
+
+        control_page_url = f"chrome-extension://{expected_extension_id}/probe.html"
+        control_target_id = create_owned_target(port, process, control_page_url)
+        if not wait_for_extension_control_page(port, process, expected_extension_id):
+            return {
+                **common_evidence,
+                "status": "live_unavailable",
+                "source_extension_tree_sha256": source_extension_hash,
+                "staged_extension_tree_sha256": staged_extension_hash,
+                "limitation": "the exact loaded extension control page did not become ready",
+            }
+        try:
+            observed_targets = chrome_endpoint(port, "/json/list")
+        except (OSError, urllib.error.URLError, ValueError):
+            observed_targets = []
+        targets = observed_targets if isinstance(observed_targets, list) else []
+        target_provider: Callable[[], list[dict[str, Any]] | None] | None = None
+        if process is not None:
+            def refresh_owned_targets() -> list[dict[str, Any]] | None:
+                if not _endpoint_belongs_to_process(port, process):
+                    return None
+                try:
+                    refreshed = chrome_endpoint(port, "/json/list")
+                except (OSError, urllib.error.URLError, ValueError):
+                    return None
+                return refreshed if isinstance(refreshed, list) else None
+
+            target_provider = refresh_owned_targets
+            refreshed_targets = target_provider()
+            if refreshed_targets is not None:
+                targets = refreshed_targets
         if staged_extension_hash is not None:
             try:
                 current_staged_hash = extension_tree_sha256(profile_dir / "extension" / "probes")
@@ -1373,7 +1634,12 @@ def inspect_live(
             fixture_path=fixture_path,
             binding_nonce=binding_nonce,
             source_extension_hash=source_extension_hash,
+            target_provider=target_provider,
         )
+        control_page_cleanup_passed = close_owned_target(port, process, control_target_id) if control_target_id else False
+        if control_target_id and not control_page_cleanup_passed:
+            extension["status"] = "live_unavailable"
+            extension["limitation"] = "probe control-page cleanup was not confirmed"
         if load_evidence is not None:
             extension["extension_load_evidence"] = load_evidence
             if extension.get("status") != "live_passed":
@@ -1394,8 +1660,10 @@ def inspect_live(
             "status": status,
             "chrome_version": version.get("Browser", "unknown"),
             "target_count": target_count,
-            "candidate_worker_count": extension.get("candidate_worker_count", 0),
-            "verified_worker_count": extension.get("verified_worker_count", 0),
+            "candidate_extension_page_count": extension.get("candidate_extension_page_count", 0),
+            "verified_extension_page_count": extension.get("verified_extension_page_count", 0),
+            "control_page_identity_passed": extension.get("control_page_identity_passed", False),
+            "control_page_cleanup_passed": control_page_cleanup_passed,
             "launched_by_probe": launched,
             "extension_loaded": extension.get("extension_loaded", False),
             "extension_identity_passed": extension.get("extension_identity_passed", False),
@@ -1412,7 +1680,7 @@ def inspect_live(
             "screenshot_captured": extension.get("screenshot_captured", False),
             "screenshots": extension.get("screenshots", []),
             "handshake_transcript": extension.get("handshake_transcript", []),
-            "worker_diagnostics": extension.get("worker_diagnostics", []),
+            "identity_diagnostics": extension.get("identity_diagnostics", []),
             "extension_load_evidence": extension.get("extension_load_evidence"),
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "source_extension_tree_sha256": source_extension_hash,
@@ -1498,6 +1766,8 @@ def main() -> int:
             "raw_ids_logged": False,
             "secrets_logged": False,
             "fixture_only_mutation": True,
+            "service_worker_cdp": False,
+            "owned_page_cdp_test_instrumentation": True,
         },
         "handshake_transcript": [],
         "screenshots": [],
