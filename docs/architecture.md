@@ -35,26 +35,25 @@ agentyc_mcp::run_stdio / BrowserServer  ── crates/agentyc-mcp
 The workspace is defined in the root `Cargo.toml` (`edition = "2024"`). Each
 crate owns one concern:
 
-| Crate | Path | Responsibility |
-|-------|------|----------------|
-| `agentyc` | `crates/agentyc` | Binary + CLI (`mcp`, `serve`, `init`, `browser`). |
-| `agentyc-mcp` | `crates/agentyc-mcp` | The MCP server: tool definitions, schemas, dispatch, state serialization. |
-| `agentyc-cdp` | `crates/agentyc-cdp` | Chrome DevTools Protocol client over WebSocket / HTTP attach. |
-| `agentyc-browser` | `crates/agentyc-browser` | Chrome discovery, launch, profile/env config, session lifecycle. |
-| `agentyc-dom` | `crates/agentyc-dom` | DOM tree serialization, clickable-element heuristics, HTML→markdown. |
-| `agentyc-tools` | `crates/agentyc-tools` | Deterministic extraction route selection. |
-| `agentyc-tests` | `crates/agentyc-tests` | Integration-test harness and ported suites. |
+| Crate             | Path                     | Responsibility                                                            |
+| ----------------- | ------------------------ | ------------------------------------------------------------------------- |
+| `agentyc`         | `crates/agentyc`         | Binary + CLI (`mcp`, `serve`, `init`, `browser`).                         |
+| `agentyc-mcp`     | `crates/agentyc-mcp`     | The MCP server: tool definitions, schemas, dispatch, state serialization. |
+| `agentyc-cdp`     | `crates/agentyc-cdp`     | Chrome DevTools Protocol client over WebSocket / HTTP attach.             |
+| `agentyc-browser` | `crates/agentyc-browser` | Chrome discovery, launch, profile/env config, session lifecycle.          |
+| `agentyc-dom`     | `crates/agentyc-dom`     | DOM tree serialization, clickable-element heuristics, HTML→markdown.      |
+| `agentyc-tools`   | `crates/agentyc-tools`   | Deterministic extraction route selection.                                 |
+| `agentyc-tests`   | `crates/agentyc-tests`   | Integration-test harness and ported suites.                               |
 
 ## CLI Layer
 
 `crates/agentyc/src/main.rs` parses the CLI with `clap` and dispatches:
 
-1. `agentyc` / `agentyc mcp` → `agentyc_mcp::run_stdio` (stdio JSON-RPC, the default).
-2. `agentyc serve` → a Streamable HTTP server built with `axum` and
-   `rmcp`'s `StreamableHttpService`.
-3. `agentyc init` → writes the bundled `SKILL.md` (embedded via `include_str!`).
-4. `agentyc browser` → launches Chrome with remote debugging and prints the CDP
-   WebSocket URL, for shared/attached sessions.
+1. `agentyc` / `agentyc mcp` → the host-backed logical MCP adapter over stdio.
+2. `agentyc mcp --legacy-cdp` → the explicit legacy direct-CDP compatibility server.
+3. `agentyc serve --cdp-url <url>` → legacy Streamable HTTP over an explicitly supplied CDP endpoint; no implicit browser launch.
+4. `agentyc init` → writes the bundled `SKILL.md` (embedded via `include_str!`).
+5. `agentyc browser` → an explicit managed/test command that launches Chrome with remote debugging and prints the CDP WebSocket URL.
 
 Tracing is configured to write to stderr only — stdout is reserved for the
 JSON-RPC channel — with the level taken from `AGENTYC_LOGGING_LEVEL`.
@@ -80,7 +79,7 @@ input schema to keep the `tools/list` payload compact.
 Responsibilities:
 
 - Register the MCP tool list (61 tools) and serve them over stdio or HTTP.
-- Lazily launch / connect a browser on first browser tool use.
+- The legacy server connects only to an explicit CDP endpoint or, when selected explicitly with `--legacy-cdp`, uses its managed compatibility lifecycle; the host-backed default never launches or attaches to Chrome directly.
 - Translate MCP arguments (typed `Deserialize` + `JsonSchema` param structs)
   into `tools::*` calls.
 - Return text and image content in MCP response format.
