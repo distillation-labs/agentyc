@@ -1,0 +1,354 @@
+{
+  "schema_version": 1,
+  "source": "local repository MCP tool surface",
+  "tools": [
+    {
+      "name": "browser_navigate",
+      "category": "navigation",
+      "status": "partial"
+    },
+    {
+      "name": "browser_go_back",
+      "category": "navigation",
+      "status": "supported"
+    },
+    {
+      "name": "browser_go_forward",
+      "category": "navigation",
+      "status": "supported"
+    },
+    {
+      "name": "browser_refresh",
+      "category": "navigation",
+      "status": "supported"
+    },
+    { "name": "browser_wait", "category": "wait", "status": "supported" },
+    {
+      "name": "browser_wait_for_url",
+      "category": "wait",
+      "status": "supported"
+    },
+    {
+      "name": "browser_wait_for_network_idle",
+      "category": "wait",
+      "status": "partial"
+    },
+    {
+      "name": "browser_wait_for_request",
+      "category": "wait",
+      "status": "partial"
+    },
+    {
+      "name": "browser_wait_for_response",
+      "category": "wait",
+      "status": "partial"
+    },
+    {
+      "name": "browser_wait_for_stable_dom",
+      "category": "wait",
+      "status": "partial"
+    },
+    { "name": "browser_get_state", "category": "state", "status": "supported" },
+    { "name": "browser_get_html", "category": "state", "status": "partial" },
+    {
+      "name": "browser_screenshot",
+      "category": "reading",
+      "status": "partial"
+    },
+    {
+      "name": "browser_save_as_pdf",
+      "category": "reading",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_viewport",
+      "category": "reading",
+      "status": "supported"
+    },
+    { "name": "browser_evaluate", "category": "evaluate", "status": "partial" },
+    {
+      "name": "browser_click",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_right_click",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_double_click",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_hover",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_drag_to",
+      "category": "interaction",
+      "status": "partial"
+    },
+    {
+      "name": "browser_type",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_fill_form",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_press_key",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_scroll",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_scroll_to_text",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_select_option",
+      "category": "interaction",
+      "status": "supported"
+    },
+    {
+      "name": "browser_upload_file",
+      "category": "interaction",
+      "status": "partial"
+    },
+    {
+      "name": "browser_handle_dialog",
+      "category": "interaction",
+      "status": "partial"
+    },
+    {
+      "name": "browser_extract_content",
+      "category": "inspection",
+      "status": "supported"
+    },
+    {
+      "name": "browser_find_elements",
+      "category": "inspection",
+      "status": "supported"
+    },
+    {
+      "name": "browser_search_page",
+      "category": "inspection",
+      "status": "supported"
+    },
+    {
+      "name": "browser_wait_for_element",
+      "category": "inspection",
+      "status": "supported"
+    },
+    {
+      "name": "browser_get_focused_element",
+      "category": "inspection",
+      "status": "supported"
+    },
+    {
+      "name": "browser_get_dropdown_options",
+      "category": "inspection",
+      "status": "supported"
+    },
+    {
+      "name": "browser_get_attribute",
+      "category": "inspection",
+      "status": "supported"
+    },
+    {
+      "name": "browser_list_frames",
+      "category": "frames",
+      "status": "supported"
+    },
+    {
+      "name": "browser_get_frame_html",
+      "category": "frames",
+      "status": "partial"
+    },
+    {
+      "name": "browser_get_storage",
+      "category": "storage",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_storage",
+      "category": "storage",
+      "status": "partial"
+    },
+    {
+      "name": "browser_clear_storage",
+      "category": "storage",
+      "status": "partial"
+    },
+    {
+      "name": "browser_get_cookies",
+      "category": "cookies",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_cookies",
+      "category": "cookies",
+      "status": "partial"
+    },
+    {
+      "name": "browser_clear_cookies",
+      "category": "cookies",
+      "status": "partial"
+    },
+    { "name": "browser_new_tab", "category": "tabs", "status": "supported" },
+    { "name": "browser_list_tabs", "category": "tabs", "status": "supported" },
+    { "name": "browser_switch_tab", "category": "tabs", "status": "supported" },
+    { "name": "browser_close_tab", "category": "tabs", "status": "partial" },
+    {
+      "name": "browser_wait_for_tab",
+      "category": "tabs",
+      "status": "supported"
+    },
+    {
+      "name": "browser_list_sessions",
+      "category": "sessions",
+      "status": "legacy-only"
+    },
+    {
+      "name": "browser_close_session",
+      "category": "sessions",
+      "status": "legacy-only"
+    },
+    {
+      "name": "browser_close_all",
+      "category": "sessions",
+      "status": "legacy-only"
+    },
+    {
+      "name": "browser_grant_permissions",
+      "category": "permissions",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_geolocation",
+      "category": "emulation",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_extra_headers",
+      "category": "emulation",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_user_agent",
+      "category": "emulation",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_timezone",
+      "category": "emulation",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_locale",
+      "category": "emulation",
+      "status": "partial"
+    },
+    {
+      "name": "browser_emulate_media",
+      "category": "emulation",
+      "status": "partial"
+    },
+    {
+      "name": "browser_save_state",
+      "category": "state",
+      "status": "legacy-only"
+    },
+    {
+      "name": "browser_load_state",
+      "category": "state",
+      "status": "legacy-only"
+    },
+    {
+      "name": "browser_get_downloads",
+      "category": "downloads",
+      "status": "partial"
+    },
+    {
+      "name": "browser_wait_for_download",
+      "category": "downloads",
+      "status": "partial"
+    },
+    {
+      "name": "browser_add_network_mock",
+      "category": "network",
+      "status": "partial"
+    },
+    {
+      "name": "browser_remove_network_mock",
+      "category": "network",
+      "status": "partial"
+    },
+    {
+      "name": "browser_list_network_mocks",
+      "category": "network",
+      "status": "partial"
+    },
+    {
+      "name": "browser_replay_request",
+      "category": "network",
+      "status": "partial"
+    },
+    {
+      "name": "browser_set_network_conditions",
+      "category": "network",
+      "status": "partial"
+    },
+    {
+      "name": "browser_get_network_conditions",
+      "category": "network",
+      "status": "partial"
+    },
+    {
+      "name": "browser_get_network_log",
+      "category": "observability",
+      "status": "partial"
+    },
+    {
+      "name": "browser_inspect_network_entry",
+      "category": "observability",
+      "status": "partial"
+    },
+    {
+      "name": "browser_clear_logs",
+      "category": "observability",
+      "status": "partial"
+    },
+    {
+      "name": "browser_get_console_logs",
+      "category": "observability",
+      "status": "partial"
+    },
+    {
+      "name": "browser_start_trace",
+      "category": "observability",
+      "status": "partial"
+    },
+    {
+      "name": "browser_stop_trace",
+      "category": "observability",
+      "status": "partial"
+    },
+    {
+      "name": "browser_export_debug_bundle",
+      "category": "observability",
+      "status": "partial"
+    }
+  ]
+}
