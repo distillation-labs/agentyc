@@ -21,6 +21,10 @@ name = "benchmark"
 path = "../../tests/benchmark.rs"
 
 [[test]]
+name = "direct_benchmark"
+path = "../../tests/direct_benchmark.rs"
+
+[[test]]
 name = "browser_automation"
 path = "../../tests/browser_automation.rs"
 
