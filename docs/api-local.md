@@ -4,7 +4,9 @@
 
 ## Connect through a local transport
 
-The SDK accepts one injected transport. A transport can be a Native Messaging/local IPC adapter, a test handler, or another local host adapter that implements the same request-batch shape.
+The SDK accepts an injected transport or a real framed local host socket. An injected transport can be a Native Messaging/local IPC adapter, a test handler, or another local host adapter that implements the same request-batch shape. Without an injected transport, pass `socketPath` or set `AGENTYC_HOST_SOCKET`; `connect({ profile })` fails with `native_host_unavailable` when no socket is configured rather than pretending to be connected.
+
+The built-in `LocalProtocolTransport` uses the Rust envelope contract: one UTF-8 JSON `Envelope` per four-byte big-endian length frame, with the bounded one MiB control-payload default. It performs `hello`/`hello_ok`, request/response correlation, cancellation, event delivery, and cursor-based resume. The Rust host dispatcher remains the authority for method support and canonical errors.
 
 ```js
 import { connect, createLocalTransport } from "@agentyc/browser";
@@ -19,6 +21,7 @@ const transport = createLocalTransport({
 });
 
 const client = await connect({ transport });
+// Or: const client = await connect({ profile: "default", socketPath });
 const space = client.taskSpace("space_research");
 const page = space.page("main"); // lazy logical handle
 const snapshot = await page.snapshot(); // creates the logical page on first use
@@ -51,11 +54,11 @@ const [spaces, status] = await client.batch([
 ]);
 ```
 
-The local transport is generic and injectable, so unit tests can use a deterministic fake without installing packages or starting a browser.
+The local transport is generic and injectable, so unit tests can use a deterministic fake without installing packages or starting a browser. Batched responses must contain exactly one matching `request_id` per request; missing, duplicate, or unexpected IDs are protocol failures, not positional fallbacks.
 
 ## Reconnect and outcome safety
 
-Read-only transport failures may invoke `transport.reconnect()` once and retry. Requests marked `mayHaveSideEffects` are never blindly retried after transport loss. They become a typed `UnknownOutcomeError` with code `unknown_outcome` and reconciliation guidance.
+Read-only transport failures may invoke `transport.reconnect()` once and retry. Lifecycle and mutation methods—including space create/claim/renew/takeover/return/finish/release, page create/close, and action execution—are never blindly retried after transport loss. They become a typed `UnknownOutcomeError` with code `unknown_outcome`, request/action identity, and reconciliation guidance. `AbortSignal` cancels queued/read work; a dispatched mutation cancelled before its response is also `unknown_outcome` because its result must be reconciled.
 
 ```js
 try {
@@ -78,7 +81,7 @@ const events = await space.events({ afterSequence: 0 });
 await space.waitFor({ kind: "page_changed" }, { timeoutMs: 10_000 });
 ```
 
-Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped, and callers must resync when the host reports a lagged or invalid cursor.
+Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` resumes retained events and preserves the latest cursor across reconnects; callers must resync when the host reports a lagged or invalid cursor.
 
 ## Compatibility boundary
 
