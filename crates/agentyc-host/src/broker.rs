@@ -25,10 +25,11 @@ use crate::{
     events::{EventBatch, EventQuery},
     leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult},
     ledger::{
-        ControlTicketRecord, Ledger, LedgerLimits, LedgerState,
-        canonical_action_hash as ledger_action_hash, validate_public_payload_shape,
+        ControlTicketRecord, FencePurpose, Ledger, LedgerLimits, LedgerState, PendingFenceRecord,
+        TakeoverProofRecord, canonical_action_hash as ledger_action_hash,
+        validate_action_payload_contract, validate_public_payload_shape,
     },
-    snapshots::{PageGeneration, SnapshotCacheRecord, SnapshotRead},
+    snapshots::{PageGeneration, SnapshotCacheRecord, SnapshotMetadataRead, SnapshotRead},
 };
 
 /// Lifecycle of the host broker itself.
@@ -73,7 +74,7 @@ impl Connection {
             host_metadata: Some(HostMetadata {
                 host_name: Some("agentyc-host".to_owned()),
                 host_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                connection_nonce: self.authority.connection_nonce.clone(),
+                connection_nonce: Some(self.authority.connection_nonce.clone()),
                 profile_binding_id: self.authority.profile_binding_id.clone(),
             }),
         }
@@ -166,36 +167,6 @@ impl Broker {
         self.with_inner(|inner| Ok(inner.bridge.capabilities()))
     }
 
-    /// Issue an explicit test-only authority proof for deterministic host tests.
-    pub fn test_authority(&self, principal_id: PrincipalId) -> Result<AuthorityTicket, HostError> {
-        let profile_binding_id = ProfileBindingId::from_suffix("host-test")
-            .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
-        self.test_authority_with_profile(principal_id, Some(profile_binding_id))
-    }
-
-    /// Issue an explicit test-only authority proof without a profile binding.
-    pub fn test_authority_without_profile(
-        &self,
-        principal_id: PrincipalId,
-    ) -> Result<AuthorityTicket, HostError> {
-        self.test_authority_with_profile(principal_id, None)
-    }
-
-    /// Issue an explicit test-only authority proof with a selected profile binding.
-    pub fn test_authority_with_profile(
-        &self,
-        principal_id: PrincipalId,
-        profile_binding_id: Option<ProfileBindingId>,
-    ) -> Result<AuthorityTicket, HostError> {
-        self.with_inner(|inner| {
-            Ok(AuthorityTicket::test_issued(
-                principal_id,
-                inner.ledger.broker_epoch(),
-                profile_binding_id,
-            ))
-        })
-    }
-
     /// Return a principal-filtered JSON representation of the durable state.
     pub fn ledger_json(&self, authority: &AuthorityTicket) -> Result<Vec<u8>, HostError> {
         self.with_inner(|inner| {
@@ -229,13 +200,25 @@ impl Broker {
         }
         let capabilities = self.capabilities()?;
         self.with_inner(|inner| {
+            let metadata = hello
+                .client_metadata
+                .as_ref()
+                .ok_or_else(|| CoreError::invalid_argument("handshake metadata is missing"))?;
+            let connection_nonce = metadata
+                .connection_nonce
+                .clone()
+                .ok_or_else(|| CoreError::invalid_argument("handshake nonce is missing"))?;
+            let profile_binding_id = metadata.profile_binding_id.clone();
             let (connection_epoch, principal_id, resume) = inner.ledger.update(|state| {
                 let connection_epoch = state
                     .connection_epoch
                     .checked_next()
                     .ok_or_else(|| CoreError::invalid_argument("connection epoch overflow"))?;
-                state.connection_epoch = connection_epoch;
                 let principal_id = hello.principal_id.clone();
+                state.connection_epoch = connection_epoch;
+                state.connection_principal_id = Some(principal_id.clone());
+                state.connection_nonce = Some(connection_nonce.clone());
+                state.connection_profile_binding_id = profile_binding_id.clone();
                 let resume = hello
                     .resume_from
                     .map_or(ResumeResult::Accepted, |watermark| {
@@ -247,14 +230,8 @@ impl Broker {
                 principal_id.clone(),
                 inner.ledger.broker_epoch(),
                 connection_epoch,
-                hello
-                    .client_metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.profile_binding_id.clone()),
-                hello
-                    .client_metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.connection_nonce.clone()),
+                profile_binding_id,
+                connection_nonce,
             );
             Ok(Connection {
                 principal_id,
@@ -541,7 +518,7 @@ impl Broker {
         lease_epoch: LeaseEpoch,
         now: Timestamp,
     ) -> Result<ControlReturn, HostError> {
-        let (old_epoch, fence_epoch) = self.with_inner(|inner| {
+        let (old_epoch, fence_epoch, fence_token) = self.with_inner(|inner| {
             ensure_ready(inner)?;
             require_capability(&*inner.bridge, Capability::Action)?;
             inner.ledger.update(|state| {
@@ -552,6 +529,8 @@ impl Broker {
                     .checked_add(1)
                     .ok_or_else(|| CoreError::invalid_argument("lease epoch overflow"))?;
                 let fence_epoch = LeaseEpoch::new(next_number);
+                let fence_token =
+                    fence_request_token(state, space_id, fence_epoch, FencePurpose::ReturnControl)?;
                 let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
                     CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
                 })?;
@@ -611,6 +590,18 @@ impl Broker {
                         )?;
                     }
                 }
+                state.pending_fences.insert(
+                    space_id.clone(),
+                    PendingFenceRecord {
+                        space_id: space_id.clone(),
+                        broker_epoch: state.broker_epoch,
+                        request_token: fence_token.clone(),
+                        old_epoch: Some(lease_epoch),
+                        fence_epoch,
+                        principal_id: authority.principal_id().clone(),
+                        purpose: FencePurpose::ReturnControl,
+                    },
+                );
                 append_event(
                     state,
                     EventScope::space(space_id.clone()),
@@ -622,15 +613,20 @@ impl Broker {
                     None,
                     true,
                 )?;
-                Ok((Some(lease_epoch), fence_epoch))
+                Ok((Some(lease_epoch), fence_epoch, fence_token))
             })
         })?;
         let bridge = self.bridge()?;
         let fence = bridge.fence(space_id, old_epoch, fence_epoch, self.broker_epoch()?);
         match fence {
-            Ok(FenceResult { acknowledged: true }) => {
-                self.finish_user_return(space_id, authority, lease_epoch, fence_epoch, now)
-            }
+            Ok(FenceResult { acknowledged: true }) => self.finish_user_return(
+                space_id,
+                authority,
+                lease_epoch,
+                fence_epoch,
+                &fence_token,
+                now,
+            ),
             Ok(FenceResult {
                 acknowledged: false,
             }) => {
@@ -654,35 +650,60 @@ impl Broker {
         authority: &AuthorityTicket,
         released_epoch: LeaseEpoch,
         fence_epoch: LeaseEpoch,
+        fence_token: &ReconcileToken,
         _now: Timestamp,
     ) -> Result<ControlReturn, HostError> {
         self.with_inner(|inner| {
             inner.ledger.update(|state| {
                 authorize_ticket(state, authority)?;
-                let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
-                    CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
+                let pending = state.pending_fences.get(space_id).cloned().ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::StaleLease,
+                        "user-return fence completion is no longer pending",
+                    )
                 })?;
-                let valid = descriptor.lifecycle == SpaceLifecycle::FencePending
-                    && descriptor.lease.as_ref().is_some_and(|lease| {
-                        lease.principal_id == *authority.principal_id()
-                            && lease.lease_epoch == fence_epoch
-                            && lease.state == LeaseState::Fenced
-                    });
-                if !valid {
-                    return Err(
-                        CoreError::stale_lease(fence_epoch.get(), released_epoch.get()).into(),
-                    );
-                }
-                if let Some(lease) = &mut descriptor.lease {
-                    lease.state = LeaseState::Released;
-                }
-                descriptor.lifecycle = SpaceLifecycle::UserOwned;
-                for page in &mut descriptor.pages {
-                    page.ownership = PageOwnership::User;
-                    page.binding = PageBindingState::UserOwned;
-                    page.lifecycle = PageLifecycle::UserOwned;
+                if pending.purpose != FencePurpose::ReturnControl
+                    || pending.request_token != *fence_token
+                    || pending.broker_epoch != state.broker_epoch
+                    || pending.fence_epoch != fence_epoch
+                    || pending.old_epoch != Some(released_epoch)
+                    || pending.principal_id != *authority.principal_id()
+                {
+                    return Err(CoreError::new(
+                        ErrorCode::StaleLease,
+                        "user-return fence completion does not match the pending request",
+                    )
+                    .into());
                 }
                 let token = reconcile_token("control", fence_epoch.get())?;
+                {
+                    let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
+                        CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
+                    })?;
+                    let valid = descriptor.lifecycle == SpaceLifecycle::FencePending
+                        && descriptor.lease.as_ref().is_some_and(|lease| {
+                            lease.principal_id == *authority.principal_id()
+                                && lease.lease_epoch == fence_epoch
+                                && lease.state == LeaseState::Fenced
+                        });
+                    if !valid {
+                        return Err(CoreError::stale_lease(
+                            fence_epoch.get(),
+                            released_epoch.get(),
+                        )
+                        .into());
+                    }
+                    if let Some(lease) = &mut descriptor.lease {
+                        lease.state = LeaseState::Released;
+                    }
+                    descriptor.lifecycle = SpaceLifecycle::UserOwned;
+                    for page in &mut descriptor.pages {
+                        page.ownership = PageOwnership::User;
+                        page.binding = PageBindingState::UserOwned;
+                        page.lifecycle = PageLifecycle::UserOwned;
+                    }
+                }
+                state.pending_fences.remove(space_id);
                 state.control_tickets.insert(
                     space_id.clone(),
                     ControlTicketRecord {
@@ -755,7 +776,7 @@ impl Broker {
         ttl: u64,
     ) -> Result<TakeoverResult, HostError> {
         let (expires_at, renew_by) = lease_times(now, ttl)?;
-        let (old_epoch, new_epoch) = self.with_inner(|inner| {
+        let (old_epoch, new_epoch, fence_token) = self.with_inner(|inner| {
             ensure_ready(inner)?;
             require_capability(&*inner.bridge, Capability::Action)?;
             inner.ledger.update(|state| {
@@ -786,10 +807,9 @@ impl Broker {
                 let current_lease = space.lease.as_ref().ok_or_else(|| {
                     CoreError::new(ErrorCode::SpaceForbidden, "space has no current authority")
                 })?;
-                if !authority.is_test_only()
-                    && (current_lease.principal_id != *authority.principal_id()
-                        || current_lease.state != LeaseState::Active
-                        || current_lease.expires_at.get() <= now.get())
+                if current_lease.principal_id != *authority.principal_id()
+                    || current_lease.state != LeaseState::Active
+                    || current_lease.expires_at.get() <= now.get()
                 {
                     return Err(CoreError::new(
                         ErrorCode::PermissionDenied,
@@ -803,6 +823,8 @@ impl Broker {
                     .checked_add(1)
                     .ok_or_else(|| CoreError::invalid_argument("lease epoch overflow"))?;
                 let new_epoch = LeaseEpoch::new(next_number);
+                let fence_token =
+                    fence_request_token(state, space_id, new_epoch, FencePurpose::Takeover)?;
                 let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
                     CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
                 })?;
@@ -862,6 +884,18 @@ impl Broker {
                         )?;
                     }
                 }
+                state.pending_fences.insert(
+                    space_id.clone(),
+                    PendingFenceRecord {
+                        space_id: space_id.clone(),
+                        broker_epoch: state.broker_epoch,
+                        request_token: fence_token.clone(),
+                        old_epoch,
+                        fence_epoch: new_epoch,
+                        principal_id: authority.principal_id().clone(),
+                        purpose: FencePurpose::Takeover,
+                    },
+                );
                 append_event(
                     state,
                     EventScope::space(space_id.clone()),
@@ -873,7 +907,7 @@ impl Broker {
                     None,
                     false,
                 )?;
-                Ok((old_epoch, new_epoch))
+                Ok((old_epoch, new_epoch, fence_token))
             })
         })?;
 
@@ -883,8 +917,14 @@ impl Broker {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
         };
-        let lifecycle =
-            self.finish_fence(space_id, authority, new_epoch, acknowledged, bridge_error)?;
+        let lifecycle = self.finish_fence(
+            space_id,
+            authority,
+            new_epoch,
+            &fence_token,
+            acknowledged,
+            bridge_error,
+        )?;
         Ok(TakeoverResult {
             space_id: space_id.clone(),
             lease_epoch: new_epoch,
@@ -903,7 +943,7 @@ impl Broker {
         ttl: u64,
     ) -> Result<TakeoverResult, HostError> {
         let (expires_at, renew_by) = lease_times(now, ttl)?;
-        let (old_epoch, new_epoch) = self.with_inner(|inner| {
+        let (old_epoch, new_epoch, fence_token) = self.with_inner(|inner| {
             ensure_ready(inner)?;
             require_capability(&*inner.bridge, Capability::Action)?;
             inner.ledger.update(|state| {
@@ -943,6 +983,8 @@ impl Broker {
                         .checked_add(1)
                         .ok_or_else(|| CoreError::invalid_argument("lease epoch overflow"))?,
                 );
+                let fence_token =
+                    fence_request_token(state, space_id, new_epoch, FencePurpose::Takeover)?;
                 let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
                     CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
                 })?;
@@ -958,7 +1000,20 @@ impl Broker {
                 ));
                 descriptor.lifecycle = SpaceLifecycle::FencePending;
                 state.control_tickets.remove(space_id);
+                state.takeover_proofs.remove(space_id);
                 state.snapshots.remove(space_id);
+                state.pending_fences.insert(
+                    space_id.clone(),
+                    PendingFenceRecord {
+                        space_id: space_id.clone(),
+                        broker_epoch: state.broker_epoch,
+                        request_token: fence_token.clone(),
+                        old_epoch: Some(current_epoch),
+                        fence_epoch: new_epoch,
+                        principal_id: authority.principal_id().clone(),
+                        purpose: FencePurpose::Takeover,
+                    },
+                );
                 append_event(
                     state,
                     EventScope::space(space_id.clone()),
@@ -970,7 +1025,7 @@ impl Broker {
                     None,
                     true,
                 )?;
-                Ok((Some(current_epoch), new_epoch))
+                Ok((Some(current_epoch), new_epoch, fence_token))
             })
         })?;
         let bridge = self.bridge()?;
@@ -979,8 +1034,14 @@ impl Broker {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
         };
-        let lifecycle =
-            self.finish_fence(space_id, authority, new_epoch, acknowledged, bridge_error)?;
+        let lifecycle = self.finish_fence(
+            space_id,
+            authority,
+            new_epoch,
+            &fence_token,
+            acknowledged,
+            bridge_error,
+        )?;
         Ok(TakeoverResult {
             space_id: space_id.clone(),
             lease_epoch: new_epoch,
@@ -996,34 +1057,52 @@ impl Broker {
         authority: &AuthorityTicket,
         fence_epoch: LeaseEpoch,
     ) -> Result<ControlReturn, HostError> {
-        self.with_inner(|inner| {
+        let (released_epoch, fence_token, old_epoch) = self.with_inner(|inner| {
             require_capability(&*inner.bridge, Capability::Action)?;
             authorize_ticket(inner.ledger.state(), authority)?;
-            let space = inner.ledger.state().spaces.get(space_id).ok_or_else(|| {
+            let state = inner.ledger.state();
+            let space = state.spaces.get(space_id).ok_or_else(|| {
                 CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
             })?;
-            if !space.lease.as_ref().is_some_and(|lease| {
-                lease.principal_id == *authority.principal_id()
-                    && lease.lease_epoch == fence_epoch
-                    && lease.state == LeaseState::Fenced
-                    && space.lifecycle == SpaceLifecycle::FencePending
-            }) {
+            let pending = state.pending_fences.get(space_id).ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::PermissionDenied,
+                    "user-return fence request is missing",
+                )
+            })?;
+            if pending.purpose != FencePurpose::ReturnControl
+                || pending.fence_epoch != fence_epoch
+                || pending.principal_id != *authority.principal_id()
+                || !space.lease.as_ref().is_some_and(|lease| {
+                    lease.principal_id == *authority.principal_id()
+                        && lease.lease_epoch == fence_epoch
+                        && lease.state == LeaseState::Fenced
+                        && space.lifecycle == SpaceLifecycle::FencePending
+                })
+            {
                 return Err(CoreError::new(
                     ErrorCode::PermissionDenied,
                     "user-return fence is not owned by this authority",
                 )
                 .into());
             }
-            Ok(())
+            Ok((
+                pending
+                    .old_epoch
+                    .unwrap_or_else(|| LeaseEpoch::new(fence_epoch.get().saturating_sub(1))),
+                pending.request_token.clone(),
+                pending.old_epoch,
+            ))
         })?;
         let bridge = self.bridge()?;
-        let fence = bridge.fence(space_id, None, fence_epoch, self.broker_epoch()?);
+        let fence = bridge.fence(space_id, old_epoch, fence_epoch, self.broker_epoch()?);
         match fence {
             Ok(FenceResult { acknowledged: true }) => self.finish_user_return(
                 space_id,
                 authority,
-                LeaseEpoch::new(fence_epoch.get().saturating_sub(1)),
+                released_epoch,
                 fence_epoch,
+                &fence_token,
                 Timestamp::new(0),
             ),
             Ok(FenceResult {
@@ -1050,42 +1129,55 @@ impl Broker {
         authority: &AuthorityTicket,
         lease_epoch: LeaseEpoch,
     ) -> Result<TakeoverResult, HostError> {
-        let return_pending = self.with_inner(|inner| {
+        let (return_pending, fence_token, old_epoch) = self.with_inner(|inner| {
             require_capability(&*inner.bridge, Capability::Action)?;
             authorize_ticket(inner.ledger.state(), authority)?;
-            let space = inner.ledger.state().spaces.get(space_id).ok_or_else(|| {
+            let state = inner.ledger.state();
+            let space = state.spaces.get(space_id).ok_or_else(|| {
                 CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
             })?;
-            if !space.lease.as_ref().is_some_and(|lease| {
-                lease.principal_id == *authority.principal_id()
-                    && lease.lease_epoch == lease_epoch
-                    && space.lifecycle == SpaceLifecycle::FencePending
-            }) {
+            let pending = state.pending_fences.get(space_id).ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::PermissionDenied,
+                    "pending fence request is missing",
+                )
+            })?;
+            if pending.fence_epoch != lease_epoch
+                || pending.principal_id != *authority.principal_id()
+                || !space.lease.as_ref().is_some_and(|lease| {
+                    lease.principal_id == *authority.principal_id()
+                        && lease.lease_epoch == lease_epoch
+                        && space.lifecycle == SpaceLifecycle::FencePending
+                })
+            {
                 return Err(CoreError::new(
                     ErrorCode::PermissionDenied,
                     "fence acknowledgement is not owned by this authority",
                 )
                 .into());
             }
-            Ok(space
-                .lease
-                .as_ref()
-                .is_some_and(|lease| lease.state == LeaseState::Fenced))
+            Ok((
+                pending.purpose == FencePurpose::ReturnControl,
+                pending.request_token.clone(),
+                pending.old_epoch,
+            ))
         })?;
         let bridge = self.bridge()?;
-        let fence = bridge.fence(space_id, None, lease_epoch, self.broker_epoch()?);
+        let fence = bridge.fence(space_id, old_epoch, lease_epoch, self.broker_epoch()?);
         let (acknowledged, bridge_error) = match fence {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
         };
         let lifecycle = if return_pending {
             if acknowledged {
-                let released_epoch = LeaseEpoch::new(lease_epoch.get().saturating_sub(1));
+                let released_epoch = old_epoch
+                    .unwrap_or_else(|| LeaseEpoch::new(lease_epoch.get().saturating_sub(1)));
                 self.finish_user_return(
                     space_id,
                     authority,
                     released_epoch,
                     lease_epoch,
+                    &fence_token,
                     Timestamp::new(0),
                 )?
                 .lifecycle
@@ -1096,7 +1188,14 @@ impl Broker {
                 SpaceLifecycle::FencePending
             }
         } else {
-            self.finish_fence(space_id, authority, lease_epoch, acknowledged, bridge_error)?
+            self.finish_fence(
+                space_id,
+                authority,
+                lease_epoch,
+                &fence_token,
+                acknowledged,
+                bridge_error,
+            )?
         };
         Ok(TakeoverResult {
             space_id: space_id.clone(),
@@ -1111,12 +1210,31 @@ impl Broker {
         space_id: &SpaceId,
         authority: &AuthorityTicket,
         lease_epoch: LeaseEpoch,
+        fence_token: &ReconcileToken,
         acknowledged: bool,
         bridge_error: Option<CoreError>,
     ) -> Result<SpaceLifecycle, HostError> {
         self.with_inner(|inner| {
             inner.ledger.update(|state| {
                 authorize_ticket(state, authority)?;
+                let pending = state.pending_fences.get(space_id).cloned().ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::StaleLease,
+                        "fence completion is no longer pending",
+                    )
+                })?;
+                if pending.purpose != FencePurpose::Takeover
+                    || pending.request_token != *fence_token
+                    || pending.broker_epoch != state.broker_epoch
+                    || pending.fence_epoch != lease_epoch
+                    || pending.principal_id != *authority.principal_id()
+                {
+                    return Err(CoreError::new(
+                        ErrorCode::StaleLease,
+                        "fence completion does not match the pending request",
+                    )
+                    .into());
+                }
                 let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
                     CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
                 })?;
@@ -1155,6 +1273,28 @@ impl Broker {
                     }
                 }
                 let lifecycle = descriptor.lifecycle;
+                if acknowledged {
+                    let previous_epoch = pending.old_epoch.ok_or_else(|| {
+                        CoreError::new(
+                            ErrorCode::LedgerIncompatible,
+                            "takeover fence has no previous lease epoch",
+                        )
+                    })?;
+                    state.pending_fences.remove(space_id);
+                    let broker_epoch = state.broker_epoch;
+                    let proofs = state.takeover_proofs.entry(space_id.clone()).or_default();
+                    proofs.push(TakeoverProofRecord {
+                        space_id: space_id.clone(),
+                        broker_epoch,
+                        previous_epoch,
+                        current_epoch: lease_epoch,
+                        principal_id: authority.principal_id().clone(),
+                        request_token: pending.request_token,
+                    });
+                    if proofs.len() > 64 {
+                        proofs.remove(0);
+                    }
+                }
                 append_event(
                     state,
                     EventScope::space(space_id.clone()),
@@ -1568,6 +1708,7 @@ impl Broker {
                     descriptor.clone()
                 };
                 state.snapshots.remove(space_id);
+                state.takeover_proofs.remove(space_id);
                 append_event(
                     state,
                     EventScope::space(space_id.clone()),
@@ -1715,6 +1856,7 @@ impl Broker {
                     descriptor.clone()
                 };
                 state.snapshots.remove(space_id);
+                state.takeover_proofs.remove(space_id);
                 append_event(
                     state,
                     EventScope::space(space_id.clone()),
@@ -1747,6 +1889,8 @@ impl Broker {
         now: Timestamp,
     ) -> Result<ActionReceipt, HostError> {
         validate_public_payload(&request.payload)?;
+        validate_action_payload_contract(request.operation, &request.payload)
+            .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
         let expected_hash = ledger_action_hash(&request).map_err(HostError::Ledger)?;
         if request.request_hash != expected_hash {
             return Err(CoreError::invalid_argument(
@@ -1762,6 +1906,7 @@ impl Broker {
                 )
                 .into());
             }
+            require_operation_capabilities(&*inner.bridge, request.operation)?;
             let max_queued_actions = inner.ledger.limits().max_queued_actions_per_space;
             inner.ledger.update(|state| {
                 authorize_space(
@@ -1876,7 +2021,10 @@ impl Broker {
     ) -> Result<ActionResult, HostError> {
         let request = self.with_inner(|inner| {
             ensure_ready(inner)?;
-            require_capability(&*inner.bridge, Capability::Action)?;
+            let request = inner.ledger.state().action_requests.get(action_id).cloned();
+            if let Some(request) = &request {
+                require_operation_capabilities(&*inner.bridge, request.operation)?;
+            }
             inner.ledger.update(|state| {
                 let request = state
                     .action_requests
@@ -1914,9 +2062,36 @@ impl Broker {
                     .into());
                 }
                 authorize_space(state, &request.space_id, authority, lease_epoch, now, true)?;
-                if let Some(queue) = state.action_queues.get_mut(&request.space_id) {
-                    queue.retain(|queued| queued != action_id);
+                let queue = state
+                    .action_queues
+                    .get_mut(&request.space_id)
+                    .ok_or_else(|| {
+                        CoreError::new(
+                            ErrorCode::LedgerIncompatible,
+                            "queued action has no space queue",
+                        )
+                    })?;
+                if queue.first() != Some(action_id) {
+                    return Err(CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "actions must dispatch in per-space FIFO order",
+                    )
+                    .into());
                 }
+                if is_mutating(request.operation)
+                    && state.actions.values().any(|receipt| {
+                        receipt.space_id == request.space_id
+                            && receipt.status == ActionStatus::Running
+                            && is_mutating(receipt.operation)
+                    })
+                {
+                    return Err(CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "a mutating action is already in flight for this space",
+                    )
+                    .into());
+                }
+                let _ = queue.remove(0);
                 let receipt = state.actions.get_mut(action_id).ok_or_else(|| {
                     CoreError::new(ErrorCode::LedgerIncompatible, "action receipt is missing")
                 })?;
@@ -2091,13 +2266,12 @@ impl Broker {
         require_capability(&*bridge, Capability::Reconcile)?;
         let receipt = self.with_inner(|inner| {
             inner.ledger.update(|state| {
-                authorize_space(
+                let existing = authorize_reconciliation_authority(
                     state,
-                    &self.action_space(state, action_id)?,
+                    action_id,
                     authority,
                     lease_epoch,
                     now,
-                    true,
                 )?;
                 let receipt = state
                     .actions
@@ -2107,6 +2281,13 @@ impl Broker {
                     return Err(CoreError::new(
                         ErrorCode::ReconciliationRequired,
                         "action does not have an unknown outcome",
+                    )
+                    .into());
+                }
+                if receipt.request_hash != existing.request_hash {
+                    return Err(CoreError::new(
+                        ErrorCode::LedgerIncompatible,
+                        "reconciliation request context changed",
                     )
                     .into());
                 }
@@ -2131,15 +2312,14 @@ impl Broker {
             inner.ledger.update(|state| {
                 let lease_current = inner.lifecycle == HostLifecycle::Ready
                     && authority_is_current(state, authority)
-                    && state.spaces.get(&receipt.space_id).is_some_and(|space| {
-                        space.lifecycle.admits_mutations()
-                            && space.lease.as_ref().is_some_and(|lease| {
-                                lease.principal_id == *authority.principal_id()
-                                    && lease.lease_epoch == receipt.lease_epoch
-                                    && lease.state == LeaseState::Active
-                                    && lease.expires_at.get() > now.get()
-                            })
-                    });
+                    && authorize_reconciliation_authority(
+                        state,
+                        action_id,
+                        authority,
+                        lease_epoch,
+                        now,
+                    )
+                    .is_ok();
                 let current = state
                     .actions
                     .get_mut(action_id)
@@ -2183,18 +2363,6 @@ impl Broker {
             })
         })
         .map(|receipt| ActionResult { receipt })
-    }
-
-    fn action_space(
-        &self,
-        state: &LedgerState,
-        action_id: &agentyc_core::ActionId,
-    ) -> Result<SpaceId, HostError> {
-        state
-            .actions
-            .get(action_id)
-            .map(|receipt| receipt.space_id.clone())
-            .ok_or_else(|| CoreError::invalid_argument("action receipt is missing").into())
     }
 
     /// Read a clean cached snapshot or perform exactly one bridge scan on a miss/dirty entry.
@@ -2288,6 +2456,23 @@ impl Broker {
                 })
             })
         })
+    }
+
+    /// Read snapshot metadata without returning a DOM or delta body.
+    ///
+    /// A clean cache hit performs no bridge scan, while a miss performs the same
+    /// single validated scan as [`Broker::read_snapshot`] and discards its body
+    /// before returning to the adapter.
+    pub fn read_snapshot_metadata(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        now: Timestamp,
+    ) -> Result<SnapshotMetadataRead, HostError> {
+        self.read_snapshot(space_id, page_id, authority, lease_epoch, now)
+            .map(|read| read.metadata())
     }
 
     /// Seed a clean cache entry after proving the current page lease and generation.
@@ -2644,9 +2829,11 @@ fn create_page_in_state(
 
 fn authority_is_current(state: &LedgerState, authority: &AuthorityTicket) -> bool {
     authority.broker_epoch() == state.broker_epoch
-        && (authority.is_test_only()
-            || (authority.connection_epoch().get() != 0
-                && authority.connection_epoch() == state.connection_epoch))
+        && authority.connection_epoch().get() != 0
+        && authority.connection_epoch() == state.connection_epoch
+        && state.connection_principal_id.as_ref() == Some(authority.principal_id())
+        && state.connection_nonce.as_ref() == Some(authority.connection_nonce())
+        && state.connection_profile_binding_id == authority.profile_binding_id().cloned()
 }
 
 fn authorize_ticket(state: &LedgerState, authority: &AuthorityTicket) -> Result<(), HostError> {
@@ -2657,12 +2844,7 @@ fn authorize_ticket(state: &LedgerState, authority: &AuthorityTicket) -> Result<
         )
         .into());
     }
-    if authority.is_test_only() {
-        return Ok(());
-    }
-    if authority.connection_epoch().get() == 0
-        || authority.connection_epoch() != state.connection_epoch
-    {
+    if !authority_is_current(state, authority) {
         return Err(CoreError::new(
             ErrorCode::PermissionDenied,
             "authority ticket is not the current connection authority",
@@ -2690,6 +2872,29 @@ fn require_capability(bridge: &dyn Bridge, capability: Capability) -> Result<(),
         )
         .into())
     }
+}
+
+fn require_operation_capabilities(
+    bridge: &dyn Bridge,
+    operation: ActionOperation,
+) -> Result<(), HostError> {
+    let required = match operation {
+        ActionOperation::Evaluate => vec![Capability::Evaluate],
+        ActionOperation::Screenshot => vec![Capability::Artifact],
+        ActionOperation::Upload => vec![Capability::Action, Capability::Artifact],
+        ActionOperation::Wait => vec![Capability::Wait],
+        ActionOperation::Navigate
+        | ActionOperation::Click
+        | ActionOperation::Input
+        | ActionOperation::Scroll
+        | ActionOperation::StorageWrite
+        | ActionOperation::CookieWrite
+        | ActionOperation::Close => vec![Capability::Action],
+    };
+    for capability in required {
+        require_capability(bridge, capability)?;
+    }
+    Ok(())
 }
 
 fn authorize_profile_for_mutation(
@@ -2869,6 +3074,78 @@ fn authorize_release_claim(
         .into());
     }
     Ok(())
+}
+
+fn authorize_reconciliation_authority(
+    state: &LedgerState,
+    action_id: &ActionId,
+    authority: &AuthorityTicket,
+    lease_epoch: LeaseEpoch,
+    now: Timestamp,
+) -> Result<ActionReceipt, HostError> {
+    authorize_ticket(state, authority)?;
+    let receipt = state
+        .actions
+        .get(action_id)
+        .ok_or_else(|| CoreError::invalid_argument("action receipt is missing"))?
+        .clone();
+    if receipt.status != ActionStatus::Unknown {
+        return Err(CoreError::new(
+            ErrorCode::ReconciliationRequired,
+            "action does not have an unknown outcome",
+        )
+        .into());
+    }
+    authorize_profile_for_mutation(state, &receipt.space_id, authority)?;
+    let space = state
+        .spaces
+        .get(&receipt.space_id)
+        .ok_or_else(|| CoreError::new(ErrorCode::SpaceNotFound, "logical space not found"))?;
+    if !space.lifecycle.admits_mutations() || space.owner != *authority.principal_id() {
+        return Err(CoreError::new(
+            ErrorCode::SpaceForbidden,
+            "principal does not own the current reconciliation lease",
+        )
+        .into());
+    }
+    let lease = space
+        .lease
+        .as_ref()
+        .ok_or_else(|| CoreError::new(ErrorCode::SpaceForbidden, "space has no current lease"))?;
+    if lease.principal_id != *authority.principal_id() {
+        return Err(CoreError::new(
+            ErrorCode::SpaceForbidden,
+            "principal does not own the current reconciliation lease",
+        )
+        .into());
+    }
+    if lease.lease_epoch != lease_epoch {
+        return Err(CoreError::stale_lease(lease.lease_epoch.get(), lease_epoch.get()).into());
+    }
+    if lease.state != LeaseState::Active || lease.expires_at.get() <= now.get() {
+        return Err(CoreError::new(ErrorCode::LeaseExpired, "lease has expired").into());
+    }
+    if receipt.lease_epoch != lease.lease_epoch {
+        let proof_exists = state
+            .takeover_proofs
+            .get(&receipt.space_id)
+            .is_some_and(|proofs| {
+                proofs.iter().any(|proof| {
+                    proof.broker_epoch == state.broker_epoch
+                        && proof.previous_epoch == receipt.lease_epoch
+                        && proof.current_epoch == lease.lease_epoch
+                        && proof.principal_id == *authority.principal_id()
+                })
+            });
+        if receipt.lease_epoch > lease.lease_epoch || !proof_exists {
+            return Err(CoreError::new(
+                ErrorCode::ReconciliationRequired,
+                "older-epoch reconciliation requires a durable takeover proof",
+            )
+            .into());
+        }
+    }
+    Ok(receipt)
 }
 
 fn authorize_space(
@@ -3246,6 +3523,25 @@ fn reconcile_token(prefix: &str, number: u64) -> Result<ReconcileToken, HostErro
         .map_err(|error| CoreError::invalid_argument(error.to_string()).into())
 }
 
+fn fence_request_token(
+    state: &LedgerState,
+    space_id: &SpaceId,
+    fence_epoch: LeaseEpoch,
+    purpose: FencePurpose,
+) -> Result<ReconcileToken, HostError> {
+    let purpose_name = match purpose {
+        FencePurpose::Takeover => "takeover",
+        FencePurpose::ReturnControl => "return",
+    };
+    ReconcileToken::from_suffix(format!(
+        "fence-{purpose_name}-{}-{}-{}",
+        state.broker_epoch.get(),
+        space_id,
+        fence_epoch.get()
+    ))
+    .map_err(|error| CoreError::invalid_argument(error.to_string()).into())
+}
+
 fn action_sequence(action_id: &agentyc_core::ActionId) -> u64 {
     action_id.as_str().bytes().fold(0_u64, |value, byte| {
         value.wrapping_mul(31).wrapping_add(u64::from(byte))
@@ -3277,31 +3573,49 @@ fn status_name(status: ActionStatus) -> String {
 mod tests {
     use super::*;
     use crate::bridge::FakeBridge;
+    use agentyc_core::{ClientId, ClientMetadata, ConnectionNonce};
     use tempfile::tempdir;
 
     fn principal(suffix: &str) -> PrincipalId {
         PrincipalId::from_suffix(suffix).expect("principal")
     }
 
+    fn admit_authority(broker: &Broker, suffix: &str) -> AuthorityTicket {
+        let hello = HelloEnvelope {
+            protocol: PROTOCOL_VERSION,
+            supported_protocols: vec![PROTOCOL_VERSION],
+            principal_id: principal(suffix),
+            resume_from: None,
+            client_metadata: Some(ClientMetadata {
+                client_id: Some(ClientId::from_suffix(format!("client-{suffix}")).expect("client")),
+                client_name: Some("host-unit-test".to_owned()),
+                client_version: Some("2".to_owned()),
+                connection_nonce: Some(
+                    ConnectionNonce::from_suffix(format!("nonce-{suffix}")).expect("nonce"),
+                ),
+                profile_binding_id: Some(
+                    ProfileBindingId::from_suffix("host-test").expect("profile"),
+                ),
+            }),
+        };
+        broker.hello(&hello).expect("hello").authority().clone()
+    }
+
     #[test]
     fn two_spaces_are_isolated_and_stale_epochs_are_rejected() {
         let directory = tempdir().expect("tempdir");
         let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
-        let one_authority = broker
-            .test_authority(principal("one"))
-            .expect("authority one");
-        let two_authority = broker
-            .test_authority(principal("two"))
-            .expect("authority two");
+        let one_authority = admit_authority(&broker, "one");
         let one = broker
             .create_space(&one_authority, "one")
             .expect("space one");
-        let two = broker
-            .create_space(&two_authority, "two")
-            .expect("space two");
         let lease_one = broker
             .acquire_lease(&one.space_id, &one_authority, Timestamp::new(0), 100)
             .expect("lease one");
+        let two_authority = admit_authority(&broker, "two");
+        let two = broker
+            .create_space(&two_authority, "two")
+            .expect("space two");
         let lease_two = broker
             .acquire_lease(&two.space_id, &two_authority, Timestamp::new(0), 100)
             .expect("lease two");
@@ -3315,6 +3629,7 @@ mod tests {
                 )
                 .is_err()
         );
+        let one_authority = admit_authority(&broker, "one");
         assert!(matches!(
             broker.renew_lease(
                 &one.space_id,
@@ -3339,18 +3654,13 @@ mod tests {
         let bridge = FakeBridge::new();
         bridge.set_fence_acknowledged(false);
         let broker = Broker::open(directory.path(), bridge).expect("broker");
-        let one_authority = broker
-            .test_authority(principal("one"))
-            .expect("authority one");
-        let two_authority = broker
-            .test_authority(principal("two"))
-            .expect("authority two");
+        let one_authority = admit_authority(&broker, "one");
         let space = broker.create_space(&one_authority, "one").expect("space");
         let lease = broker
             .acquire_lease(&space.space_id, &one_authority, Timestamp::new(0), 100)
             .expect("lease");
         let takeover = broker
-            .takeover(&space.space_id, &two_authority, Timestamp::new(1), 100)
+            .takeover(&space.space_id, &one_authority, Timestamp::new(1), 100)
             .expect("takeover pending");
         assert!(!takeover.fence_acknowledged);
         assert_eq!(takeover.lifecycle, SpaceLifecycle::FencePending);
@@ -3365,5 +3675,61 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn forged_principal_nonce_profile_and_old_epoch_tickets_are_rejected() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let authority = admit_authority(&broker, "legitimate");
+
+        let forged_principal = AuthorityTicket::host_issued(
+            principal("impostor"),
+            authority.broker_epoch(),
+            authority.connection_epoch(),
+            authority.profile_binding_id().cloned(),
+            authority.connection_nonce().clone(),
+        );
+        assert!(matches!(
+            broker.ledger_json(&forged_principal),
+            Err(HostError::Core(CoreError {
+                code: ErrorCode::PermissionDenied,
+                ..
+            }))
+        ));
+
+        let forged_nonce = AuthorityTicket::host_issued(
+            authority.principal_id().clone(),
+            authority.broker_epoch(),
+            authority.connection_epoch(),
+            authority.profile_binding_id().cloned(),
+            ConnectionNonce::from_suffix("wrong-nonce").expect("nonce"),
+        );
+        assert!(matches!(
+            broker.ledger_json(&forged_nonce),
+            Err(HostError::Core(CoreError {
+                code: ErrorCode::PermissionDenied,
+                ..
+            }))
+        ));
+
+        let forged_profile = AuthorityTicket::host_issued(
+            authority.principal_id().clone(),
+            authority.broker_epoch(),
+            authority.connection_epoch(),
+            Some(ProfileBindingId::from_suffix("wrong-profile").expect("profile")),
+            authority.connection_nonce().clone(),
+        );
+        assert!(matches!(
+            broker.ledger_json(&forged_profile),
+            Err(HostError::Core(CoreError {
+                code: ErrorCode::PermissionDenied,
+                ..
+            }))
+        ));
+
+        let newer = admit_authority(&broker, "newer");
+        assert!(broker.ledger_json(&authority).is_err());
+        assert!(broker.ledger_json(&newer).is_ok());
     }
 }
