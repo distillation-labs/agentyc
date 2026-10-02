@@ -16,7 +16,7 @@ Prove the target product boundary before implementation: a normal user-approved 
 ## Handoff in
 
 - **Inputs:** revised README; `research/decision-supersession.md`; S-018–S-025; current crates and tests; read-only ego-lite reference.
-- **Must already be true:** no new implementation for this plan has started; the repository's existing production crates and tests remain unchanged except for planning/retrieval artifacts.
+- **Must already be true:** production implementation remains gated; Phase 0 test/probe scaffolding may change, while existing production crates are not migrated by this plan.
 - **Do not reopen:** existing Chrome is the default; MCP is adapter-only; no automatic browser launch/download; task spaces/pages are canonical; raw IDs and `[id] name` are forbidden in primary output.
 
 ## Confirmed facts
@@ -107,13 +107,13 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 - [ ] P0-T2 — Build a test-only extension/native-host vertical slice.
   - **Files/surfaces:** `extension/probes/manifest.json`, service worker, debugger/tabs/native messaging probe; `tests/probes/native_probe`; `scripts/run_chrome_probe.py`; platform manifest fixtures; no production host crate changes.
   - **Done when:** the probe connects to a real Chrome tab, sends one allowed debugger command, receives an event, creates a tab group, and sends a validated envelope through Native Messaging to a local test host.
-  - **Validation:** `python3 scripts/run_chrome_probe.py --headed --profile-dir artifacts/p0-extension/profile`; capture extension version, Chrome version, permission prompts, handshake transcript without secrets, and screenshots in `artifacts/p0-extension/`.
+  - **Validation:** `python3 scripts/run_chrome_probe.py --headed --require-live --profile-dir artifacts/p0-extension/profile`; capture extension version, Chrome version, permission prompts, handshake transcript without secrets, and screenshots in `artifacts/p0-extension/`.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T3 — Measure Native Messaging framing, origin, reconnect, and limits.
   - **Files/surfaces:** test host protocol harness, `extension/probes`, `tests/probes/native_messaging.rs`, `scripts/run_native_messaging_probe.py`, or an explicitly registered `agentyc-tests` target.
   - **Done when:** fragmented/truncated/invalid UTF-8/invalid JSON/wrong-origin/replayed/oversized/unsupported-version messages fail closed; clean EOF and host crash are distinguishable; reconnect does not create a second broker.
-  - **Validation:** `python3 scripts/run_native_messaging_probe.py --artifact artifacts/p0-native-protocol.json`; real Chrome host logs; verify bounded allocation below Chrome's documented limits using the Phase 0 source ledger, and enforce cumulative frame/chunk/artifact/assembly/in-flight-byte budgets.
+  - **Validation:** `python3 scripts/run_native_messaging_probe.py --require-live --check-install --extension-origin chrome-extension://<registered-id> --artifact artifacts/p0-native-protocol/report.json`; real Chrome host logs; verify bounded allocation below Chrome's documented limits using the Phase 0 source ledger, and enforce cumulative frame/chunk/artifact/assembly/in-flight-byte budgets.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T4 — Build the Chrome capability matrix.
@@ -131,7 +131,7 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 - [ ] P0-T6 — Measure context, latency, and resource baselines.
   - **Files/surfaces:** `tests/benchmark.rs`; new registered `tests/direct_benchmark.rs`, `tests/browser_task_spaces_existing_chrome.rs`; `scripts/run_direct_benchmark.py`; test tokenizer adapter; `docs/release-gate.md`.
   - **Done when:** report includes time to first useful action, warm metadata/action/wait p50/p95/p99, SDK batch versus separate CLI calls, transport/UTF-8/serialized/model-context token counts with tokenizer metadata, clean-snapshot DOM scans, delta/full actionable-control coverage, Chrome CPU/RSS, host RSS, event lag, reconnect time, stale-ref/unknown rates, and human-tab responsiveness. It contains a committed baseline manifest with environment, fixture hash, cache state, concurrency, sample count, and confidence intervals.
-  - **Validation:** `python3 scripts/run_direct_benchmark.py --warmups 10 --min-samples-p95 200 --min-samples-p99 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`; archive JSON/Markdown/raw samples/manifest under the artifact directory. Thirty samples are smoke-only and cannot gate p95/p99.
+  - **Validation:** `python3 scripts/run_direct_benchmark.py --warmups 10 --samples 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`; archive JSON/Markdown/raw samples/manifest under the artifact directory. Thirty samples are smoke-only and cannot gate p95/p99.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T7 — Verify packaging and installation rollback.
