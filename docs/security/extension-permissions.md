@@ -10,17 +10,19 @@ The extension is a browser adapter, not an authority store. Chrome permission gr
 
 ### Required baseline permissions
 
-| Permission/API    | Install-time status                         | Allowed purpose                                                                                                         | Denial behavior                                                                                   |
-| ----------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `debugger`        | **required; never optional**                | allowlisted CDP domains for target-scoped attach, events, snapshots, waits, and approved actions                        | extension reports `permission_denied`/`capability_unavailable`; host grants no mutation authority |
-| `nativeMessaging` | required                                    | connect the extension context to the registered local native host                                                       | `native_host_unavailable`; no direct client or browser fallback                                   |
-| `tabs`            | required                                    | inspect bounded tab metadata, create agent pages, observe replacement/removal, and act on host-authorized page bindings | typed capability error; no user-tab adoption or cleanup                                           |
-| `tabGroups`       | required for visual presentation            | create/update a presentation mapping for an agent space                                                                 | space remains valid without a group; never affects authorization                                  |
-| `scripting`       | required for the narrow content/page bridge | inject versioned bridge code into an approved frame/document                                                            | `capability_unavailable` or `restricted_url`; no arbitrary script fallback                        |
-| `storage`         | required                                    | persist profile/connection metadata, installation state, and bounded UI preferences                                     | host re-enrollment or read-only UI; authoritative state stays in host                             |
-| `sidePanel`       | required for user-control UI                | render pause, takeover, return, finish, retain, release, and confirmation controls                                      | agent remains host-controlled; user operation returns a typed UI-unavailable result               |
+| Permission/API    | Install-time status              | Allowed purpose                                                                                                         | Denial behavior                                                                                   |
+| ----------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `debugger`        | **required; never optional**     | allowlisted CDP domains for target-scoped attach, events, snapshots, waits, and approved actions                        | extension reports `permission_denied`/`capability_unavailable`; host grants no mutation authority |
+| `nativeMessaging` | required                         | connect the extension context to the registered local native host                                                       | `native_host_unavailable`; no direct client or browser fallback                                   |
+| `tabs`            | required                         | inspect bounded tab metadata, create agent pages, observe replacement/removal, and act on host-authorized page bindings | typed capability error; no user-tab adoption or cleanup                                           |
+| `tabGroups`       | required for visual presentation | create/update a presentation mapping for an agent space                                                                 | space remains valid without a group; never affects authorization                                  |
+
+| `storage` | required | persist profile/connection metadata, installation state, and bounded UI preferences | host re-enrollment or read-only UI; authoritative state stays in host |
+| `sidePanel` | required for user-control UI | render pause, takeover, return, finish, retain, release, and confirmation controls | agent remains host-controlled; user operation returns a typed UI-unavailable result |
 
 `debugger` MUST be declared in the required permission set. It MUST NOT be placed in an optional permission list, modeled as a live grant that silently widens authority, or bypassed through a copied debugger endpoint.
+
+The product manifest intentionally omits both `host_permissions` and `scripting`: the bridge is a statically declared, isolated-world content script, and the current product does not use programmatic script injection. Its explicit `http://*/*` and `https://*/*` content-script match patterns still cause Chrome's documented host-access warning; that warning is disclosed to the user and is not replaced with a hidden or silent grant. Narrower origin enrollment remains a follow-up capability decision.
 
 ### Optional permissions and host access
 
@@ -41,24 +43,24 @@ No permission permits automatic browser download, browser launch, profile switch
 
 The bridge sends only the smallest domain/method set required by the capability matrix. The allowlist is versioned and enforced before dispatch:
 
-| Domain          | Phase 1 use                                                             | Boundary                                                  |
-| --------------- | ----------------------------------------------------------------------- | --------------------------------------------------------- |
-| `Accessibility` | bounded accessibility snapshot data                                     | read; page data remains untrusted                         |
-| `DOM`           | bounded DOM topology, nodes, and mutations required by approved actions | generation and lease checks                               |
-| `DOMSnapshot`   | compact snapshot acquisition                                            | bounded size and scan budget                              |
-| `Input`         | click/type/fill/key/scroll actions                                      | mutation policy, actionability, and postcondition         |
-| `IO`            | bounded artifact/stream reads                                           | chunk and aggregate limits                                |
-| `Log`           | bounded diagnostic events                                               | redaction; no secret/page-body persistence                |
-| `Network`       | request/response events and waits                                       | no unrestricted body persistence; policy and origin scope |
-| `Page`          | navigation, lifecycle, dialogs, and page events                         | lease, deadline, and unknown outcome rules                |
-| `Runtime`       | approved evaluation and bridge calls                                    | evaluate policy below; no unrestricted string execution   |
-| `Target`        | related target/frame lifecycle and attach state                         | internal reconciliation only                              |
+| Domain          | Phase 1 use                                                                         | Boundary                                                                                   |
+| --------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `Accessibility` | bounded accessibility snapshot data                                                 | read; page data remains untrusted                                                          |
+| `DOM`           | bounded DOM topology and node reads; typed actions use approved input/content paths | generation and lease checks; arbitrary DOM mutation and `DOM.setFileInputFiles` are denied |
+| `DOMSnapshot`   | compact snapshot acquisition                                                        | bounded size and scan budget                                                               |
+| `Input`         | click/type/fill/key/scroll actions                                                  | mutation policy, actionability, and postcondition                                          |
+| `IO`            | bounded artifact/stream reads                                                       | chunk and aggregate limits                                                                 |
+| `Log`           | bounded diagnostic events                                                           | redaction; no secret/page-body persistence                                                 |
+| `Network`       | request/response events and waits                                                   | no unrestricted body persistence; global cache/cookie/blocking mutations are denied        |
+| `Page`          | navigation, lifecycle, dialogs, and page events                                     | lease, deadline, and unknown outcome rules                                                 |
+| `Runtime`       | approved evaluation and bridge calls                                                | evaluate policy below; no unrestricted string execution                                    |
+| `Target`        | related target/frame lifecycle and attach state                                     | extension-internal reconciliation only; no public target control commands                  |
 
-`Browser`, unrestricted `Storage`, arbitrary CDP command passthrough, and unreviewed domains are not in the baseline allowlist. An unsupported domain or method returns `capability_unavailable` with the required Chrome/policy reason. It never falls back to a second browser or direct client-side CDP.
+`Browser`, public `Target` control, unrestricted `Storage`, arbitrary CDP command passthrough, arbitrary runtime script compilation/calls, file-input CDP injection, and unreviewed domains are not in the baseline allowlist. An unsupported domain or method returns `capability_unavailable` with the required Chrome/policy reason. It never falls back to a second browser or direct client-side CDP.
 
 ## 3. Content-script and page worlds
 
-- The content script runs in an isolated world by default and carries only a versioned, nonce-bound bridge envelope.
+- The content script runs in an isolated world by default and carries only a versioned, nonce-bound bridge envelope. The current product executes its four named DOM/ARIA operations directly in that isolated world; it does not relay them through page JavaScript.
 - Page `postMessage` is untrusted. The bridge checks a per-connection channel nonce, schema, origin/frame/document binding, size, and direction before forwarding anything.
 - Content scripts cannot call Native Messaging directly. Only the extension service-worker/approved extension contexts may use the host channel.
 - The `MAIN` world is denied by default. A reviewed capability may use it only with an explicit script hash, origin, frame/document generation, deadline, lease, and user-intent ticket where the operation can mutate or expose sensitive state.
@@ -83,7 +85,7 @@ The host evaluates the following policy at request admission and again immediate
 | cookies                     | optional `cookies`                                 | explicit policy, origin, lease, single-use user intent, redaction                                | `permission_denied`/`user_confirmation_required`              |
 | storage read/write          | `debugger`/approved bridge                         | reads are scoped; writes are mutations with policy, lease, and intent                            | `policy_denied`/`permission_denied`                           |
 | download                    | optional `downloads`                               | path allowlist, DLP, user intent, postcondition                                                  | `download_denied`; preserve existing files                    |
-| upload                      | `scripting`/approved page bridge                   | explicit file path policy, user intent, DLP, page generation                                     | `upload_denied`; no retry after unknown dispatch              |
+| upload                      | future reviewed user-controlled flow               | explicit file path policy, user intent, DLP, page generation                                     | `upload_denied`; no retry after unknown dispatch              |
 | adopt/close/release         | `tabs`, `debugger`, `sidePanel`                    | individual ownership proof, fresh generation, current lease, single-use ticket                   | `unmanaged_page`/`user_control_required`; user page preserved |
 | pause/takeover/return       | `sidePanel`, `nativeMessaging`                     | side-panel ticket, current binding, durable host transition                                      | `user_confirmation_required` or `fence_pending`               |
 
