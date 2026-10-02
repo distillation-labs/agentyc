@@ -26,7 +26,7 @@ async function boot(chrome, options = {}) {
   return { worker, port, hello };
 }
 
-function proof(kind, spaceId, pageId, leaseEpoch, suffix = kind) {
+function proof(kind, spaceId, pageId, leaseEpoch, suffix = kind, extra = {}) {
   return {
     issued_by_host: true,
     proof_id: `${kind}-${suffix}-proof`,
@@ -34,6 +34,8 @@ function proof(kind, spaceId, pageId, leaseEpoch, suffix = kind) {
     space_id: spaceId,
     page_id: pageId,
     lease_epoch: leaseEpoch,
+    expires_at: Date.now() + 60_000,
+    ...extra,
   };
 }
 
@@ -171,7 +173,13 @@ test("cleanup requires host proof and group drift never destroys a logical page"
     params: {
       expected_generation: 1,
       cleanup_proof: {
-        ...proof("cleanup", "space_one", "page_one", 1),
+        ...proof("cleanup", "space_one", "page_one", 1, "close", {
+          browser_session_epoch: hello.browser_session_epoch,
+          tab_hint: worker.tabs
+            .inventory()
+            .find((tab) => tab.page_id === "page_one").tab_hint,
+          target_generation: 1,
+        }),
         ownership: "agent",
         generation: 1,
       },
