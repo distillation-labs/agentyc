@@ -1,2 +1,17 @@
 /target/
 .DS_Store
+
+# Phase 0 generated evidence is local-only and must be redacted before sharing.
+/artifacts/*
+!/artifacts/.gitkeep
+
+# Local Python execution products.
+__pycache__/
+*.py[cod]
+
+# Local configuration and private key material.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
