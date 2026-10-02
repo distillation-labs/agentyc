@@ -12,6 +12,8 @@ keywords = ["mcp", "browser", "automation", "cdp", "agent"]
 categories = ["web-programming", "development-tools", "command-line-utilities"]
 
 [dependencies]
+agentyc-core    = { workspace = true }
+agentyc-host    = { workspace = true }
 agentyc-cdp     = { workspace = true }
 agentyc-browser = { workspace = true }
 agentyc-runtime = { workspace = true }
@@ -31,3 +33,6 @@ md5 = { workspace = true }
 schemars = { workspace = true }
 dirs = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
