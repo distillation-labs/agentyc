@@ -12,15 +12,24 @@ The script never touches the default Chrome profile.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import shutil
+import signal
+import socket
+import struct
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from artifact_envelope import envelope as add_envelope
+from artifact_envelope import write_json_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_DIR = ROOT / "extension" / "probes"
@@ -68,6 +77,155 @@ def chrome_endpoint(port: int, path: str) -> Any:
     request = urllib.request.Request(f"http://127.0.0.1:{port}{path}")
     with urllib.request.urlopen(request, timeout=0.75) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+class DevToolsSocket:
+    """Minimal bounded WebSocket client for the local Chrome debugging endpoint."""
+
+    def __init__(self, url: str, timeout: float = 2.0) -> None:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "ws" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+            raise ValueError("debugger websocket must be local ws")
+        self.socket = socket.create_connection((parsed.hostname, parsed.port or 80), timeout=timeout)
+        self.socket.settimeout(timeout)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        request = (
+            f"GET {parsed.path or '/'} HTTP/1.1\\r\\n"
+            f"Host: {parsed.hostname}:{parsed.port or 80}\\r\\n"
+            "Upgrade: websocket\\r\\nConnection: Upgrade\\r\\n"
+            f"Sec-WebSocket-Key: {key}\\r\\nSec-WebSocket-Version: 13\\r\\n\\r\\n"
+        ).encode("ascii")
+        self.socket.sendall(request)
+        response = self._read_http_headers()
+        if not response.startswith(b"HTTP/1.1 101"):
+            raise OSError("debugger websocket handshake failed")
+        self.next_id = 0
+
+    def _read_http_headers(self) -> bytes:
+        data = bytearray()
+        while b"\\r\\n\\r\\n" not in data and len(data) <= 16 * 1024:
+            chunk = self.socket.recv(1024)
+            if not chunk:
+                break
+            data.extend(chunk)
+        return bytes(data)
+
+    def _frame(self, payload: bytes, opcode: int = 1) -> bytes:
+        length = len(payload)
+        if length > 64 * 1024:
+            raise ValueError("debugger message exceeds the probe bound")
+        mask = os.urandom(4)
+        if length < 126:
+            header = bytes([0x80 | opcode, 0x80 | length])
+        else:
+            header = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack("!H", length)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        return header + mask + masked
+
+    def _receive(self) -> tuple[int, bytes]:
+        header = self._receive_exact(2)
+        first, second = header
+        opcode = first & 0x0F
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", self._receive_exact(2))[0]
+        elif length == 127:
+            raise ValueError("large debugger websocket frames are not supported")
+        if length > 64 * 1024:
+            raise ValueError("debugger frame exceeds the probe bound")
+        masked = bool(second & 0x80)
+        mask = self._receive_exact(4) if masked else b""
+        payload = self._receive_exact(length)
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        return opcode, payload
+
+    def _receive_exact(self, size: int) -> bytes:
+        result = bytearray()
+        while len(result) < size:
+            chunk = self.socket.recv(size - len(result))
+            if not chunk:
+                raise OSError("debugger websocket closed")
+            result.extend(chunk)
+        return bytes(result)
+
+    def command(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        self.next_id += 1
+        command_id = self.next_id
+        payload = json.dumps({"id": command_id, "method": method, "params": params or {}}, separators=(",", ":")).encode("utf-8")
+        self.socket.sendall(self._frame(payload))
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            opcode, frame = self._receive()
+            if opcode == 9:
+                self.socket.sendall(self._frame(frame, opcode=10))
+                continue
+            if opcode == 8:
+                raise OSError("debugger websocket closed")
+            if opcode != 1:
+                continue
+            message = json.loads(frame.decode("utf-8"))
+            if message.get("id") == command_id:
+                if "error" in message:
+                    raise OSError("debugger command rejected")
+                return message.get("result")
+        raise TimeoutError("debugger command timed out")
+
+    def close(self) -> None:
+        try:
+            self.socket.close()
+        except OSError:
+            pass
+
+
+def extension_probe_result(port: int, targets: list[dict[str, Any]]) -> dict[str, Any]:
+    workers = [target for target in targets if target.get("type") == "service_worker" and str(target.get("url", "")).startswith("chrome-extension://")]
+    if not workers or not workers[0].get("webSocketDebuggerUrl"):
+        return {"status": "live_unavailable", "limitation": "probe extension service worker was not observed"}
+    request_id = "p0-live-probe"
+    socket_client: DevToolsSocket | None = None
+    try:
+        socket_client = DevToolsSocket(workers[0]["webSocketDebuggerUrl"])
+        socket_client.command("Runtime.enable")
+        socket_client.command(
+            "Runtime.evaluate",
+            {
+                "expression": "chrome.storage.local.set({run_probe:{request_id:'p0-live-probe'}})",
+                "awaitPromise": True,
+                "returnByValue": True,
+            },
+        )
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            result = socket_client.command(
+                "Runtime.evaluate",
+                {
+                    "expression": "chrome.storage.local.get('last_probe')",
+                    "awaitPromise": True,
+                    "returnByValue": True,
+                },
+            )
+            value = (((result or {}).get("result") or {}).get("value") or {}).get("last_probe")
+            if isinstance(value, dict) and value.get("request_id") == request_id:
+                required = {
+                    "extension_loaded": value.get("extension_loaded") is True,
+                    "debugger_command_passed": value.get("debugger_command_passed") is True,
+                    "debugger_event_received": value.get("debugger_event_received") is True,
+                    "tab_group_created": value.get("tab_group_created") is True,
+                    "native_messaging_passed": value.get("native_messaging_passed") is True,
+                    "cleanup_passed": value.get("cleanup_passed") is True,
+                }
+                transcript = value.get("handshake_transcript")
+                if all(required.values()) and isinstance(transcript, list) and transcript:
+                    return {"status": "live_passed", **required, "handshake_transcript": transcript[:8]}
+                return {"status": "live_unavailable", **required, "handshake_transcript": transcript if isinstance(transcript, list) else [], "limitation": "extension probe returned incomplete evidence"}
+            time.sleep(0.1)
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, TimeoutError):
+        return {"status": "live_unavailable", "limitation": "extension result handoff failed closed"}
+    finally:
+        if socket_client is not None:
+            socket_client.close()
+    return {"status": "live_unavailable", "limitation": "extension probe result was not received before the deadline"}
 
 
 def wait_for_chrome(port: int, timeout: float = 8.0) -> dict[str, Any] | None:
@@ -119,7 +277,7 @@ def inspect_live(port: int, profile_dir: Path | None, launch: bool, binary: str 
                 return {"status": "live_unavailable", "limitation": "Chrome binary was not found; install Chrome or pass --chrome-binary."}
             assert profile_dir is not None
             profile_dir.mkdir(parents=True, exist_ok=True)
-            fixture = (EXTENSION_DIR / "fixture.html").resolve().as_uri()
+            fixture = (EXTENSION_DIR / "fixture.html").resolve().as_uri() + "?agentyc_p0_probe=1"
             command = [
                 executable,
                 f"--user-data-dir={profile_dir}",
@@ -131,7 +289,12 @@ def inspect_live(port: int, profile_dir: Path | None, launch: bool, binary: str 
                 "--new-window",
                 fixture,
             ]
-            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
             launched = True
         version = wait_for_chrome(port)
         if version is None:
@@ -140,25 +303,38 @@ def inspect_live(port: int, profile_dir: Path | None, launch: bool, binary: str 
             targets = chrome_endpoint(port, "/json/list")
             target_count = len(targets) if isinstance(targets, list) else None
         except (OSError, urllib.error.URLError, ValueError):
+            targets = []
             target_count = None
+        extension = extension_probe_result(port, targets if isinstance(targets, list) else [])
         return {
-            "status": "live_observed",
+            "status": extension.get("status", "live_unavailable"),
             "chrome_version": version.get("Browser", "unknown"),
-            "debugger_endpoint": f"127.0.0.1:{port}",
             "target_count": target_count,
             "launched_by_probe": launched,
+            "extension_loaded": extension.get("extension_loaded", False),
+            "debugger_command_passed": extension.get("debugger_command_passed", False),
+            "debugger_event_received": extension.get("debugger_event_received", False),
+            "event_received": extension.get("debugger_event_received", False),
+            "tab_group_created": extension.get("tab_group_created", False),
+            "native_messaging_passed": extension.get("native_messaging_passed", False),
+            "cleanup_passed": extension.get("cleanup_passed", False),
+            "handshake_transcript": extension.get("handshake_transcript", []),
             "permission_prompts": "not recorded; Chrome UI prompts require explicit user handling",
-            "handshake": "not attempted; Native Messaging registration is an explicit installation step",
-            "screenshots": [],
-            "limitation": "The safe runner observes Chrome only; the extension popup and native host require explicit user installation/click-through.",
+            "limitation": extension.get("limitation"),
         }
     finally:
         if process is not None:
-            process.terminate()
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (OSError, AttributeError):
+                process.terminate()
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (OSError, AttributeError):
+                    process.kill()
                 process.wait(timeout=5)
 
 
@@ -215,14 +391,28 @@ def main() -> int:
         if live["status"] == "live_unavailable":
             report["status"] = "live_required_unavailable" if live_required else "live_optional_unavailable"
             report["limitations"].append(live["limitation"])
+        elif live_required:
+            # /json/version proves only that a debugging endpoint is reachable.
+            # It does not prove that the MV3 extension, debugger permission,
+            # tab-group mutation, and Native Messaging handshake succeeded.
+            report["status"] = "live_required_unavailable"
+            report["limitations"].append(
+                "Chrome endpoint was observed, but no extension probe result was supplied; "
+                "an endpoint alone cannot close the live gate."
+            )
         else:
-            report["status"] = "live_passed"
+            report["status"] = "live_observed"
             report["limitations"].append(live["limitation"])
     else:
         report["limitations"].append("Real Chrome, extension installation, and Native Messaging registration were not requested.")
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    add_envelope(report, kind="chrome-extension-probe")
     output = artifact_dir / "report.json"
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        write_json_atomic(output, report)
+    except (OSError, ValueError) as error:
+        print(f"chrome probe error: {type(error).__name__}", file=sys.stderr)
+        return 2
     print(json.dumps(report, indent=2, sort_keys=True))
     return 1 if report["status"] == "live_required_unavailable" else 0
 
