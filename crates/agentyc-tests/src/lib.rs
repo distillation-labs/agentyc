@@ -10,6 +10,10 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use serde_json::{Value, json};
 
@@ -63,6 +67,8 @@ impl Mcp {
         let binary = binary_path();
         assert!(binary.exists(), "build first: cargo build -p agentyc");
         let mut cmd = Command::new(&binary);
+        #[cfg(unix)]
+        cmd.process_group(0);
         cmd.arg("mcp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -275,7 +281,8 @@ impl Mcp {
 
 impl Drop for Mcp {
     fn drop(&mut self) {
-        // Best-effort cleanup: ask the server to close the browser, then kill.
+        // Ask the server to perform scoped cleanup first, then terminate the
+        // owned process group so Chrome children cannot outlive the harness.
         let msg = serde_json::to_string(&json!({
             "jsonrpc": "2.0", "id": 0, "method": "tools/call",
             "params": {"name": "browser_close_all", "arguments": {}}
@@ -284,8 +291,27 @@ impl Drop for Mcp {
             + "\n";
         let _ = self.stdin.write_all(msg.as_bytes());
         let _ = self.stdin.flush();
-        self.proc.kill().ok();
+        terminate_owned_process(&mut self.proc);
     }
+}
+
+fn terminate_owned_process(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-TERM", &group]).status();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+                Err(_) => break,
+            }
+        }
+        let _ = Command::new("kill").args(["-KILL", &group]).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Loop-count helper for stress tests: returns `base` scaled by the
