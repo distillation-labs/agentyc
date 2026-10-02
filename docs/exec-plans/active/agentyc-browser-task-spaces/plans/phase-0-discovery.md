@@ -49,6 +49,10 @@ Prove the target product boundary before implementation: a normal user-approved 
 
 None of these blocks writing contracts, but Phase 1 cannot claim a complete Chrome support matrix until U0-1–U0-4 are recorded.
 
+### Current execution blocker
+
+The installed branded Chrome rejects command-line unpacked-extension loading. The supported replacement is implemented as an operator-assisted disposable-profile lane that opens `chrome://extensions`, avoids private Chrome APIs and native file-picker automation, waits for the pinned worker, verifies a staged binding, and collects a post-load permission/policy acknowledgement. Its negative lane has been validated; the positive lane requires an operator with a headed Chrome window. Native Messaging registration must be installed explicitly before the run, and the remaining two-space coexistence, install/update/uninstall/downgrade/rollback, and live performance/resource/token gates still require independently captured evidence. Owner: Japneet Kalkat. Impact: Phase 0 remains active and Phase 1 cannot be activated. Release posture: blocked; no live gate is inferred from offline or partial artifacts. Next action: run `python3 scripts/run_chrome_probe.py --headed --require-live --launch-chrome --operator-assisted`, then capture the enrolled existing-Chrome and lifecycle/benchmark evidence.
+
 ## Scope
 
 ### In scope
@@ -116,7 +120,7 @@ The test-manifest contract must name preflight and drill targets separately, rec
 - [ ] P0-T2 — Build a test-only extension/native-host vertical slice.
   - **Files/surfaces:** `extension/probes/manifest.json`, service worker, debugger/tabs/native messaging probe; `tests/probes/native_probe`; `scripts/run_chrome_probe.py`; platform manifest fixtures; no production host crate changes.
   - **Done when:** the probe connects to a real Chrome tab, sends one allowed debugger command, receives an event, creates a tab group, and sends a validated envelope through Native Messaging to a local test host.
-  - **Validation:** `python3 scripts/run_chrome_probe.py --headed --require-live --launch-chrome --operator-assisted --permission-prompt-status <recorded|none_observed>`; branded Chrome must use the documented `chrome://extensions` Developer mode + Load unpacked flow because Chrome rejects `--load-extension`. The live probe must launch only a short-lived system-temporary profile, remove it after the run, never attach to an arbitrary existing debug endpoint, and never call Chrome private extension APIs or simulate the file picker. Capture extension/runner tree hashes, extension version, Chrome version, permission prompts, handshake transcript without secrets, and screenshots in `artifacts/p0-extension/`.
+  - **Validation:** `python3 scripts/run_chrome_probe.py --headed --require-live --launch-chrome --operator-assisted`; branded Chrome must use the documented `chrome://extensions` Developer mode + Load unpacked flow because Chrome rejects `--load-extension`. After the pinned worker is observed, the runner collects a post-load operator permission/policy acknowledgement; missing or non-interactive input cannot pass. The live probe must launch only a short-lived system-temporary profile, remove it after the run, never attach to an arbitrary existing debug endpoint, and never call Chrome private extension APIs or simulate the file picker. Capture extension/runner tree hashes, extension version, Chrome version, permission evidence, handshake transcript without secrets, and screenshots in `artifacts/p0-extension/`.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T3 — Measure Native Messaging framing, origin, reconnect, and limits.
