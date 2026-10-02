@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "agentyc Phase 0 Probe",
+  "version": "0.0.1",
+  "description": "Test-only MV3 debugger, tab-group, and Native Messaging probe.",
+  "permissions": [
+    "debugger",
+    "nativeMessaging",
+    "storage",
+    "tabGroups",
+    "tabs"
+  ],
+  "background": {
+    "service_worker": "service_worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Run agentyc Phase 0 probe",
+    "default_popup": "probe.html"
+  }
+}
