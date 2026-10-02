@@ -6,9 +6,10 @@
 use std::collections::BTreeMap;
 
 use agentyc_core::{
-    ActionId, DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventScope, FrameDecoder,
-    HelloEnvelope, RequestEnvelope, RequestId, ResponseEnvelope, ResumeEnvelope, SpaceId,
-    decode_frame, decode_utf8, encode_frame,
+    ActionId, ArtifactEnvelope, DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventScope,
+    FrameDecoder, HelloEnvelope, MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES,
+    RequestEnvelope, RequestId, ResponseEnvelope, ResumeEnvelope, SpaceId, decode_frame,
+    decode_utf8, encode_frame,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
@@ -23,6 +24,7 @@ use crate::{
 pub struct ProtocolServer {
     broker: Broker,
     max_payload_bytes: usize,
+    max_artifact_chunk_bytes: usize,
     connection: Option<Connection>,
 }
 
@@ -31,6 +33,7 @@ impl std::fmt::Debug for ProtocolServer {
         formatter
             .debug_struct("ProtocolServer")
             .field("max_payload_bytes", &self.max_payload_bytes)
+            .field("max_artifact_chunk_bytes", &self.max_artifact_chunk_bytes)
             .field("connected", &self.connection.is_some())
             .finish_non_exhaustive()
     }
@@ -40,15 +43,28 @@ impl ProtocolServer {
     /// Construct a dispatcher using the core's default payload bound.
     pub fn new(broker: Broker) -> Self {
         Self::with_max_payload(broker, DEFAULT_MAX_FRAME_PAYLOAD_BYTES)
+            .expect("core default frame bound is valid")
     }
 
     /// Construct a dispatcher with a smaller explicit payload bound.
-    pub fn with_max_payload(broker: Broker, max_payload_bytes: usize) -> Self {
-        Self {
+    pub fn with_max_payload(broker: Broker, max_payload_bytes: usize) -> Result<Self, HostError> {
+        Self::with_limits(broker, max_payload_bytes, MAX_ARTIFACT_CHUNK_BYTES)
+    }
+
+    /// Construct a dispatcher with checked frame and artifact bounds.
+    pub fn with_limits(
+        broker: Broker,
+        max_payload_bytes: usize,
+        max_artifact_chunk_bytes: usize,
+    ) -> Result<Self, HostError> {
+        validate_payload_limit(max_payload_bytes)?;
+        validate_artifact_limit(max_artifact_chunk_bytes)?;
+        Ok(Self {
             broker,
-            max_payload_bytes: max_payload_bytes.min(u32::MAX as usize),
+            max_payload_bytes,
+            max_artifact_chunk_bytes,
             connection: None,
-        }
+        })
     }
 
     /// Return the broker behind this protocol session.
@@ -241,25 +257,40 @@ impl ProtocolServer {
 pub struct ProtocolClient {
     decoder: FrameDecoder,
     max_payload_bytes: usize,
+    max_artifact_chunk_bytes: usize,
 }
 
 impl ProtocolClient {
     /// Construct a client with the core default payload bound.
     pub fn new() -> Self {
         Self::with_max_payload(DEFAULT_MAX_FRAME_PAYLOAD_BYTES)
+            .expect("core default frame bound is valid")
     }
 
     /// Construct a client with an explicit payload bound.
-    pub fn with_max_payload(max_payload_bytes: usize) -> Self {
-        let max_payload_bytes = max_payload_bytes.min(u32::MAX as usize);
-        Self {
+    pub fn with_max_payload(max_payload_bytes: usize) -> Result<Self, HostError> {
+        Self::with_limits(max_payload_bytes, MAX_ARTIFACT_CHUNK_BYTES)
+    }
+
+    /// Construct a client with checked frame and artifact bounds.
+    pub fn with_limits(
+        max_payload_bytes: usize,
+        max_artifact_chunk_bytes: usize,
+    ) -> Result<Self, HostError> {
+        validate_payload_limit(max_payload_bytes)?;
+        validate_artifact_limit(max_artifact_chunk_bytes)?;
+        Ok(Self {
             decoder: FrameDecoder::new(max_payload_bytes),
             max_payload_bytes,
-        }
+            max_artifact_chunk_bytes,
+        })
     }
 
     /// Encode a core envelope into one bounded frame.
     pub fn encode(&self, envelope: &Envelope) -> Result<Vec<u8>, HostError> {
+        if let Envelope::Artifact(artifact) = envelope {
+            validate_artifact_envelope(artifact, self.max_artifact_chunk_bytes)?;
+        }
         let json = serde_json::to_vec(envelope)?;
         Ok(encode_frame(&json, self.max_payload_bytes)?)
     }
@@ -292,6 +323,45 @@ impl Default for ProtocolClient {
 pub type LocalProtocolServer = ProtocolServer;
 /// Names used by later local IPC adapters.
 pub type LocalProtocolClient = ProtocolClient;
+
+fn validate_payload_limit(max_payload_bytes: usize) -> Result<(), HostError> {
+    if max_payload_bytes == 0 || max_payload_bytes > MAX_CONTROL_FRAME_PAYLOAD_BYTES {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::MessageTooLarge,
+            format!(
+                "control frame payload bound must be between 1 and {MAX_CONTROL_FRAME_PAYLOAD_BYTES}"
+            ),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_artifact_limit(max_artifact_chunk_bytes: usize) -> Result<(), HostError> {
+    if max_artifact_chunk_bytes == 0 || max_artifact_chunk_bytes > MAX_ARTIFACT_CHUNK_BYTES {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::MessageTooLarge,
+            format!("artifact chunk bound must be between 1 and {MAX_ARTIFACT_CHUNK_BYTES}"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_artifact_envelope(
+    artifact: &ArtifactEnvelope,
+    max_artifact_chunk_bytes: usize,
+) -> Result<(), HostError> {
+    artifact.validate()?;
+    if artifact.bytes.len() > max_artifact_chunk_bytes {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::MessageTooLarge,
+            "artifact chunk exceeds the configured host bound",
+        )
+        .into());
+    }
+    Ok(())
+}
 
 fn required<'a>(params: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, HostError> {
     params.get(key).map(String::as_str).ok_or_else(|| {
@@ -329,8 +399,9 @@ mod tests {
     fn dispatcher_uses_core_frames_and_requires_hello() {
         let directory = tempdir().expect("tempdir");
         let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
-        let mut server = ProtocolServer::with_max_payload(broker, 4096);
-        let mut client = ProtocolClient::with_max_payload(4096);
+        let mut server =
+            ProtocolServer::with_max_payload(broker, 4096).expect("server configuration");
+        let mut client = ProtocolClient::with_max_payload(4096).expect("client configuration");
         let request = Envelope::Request(RequestEnvelope {
             protocol: PROTOCOL_VERSION,
             request_id: RequestId::from_suffix("request").expect("request"),
