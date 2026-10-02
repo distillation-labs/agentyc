@@ -4,6 +4,13 @@
 mod state;
 mod tools;
 
+pub mod host_adapter;
+
+pub use host_adapter::HostAdapter;
+
+#[cfg(test)]
+mod host_adapter_audit;
+
 use agentyc_runtime::BrowserRuntime;
 use anyhow::Result;
 use rmcp::{
