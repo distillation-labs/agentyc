@@ -8,17 +8,15 @@ use agentyc_core::{
 /// A host-issued authority proof bound to the current broker connection.
 ///
 /// Production callers obtain this only from [`crate::Connection`]. The broker
-/// rejects a ticket after a broker restart or after a newer connection is
-/// admitted. The test-only constructor is intentionally named to make bypasses
-/// explicit in host tests.
+/// rejects a ticket after a broker restart, after a newer connection is
+/// admitted, or when any connection metadata differs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorityTicket {
     pub(crate) principal_id: agentyc_core::PrincipalId,
     pub(crate) broker_epoch: BrokerEpoch,
     pub(crate) connection_epoch: ConnectionEpoch,
     pub(crate) profile_binding_id: Option<ProfileBindingId>,
-    pub(crate) connection_nonce: Option<ConnectionNonce>,
-    pub(crate) test_only: bool,
+    pub(crate) connection_nonce: ConnectionNonce,
 }
 
 impl AuthorityTicket {
@@ -27,7 +25,7 @@ impl AuthorityTicket {
         broker_epoch: BrokerEpoch,
         connection_epoch: ConnectionEpoch,
         profile_binding_id: Option<ProfileBindingId>,
-        connection_nonce: Option<ConnectionNonce>,
+        connection_nonce: ConnectionNonce,
     ) -> Self {
         Self {
             principal_id,
@@ -35,22 +33,6 @@ impl AuthorityTicket {
             connection_epoch,
             profile_binding_id,
             connection_nonce,
-            test_only: false,
-        }
-    }
-
-    pub(crate) fn test_issued(
-        principal_id: agentyc_core::PrincipalId,
-        broker_epoch: BrokerEpoch,
-        profile_binding_id: Option<ProfileBindingId>,
-    ) -> Self {
-        Self {
-            principal_id,
-            broker_epoch,
-            connection_epoch: ConnectionEpoch::new(0),
-            profile_binding_id,
-            connection_nonce: None,
-            test_only: true,
         }
     }
 
@@ -75,13 +57,8 @@ impl AuthorityTicket {
     }
 
     /// Connection nonce presented when this ticket was issued.
-    pub fn connection_nonce(&self) -> Option<&ConnectionNonce> {
-        self.connection_nonce.as_ref()
-    }
-
-    /// Whether this ticket was explicitly created for a host test seam.
-    pub const fn is_test_only(&self) -> bool {
-        self.test_only
+    pub fn connection_nonce(&self) -> &ConnectionNonce {
+        &self.connection_nonce
     }
 }
 
