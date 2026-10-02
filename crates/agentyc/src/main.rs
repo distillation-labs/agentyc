@@ -54,12 +54,15 @@ enum Cmd {
     Mcp {
         #[arg(long)]
         cdp_url: Option<String>,
+        /// Explicitly use the legacy direct-CDP compatibility server.
+        #[arg(long, conflicts_with = "host")]
+        legacy_cdp: bool,
         /// Expose the extended tool profile (observability: console/network logs,
         /// mocks, conditions, replay, debug bundle, downloads, trace).
         #[arg(long)]
         extended: bool,
         /// Run the isolated host-backed logical task-space service.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "legacy_cdp")]
         host: bool,
     },
     /// Run MCP server over Streamable HTTP.
@@ -164,13 +167,14 @@ async fn run() -> Result<()> {
     };
 
     match cli.command {
-        None => agentyc_mcp::run_stdio(None).await,
+        None => run_host_mcp(&direct_options).await,
         Some(Cmd::Mcp {
             cdp_url,
+            legacy_cdp,
             extended,
             host,
         }) => {
-            if host {
+            if host || (!legacy_cdp && cdp_url.is_none()) {
                 run_host_mcp(&direct_options).await
             } else {
                 if extended {
@@ -281,7 +285,13 @@ fn host_principal(explicit: Option<&str>) -> Result<PrincipalId> {
 }
 
 async fn run_action(cdp_url: Option<String>, headless: Option<bool>, action: Action) -> Result<()> {
-    let runtime = agentyc_runtime::BrowserRuntime::open(runtime_config(cdp_url, headless)).await?;
+    let cdp_url = cdp_url.ok_or_else(|| {
+        anyhow!(
+            "legacy direct-CDP run requires an explicit --cdp-url; the default product path does not launch Chrome"
+        )
+    })?;
+    let runtime =
+        agentyc_runtime::BrowserRuntime::open(runtime_config(Some(cdp_url), headless)).await?;
     match dispatch(&runtime, action).await {
         Ok(value) => println!("{}", render_json(&value)),
         Err(error) => {
@@ -297,7 +307,13 @@ async fn run_action(cdp_url: Option<String>, headless: Option<bool>, action: Act
 async fn run_repl(cdp_url: Option<String>, headless: Option<bool>) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let runtime = agentyc_runtime::BrowserRuntime::open(runtime_config(cdp_url, headless)).await?;
+    let cdp_url = cdp_url.ok_or_else(|| {
+        anyhow!(
+            "legacy direct-CDP repl requires an explicit --cdp-url; the default product path does not launch Chrome"
+        )
+    })?;
+    let runtime =
+        agentyc_runtime::BrowserRuntime::open(runtime_config(Some(cdp_url), headless)).await?;
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
     eprintln!("agentyc REPL — type 'help' for commands, 'exit' to close");
@@ -329,11 +345,16 @@ async fn run_repl(cdp_url: Option<String>, headless: Option<bool>) -> Result<()>
 }
 
 async fn run_serve(host: &str, port: u16, cdp_url: Option<&str>) -> Result<()> {
+    let cdp_url = cdp_url.ok_or_else(|| {
+        anyhow!(
+            "agentyc serve is legacy compatibility mode and requires an explicit --cdp-url; use `agentyc mcp` for the host-backed adapter"
+        )
+    })?;
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
 
-    let cdp_owned = cdp_url.map(str::to_string);
+    let cdp_owned = Some(cdp_url.to_string());
     let service: StreamableHttpService<agentyc_mcp::BrowserServer, LocalSessionManager> =
         StreamableHttpService::new(
             move || Ok(agentyc_mcp::BrowserServer::with_cdp_url(cdp_owned.clone())),
