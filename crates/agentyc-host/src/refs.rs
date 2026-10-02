@@ -161,28 +161,6 @@ impl RefRegistry {
         self.issue(envelope, frame_id, now)
     }
 
-    /// Issue a ref from standalone provenance and an exact frame identity.
-    pub fn issue_from_provenance(
-        &mut self,
-        ref_id: RefId,
-        frame_id: FrameId,
-        provenance: SnapshotProvenance,
-        now: Timestamp,
-    ) -> Result<ElementRef, CoreError> {
-        let element_ref = ElementRef {
-            ref_id,
-            space_id: provenance.space_id.clone(),
-            page_id: provenance.page_id.clone(),
-            frame_id,
-            snapshot_version: provenance.snapshot_version,
-            document_generation: provenance.document_generation,
-            navigation_generation: provenance.navigation_generation,
-            refs_epoch: provenance.refs_epoch,
-        };
-        self.register(element_ref.clone(), provenance, now)?;
-        Ok(element_ref)
-    }
-
     /// Alias for [`Self::issue`].
     pub fn issue_ref(
         &mut self,
@@ -198,7 +176,7 @@ impl RefRegistry {
     }
 
     /// Issue a ref with a caller-selected logical identity.
-    pub fn issue_with_id(
+    pub(crate) fn issue_with_id(
         &mut self,
         ref_id: RefId,
         envelope: &SnapshotEnvelope,
@@ -208,6 +186,11 @@ impl RefRegistry {
         envelope
             .validate()
             .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
+        if !envelope.frame_versions.contains_key(&frame_id) {
+            return Err(CoreError::stale_ref(
+                "snapshot frame vector does not contain the requested frame",
+            ));
+        }
         let element_ref = envelope.make_ref(ref_id, frame_id)?;
         self.register(element_ref.clone(), envelope.provenance(), now)?;
         if let Some(record) = self.active.get_mut(&element_ref.ref_id) {
@@ -217,7 +200,7 @@ impl RefRegistry {
     }
 
     /// Register an already-created ref and its exact provenance.
-    pub fn register(
+    pub(crate) fn register(
         &mut self,
         element_ref: ElementRef,
         provenance: SnapshotProvenance,
