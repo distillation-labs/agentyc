@@ -1,12 +1,14 @@
-//! agentyc-mcp: 77-tool browser automation MCP server.
+//! agentyc-mcp: browser automation MCP servers.
 #![allow(clippy::collapsible_if)]
 
 mod state;
 mod tools;
 
 pub mod host_adapter;
+mod host_server;
 
 pub use host_adapter::HostAdapter;
+pub use host_server::{HostBrowserServer, host_service, run_host_stdio};
 
 #[cfg(test)]
 mod host_adapter_audit;
@@ -65,7 +67,7 @@ impl ScrollDir {
     }
 }
 
-/// agentyc browser automation MCP server with all 76 tools.
+/// Legacy agentyc browser automation MCP server.
 #[derive(Clone)]
 pub struct BrowserServer {
     state: SharedState,
