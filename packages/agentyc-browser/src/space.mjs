@@ -38,19 +38,25 @@ export class TaskSpace {
   }
 
   async newPage(label, options = {}) {
-    const result = await this.client.request("page.create", {
-      space_id: this.id,
-      lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
-      label,
-      now: options.now,
-    });
+    const result = await this.client.request(
+      "page.create",
+      {
+        space_id: this.id,
+        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        label,
+        now: options.now,
+      },
+      { signal: options.signal },
+    );
     return this._pageFromResult(result, label);
   }
 
-  async listPages() {
-    const result = await this.client.request("page.list", {
-      space_id: this.id,
-    });
+  async listPages(options = {}) {
+    const result = await this.client.request(
+      "page.list",
+      { space_id: this.id },
+      { signal: options.signal },
+    );
     return (result?.pages ?? []).map(
       (page) =>
         new Page(this, {
@@ -62,11 +68,15 @@ export class TaskSpace {
   }
 
   async claim(options = {}) {
-    const result = await this.client.request("space.claim", {
-      space_id: this.id,
-      ttl: options.ttl,
-      now: options.now,
-    });
+    const result = await this.client.request(
+      "space.claim",
+      {
+        space_id: this.id,
+        ttl: options.ttl,
+        now: options.now,
+      },
+      { signal: options.signal },
+    );
     this.leaseEpoch =
       result?.lease?.lease_epoch ?? result?.lease_epoch ?? this.leaseEpoch;
     this.record = result?.space ?? this.record;
@@ -74,33 +84,44 @@ export class TaskSpace {
   }
 
   async renew(options = {}) {
-    const result = await this.client.request("space.renew", {
-      space_id: this.id,
-      lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
-      ttl: options.ttl,
-      now: options.now,
-    });
+    const result = await this.client.request(
+      "space.renew",
+      {
+        space_id: this.id,
+        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        ttl: options.ttl,
+        now: options.now,
+      },
+      { signal: options.signal },
+    );
     this.leaseEpoch = result?.lease?.lease_epoch ?? this.leaseEpoch;
     return result;
   }
 
   async takeover(options = {}) {
-    const result = await this.client.request("space.takeover", {
-      space_id: this.id,
-      ttl: options.ttl,
-      now: options.now,
-    });
+    const result = await this.client.request(
+      "space.takeover",
+      {
+        space_id: this.id,
+        ttl: options.ttl,
+        now: options.now,
+      },
+      { signal: options.signal },
+    );
     this.leaseEpoch = result?.lease_epoch ?? this.leaseEpoch;
     return result;
   }
 
   async returnControl(options = {}) {
-    const result = await this.client.request("space.return", {
-      space_id: this.id,
-      lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
-      now: options.now,
-    });
-    return result;
+    return this.client.request(
+      "space.return",
+      {
+        space_id: this.id,
+        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        now: options.now,
+      },
+      { signal: options.signal },
+    );
   }
 
   async finish(options = {}) {
@@ -111,7 +132,7 @@ export class TaskSpace {
         lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
         now: options.now,
       },
-      { mayHaveSideEffects: true },
+      { signal: options.signal },
     );
   }
 
@@ -123,12 +144,12 @@ export class TaskSpace {
         lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
         now: options.now,
       },
-      { mayHaveSideEffects: true },
+      { signal: options.signal },
     );
   }
 
-  async actionStatus(actionId) {
-    return this.client.actionStatus(actionId);
+  async actionStatus(actionId, options = {}) {
+    return this.client.actionStatus(actionId, options);
   }
 
   async reconcileAction(actionId, options = {}) {
@@ -136,6 +157,7 @@ export class TaskSpace {
       actionId,
       options.leaseEpoch ?? this.leaseEpoch,
       options.now,
+      options,
     );
   }
 
