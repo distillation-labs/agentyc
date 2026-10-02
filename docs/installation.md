@@ -74,11 +74,14 @@ The runner opens an owned disposable Chrome window, navigates to
 `chrome://extensions`, prints the exact staged directory, and waits for the
 operator to enable Developer mode and click **Load unpacked**. It does not pass
 `--load-extension`, call `chrome.developerPrivate`, inspect the internal
-extensions page DOM, or automate the native file picker. Native Messaging must
-be installed separately before this run. After the exact extension worker is
-observed, the runner asks the operator for a post-load permission/policy
-acknowledgement; missing or non-interactive input cannot pass the gate. If a
-different manifest is already present, the script refuses to replace it. Use `--install` or `--rollback`
+extensions page DOM, or automate the native file picker. For this disposable
+probe, the runner stages the test Native Messaging manifest inside the owned
+profile; the separate user-level install drill is not a prerequisite. After the
+exact extension worker is observed, the runner asks the operator for a post-load
+permission/policy acknowledgement; it reads the controlling terminal when the
+process stdin is redirected, and missing acknowledgement still cannot pass the
+gate. If a different manifest is already present, the script refuses to replace
+it. Use `--install` or `--rollback`
 separately only for an explicit, operator-controlled action:
 
 ```bash
@@ -93,6 +96,8 @@ python3 scripts/run_install_drill.py --rollback \
 
 These actions can change only the explicitly targeted test Native Messaging
 registration. They never mutate a Chrome profile, tabs, or user browser state.
+The live disposable probe instead owns and removes its temporary profile and
+stages its test registration there.
 Rollback refuses to delete a changed or unowned manifest. A pre-existing exact
 manifest is reported as already installed and is not removed by the drill.
 
