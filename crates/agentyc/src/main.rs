@@ -4,16 +4,22 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+use agentyc_core::{
+    ClientId, ClientMetadata, ConnectionNonce, HelloEnvelope, PROTOCOL_VERSION, PrincipalId,
+    ProfileBindingId,
+};
+use agentyc_host::{Broker, FakeBridge, NullBridge};
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 mod commands;
 mod frontend;
 
 use commands::direct::{
-    ActionCommand as DirectActionCommand, DirectCommand, DirectOptions, EventsArgs, HostCommand,
-    PageCommand as DirectPageCommand, SnapshotArgs, SpaceCommand,
+    ActionCommand as DirectActionCommand, DirectCommand, DirectCommandError, DirectOptions,
+    EventsArgs, HostCommand, PageCommand as DirectPageCommand, SnapshotArgs, SpaceCommand,
 };
 use frontend::{Action, dispatch, render_error, render_json, runtime_config};
 
@@ -37,6 +43,9 @@ struct Cli {
     /// Use the explicit deterministic fake-host seam for direct commands.
     #[arg(long, global = true)]
     offline: bool,
+    /// Emit compact structured JSON for direct commands.
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -49,6 +58,9 @@ enum Cmd {
         /// mocks, conditions, replay, debug bundle, downloads, trace).
         #[arg(long)]
         extended: bool,
+        /// Run the isolated host-backed logical task-space service.
+        #[arg(long)]
+        host: bool,
     },
     /// Run MCP server over Streamable HTTP.
     Serve {
@@ -123,7 +135,17 @@ enum Cmd {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        let exit_code = error
+            .downcast_ref::<DirectCommandError>()
+            .map_or(1, DirectCommandError::exit_code);
+        eprintln!("Error: {error}");
+        std::process::exit(exit_code);
+    }
+}
+
+async fn run() -> Result<()> {
     // stderr-only tracing — stdout is the JSON-RPC channel
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -138,15 +160,24 @@ async fn main() -> Result<()> {
         state_dir: cli.state_dir.clone(),
         principal: cli.principal.clone(),
         offline: cli.offline,
+        json: cli.json,
     };
 
     match cli.command {
         None => agentyc_mcp::run_stdio(None).await,
-        Some(Cmd::Mcp { cdp_url, extended }) => {
-            if extended {
-                unsafe { std::env::set_var("AGENTYC_EXTENDED", "1") };
+        Some(Cmd::Mcp {
+            cdp_url,
+            extended,
+            host,
+        }) => {
+            if host {
+                run_host_mcp(&direct_options).await
+            } else {
+                if extended {
+                    unsafe { std::env::set_var("AGENTYC_EXTENDED", "1") };
+                }
+                agentyc_mcp::run_stdio(cdp_url.as_deref()).await
             }
-            agentyc_mcp::run_stdio(cdp_url.as_deref()).await
         }
         Some(Cmd::Serve {
             host,
@@ -175,24 +206,77 @@ async fn main() -> Result<()> {
             action,
         }) => run_action(cdp_url, headless, action).await,
         Some(Cmd::Repl { cdp_url, headless }) => run_repl(cdp_url, headless).await,
-        Some(Cmd::Space { command }) => {
-            commands::direct::run(DirectCommand::Space(command), direct_options)
-        }
-        Some(Cmd::Page { command }) => {
-            commands::direct::run(DirectCommand::Page(command), direct_options)
-        }
-        Some(Cmd::Snapshot(args)) => {
-            commands::direct::run(DirectCommand::Snapshot(args), direct_options)
-        }
-        Some(Cmd::Action { command }) => {
-            commands::direct::run(DirectCommand::Action(command), direct_options)
-        }
-        Some(Cmd::Events(args)) => {
-            commands::direct::run(DirectCommand::Events(args), direct_options)
-        }
-        Some(Cmd::Host { command }) => {
-            commands::direct::run(DirectCommand::Host(command), direct_options)
-        }
+        Some(Cmd::Space { command }) => run_direct(DirectCommand::Space(command), direct_options),
+        Some(Cmd::Page { command }) => run_direct(DirectCommand::Page(command), direct_options),
+        Some(Cmd::Snapshot(args)) => run_direct(DirectCommand::Snapshot(args), direct_options),
+        Some(Cmd::Action { command }) => run_direct(DirectCommand::Action(command), direct_options),
+        Some(Cmd::Events(args)) => run_direct(DirectCommand::Events(args), direct_options),
+        Some(Cmd::Host { command }) => run_direct(DirectCommand::Host(command), direct_options),
+    }
+}
+
+fn run_direct(command: DirectCommand, options: DirectOptions) -> Result<()> {
+    commands::direct::run(command, options).map_err(anyhow::Error::new)
+}
+
+async fn run_host_mcp(options: &DirectOptions) -> Result<()> {
+    let state_dir = host_state_dir(options.state_dir.as_deref())?;
+    let broker = if options.offline {
+        Broker::open(&state_dir, FakeBridge::new())?
+    } else {
+        Broker::open(&state_dir, NullBridge)?
+    };
+    let principal = host_principal(options.principal.as_deref())?;
+    let connection_nonce = ConnectionNonce::from_suffix(format!("mcp-{}", Uuid::new_v4().simple()))
+        .map_err(|error| anyhow!(error.to_string()))?;
+    let hello = HelloEnvelope {
+        protocol: PROTOCOL_VERSION,
+        supported_protocols: vec![PROTOCOL_VERSION],
+        principal_id: principal,
+        resume_from: None,
+        client_metadata: Some(ClientMetadata {
+            client_id: Some(
+                ClientId::from_suffix("mcp-host").map_err(|error| anyhow!(error.to_string()))?,
+            ),
+            client_name: Some("agentyc-host-mcp".to_owned()),
+            client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            connection_nonce: Some(connection_nonce),
+            profile_binding_id: if options.offline {
+                Some(
+                    ProfileBindingId::from_suffix("cli-offline")
+                        .map_err(|error| anyhow!(error.to_string()))?,
+                )
+            } else {
+                None
+            },
+        }),
+    };
+    agentyc_mcp::run_host_stdio(broker, hello).await
+}
+
+fn host_state_dir(explicit: Option<&str>) -> Result<std::path::PathBuf> {
+    if let Some(path) = explicit.filter(|value| !value.is_empty()) {
+        return Ok(std::path::PathBuf::from(path));
+    }
+    if let Ok(path) = std::env::var("AGENTYC_STATE_DIR")
+        && !path.trim().is_empty()
+    {
+        return Ok(std::path::PathBuf::from(path));
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".agentyc").join("state"))
+        .ok_or_else(|| anyhow!("home directory is unavailable; pass --state-dir"))
+}
+
+fn host_principal(explicit: Option<&str>) -> Result<PrincipalId> {
+    let value = explicit
+        .map(str::to_owned)
+        .or_else(|| std::env::var("AGENTYC_PRINCIPAL").ok())
+        .unwrap_or_else(|| "principal_cli".to_owned());
+    if value.starts_with(PrincipalId::PREFIX) {
+        PrincipalId::new(value).map_err(|error| anyhow!(error.to_string()))
+    } else {
+        PrincipalId::from_suffix(value).map_err(|error| anyhow!(error.to_string()))
     }
 }
 
