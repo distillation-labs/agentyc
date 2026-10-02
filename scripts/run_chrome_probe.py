@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 import os
 import shutil
@@ -21,6 +20,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -55,6 +55,11 @@ def safe_artifact_dir(value: str) -> Path:
     requested = Path(value)
     if not requested.is_absolute():
         requested = ROOT / requested
+    current = requested
+    while current != current.parent:
+        if current.is_symlink():
+            raise SystemExit("artifact path components must not be symlinks")
+        current = current.parent
     requested = requested.resolve()
     allowed = DEFAULT_ARTIFACT_DIR.resolve()
     if requested != allowed and allowed not in requested.parents:
@@ -66,6 +71,11 @@ def safe_profile_dir(value: str) -> Path:
     requested = Path(value)
     if not requested.is_absolute():
         requested = ROOT / requested
+    current = requested
+    while current != current.parent:
+        if current.is_symlink():
+            raise SystemExit("profile path components must not be symlinks")
+        current = current.parent
     requested = requested.resolve()
     allowed = DEFAULT_ARTIFACT_DIR.resolve()
     if allowed not in requested.parents and requested != allowed:
@@ -277,7 +287,7 @@ def inspect_live(port: int, profile_dir: Path | None, launch: bool, binary: str 
                 return {"status": "live_unavailable", "limitation": "Chrome binary was not found; install Chrome or pass --chrome-binary."}
             assert profile_dir is not None
             profile_dir.mkdir(parents=True, exist_ok=True)
-            fixture = (EXTENSION_DIR / "fixture.html").resolve().as_uri() + "?agentyc_p0_probe=1"
+            fixture = (EXTENSION_DIR / "fixture.html").resolve().as_uri() + "?agentyc_p0_probe=1&agentyc_p0_fixture_sha256=fc8ff011514dc69192ec3f383821a38d9c6f584d2756d8013446cbfe80b902e6"
             command = [
                 executable,
                 f"--user-data-dir={profile_dir}",
