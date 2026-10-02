@@ -110,7 +110,30 @@ def load_manifest() -> dict[str, Any]:
     return manifest
 
 
-def extension_tree_sha256(directory: Path) -> str:
+def _read_bounded_file(path: Path, maximum: int) -> bytes:
+    if maximum < 0:
+        raise ValueError("bounded file limit is invalid")
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise ValueError("extension file could not be stat-ed") from error
+    if size > maximum:
+        raise ValueError("extension file exceeds the bounded read limit")
+    data = bytearray()
+    with path.open("rb") as handle:
+        while len(data) <= maximum:
+            chunk = handle.read(min(1024 * 1024, maximum - len(data) + 1))
+            if not chunk:
+                break
+            data.extend(chunk)
+            if len(data) > maximum:
+                raise ValueError("extension file grew beyond the bounded read limit")
+    if len(data) != size:
+        raise ValueError("extension file changed while it was being hashed")
+    return bytes(data)
+
+
+def extension_tree_sha256(directory: Path, *, exclude: frozenset[str] = frozenset()) -> str:
     """Hash an extension tree without following symlinks or unbounded files."""
     root = Path(directory)
     if not root.is_dir() or root.is_symlink():
@@ -124,11 +147,15 @@ def extension_tree_sha256(directory: Path) -> str:
             continue
         if not path.is_file():
             raise ValueError("extension tree contains a non-file entry")
-        data = path.read_bytes()
-        total_bytes += len(data)
-        if len(files) >= MAX_EXTENSION_FILES or total_bytes > MAX_EXTENSION_BYTES:
+        relative = path.relative_to(root).as_posix()
+        if relative in exclude:
+            continue
+        remaining = MAX_EXTENSION_BYTES - total_bytes
+        if len(files) >= MAX_EXTENSION_FILES or remaining < 0:
             raise ValueError("extension tree exceeds the bounded staging limit")
-        files.append((path.relative_to(root).as_posix(), data))
+        data = _read_bounded_file(path, remaining)
+        total_bytes += len(data)
+        files.append((relative, data))
     if not files:
         raise ValueError("extension staging directory is empty")
     digest = hashlib.sha256()
@@ -141,15 +168,23 @@ def extension_tree_sha256(directory: Path) -> str:
     return digest.hexdigest()
 
 
-def stage_extension(profile_dir: Path) -> tuple[Path, str, str]:
-    """Copy and hash the exact probe selected by the operator."""
+def stage_extension(profile_dir: Path, binding_nonce: str) -> tuple[Path, str, str]:
+    """Copy and bind the exact probe selected by the operator."""
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", binding_nonce, re.IGNORECASE):
+        raise ValueError("extension binding nonce is invalid")
     source_hash = extension_tree_sha256(EXTENSION_DIR)
     destination = profile_dir / "extension" / "probes"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(EXTENSION_DIR, destination, symlinks=False)
-    staged_hash = extension_tree_sha256(destination)
-    if staged_hash != source_hash:
+    binding = {"nonce": binding_nonce, "source_tree_sha256": source_hash}
+    (destination / "probe_binding.json").write_text(
+        json.dumps(binding, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    staged_source_hash = extension_tree_sha256(destination, exclude=frozenset({"probe_binding.json"}))
+    if staged_source_hash != source_hash:
         raise ValueError("staged extension hash did not match the repository probe")
+    staged_hash = extension_tree_sha256(destination)
     return destination, source_hash, staged_hash
 
 
@@ -608,6 +643,19 @@ def _bounded_diagnostic_string(value: Any) -> str | None:
     return value[:MAX_DIAGNOSTIC_STRING]
 
 
+def _bounded_worker_diagnostic(field: str, value: Any) -> str | None:
+    bounded = _bounded_diagnostic_string(value)
+    if bounded is None:
+        return None
+    if field == "version" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", bounded):
+        return None
+    if field == "service_worker" and not re.fullmatch(r"[A-Za-z0-9._/-]{1,128}", bounded):
+        return None
+    if field == "name" and (len(bounded) > MAX_DIAGNOSTIC_STRING or any(character in bounded for character in "/\\\\:")):
+        return None
+    return bounded
+
+
 def _worker_identity_evidence(
     identity: Any,
     extension_id: str,
@@ -630,7 +678,7 @@ def _worker_identity_evidence(
         evidence["manifest_key_id_matches_target"] = expected_extension_id == extension_id
     if isinstance(identity, dict):
         for field in ("name", "version", "service_worker"):
-            value = _bounded_diagnostic_string(identity.get(field))
+            value = _bounded_worker_diagnostic(field, identity.get(field))
             if value is not None:
                 evidence[f"observed_{field}"] = value
     return evidence
@@ -652,13 +700,33 @@ def _cleanup_owned_profile(profile: Path | None) -> bool:
     return success
 
 
+def _process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
 def _safe_stop_process(process: subprocess.Popen[bytes]) -> bool:
     global _LAST_CLEANUP_OK
     success = True
+    owned_group = False
     try:
+        try:
+            owned_group = os.getpgid(process.pid) == process.pid
+        except OSError:
+            owned_group = False
         if process.poll() is None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                if owned_group:
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
             except (OSError, AttributeError):
                 try:
                     process.terminate()
@@ -668,7 +736,10 @@ def _safe_stop_process(process: subprocess.Popen[bytes]) -> bool:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                if owned_group:
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
             except (OSError, AttributeError):
                 try:
                     process.kill()
@@ -678,9 +749,17 @@ def _safe_stop_process(process: subprocess.Popen[bytes]) -> bool:
                 process.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 success = False
+        if owned_group and _process_group_exists(process.pid):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                success = False
+            time.sleep(0.1)
+            if _process_group_exists(process.pid):
+                success = False
     except (OSError, ValueError):
         success = False
-    if process.poll() is not None:
+    if process.poll() is not None and (not owned_group or not _process_group_exists(process.pid)):
         return success
     _LAST_CLEANUP_OK = False
     return False
@@ -691,6 +770,9 @@ def extension_probe_result(
     targets: list[dict[str, Any]],
     expected_manifest: dict[str, Any] | None = None,
     fixture_path: Path | None = None,
+    *,
+    binding_nonce: str | None = None,
+    source_extension_hash: str | None = None,
 ) -> dict[str, Any]:
     """Run the probe only after selecting one identity-verified worker."""
     request_id = new_request_id()
@@ -800,8 +882,15 @@ def extension_probe_result(
             permissions_match = isinstance(permissions, list) and set(permissions) == set(manifest.get("permissions", []))
             transcript = value.get("handshake_transcript")
             transcript_valid = transcript == ["hello_accepted", "probe_accepted"]
+            binding_passed = (
+                isinstance(binding_nonce, str)
+                and isinstance(source_extension_hash, str)
+                and value.get("binding_nonce") == binding_nonce
+                and value.get("binding_source_tree_sha256") == source_extension_hash
+            )
             required = {
                 "extension_loaded": value.get("extension_loaded") is True,
+                "extension_build_binding_passed": binding_passed,
                 "fixture_identity_passed": value.get("fixture_identity_passed") is True,
                 "debugger_command_passed": value.get("debugger_command_passed") is True,
                 "debugger_event_received": value.get("debugger_event_received") is True,
@@ -929,20 +1018,28 @@ def _owned_page_target(port: int, process: subprocess.Popen[bytes]) -> dict[str,
     return None
 
 
-def navigate_owned_page(port: int, process: subprocess.Popen[bytes], url: str) -> None:
-    """Navigate only a page in the probe-owned disposable browser."""
+def navigate_page_target(websocket_url: str, url: str) -> None:
+    if not isinstance(websocket_url, str) or not websocket_url:
+        raise ValueError("owned page debugger URL is invalid")
     if not isinstance(url, str) or not url or _contains_control(url):
         raise ValueError("owned page URL is invalid")
-    target = _owned_page_target(port, process)
-    if target is None:
-        raise OSError("probe-owned page target was not observed")
-    client = DevToolsSocket(target["webSocketDebuggerUrl"])
+    client = DevToolsSocket(websocket_url)
     try:
         result = client.command("Page.navigate", {"url": url})
         if not isinstance(result, dict) or result.get("errorText"):
             raise OSError("probe-owned page navigation was rejected")
     finally:
         client.close()
+
+
+def navigate_owned_page(port: int, process: subprocess.Popen[bytes], url: str) -> str:
+    """Navigate only a page in the probe-owned disposable browser."""
+    target = _owned_page_target(port, process)
+    if target is None:
+        raise OSError("probe-owned page target was not observed")
+    websocket_url = target["webSocketDebuggerUrl"]
+    navigate_page_target(websocket_url, url)
+    return websocket_url
 
 
 def wait_for_fixture_page(
@@ -961,16 +1058,51 @@ def wait_for_fixture_page(
             targets = chrome_endpoint(port, "/json/list")
         except (OSError, urllib.error.URLError, ValueError):
             targets = None
-        if isinstance(targets, list) and any(
-            isinstance(target, dict) and target.get("type") == "page" and target.get("url") == fixture_url
-            for target in targets
-        ):
-            return True
+        if isinstance(targets, list):
+            for target in targets:
+                if not (
+                    isinstance(target, dict)
+                    and target.get("type") == "page"
+                    and target.get("url") == fixture_url
+                    and isinstance(target.get("webSocketDebuggerUrl"), str)
+                ):
+                    continue
+                client = DevToolsSocket(target["webSocketDebuggerUrl"])
+                try:
+                    ready = client.command(
+                        "Runtime.evaluate",
+                        {
+                            "expression": "({ ready: document.readyState, title: document.title })",
+                            "returnByValue": True,
+                        },
+                    )
+                    value = _runtime_value(ready)
+                    if isinstance(value, dict) and value.get("ready") == "complete" and value.get("title") == "agentyc P0 probe fixture":
+                        return True
+                except (OSError, ValueError, TypeError, KeyError, TimeoutError, struct.error):
+                    pass
+                finally:
+                    client.close()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         time.sleep(min(WORKER_DISCOVERY_INTERVAL, remaining))
     return False
+
+
+def claim_disposable_profile(profile: Path) -> None:
+    """Claim an empty profile directory without following a final symlink."""
+    if profile.is_symlink():
+        raise ValueError("disposable profile must not be a symlink")
+    if profile.exists():
+        if not profile.is_dir() or any(profile.iterdir()):
+            raise ValueError("the supplied disposable Chrome profile is not empty")
+        return
+    try:
+        profile.mkdir(mode=0o700)
+    except FileExistsError as error:
+        if profile.is_symlink() or not profile.is_dir() or any(profile.iterdir()):
+            raise ValueError("the supplied disposable Chrome profile is not empty") from error
 
 
 def print_operator_instructions(staged_extension: Path, timeout: float) -> None:
@@ -979,9 +1111,31 @@ def print_operator_instructions(staged_extension: Path, timeout: float) -> None:
     print("  2. Enable Developer mode.", file=sys.stderr)
     print("  3. Click Load unpacked and select this exact directory:", file=sys.stderr)
     print(f"     {staged_extension}", file=sys.stderr)
-    print("  4. Record any permission or policy prompt outcome when invoking the runner.", file=sys.stderr)
-    print(f"  5. Leave the window open; the runner waits up to {timeout:.0f} seconds.", file=sys.stderr)
+    print(f"  4. Leave the window open; the runner waits up to {timeout:.0f} seconds.", file=sys.stderr)
+    print("  5. After the extension appears, answer the permission/policy prompt below.", file=sys.stderr)
     sys.stderr.flush()
+
+
+def collect_operator_permission_status() -> str:
+    """Collect a post-load operator acknowledgement; never trust a predeclared flag."""
+    print(
+        "After Load unpacked, enter permission/policy outcome "
+        "(recorded, none_observed, shown_accepted, shown_denied, or policy_blocked): ",
+        file=sys.stderr,
+        end="",
+        flush=True,
+    )
+    if not sys.stdin.isatty():
+        return "not_recorded"
+    try:
+        value = input().strip()
+    except (EOFError, OSError):
+        return "not_recorded"
+    if value == "none_observed":
+        return value
+    if value in {"recorded", "shown_accepted", "shown_denied", "policy_blocked"}:
+        return "recorded"
+    return "not_recorded"
 
 
 def _chrome_load_extension_evidence(log_path: Path | None, log_handle: Any | None = None) -> dict[str, str] | None:
@@ -1030,10 +1184,14 @@ def wait_for_probe_worker(
     port: int,
     process: subprocess.Popen[bytes],
     timeout: float = WORKER_DISCOVERY_TIMEOUT,
+    *,
+    expected_extension_id: str | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Poll the launched process for one exact probe worker, failing closed."""
+    """Poll until the launched process exposes the pinned probe worker."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("worker discovery timeout must be positive and finite")
+    if expected_extension_id is not None and not EXTENSION_ID_PATTERN.fullmatch(expected_extension_id):
+        raise ValueError("expected extension ID is invalid")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _endpoint_belongs_to_process(port, process):
@@ -1042,8 +1200,14 @@ def wait_for_probe_worker(
             targets = chrome_endpoint(port, "/json/list")
         except (OSError, urllib.error.URLError, ValueError):
             targets = None
-        if isinstance(targets, list) and any(_worker_candidate(target, port) for target in targets):
-            return targets
+        if isinstance(targets, list):
+            candidates = [_worker_candidate(target, port) for target in targets]
+            if any(
+                candidate is not None
+                and (expected_extension_id is None or candidate[0] == expected_extension_id)
+                for candidate in candidates
+            ):
+                return targets
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
@@ -1060,7 +1224,6 @@ def inspect_live(
     manifest: dict[str, Any] | None = None,
     *,
     operator_assisted: bool = False,
-    permission_prompt_status: str = "not_recorded",
     operator_timeout: float = DEFAULT_OPERATOR_TIMEOUT,
 ) -> dict[str, Any]:
     global _LAST_CLEANUP_OK
@@ -1074,8 +1237,9 @@ def inspect_live(
         "developer_private_used": False,
         "extensions_ui_dom_access": False,
         "permission_prompts": {
-            "status": permission_prompt_status,
+            "status": "not_recorded",
             "required_manual_review": operator_assisted,
+            "collection": "post_load_operator_ack" if operator_assisted else "not_requested",
         },
     }
     if not launch:
@@ -1090,8 +1254,6 @@ def inspect_live(
         }
     if not math.isfinite(operator_timeout) or operator_timeout <= 0:
         raise ValueError("operator timeout must be positive and finite")
-    if permission_prompt_status not in OPERATOR_PERMISSION_STATUSES | {"not_recorded"}:
-        raise ValueError("permission prompt status is invalid")
     owned_profile: Path | None = profile_dir if launch and profile_dir is not None else None
     if launch:
         try:
@@ -1111,6 +1273,8 @@ def inspect_live(
     fixture_path: Path | None = None
     source_extension_hash: str | None = None
     staged_extension_hash: str | None = None
+    binding_nonce = new_request_id()
+    operator_page_websocket: str | None = None
     launched = False
     try:
         if launch:
@@ -1121,10 +1285,11 @@ def inspect_live(
                 owned_profile = Path(tempfile.mkdtemp(prefix="agentyc-p0-profile-"))
                 profile_dir = owned_profile
             assert profile_dir is not None
-            if profile_dir.exists() and any(profile_dir.iterdir()):
-                return {**common_evidence, "status": "live_unavailable", "limitation": "the supplied disposable Chrome profile is not empty"}
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            loaded_extension_dir, source_extension_hash, staged_extension_hash = stage_extension(profile_dir)
+            try:
+                claim_disposable_profile(profile_dir)
+            except (OSError, ValueError):
+                return {**common_evidence, "status": "live_unavailable", "limitation": "the supplied disposable Chrome profile is not empty or is unsafe"}
+            loaded_extension_dir, source_extension_hash, staged_extension_hash = stage_extension(profile_dir, binding_nonce)
             fixture_path = loaded_extension_dir / "fixture.html"
             fixture = fixture_path.resolve().as_uri()
             stderr_log_path = profile_dir / "chrome.stderr.log"
@@ -1149,14 +1314,23 @@ def inspect_live(
             return {**common_evidence, "status": "live_unavailable", "limitation": "Chrome did not expose the requested debug endpoint."}
         if process is None or not _endpoint_belongs_to_process(port, process):
             return {**common_evidence, "status": "live_unavailable", "limitation": "the debug endpoint owner could not be bound to the probe-launched Chrome process"}
+        expected_extension_id = _manifest_extension_id(manifest or {})
 
         if operator_assisted:
-            navigate_owned_page(port, process, "chrome://extensions/")
+            operator_page_websocket = navigate_owned_page(port, process, "chrome://extensions/")
             loaded_extension_dir = profile_dir / "extension" / "probes"
             print_operator_instructions(loaded_extension_dir, operator_timeout)
-            targets = wait_for_probe_worker(port, process, timeout=operator_timeout)
+            targets = wait_for_probe_worker(
+                port,
+                process,
+                timeout=operator_timeout,
+                expected_extension_id=expected_extension_id,
+            )
             if targets is not None:
-                navigate_owned_page(port, process, fixture)
+                common_evidence["permission_prompts"]["status"] = collect_operator_permission_status()
+                if operator_page_websocket is None:
+                    raise OSError("probe-owned operator page was lost")
+                navigate_page_target(operator_page_websocket, fixture)
                 if not wait_for_fixture_page(port, process, fixture, timeout=WORKER_DISCOVERY_TIMEOUT):
                     return {
                         **common_evidence,
@@ -1166,13 +1340,30 @@ def inspect_live(
                         "limitation": "operator-loaded extension was observed, but the owned fixture tab did not become ready",
                     }
         else:
-            targets = wait_for_probe_worker(port, process)
+            targets = wait_for_probe_worker(
+                port,
+                process,
+                expected_extension_id=expected_extension_id,
+            )
         if targets is None:
             try:
                 observed_targets = chrome_endpoint(port, "/json/list")
             except (OSError, urllib.error.URLError, ValueError):
                 observed_targets = []
             targets = observed_targets if isinstance(observed_targets, list) else []
+        if staged_extension_hash is not None:
+            try:
+                current_staged_hash = extension_tree_sha256(profile_dir / "extension" / "probes")
+            except (OSError, ValueError):
+                current_staged_hash = None
+            if current_staged_hash != staged_extension_hash:
+                return {
+                    **common_evidence,
+                    "status": "live_unavailable",
+                    "source_extension_tree_sha256": source_extension_hash,
+                    "staged_extension_tree_sha256": staged_extension_hash,
+                    "limitation": "staged extension changed after launch; refusing to trust the loaded worker",
+                }
         target_count = len(targets)
         load_evidence = _chrome_load_extension_evidence(stderr_log_path, stderr_log)
         extension = extension_probe_result(
@@ -1180,6 +1371,8 @@ def inspect_live(
             targets,
             expected_manifest=manifest,
             fixture_path=fixture_path,
+            binding_nonce=binding_nonce,
+            source_extension_hash=source_extension_hash,
         )
         if load_evidence is not None:
             extension["extension_load_evidence"] = load_evidence
@@ -1191,10 +1384,11 @@ def inspect_live(
                 )
         status = extension.get("status", "live_unavailable")
         limitation = extension.get("limitation")
-        if operator_assisted and permission_prompt_status not in OPERATOR_PERMISSION_STATUSES:
+        permission_status = common_evidence["permission_prompts"].get("status")
+        if operator_assisted and permission_status not in OPERATOR_PERMISSION_STATUSES:
             if status == "live_passed":
                 status = "live_unavailable"
-            limitation = limitation or "operator-assisted probe requires a recorded permission prompt outcome"
+            limitation = limitation or "operator-assisted probe requires a post-load permission prompt acknowledgement"
         return {
             **common_evidence,
             "status": status,
@@ -1205,6 +1399,7 @@ def inspect_live(
             "launched_by_probe": launched,
             "extension_loaded": extension.get("extension_loaded", False),
             "extension_identity_passed": extension.get("extension_identity_passed", False),
+            "extension_build_binding_passed": extension.get("extension_build_binding_passed", False),
             "fixture_identity_passed": extension.get("fixture_identity_passed", False),
             "debugger_command_passed": extension.get("debugger_command_passed", False),
             "debugger_event_received": extension.get("debugger_event_received", False),
@@ -1261,12 +1456,7 @@ def main() -> int:
         action="store_true",
         help="use Chrome's documented chrome://extensions Load unpacked UI flow",
     )
-    parser.add_argument(
-        "--permission-prompt-status",
-        choices=("not_recorded", "recorded", "none_observed"),
-        default="not_recorded",
-        help="operator-recorded permission/policy prompt outcome",
-    )
+
     parser.add_argument(
         "--operator-timeout",
         type=float,
@@ -1322,7 +1512,6 @@ def main() -> int:
             artifact_dir,
             manifest,
             operator_assisted=args.operator_assisted,
-            permission_prompt_status=args.permission_prompt_status,
             operator_timeout=args.operator_timeout,
         )
         if not _LAST_CLEANUP_OK:
