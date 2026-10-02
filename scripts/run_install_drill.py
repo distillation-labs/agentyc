@@ -34,7 +34,7 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
     fcntl = None
 
 from artifact_envelope import envelope as add_envelope
-from artifact_envelope import write_json_atomic
+from artifact_envelope import redact_for_persistence, write_json_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = (ROOT / "artifacts").resolve()
@@ -52,6 +52,9 @@ INSTALL_SCHEMA = 2
 REPORT_NAME = "report.json"
 DISPLAY_FILENAME = "native-host-manifest.json"
 JOURNAL_STATES = frozenset({"prepared", "temp_written", "installed", "removing", "removed"})
+LIFECYCLE_SCHEMA_VERSION = 1
+OFFLINE_EVIDENCE_STATUS = "not_measured_offline"
+MAX_LIFECYCLE_RECORD_BYTES = 128 * 1024
 EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
 PROFILE_MARKERS = {
     "Default",
@@ -562,6 +565,149 @@ def registration_state(path: Path, extension_id: str | None) -> dict[str, Any]:
     return result
 
 
+def offline_lifecycle_record() -> dict[str, Any]:
+    """Describe every lifecycle phase without turning an unrun phase green."""
+    return {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "evidence_mode": "offline",
+        "status": "not_gateable_offline",
+        "install": OFFLINE_EVIDENCE_STATUS,
+        "update": OFFLINE_EVIDENCE_STATUS,
+        "uninstall": OFFLINE_EVIDENCE_STATUS,
+        "downgrade": OFFLINE_EVIDENCE_STATUS,
+        "rollback": OFFLINE_EVIDENCE_STATUS,
+    }
+
+
+def offline_rollback_safety() -> dict[str, Any]:
+    """Return a complete rollback-safety shape with no fabricated observations."""
+    return {
+        "schema_version": LIFECYCLE_SCHEMA_VERSION,
+        "evidence_mode": "offline",
+        "new_mutations": OFFLINE_EVIDENCE_STATUS,
+        "pages_retained": None,
+        "user_tabs_preserved": None,
+        "chrome_process_terminated": None,
+        "global_close_used": None,
+        "incompatible_ledger_refused": None,
+        "kill_switch": {
+            "status": OFFLINE_EVIDENCE_STATUS,
+            "armed": False,
+            "verified": False,
+        },
+    }
+
+
+def validate_lifecycle_record(record: dict[str, Any], *, require_live: bool) -> list[str]:
+    """Validate an operator-supplied lifecycle record without executing it."""
+    errors: list[str] = []
+    if not isinstance(record, dict):
+        return ["lifecycle record must be an object"]
+    lifecycle = record.get("lifecycle")
+    if not isinstance(lifecycle, dict):
+        errors.append("lifecycle is missing")
+    else:
+        if lifecycle.get("schema_version") != LIFECYCLE_SCHEMA_VERSION:
+            errors.append("lifecycle schema_version must be 1")
+        evidence_mode = record.get("evidence_mode", lifecycle.get("evidence_mode"))
+        if require_live and evidence_mode != "live":
+            errors.append("lifecycle record is not real live evidence")
+        if not require_live and evidence_mode not in {"offline", "live"}:
+            errors.append("lifecycle evidence_mode is invalid")
+        expected = {
+            "install": "installed",
+            "update": "passed",
+            "uninstall": "passed",
+            "downgrade": "passed",
+            "rollback": "rolled_back",
+        }
+        allowed_offline = {
+            OFFLINE_EVIDENCE_STATUS,
+            "not_run",
+            "not_observed",
+            "not_applicable",
+            "installed",
+            "already_installed",
+            "passed",
+            "rolled_back",
+        }
+        for key, wanted in expected.items():
+            value = lifecycle.get(key)
+            if not isinstance(value, str):
+                errors.append(f"lifecycle.{key} is missing")
+            elif require_live and value != wanted:
+                errors.append(f"lifecycle.{key} is not {wanted}")
+            elif not require_live and value not in allowed_offline:
+                errors.append(f"lifecycle.{key} has an invalid status")
+
+    rollback_safety = record.get("rollback_safety")
+    required_safety = {
+        "new_mutations": "paused",
+        "pages_retained": True,
+        "user_tabs_preserved": True,
+        "chrome_process_terminated": False,
+        "global_close_used": False,
+        "incompatible_ledger_refused": True,
+    }
+    if not isinstance(rollback_safety, dict):
+        errors.append("rollback_safety is missing")
+    else:
+        if rollback_safety.get("schema_version") != LIFECYCLE_SCHEMA_VERSION:
+            errors.append("rollback_safety.schema_version must be 1")
+        safety_mode = record.get("evidence_mode", rollback_safety.get("evidence_mode"))
+        if require_live and safety_mode != "live":
+            errors.append("rollback_safety is not live evidence")
+        if not require_live and safety_mode not in {"offline", "live"}:
+            errors.append("rollback_safety evidence_mode is invalid")
+        for key, wanted in required_safety.items():
+            if key not in rollback_safety:
+                errors.append(f"rollback_safety.{key} is missing")
+            elif require_live and rollback_safety.get(key) != wanted:
+                errors.append(f"rollback_safety.{key} is unsafe or unproven")
+        kill_switch = rollback_safety.get("kill_switch")
+        if not isinstance(kill_switch, dict):
+            errors.append("rollback_safety.kill_switch is missing")
+        elif require_live and (
+            kill_switch.get("status") != "armed_and_verified"
+            or kill_switch.get("armed") is not True
+            or kill_switch.get("verified") is not True
+        ):
+            errors.append("rollback_safety.kill_switch is not armed_and_verified")
+        elif not require_live and kill_switch.get("status") not in {OFFLINE_EVIDENCE_STATUS, "armed_and_verified"}:
+            errors.append("rollback_safety.kill_switch has an invalid status")
+
+    if redact_for_persistence(record) != record:
+        errors.append("lifecycle record is not stable after central redaction")
+    return sorted(set(errors))
+
+
+def load_lifecycle_record(path_value: str, artifact_dir: Path) -> dict[str, Any]:
+    """Load a redacted live lifecycle record from the repository artifact tree."""
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    current = path
+    while current != current.parent:
+        if current.is_symlink():
+            raise ValueError("lifecycle record path components must not be symlinks")
+        current = current.parent
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(ROOT)
+        resolved.relative_to(Path(artifact_dir).resolve())
+        if resolved.stat().st_size > MAX_LIFECYCLE_RECORD_BYTES:
+            raise ValueError("lifecycle record exceeds the bounded read limit")
+        value = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("lifecycle record is unreadable") from error
+    if not isinstance(value, dict):
+        raise ValueError("lifecycle record must be an object")
+    errors = validate_lifecycle_record(value, require_live=True)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return redact_for_persistence(value)
+
+
 def build_preflight(
     *,
     artifact_dir: Path,
@@ -623,7 +769,11 @@ def build_preflight(
     return {
         "status": "ready" if not blockers else "blocked",
         "blockers": blockers,
+        "evidence_mode": "offline",
+        "release_eligible": False,
         "evidence": evidence,
+        "lifecycle": offline_lifecycle_record(),
+        "rollback_safety": offline_rollback_safety(),
         "safety": {
             "dry_run_default": True,
             "chrome_launch": "never",
@@ -853,7 +1003,15 @@ def _new_install_journal(
 
 
 def _install_result(status: str, *, mutated: bool = False, detail: str | None = None, **extra: Any) -> dict[str, Any]:
-    result: dict[str, Any] = {"status": status, "mutated": mutated, "filename": DISPLAY_FILENAME, **extra}
+    result: dict[str, Any] = {
+        "status": status,
+        "mutated": mutated,
+        "filename": DISPLAY_FILENAME,
+        "user_tabs_or_chrome_changed": False,
+        "chrome_process_terminated": False,
+        "global_close_used": False,
+        **extra,
+    }
     if detail:
         result["detail"] = detail
     return result
@@ -1018,6 +1176,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--extension-id", help="exact 32-character unpacked/stable Chrome extension ID; never written to the report")
     parser.add_argument("--chrome-binary", help="explicit already-installed macOS Chrome executable to inspect")
     parser.add_argument("--registration-path", help="test-only registration path inside --artifact-dir; default is the macOS user-level path")
+    parser.add_argument(
+        "--lifecycle-record",
+        help="redacted operator-supplied live install/update/uninstall/downgrade/rollback record inside --artifact-dir",
+    )
     return parser
 
 
@@ -1057,13 +1219,37 @@ def main(argv: list[str] | None = None) -> int:
     report.update(
         {
             "schema_version": 1,
+            "phase": 0,
+            "rollout_phase": 7,
             "kind": "installation-preflight",
             "action": action,
             "required": bool(args.required or args.clean_profile is not None or explicit_action),
             "status": report["status"],
+            "evidence_mode": "offline",
+            "release_eligible": False,
             "registration_filename": DISPLAY_FILENAME,
         }
     )
+
+    lifecycle_record: dict[str, Any] | None = None
+    lifecycle_record_errors: list[str] = []
+    if args.lifecycle_record:
+        try:
+            lifecycle_record = load_lifecycle_record(args.lifecycle_record, artifact_dir)
+            lifecycle_record_errors = validate_lifecycle_record(lifecycle_record, require_live=True)
+        except ValueError as error:
+            lifecycle_record_errors = [str(error)]
+        report["lifecycle_record_validation"] = {
+            "status": "passed" if not lifecycle_record_errors else "blocked",
+            "evidence_mode": "live",
+            "errors": lifecycle_record_errors,
+        }
+    else:
+        report["lifecycle_record_validation"] = {
+            "status": "not_supplied",
+            "evidence_mode": "not_measured_offline",
+            "errors": [],
+        }
 
     if explicit_action:
         assert extension_id is not None
@@ -1075,33 +1261,44 @@ def main(argv: list[str] | None = None) -> int:
             report["limitations"] = report["blockers"]
         elif action == "install":
             report["installation"] = install_registration(registration_path, extension_id, artifact_dir)
+            report["lifecycle"]["install"] = report["installation"]["status"]
             report["status"] = "drill_passed" if report["installation"]["status"] == "installed" else "drill_failed"
         elif action == "rollback":
             report["rollback"] = rollback_registration(registration_path, extension_id, artifact_dir)
+            report["lifecycle"]["rollback"] = report["rollback"]["status"]
             report["status"] = "drill_passed" if report["rollback"]["status"] == "rolled_back" else "drill_failed"
         else:
             installation = install_registration(registration_path, extension_id, artifact_dir)
             report["installation"] = installation
-            if installation["status"] in {"installed", "already_installed"} and installation["status"] == "installed":
+            if installation["status"] == "installed":
                 rollback = rollback_registration(registration_path, extension_id, artifact_dir)
             elif installation["status"] == "already_installed":
-                rollback = {"status": "not_owned", "mutated": False, "filename": DISPLAY_FILENAME}
+                rollback = {"status": "not_owned", "mutated": False, "filename": DISPLAY_FILENAME, "user_tabs_or_chrome_changed": False}
             else:
-                rollback = {"status": "not_run", "mutated": False, "filename": DISPLAY_FILENAME}
+                rollback = {"status": "not_run", "mutated": False, "filename": DISPLAY_FILENAME, "user_tabs_or_chrome_changed": False}
             report["rollback"] = rollback
+            report["lifecycle"]["install"] = installation["status"]
+            report["lifecycle"]["rollback"] = rollback["status"]
             report["status"] = "drill_passed" if installation["status"] == "installed" and rollback["status"] == "rolled_back" else "drill_failed"
-        if action == "drill":
-            report["lifecycle"] = {
-                "install": report.get("installation", {}).get("status", "not_run"),
-                "update": "not_implemented",
-                "uninstall": "not_implemented",
-                "downgrade": "not_implemented",
-                "rollback": report.get("rollback", {}).get("status", "not_run"),
-            }
-            if report["status"] == "drill_passed":
-                report["status"] = "drill_incomplete"
+        if action == "drill" and report["status"] == "drill_passed":
+            report["status"] = "drill_incomplete"
+            report.setdefault("limitations", []).append(
+                "install/rollback smoke passed; update, uninstall, and downgrade require a separately captured lifecycle record"
+            )
+
+        if lifecycle_record_errors:
+            report["status"] = "drill_failed"
+            report.setdefault("limitations", []).append("the supplied lifecycle record failed validation")
+        elif lifecycle_record is not None:
+            if action == "drill" and report["status"] == "drill_incomplete":
+                report["lifecycle"] = lifecycle_record["lifecycle"]
+                report["rollback_safety"] = lifecycle_record["rollback_safety"]
+                report["evidence_mode"] = "live"
+                report["status"] = "drill_passed"
+                report["release_eligible"] = True
+            else:
                 report.setdefault("limitations", []).append(
-                    "install/rollback smoke passed, but update, uninstall, and downgrade evidence is not implemented"
+                    "the lifecycle record was validated but was not merged because the local registration drill did not pass"
                 )
         report["safety"]["user_registration_mutation"] = bool(
             report.get("installation", {}).get("mutated") or report.get("rollback", {}).get("mutated")
