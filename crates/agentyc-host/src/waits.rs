@@ -2,7 +2,8 @@
 //!
 //! Waiters capture a router cursor before work begins and only inspect events
 //! after that cursor. Callers drive polling from their event loop; this module
-//! never sleeps or guesses that time has advanced.
+//! never sleeps or guesses that time has advanced. The host core does not read
+//! an OS clock; a later adapter must supply a trusted [`Clock`] implementation.
 
 use std::sync::{
     Arc,
