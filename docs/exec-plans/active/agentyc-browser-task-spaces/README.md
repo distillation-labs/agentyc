@@ -143,23 +143,23 @@ The direct CLI/SDK path and the MCP compatibility adapter share one mandatory ev
 The release tuple is versioned and published before preview: Chrome milestone/platform/policy, extension ID/build, native-host manifest/binary, host/ledger schema, CLI, Node SDK, and MCP adapter profile. A component may connect only when its declared compatibility range and ledger/protocol schema are accepted; otherwise it fails closed with `protocol_mismatch` or `ledger_incompatible` before mutation authority.
 
 - Rust workspace: edition 2024; the supported compiler floor is the pinned `rust-toolchain.toml` value created in Phase 0, not the historical README claim.
-- Node package: `packages/agentyc-browser/`, with its own `package.json` and `package-lock.json`; npm is the selected package manager, and the Node floor is frozen by Phase 0 before SDK implementation.
+- Planned Node package: `packages/agentyc-browser/`, with its own `package.json` and `package-lock.json`; npm is the selected package manager, and the Node floor is frozen by Phase 0 before SDK implementation.
 - MCP: current `rmcp = 1.7` legacy behavior is preserved first; default and extended profiles are measured and frozen from the repository, not assumed from comments.
 
 ## Architecture ownership
 
 ### Canonical crates and surfaces
 
-| Surface                     | Owns                                                                                                             | Must not own                                             |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `crates/agentyc-core/`      | transport-neutral IDs, records, states, errors, envelopes, snapshots, refs, receipts, events                     | Chrome APIs, MCP, process lifecycle                      |
-| `crates/agentyc-host/`      | broker, local IPC, Native Messaging bridge, ledger, leases, scheduler, Chrome adapter, reconciliation, redaction | UI rendering, MCP-specific schemas, arbitrary page code  |
-| `crates/agentyc-runtime/`   | compatibility facade and shared operation implementation while modules migrate                                   | a second authority or default browser launch             |
-| `extension/`                | MV3 manifest, service worker, debugger/tabs/frame bridge, side panel, browser events                             | authoritative leases, secrets, raw agent policy          |
-| `crates/agentyc/`           | `host`, `space`, `page`, `action`, `wait`, `extension`, and legacy commands; stdout/stderr discipline            | direct MCP state ownership                               |
-| `crates/agentyc-mcp/`       | legacy protocol/tool adapter over host client                                                                    | direct CDP, active-page authority, canonical space state |
-| `crates/agentyc-browser/`   | explicit legacy CDP/managed-browser compatibility and test harness during migration                              | default discovery/launch/download of Chrome              |
-| `packages/agentyc-browser/` | thin typed Node client over the local protocol                                                                   | a browser runtime or hidden evaluator                    |
+| Surface                               | Owns                                                                                                             | Must not own                                             |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `crates/agentyc-core/`                | transport-neutral IDs, records, states, errors, envelopes, snapshots, refs, receipts, events                     | Chrome APIs, MCP, process lifecycle                      |
+| `crates/agentyc-host/`                | broker, local IPC, Native Messaging bridge, ledger, leases, scheduler, Chrome adapter, reconciliation, redaction | UI rendering, MCP-specific schemas, arbitrary page code  |
+| `crates/agentyc-runtime/`             | compatibility facade and shared operation implementation while modules migrate                                   | a second authority or default browser launch             |
+| `extension/`                          | MV3 manifest, service worker, debugger/tabs/frame bridge, side panel, browser events                             | authoritative leases, secrets, raw agent policy          |
+| `crates/agentyc/`                     | `host`, `space`, `page`, `action`, `wait`, `extension`, and legacy commands; stdout/stderr discipline            | direct MCP state ownership                               |
+| `crates/agentyc-mcp/`                 | legacy protocol/tool adapter over host client                                                                    | direct CDP, active-page authority, canonical space state |
+| `crates/agentyc-browser/`             | explicit legacy CDP/managed-browser compatibility and test harness during migration                              | default discovery/launch/download of Chrome              |
+| `packages/agentyc-browser/` (planned) | thin typed Node client over the local protocol                                                                   | a browser runtime or hidden evaluator                    |
 
 New/touched implementation files stay at or below 400 lines where practical; extract protocol, state-machine, bridge, scheduler, snapshot, and UI modules rather than creating a single broker file.
 
@@ -244,4 +244,4 @@ Rollback disables new mutations, marks spaces paused, retains pages, drains only
 - [Phase 8 — MCP compatibility and deprecation](plans/phase-8-mcp-compatibility.md)
 - [Phase registry and execution rules](plans/PLAN_INDEX.md)
 
-**Planning note:** This revision changes planning and research artifacts only. No production code, extension source, installer, or dependency manifest has been added. No phase is active; Phase 0 is the next implementation gate. No later phase may start until its predecessor's exit gate is fully checked. Production implementation remains blocked until the production-grade test strategy is converted into owned tasks and Phase 0 freezes its measurable budgets and environment matrix.
+**Planning note:** Phase 0 remains active. Its test/probe scaffolding and validation scripts are present, but production implementation is still gated on real headed-Chrome evidence. No later phase may start until Phase 0's exit gate is fully checked; offline and host-only results do not close live gates.
