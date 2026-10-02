@@ -77,6 +77,18 @@ Rules:
 - `run` executes a sequence through one persistent connection; `repl` uses the same host client and is not an independent browser runtime.
 - `agentyc browser` and `--cdp-url` are marked `legacy-cdp` and do not start from the default command path.
 
+### Planned output lifecycle
+
+The direct interface should use the following reference-derived output contract; it is planned behavior, not evidence that agentyc implements it:
+
+- Structured JSON is emitted on stdout; diagnostics and progress use stderr.
+- Business output is buffered until round completion and has one final flush.
+- Clean completion flushes business output, then emits final unhandled-page notices.
+- Hard stops discard business output and notices; swallowed hard stops emit owned guidance once, while thrown hard stops remain silent so the propagating error is not duplicated.
+- Notices are round-local, keyed by logical space/target, merged/refreshed, suppressed when the page is observed, and consumed once.
+
+The exact agentyc schema, stream framing, and lifecycle hooks remain to be frozen by implementation and tests.
+
 ## SDK contract
 
 - Add the canonical thin package:
@@ -94,18 +106,23 @@ packages/agentyc-browser/
   test/...
 ```
 
-Public shape:
+Public shape (planned; aligned to the checked-in ego-lite reference):
 
 ```js
 const client = await connect({ profile: "default" });
-const space = await client.taskSpace("research competitors");
-const page = await space.page("results", { create: true });
-await page.goto("https://example.test");
-const snapshot = await page.snapshot({ mode: "min", budget: 1200 });
-const result = await page.click(snapshot.refs.submit);
-await page.waitFor({ kind: "url", pattern: "/done" });
-await space.finish({ retain: ["results"] });
+const task = await client.taskSpace("research competitors");
+const results = task.page("p1");
+const scratch = await task.newPage();
+
+await results.goto("https://example.test");
+const snapshot = await results.snapshot({ mode: "min" });
+await results.click(snapshot.refs.submit);
+await results.waitForURL(/\/done$/);
+
+await task.finish({ keep: ["p1"] });
 ```
+
+`task.page(label)` returns a lazy durable page handle; `task.newPage()` creates a new blank page with a durable label. This is the intended contract shape only: no agentyc SDK implementation or live Chrome evidence is claimed.
 
 The SDK:
 
