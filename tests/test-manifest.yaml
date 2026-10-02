@@ -285,7 +285,7 @@ commands:
       stdout: "console"
       stderr: "console"
   - id: "chrome-probe-live-required"
-    status: "optional"
+    status: "required"
     layer: "component"
     environment: ["headed-chrome"]
     fixture: "extension-probe-live"
@@ -327,13 +327,21 @@ commands:
       stdout: "console"
       stderr: "console"
   - id: "native-probe-live-required"
-    status: "optional"
+    status: "required"
     layer: "component"
     environment: ["headed-chrome"]
     fixture: "native-messaging-protocol-live"
     owner: "Japneet Kalkat"
     quarantine: false
-    command: ["python3", "scripts/run_native_messaging_probe.py", "--live-host"]
+    command:
+      [
+        "python3",
+        "scripts/run_native_messaging_probe.py",
+        "--require-live",
+        "--check-install",
+        "--extension-origin",
+        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ]
     cwd: "."
     timeout_seconds: 60
     prerequisites:
@@ -372,7 +380,7 @@ commands:
       stdout: "console"
       stderr: "console"
   - id: "capability-matrix-live-required"
-    status: "optional"
+    status: "required"
     layer: "component"
     environment: ["headed-chrome"]
     fixture: "capability-catalog-live"
@@ -403,9 +411,7 @@ commands:
         "offline",
         "--warmups",
         "10",
-        "--min-samples-p95",
-        "200",
-        "--min-samples-p99",
+        "--samples",
         "1000",
         "--fixtures",
         "small-form,dense-admin-table,dynamic-feed,nested-frame",
@@ -548,21 +554,21 @@ test_targets:
     status: "required"
     command_id: "chrome-probe-offline"
   - id: "p0-t2-live-required"
-    status: "optional"
+    status: "required"
     command_id: "chrome-probe-live-required"
     prerequisite: "user-approved headed Chrome and an isolated probe profile"
   - id: "p0-t3-offline"
     status: "required"
     command_id: "native-probe-offline"
   - id: "p0-t3-live-required"
-    status: "optional"
+    status: "required"
     command_id: "native-probe-live-required"
     prerequisite: "installed platform Native Messaging host manifest"
   - id: "p0-t4-offline"
     status: "required"
     command_id: "capability-matrix-offline"
   - id: "p0-t4-live-required"
-    status: "optional"
+    status: "required"
     command_id: "capability-matrix-live-required"
     prerequisite: "existing user-approved headed Chrome and extension probe"
   - id: "p0-t5-coexistence"
