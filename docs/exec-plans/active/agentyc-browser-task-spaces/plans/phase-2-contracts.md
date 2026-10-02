@@ -170,13 +170,13 @@ Required error codes include `extension_not_connected`, `profile_not_found`, `sp
   - **Owner:** Japneet Kalkat.
 
 - [ ] P2-T4 — Define snapshot, ref, action, wait, artifact, and capability schemas.
-  - **Files:** `agentyc-core/src/{snapshots.rs,actions.rs,events.rs}`; `docs/api-local.md`; fixture directories for snapshots/actions/capabilities.
+  - **Files:** `crates/agentyc-core/src/{snapshots.rs,actions.rs,events.rs}`; `docs/api-local.md`; fixture directories for snapshots/actions/capabilities.
   - **Done when:** clean/delta/full/truncated/resync, stale ref, action unknown/reconcile, wait cancellation, artifact handle/chunk, and unsupported capability responses are distinguishable and bounded; delta hashes/order/coverage/cache states and action dispatch/reconciliation states are normative.
   - **Validation:** golden JSON with tokenizer metadata, transport/UTF-8/serialized/model-context token fields, exact error code, redaction, and no raw IDs; deterministic delta apply/reject/resync, coherent/partial multi-frame, artifact size/chunk, and stale-generation tests.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P2-T5 — Freeze task-space/page/lease/user-control request model.
-  - **Files:** `agentyc-core/src/{records.rs,states.rs}`; `docs/api-local.md`.
+  - **Files:** `crates/agentyc-core/src/{records.rs,states.rs}`; `docs/api-local.md`.
   - **Done when:** create/resume/claim/renew/handoff/accept/pause/takeover/return/finish/release/adopt/page operations use canonical `space_id`, define owner/authority class, epoch, confirmation ticket, retention, binding/rebind state, fresh generation proof, and duplicate behavior. A user-intent ticket is single-use, expiring, action-hash-bound, and cannot be forged by a payload boolean.
   - **Validation:** state-machine fixture tests for duplicate claim, stale epoch, takeover, extension fence barrier, user return, orphan recovery, rebind-required, release, stale tab-ID reuse, and cleanup confirmation.
   - **Owner:** Japneet Kalkat.
