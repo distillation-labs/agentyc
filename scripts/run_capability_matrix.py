@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Generate the Phase 0 capability matrix without launching a browser.
 
 The default is an offline catalog report: operation statuses are catalog claims,
@@ -59,7 +59,7 @@ def load_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
         name = fixture.get("name")
         relative = fixture.get("file")
         if not isinstance(name, str) or not isinstance(relative, str):
-            raise ValueError("each browser fixture needs string name and file")
+            raise TypeError("each browser fixture needs string name and file")
         path = FIXTURE_ROOT / relative
         if path.parent != FIXTURE_ROOT or not path.is_file():
             raise ValueError(f"fixture {name!r} is not a local file")
@@ -224,9 +224,25 @@ def build_matrix(mode: str, fixtures: list[dict[str, Any]], tools: list[dict[str
     }
 
 
+def safe_matrix_path(value: Path) -> Path:
+    requested = value if value.is_absolute() else ROOT / value
+    current = requested
+    while current != current.parent:
+        if current.is_symlink():
+            raise ValueError("matrix path components must not be symlinks")
+        current = current.parent
+    resolved = requested.resolve()
+    artifacts = (ROOT / "artifacts").resolve()
+    try:
+        resolved.relative_to(artifacts)
+    except ValueError as error:
+        raise ValueError("matrix path must be inside artifacts/") from error
+    return resolved
+
+
 def write_matrix(path: Path, matrix: dict[str, Any]) -> None:
     add_envelope(matrix, kind="capability-matrix")
-    write_json_atomic(path, matrix)
+    write_json_atomic(safe_matrix_path(path), matrix)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -247,11 +263,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         _, fixtures = load_fixtures()
         tools = load_catalog()
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         print(f"capability matrix error: {exc}", file=sys.stderr)
         return 2
 
     if args.dry_run:
+        if args.matrix:
+            try:
+                args.matrix = safe_matrix_path(args.matrix)
+            except ValueError as exc:
+                print(f"capability matrix error: {exc}", file=sys.stderr)
+                return 2
         print(json.dumps({
             "mode": args.mode,
             "action": "validate local catalog and fixtures",
@@ -283,7 +305,11 @@ def main(argv: list[str] | None = None) -> int:
     matrix = build_matrix(args.mode, fixtures, tools)
     rendered = json.dumps(matrix, indent=2, sort_keys=True) + "\n"
     if args.matrix:
-        write_matrix(args.matrix, matrix)
+        try:
+            write_matrix(args.matrix, matrix)
+        except (OSError, ValueError) as exc:
+            print(f"capability matrix error: {type(exc).__name__}", file=sys.stderr)
+            return 2
         print(f"wrote offline capability matrix: {args.matrix} ({len(tools)} operations)")
     else:
         print(rendered, end="")
