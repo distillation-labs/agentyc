@@ -311,28 +311,27 @@ test("ordinary updates preserve lost/user-owned binding state and advance indepe
   assert.equal(record.targetGeneration, beforeAttach + 2);
 });
 
-test("production bridge files are registered as classic content scripts", async () => {
+test("production manifest keeps only isolated content bridge and no broad host/scripting permissions", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("../manifest.json", import.meta.url), "utf8"),
   );
-  assert.equal(manifest.content_scripts.length, 2);
+  assert.equal(Array.isArray(manifest.permissions), true);
+  assert.equal(manifest.permissions.includes("scripting"), false);
+  assert.equal(Array.isArray(manifest.host_permissions), false);
+  assert.equal(manifest.content_scripts.length, 1);
   assert.equal(
-    manifest.content_scripts.some(
-      (entry) =>
-        entry.world === "MAIN" &&
-        entry.js.includes("src/page-bridge-content.js"),
-    ),
-    true,
+    manifest.content_scripts.some((entry) => entry.world === "MAIN"),
+    false,
   );
   assert.equal(
     manifest.content_scripts.some(
-      (entry) => entry.js.includes("src/content-bridge.js") && !entry.world,
+      (entry) =>
+        entry.js.includes("src/content-bridge.js") &&
+        entry.world !== "MAIN" &&
+        entry.matches.includes("http://*/*") &&
+        entry.matches.includes("https://*/*"),
     ),
     true,
   );
   await readFile(new URL("../src/content-bridge.js", import.meta.url), "utf8");
-  await readFile(
-    new URL("../src/page-bridge-content.js", import.meta.url),
-    "utf8",
-  );
 });
