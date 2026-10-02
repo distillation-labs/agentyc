@@ -30,17 +30,58 @@ export const ENVELOPE_KINDS = Object.freeze(
 );
 
 const RAW_BROWSER_KEYS = new Set([
-  "tabId",
+  "tabid",
   "tab_id",
-  "targetId",
+  "targetid",
   "target_id",
-  "sessionId",
+  "sessionid",
   "session_id",
-  "groupId",
+  "groupid",
   "group_id",
-  "windowId",
+  "windowid",
   "window_id",
+  "frameid",
+  "frame_id",
+  "backendnodeid",
+  "backend_node_id",
+  "executioncontextid",
+  "execution_context_id",
+  "loaderid",
+  "loader_id",
+  "rawtabid",
+  "raw_tab_id",
+  "rawtargetid",
+  "raw_target_id",
+  "rawsessionid",
+  "raw_session_id",
+  "rawgroupid",
+  "raw_group_id",
+  "rawwindowid",
+  "raw_window_id",
+  "rawframeid",
+  "raw_frame_id",
 ]);
+
+function normalizedKey(key) {
+  return String(key).toLowerCase().replaceAll("-", "_");
+}
+
+function isRawBrowserKey(key, parentKey = "") {
+  const normalized = normalizedKey(key);
+  if (RAW_BROWSER_KEYS.has(normalized)) return true;
+  const parent = normalizedKey(parentKey);
+  return (
+    normalized === "id" &&
+    (parent.startsWith("frame") ||
+      parent.startsWith("target") ||
+      parent.startsWith("session") ||
+      parent.startsWith("execution_context") ||
+      parent.startsWith("executioncontext") ||
+      parent.startsWith("loader") ||
+      parent.startsWith("backend_node") ||
+      parent.startsWith("backendnode"))
+  );
+}
 
 const MUTATING_METHODS = Object.freeze(
   new Set([
@@ -55,12 +96,16 @@ const MUTATING_METHODS = Object.freeze(
     "action.press",
     "action.scroll",
     "action.evaluate",
+    "action.execute",
     "action.storage_write",
     "action.cookie_write",
     "action.upload",
     "action.download",
     "debugger.command",
+    "debugger.attach",
+    "debugger.detach",
     "content.request",
+    "group.present",
     "space.pause",
     "space.takeover",
     "space.return_control",
@@ -189,18 +234,22 @@ function serializedBytes(value) {
   return { serialized, bytes: textBytes(serialized) };
 }
 
-export function assertNoRawBrowserIdentifiers(value, { path = "" } = {}) {
+export function assertNoRawBrowserIdentifiers(
+  value,
+  { path = "", parentKey = "" } = {},
+) {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
       assertNoRawBrowserIdentifiers(item, {
         path: `${path}[${index}]`,
+        parentKey,
       }),
     );
     return value;
   }
   for (const [key, child] of Object.entries(value)) {
-    if (RAW_BROWSER_KEYS.has(key)) {
+    if (isRawBrowserKey(key, parentKey)) {
       throw new ProtocolError(
         "schema_invalid",
         `${RAW_ID_ERROR}: ${path}${key}`,
@@ -208,6 +257,7 @@ export function assertNoRawBrowserIdentifiers(value, { path = "" } = {}) {
     }
     assertNoRawBrowserIdentifiers(child, {
       path: path ? `${path}.${key}.` : `${key}.`,
+      parentKey: key,
     });
   }
   return value;
@@ -385,7 +435,10 @@ export function createLogicalId(prefix) {
 }
 
 export function isMutationMethod(method) {
-  return typeof method === "string" && MUTATING_METHODS.has(method);
+  return (
+    typeof method === "string" &&
+    (MUTATING_METHODS.has(method) || method.startsWith("action."))
+  );
 }
 
 export function isFenceMethod(method) {
@@ -425,13 +478,14 @@ export function errorResult(
   return result;
 }
 
-export function redactBrowserIdentifiers(value) {
-  if (Array.isArray(value)) return value.map(redactBrowserIdentifiers);
+export function redactBrowserIdentifiers(value, parentKey = "") {
+  if (Array.isArray(value))
+    return value.map((child) => redactBrowserIdentifiers(child, parentKey));
   if (value === null || typeof value !== "object") return value;
   const output = {};
   for (const [key, child] of Object.entries(value)) {
-    if (RAW_BROWSER_KEYS.has(key)) continue;
-    output[key] = redactBrowserIdentifiers(child);
+    if (isRawBrowserKey(key, parentKey)) continue;
+    output[key] = redactBrowserIdentifiers(child, key);
   }
   return output;
 }
@@ -512,4 +566,35 @@ export function isRestrictedUrl(url) {
   );
 }
 
-export const RAW_BROWSER_IDENTIFIER_KEYS = Object.freeze([...RAW_BROWSER_KEYS]);
+export const RAW_BROWSER_IDENTIFIER_KEYS = Object.freeze([
+  "tabId",
+  "tab_id",
+  "targetId",
+  "target_id",
+  "sessionId",
+  "session_id",
+  "groupId",
+  "group_id",
+  "windowId",
+  "window_id",
+  "frameId",
+  "frame_id",
+  "backendNodeId",
+  "backend_node_id",
+  "executionContextId",
+  "execution_context_id",
+  "loaderId",
+  "loader_id",
+  "rawTabId",
+  "raw_tab_id",
+  "rawTargetId",
+  "raw_target_id",
+  "rawSessionId",
+  "raw_session_id",
+  "rawGroupId",
+  "raw_group_id",
+  "rawWindowId",
+  "raw_window_id",
+  "rawFrameId",
+  "raw_frame_id",
+]);
