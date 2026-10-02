@@ -191,6 +191,29 @@ function unknownDispatch(message, details = undefined) {
   return error;
 }
 
+const MAX_APPROVAL_LIFETIME_MS = 15 * 60 * 1000;
+const MAX_USED_APPROVALS = 1024;
+
+export async function hashRuntimeScript(script) {
+  if (typeof script !== "string" || script.length === 0)
+    throw new ProtocolError(
+      "schema_invalid",
+      "runtime evaluation script is required",
+    );
+  if (!globalThis.crypto?.subtle)
+    throw new ProtocolError(
+      "capability_unavailable",
+      "script hashing is unavailable",
+    );
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(script),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export function isAllowedDebuggerCommand(method) {
   if (typeof method !== "string") return false;
   const separator = method.indexOf(".");
@@ -224,13 +247,20 @@ export class DebuggerBridge {
     frames,
     onEvent = () => {},
     onStateChange = () => {},
+    now = () => Date.now(),
+    profileInstanceId,
+    browserSessionEpoch,
   } = {}) {
     this.chrome = chromeApiOrGlobal(chromeApi);
     this.tabs = tabs;
     this.frames = frames;
     this.onEvent = onEvent;
     this.onStateChange = onStateChange;
+    this.now = now;
+    this.profileInstanceId = profileInstanceId;
+    this.browserSessionEpoch = browserSessionEpoch;
     this.attached = new Map();
+    this.usedEvaluationApprovals = new Map();
     this.started = false;
     this.removeListeners = [];
   }
@@ -255,9 +285,86 @@ export class DebuggerBridge {
     for (const remove of this.removeListeners.splice(0)) remove();
     this.started = false;
     this.attached.clear();
+    this.usedEvaluationApprovals.clear();
   }
 
-  async attach({ spaceId, pageId, leaseEpoch } = {}) {
+  setIdentity({ profileInstanceId, browserSessionEpoch } = {}) {
+    if (profileInstanceId !== undefined)
+      this.profileInstanceId = profileInstanceId;
+    if (browserSessionEpoch !== undefined)
+      this.browserSessionEpoch = browserSessionEpoch;
+  }
+
+  resetSession(browserSessionEpoch) {
+    if (browserSessionEpoch !== undefined)
+      this.browserSessionEpoch = browserSessionEpoch;
+    for (const tabId of [...this.attached.keys()])
+      this.frames.invalidateTab(tabId, "browser_session_changed");
+    this.attached.clear();
+    this.usedEvaluationApprovals.clear();
+    this.frames.reset?.("browser_session_changed");
+  }
+
+  pruneEvaluationApprovals() {
+    const now = this.now();
+    for (const [id, expiresAt] of this.usedEvaluationApprovals) {
+      if (expiresAt <= now) this.usedEvaluationApprovals.delete(id);
+    }
+  }
+
+  validateAttachment(record, attachment, { spaceId, pageId, leaseEpoch } = {}) {
+    if (
+      attachment.spaceId !== spaceId ||
+      attachment.pageId !== pageId ||
+      attachment.leaseEpoch !== leaseEpoch ||
+      attachment.browserSessionEpoch !== this.browserSessionEpoch ||
+      attachment.targetGeneration !== record.targetGeneration ||
+      attachment.navigationGeneration !== record.navigationGeneration ||
+      attachment.documentGeneration !== record.documentGeneration
+    ) {
+      throw new ProtocolError(
+        "stale_generation",
+        "debugger attachment scope or generation is stale",
+      );
+    }
+    return attachment;
+  }
+
+  invalidateTab(tabId, reason = "target_lost") {
+    const attachment = this.attached.get(tabId);
+    this.attached.delete(tabId);
+    this.frames.invalidateTab(tabId, reason);
+    if (attachment) {
+      this.onStateChange("detached", {
+        space_id: attachment.spaceId,
+        page_id: attachment.pageId,
+        reason,
+      });
+    }
+  }
+
+  handleDocumentChange(tabId, record) {
+    const attachment = this.attached.get(tabId);
+    if (!attachment || !record) return;
+    attachment.navigationGeneration = record.navigationGeneration;
+    attachment.documentGeneration = record.documentGeneration;
+    this.frames.invalidateDocument(
+      tabId,
+      record.documentGeneration,
+      record.navigationGeneration,
+      "document_changed",
+    );
+    this.frames.bindTab({
+      tabId,
+      spaceId: attachment.spaceId,
+      pageId: attachment.pageId,
+      targetGeneration: attachment.targetGeneration,
+      documentGeneration: attachment.documentGeneration,
+      navigationGeneration: attachment.navigationGeneration,
+    });
+  }
+
+  async attach({ spaceId, pageId, leaseEpoch, onDispatch = () => {} } = {}) {
     const record = this.tabs.assertPageDispatch({
       spaceId,
       pageId,
@@ -269,11 +376,25 @@ export class DebuggerBridge {
         "restricted_url",
         "page cannot accept debugger attachment",
       );
-    if (this.attached.has(record.rawTabId))
-      return this.publicAttachment(this.attached.get(record.rawTabId));
+    const existing = this.attached.get(record.rawTabId);
+    if (existing) {
+      this.validateAttachment(record, existing, {
+        spaceId,
+        pageId,
+        leaseEpoch,
+      });
+      return this.publicAttachment(existing);
+    }
+    const attachFn = this.chrome?.debugger?.attach;
+    if (typeof attachFn !== "function")
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Chrome debugger.attach is unavailable",
+      );
     try {
+      onDispatch();
       await chromeCall(
-        this.chrome?.debugger?.attach?.bind(this.chrome.debugger),
+        attachFn.bind(this.chrome.debugger),
         { tabId: record.rawTabId },
         "1.3",
       );
@@ -291,16 +412,52 @@ export class DebuggerBridge {
       spaceId,
       pageId,
       leaseEpoch,
-      targetGeneration: record.generation,
-      attachedAt: Date.now(),
+      targetGeneration: record.targetGeneration,
+      navigationGeneration: record.navigationGeneration,
+      documentGeneration: record.documentGeneration,
+      browserSessionEpoch: this.browserSessionEpoch,
+      attachedAt: this.now(),
     };
-    this.attached.set(record.rawTabId, attachment);
-    this.frames.bindTab({
-      tabId: record.rawTabId,
-      spaceId,
-      pageId,
-      targetGeneration: record.generation,
-    });
+    try {
+      const current = this.tabs.assertPageDispatch({
+        spaceId,
+        pageId,
+        leaseEpoch,
+        expectedTargetGeneration: record.targetGeneration,
+        mutation: false,
+      });
+      if (current !== record)
+        throw new ProtocolError(
+          "stale_generation",
+          "page changed during attachment",
+        );
+      this.attached.set(record.rawTabId, attachment);
+      this.frames.bindTab({
+        tabId: record.rawTabId,
+        spaceId,
+        pageId,
+        targetGeneration: record.targetGeneration,
+        navigationGeneration: record.navigationGeneration,
+        documentGeneration: record.documentGeneration,
+      });
+    } catch (error) {
+      this.invalidateTab(record.rawTabId, "attachment_commit_rejected");
+      try {
+        if (typeof this.chrome?.debugger?.detach === "function")
+          await this.chrome.debugger.detach({ tabId: record.rawTabId });
+      } catch (cleanupError) {
+        throw unknownDispatch(
+          "debugger attachment rollback was not confirmed",
+          {
+            cause:
+              cleanupError instanceof Error
+                ? cleanupError.message
+                : String(cleanupError),
+          },
+        );
+      }
+      throw error;
+    }
     this.onStateChange("attached", this.publicAttachment(attachment));
     return this.publicAttachment(attachment);
   }
@@ -310,6 +467,7 @@ export class DebuggerBridge {
     pageId,
     leaseEpoch,
     reason = "host_requested",
+    onDispatch = () => {},
   } = {}) {
     const record = this.tabs.assertPageDispatch({
       spaceId,
@@ -319,11 +477,22 @@ export class DebuggerBridge {
     });
     const attachment = this.attached.get(record.rawTabId);
     if (!attachment) return { detached: false, reason: "not_attached" };
-    try {
-      await chromeCall(
-        this.chrome?.debugger?.detach?.bind(this.chrome.debugger),
-        { tabId: record.rawTabId },
+    this.validateAttachment(record, attachment, {
+      spaceId,
+      pageId,
+      leaseEpoch,
+    });
+    const detachFn = this.chrome?.debugger?.detach;
+    if (typeof detachFn !== "function")
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Chrome debugger.detach is unavailable",
       );
+    try {
+      onDispatch();
+      await chromeCall(detachFn.bind(this.chrome.debugger), {
+        tabId: record.rawTabId,
+      });
     } catch (error) {
       throw unknownDispatch("debugger detach result was lost", {
         cause: error instanceof Error ? error.message : String(error),
@@ -346,9 +515,13 @@ export class DebuggerBridge {
     method,
     params = {},
     expectedGeneration,
+    expectedTargetGeneration,
+    expectedNavigationGeneration,
+    expectedDocumentGeneration,
     commandId,
     capability,
     approval,
+    onDispatch = () => {},
   } = {}) {
     assertAllowedDebuggerCommand(method);
     const mutation = isMutatingDebuggerCommand(method);
@@ -363,7 +536,21 @@ export class DebuggerBridge {
       pageId,
       leaseEpoch,
       expectedGeneration,
+      expectedTargetGeneration,
+      expectedNavigationGeneration,
+      expectedDocumentGeneration,
       mutation,
+    });
+    const attachment = this.attached.get(record.rawTabId);
+    if (!attachment)
+      throw new ProtocolError(
+        "target_not_attached",
+        "debugger target is not attached",
+      );
+    this.validateAttachment(record, attachment, {
+      spaceId,
+      pageId,
+      leaseEpoch,
     });
     if (method === "Runtime.evaluate" || method === "Runtime.callFunctionOn") {
       if (method === "Runtime.callFunctionOn" || capability !== "evaluate") {
@@ -372,11 +559,7 @@ export class DebuggerBridge {
           "runtime evaluation requires an explicit capability",
         );
       }
-      if (
-        !approval ||
-        approval.issued_by_host !== true ||
-        typeof approval.script_hash !== "string"
-      ) {
+      if (!approval || approval.issued_by_host !== true) {
         throw new ProtocolError(
           "user_confirmation_required",
           "runtime evaluation requires host approval",
@@ -399,18 +582,106 @@ export class DebuggerBridge {
         "sensitive debugger mutation requires host approval",
       );
     }
-    const attachment = this.attached.get(record.rawTabId);
-    if (!attachment)
+    const sendCommandFn = this.chrome?.debugger?.sendCommand;
+    if (typeof sendCommandFn !== "function")
       throw new ProtocolError(
-        "target_not_attached",
-        "debugger target is not attached",
+        "capability_unavailable",
+        "Chrome debugger.sendCommand is unavailable",
       );
+
+    if (method === "Runtime.evaluate") {
+      const expression = params?.expression ?? params?.script;
+      if (
+        !approval ||
+        typeof approval.approval_id !== "string" ||
+        !/^[A-Za-z0-9._:-]{8,128}$/.test(approval.approval_id) ||
+        typeof approval.script_hash !== "string" ||
+        !/^(?:sha256:)?[a-f0-9]{64}$/i.test(approval.script_hash)
+      ) {
+        throw new ProtocolError(
+          "user_confirmation_required",
+          "runtime evaluation approval is incomplete",
+        );
+      }
+      const expiresAt = approval.expires_at ?? approval.expires_at_ms;
+      if (
+        !Number.isSafeInteger(expiresAt) ||
+        expiresAt <= this.now() ||
+        expiresAt > this.now() + MAX_APPROVAL_LIFETIME_MS
+      ) {
+        throw new ProtocolError(
+          "approval_expired",
+          "runtime evaluation approval is expired",
+        );
+      }
+      if (
+        approval.space_id !== spaceId ||
+        approval.page_id !== pageId ||
+        approval.lease_epoch !== leaseEpoch ||
+        (approval.target_generation ?? approval.generation) !==
+          record.targetGeneration ||
+        (this.profileInstanceId !== undefined &&
+          approval.profile_instance_id !== this.profileInstanceId) ||
+        (this.browserSessionEpoch !== undefined &&
+          approval.browser_session_epoch !== this.browserSessionEpoch)
+      ) {
+        throw new ProtocolError(
+          "permission_denied",
+          "runtime evaluation approval scope is not current",
+        );
+      }
+      if (
+        approval.purpose !== undefined &&
+        approval.purpose !== "runtime.evaluate"
+      ) {
+        throw new ProtocolError(
+          "permission_denied",
+          "runtime evaluation approval purpose is invalid",
+        );
+      }
+      this.pruneEvaluationApprovals();
+      if (this.usedEvaluationApprovals.has(approval.approval_id))
+        throw new ProtocolError(
+          "replay_rejected",
+          "runtime evaluation approval was already consumed",
+        );
+      const scriptHash = await hashRuntimeScript(expression);
+      const approvedHash = approval.script_hash
+        .toLowerCase()
+        .replace(/^sha256:/, "");
+      if (scriptHash !== approvedHash)
+        throw new ProtocolError(
+          "permission_denied",
+          "runtime evaluation script does not match approval",
+        );
+      this.tabs.assertPageDispatch({
+        spaceId,
+        pageId,
+        leaseEpoch,
+        expectedTargetGeneration: record.targetGeneration,
+        expectedNavigationGeneration: record.navigationGeneration,
+        expectedDocumentGeneration: record.documentGeneration,
+        mutation,
+      });
+      this.validateAttachment(record, attachment, {
+        spaceId,
+        pageId,
+        leaseEpoch,
+      });
+      if (this.usedEvaluationApprovals.size >= MAX_USED_APPROVALS)
+        throw new ProtocolError(
+          "resource_exhausted",
+          "evaluation approval cache is full",
+        );
+      this.usedEvaluationApprovals.set(approval.approval_id, expiresAt);
+    }
 
     let dispatched = false;
     try {
+      onDispatch();
       dispatched = true;
       const result = await chromeCall(
-        this.chrome?.debugger?.sendCommand?.bind(this.chrome.debugger),
+        sendCommandFn.bind(this.chrome.debugger),
         { tabId: record.rawTabId },
         method,
         params,
@@ -432,6 +703,8 @@ export class DebuggerBridge {
         method,
         result: safeResult,
         target_generation: attachment.targetGeneration,
+        navigation_generation: attachment.navigationGeneration,
+        document_generation: attachment.documentGeneration,
       };
     } catch (error) {
       if (dispatched && mutation) {
@@ -491,6 +764,8 @@ export class DebuggerBridge {
       space_id: attachment.spaceId,
       page_id: attachment.pageId,
       target_generation: attachment.targetGeneration,
+      navigation_generation: attachment.navigationGeneration,
+      document_generation: attachment.documentGeneration,
       attached: true,
     };
   }
