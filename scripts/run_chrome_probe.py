@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -49,6 +50,8 @@ EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
 WEBSOCKET_HEADER_LIMIT = 16 * 1024
 WEBSOCKET_FRAME_LIMIT = 64 * 1024
 RESULT_HANDOFF_LIMIT = 16 * 1024
+WORKER_DISCOVERY_TIMEOUT = 8.0
+WORKER_DISCOVERY_INTERVAL = 0.1
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _LAST_CLEANUP_OK = True
 
@@ -156,7 +159,7 @@ class DevToolsSocket:
             raise ValueError("debugger websocket must be a local ws URL without credentials or fragments")
         try:
             resolved_hosts = {
-                sockaddr[0]
+                sockaddr[-1][0]
                 for sockaddr in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
             }
         except OSError as error:
@@ -746,6 +749,31 @@ def _endpoint_belongs_to_process(port: int, process: subprocess.Popen[bytes]) ->
         return False
 
 
+def wait_for_probe_worker(
+    port: int,
+    process: subprocess.Popen[bytes],
+    timeout: float = WORKER_DISCOVERY_TIMEOUT,
+) -> list[dict[str, Any]] | None:
+    """Poll the launched process for one exact probe worker, failing closed."""
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("worker discovery timeout must be positive and finite")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _endpoint_belongs_to_process(port, process):
+            return None
+        try:
+            targets = chrome_endpoint(port, "/json/list")
+        except (OSError, urllib.error.URLError, ValueError):
+            targets = None
+        if isinstance(targets, list) and any(_worker_candidate(target, port) for target in targets):
+            return targets
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(WORKER_DISCOVERY_INTERVAL, remaining))
+    return None
+
+
 def inspect_live(
     port: int,
     profile_dir: Path | None,
@@ -813,12 +841,8 @@ def inspect_live(
             return {"status": "live_unavailable", "limitation": "Chrome did not expose the requested debug endpoint."}
         if process is None or not _endpoint_belongs_to_process(port, process):
             return {"status": "live_unavailable", "limitation": "the debug endpoint owner could not be bound to the probe-launched Chrome process"}
-        try:
-            targets = chrome_endpoint(port, "/json/list")
-            target_count = len(targets) if isinstance(targets, list) else None
-        except (OSError, urllib.error.URLError, ValueError):
-            targets = []
-            target_count = None
+        targets = wait_for_probe_worker(port, process)
+        target_count = len(targets) if isinstance(targets, list) else None
         extension = extension_probe_result(
             port,
             targets if isinstance(targets, list) else [],
