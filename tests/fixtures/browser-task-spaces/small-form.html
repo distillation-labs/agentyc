@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Small form</title></head>
+<body>
+  <main>
+    <h1>Profile form</h1>
+    <form id="profile-form" onsubmit="event.preventDefault(); document.querySelector('#status').textContent = 'saved';">
+      <label for="name">Name</label>
+      <input id="name" name="name" value="Ada" autocomplete="off">
+      <label for="role">Role</label>
+      <select id="role" name="role"><option>Researcher</option><option>Builder</option></select>
+      <button id="save" type="submit">Save</button>
+    </form>
+    <p id="status" role="status">idle</p>
+  </main>
+</body>
+</html>
