@@ -79,7 +79,7 @@ Point your agent at that file. It explains the read→ref→act→verify loop, t
 
 ## Existing-Chrome task spaces
 
-Existing-Chrome task spaces, extension/native-host integration, and direct CLI/SDK work are an active plan, not a shipped surface. Phase 0 is active; no production implementation or live existing-Chrome evidence is claimed. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md).
+The host/core contracts, production MV3 extension package, direct CLI/SDK, context/reliability modules, rollout gates, and host-backed MCP adapter now exist behind explicit opt-in paths. Phase 0 remains active because branded Chrome 154 refused the isolated unpacked-extension probe and no live enrolled existing-Chrome, installation, or performance evidence is claimed. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md) and [release gate](docs/release-gate.md).
 
 ---
 
