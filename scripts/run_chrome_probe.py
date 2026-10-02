@@ -7,7 +7,10 @@ script fails closed rather than attaching to an existing debug endpoint.
 `--require-live` makes that isolated live inspection required and fails when
 Chrome is unavailable. `--launch-chrome` is an explicit opt-in; it creates a
 short-lived system-temporary profile unless an explicit disposable temporary
-profile is supplied.
+profile is supplied. Branded Chrome must use `--operator-assisted`: the
+operator performs Chrome's documented Developer mode + Load unpacked flow in
+the disposable window. The runner never calls Chrome's private extension APIs
+or simulates the file picker.
 The script never touches the default Chrome profile.
 """
 
@@ -51,6 +54,10 @@ EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
 MAX_WORKER_DIAGNOSTICS = 8
 MAX_DIAGNOSTIC_STRING = 128
 CHROME_LOAD_EXTENSION_REFUSAL = "--load-extension is not allowed in Google Chrome, ignoring."
+OPERATOR_PERMISSION_STATUSES = frozenset({"recorded", "none_observed"})
+DEFAULT_OPERATOR_TIMEOUT = 180.0
+MAX_EXTENSION_FILES = 64
+MAX_EXTENSION_BYTES = 8 * 1024 * 1024
 WEBSOCKET_HEADER_LIMIT = 16 * 1024
 WEBSOCKET_FRAME_LIMIT = 64 * 1024
 RESULT_HANDOFF_LIMIT = 16 * 1024
@@ -101,6 +108,49 @@ def load_manifest() -> dict[str, Any]:
         if not (EXTENSION_DIR / filename).is_file():
             raise ValueError(f"probe fixture is missing {filename}")
     return manifest
+
+
+def extension_tree_sha256(directory: Path) -> str:
+    """Hash an extension tree without following symlinks or unbounded files."""
+    root = Path(directory)
+    if not root.is_dir() or root.is_symlink():
+        raise ValueError("extension staging directory is not a real directory")
+    files: list[tuple[str, bytes]] = []
+    total_bytes = 0
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        if path.is_symlink():
+            raise ValueError("extension tree must not contain symlinks")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise ValueError("extension tree contains a non-file entry")
+        data = path.read_bytes()
+        total_bytes += len(data)
+        if len(files) >= MAX_EXTENSION_FILES or total_bytes > MAX_EXTENSION_BYTES:
+            raise ValueError("extension tree exceeds the bounded staging limit")
+        files.append((path.relative_to(root).as_posix(), data))
+    if not files:
+        raise ValueError("extension staging directory is empty")
+    digest = hashlib.sha256()
+    for relative, data in files:
+        encoded_name = relative.encode("utf-8")
+        digest.update(struct.pack(">I", len(encoded_name)))
+        digest.update(encoded_name)
+        digest.update(struct.pack(">Q", len(data)))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def stage_extension(profile_dir: Path) -> tuple[Path, str, str]:
+    """Copy and hash the exact probe selected by the operator."""
+    source_hash = extension_tree_sha256(EXTENSION_DIR)
+    destination = profile_dir / "extension" / "probes"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(EXTENSION_DIR, destination, symlinks=False)
+    staged_hash = extension_tree_sha256(destination)
+    if staged_hash != source_hash:
+        raise ValueError("staged extension hash did not match the repository probe")
+    return destination, source_hash, staged_hash
 
 
 def safe_artifact_dir(value: str) -> Path:
@@ -829,6 +879,111 @@ def chrome_binary(value: str | None) -> str | None:
     return None
 
 
+def build_chrome_command(
+    executable: str,
+    profile_dir: Path,
+    port: int,
+    *,
+    extension_dir: Path | None,
+    fixture_url: str | None,
+    operator_assisted: bool,
+) -> list[str]:
+    """Build an owned disposable-browser command for either install lane."""
+    command = [
+        executable,
+        f"--user-data-dir={profile_dir}",
+        f"--remote-debugging-port={port}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--enable-automation",
+        "--disable-background-networking",
+        "--enable-logging=stderr",
+        "--new-window",
+    ]
+    if operator_assisted:
+        if extension_dir is not None or fixture_url is not None:
+            raise ValueError("operator-assisted launch must not receive command-line extension loading inputs")
+        return command
+    if extension_dir is None or not fixture_url:
+        raise ValueError("automated extension launch requires a staged extension and fixture URL")
+    command.extend([f"--load-extension={extension_dir}", fixture_url])
+    return command
+
+
+def _owned_page_target(port: int, process: subprocess.Popen[bytes]) -> dict[str, Any] | None:
+    if not _endpoint_belongs_to_process(port, process):
+        return None
+    try:
+        targets = chrome_endpoint(port, "/json/list")
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+    if not isinstance(targets, list):
+        return None
+    for target in targets:
+        if (
+            isinstance(target, dict)
+            and target.get("type") == "page"
+            and isinstance(target.get("webSocketDebuggerUrl"), str)
+        ):
+            return target
+    return None
+
+
+def navigate_owned_page(port: int, process: subprocess.Popen[bytes], url: str) -> None:
+    """Navigate only a page in the probe-owned disposable browser."""
+    if not isinstance(url, str) or not url or _contains_control(url):
+        raise ValueError("owned page URL is invalid")
+    target = _owned_page_target(port, process)
+    if target is None:
+        raise OSError("probe-owned page target was not observed")
+    client = DevToolsSocket(target["webSocketDebuggerUrl"])
+    try:
+        result = client.command("Page.navigate", {"url": url})
+        if not isinstance(result, dict) or result.get("errorText"):
+            raise OSError("probe-owned page navigation was rejected")
+    finally:
+        client.close()
+
+
+def wait_for_fixture_page(
+    port: int,
+    process: subprocess.Popen[bytes],
+    fixture_url: str,
+    timeout: float = WORKER_DISCOVERY_TIMEOUT,
+) -> bool:
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("fixture discovery timeout must be positive and finite")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _endpoint_belongs_to_process(port, process):
+            return False
+        try:
+            targets = chrome_endpoint(port, "/json/list")
+        except (OSError, urllib.error.URLError, ValueError):
+            targets = None
+        if isinstance(targets, list) and any(
+            isinstance(target, dict) and target.get("type") == "page" and target.get("url") == fixture_url
+            for target in targets
+        ):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(WORKER_DISCOVERY_INTERVAL, remaining))
+    return False
+
+
+def print_operator_instructions(staged_extension: Path, timeout: float) -> None:
+    print("Operator action required in the disposable Chrome window:", file=sys.stderr)
+    print("  1. Open chrome://extensions if it is not already visible.", file=sys.stderr)
+    print("  2. Enable Developer mode.", file=sys.stderr)
+    print("  3. Click Load unpacked and select this exact directory:", file=sys.stderr)
+    print(f"     {staged_extension}", file=sys.stderr)
+    print("  4. Record any permission or policy prompt outcome when invoking the runner.", file=sys.stderr)
+    print(f"  5. Leave the window open; the runner waits up to {timeout:.0f} seconds.", file=sys.stderr)
+    sys.stderr.flush()
+
+
 def _chrome_load_extension_evidence(log_path: Path | None, log_handle: Any | None = None) -> dict[str, str] | None:
     if log_path is None:
         return None
@@ -903,12 +1058,29 @@ def inspect_live(
     binary: str | None,
     artifact_dir: Path,
     manifest: dict[str, Any] | None = None,
+    *,
+    operator_assisted: bool = False,
+    permission_prompt_status: str = "not_recorded",
+    operator_timeout: float = DEFAULT_OPERATOR_TIMEOUT,
 ) -> dict[str, Any]:
     global _LAST_CLEANUP_OK
     _LAST_CLEANUP_OK = True
     del artifact_dir
+    load_method = "chrome_extensions_load_unpacked" if operator_assisted else "command_line_load_extension"
+    common_evidence = {
+        "operator_assisted": operator_assisted,
+        "load_method": load_method,
+        "load_extension_flag_used": not operator_assisted,
+        "developer_private_used": False,
+        "extensions_ui_dom_access": False,
+        "permission_prompts": {
+            "status": permission_prompt_status,
+            "required_manual_review": operator_assisted,
+        },
+    }
     if not launch:
         return {
+            **common_evidence,
             "status": "live_unavailable",
             "limitation": (
                 "existing-endpoint-not-isolated: refusing to attach to an existing "
@@ -916,6 +1088,10 @@ def inspect_live(
                 "temporary profile."
             ),
         }
+    if not math.isfinite(operator_timeout) or operator_timeout <= 0:
+        raise ValueError("operator timeout must be positive and finite")
+    if permission_prompt_status not in OPERATOR_PERMISSION_STATUSES | {"not_recorded"}:
+        raise ValueError("permission prompt status is invalid")
     owned_profile: Path | None = profile_dir if launch and profile_dir is not None else None
     if launch:
         try:
@@ -924,43 +1100,43 @@ def inspect_live(
             pass
         else:
             _cleanup_owned_profile(owned_profile)
-            return {"status": "live_unavailable", "limitation": f"debug port {port} is already in use; refusing to attach or launch ambiguously."}
+            return {
+                **common_evidence,
+                "status": "live_unavailable",
+                "limitation": f"debug port {port} is already in use; refusing to attach or launch ambiguously.",
+            }
     process: subprocess.Popen[bytes] | None = None
     stderr_log_path: Path | None = None
     stderr_log: Any | None = None
     fixture_path: Path | None = None
+    source_extension_hash: str | None = None
+    staged_extension_hash: str | None = None
     launched = False
     try:
         if launch:
             executable = chrome_binary(binary)
             if executable is None:
-                return {"status": "live_unavailable", "limitation": "Chrome binary was not found; install Chrome or pass --chrome-binary."}
+                return {**common_evidence, "status": "live_unavailable", "limitation": "Chrome binary was not found; install Chrome or pass --chrome-binary."}
             if profile_dir is None:
                 owned_profile = Path(tempfile.mkdtemp(prefix="agentyc-p0-profile-"))
                 profile_dir = owned_profile
             assert profile_dir is not None
             if profile_dir.exists() and any(profile_dir.iterdir()):
-                return {"status": "live_unavailable", "limitation": "the supplied disposable Chrome profile is not empty"}
+                return {**common_evidence, "status": "live_unavailable", "limitation": "the supplied disposable Chrome profile is not empty"}
             profile_dir.mkdir(parents=True, exist_ok=True)
-            loaded_extension_dir = profile_dir / "extension" / "probes"
-            shutil.copytree(EXTENSION_DIR, loaded_extension_dir)
+            loaded_extension_dir, source_extension_hash, staged_extension_hash = stage_extension(profile_dir)
             fixture_path = loaded_extension_dir / "fixture.html"
             fixture = fixture_path.resolve().as_uri()
             stderr_log_path = profile_dir / "chrome.stderr.log"
             stderr_log = stderr_log_path.open("wb")
-            command = [
+            command = build_chrome_command(
                 executable,
-                f"--user-data-dir={profile_dir}",
-                f"--load-extension={loaded_extension_dir}",
-                f"--remote-debugging-port={port}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--enable-automation",
-                "--disable-background-networking",
-                "--enable-logging=stderr",
-                "--new-window",
-                fixture,
-            ]
+                profile_dir,
+                port,
+                extension_dir=None if operator_assisted else loaded_extension_dir,
+                fixture_url=None if operator_assisted else fixture,
+                operator_assisted=operator_assisted,
+            )
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.DEVNULL,
@@ -970,11 +1146,27 @@ def inspect_live(
             launched = True
         version = wait_for_chrome(port)
         if version is None:
-            return {"status": "live_unavailable", "limitation": "Chrome did not expose the requested debug endpoint."}
+            return {**common_evidence, "status": "live_unavailable", "limitation": "Chrome did not expose the requested debug endpoint."}
         if process is None or not _endpoint_belongs_to_process(port, process):
-            return {"status": "live_unavailable", "limitation": "the debug endpoint owner could not be bound to the probe-launched Chrome process"}
-        load_evidence = _chrome_load_extension_evidence(stderr_log_path, stderr_log)
-        targets = wait_for_probe_worker(port, process)
+            return {**common_evidence, "status": "live_unavailable", "limitation": "the debug endpoint owner could not be bound to the probe-launched Chrome process"}
+
+        if operator_assisted:
+            navigate_owned_page(port, process, "chrome://extensions/")
+            loaded_extension_dir = profile_dir / "extension" / "probes"
+            print_operator_instructions(loaded_extension_dir, operator_timeout)
+            targets = wait_for_probe_worker(port, process, timeout=operator_timeout)
+            if targets is not None:
+                navigate_owned_page(port, process, fixture)
+                if not wait_for_fixture_page(port, process, fixture, timeout=WORKER_DISCOVERY_TIMEOUT):
+                    return {
+                        **common_evidence,
+                        "status": "live_unavailable",
+                        "source_extension_tree_sha256": source_extension_hash,
+                        "staged_extension_tree_sha256": staged_extension_hash,
+                        "limitation": "operator-loaded extension was observed, but the owned fixture tab did not become ready",
+                    }
+        else:
+            targets = wait_for_probe_worker(port, process)
         if targets is None:
             try:
                 observed_targets = chrome_endpoint(port, "/json/list")
@@ -982,6 +1174,7 @@ def inspect_live(
                 observed_targets = []
             targets = observed_targets if isinstance(observed_targets, list) else []
         target_count = len(targets)
+        load_evidence = _chrome_load_extension_evidence(stderr_log_path, stderr_log)
         extension = extension_probe_result(
             port,
             targets,
@@ -996,8 +1189,15 @@ def inspect_live(
                     "was not loaded; "
                     f"{extension.get('limitation', 'no complete extension evidence was observed')}"
                 )
+        status = extension.get("status", "live_unavailable")
+        limitation = extension.get("limitation")
+        if operator_assisted and permission_prompt_status not in OPERATOR_PERMISSION_STATUSES:
+            if status == "live_passed":
+                status = "live_unavailable"
+            limitation = limitation or "operator-assisted probe requires a recorded permission prompt outcome"
         return {
-            "status": extension.get("status", "live_unavailable"),
+            **common_evidence,
+            "status": status,
             "chrome_version": version.get("Browser", "unknown"),
             "target_count": target_count,
             "candidate_worker_count": extension.get("candidate_worker_count", 0),
@@ -1019,11 +1219,17 @@ def inspect_live(
             "handshake_transcript": extension.get("handshake_transcript", []),
             "worker_diagnostics": extension.get("worker_diagnostics", []),
             "extension_load_evidence": extension.get("extension_load_evidence"),
-            "permission_prompts": {"status": "not_recorded", "required_manual_review": True},
-            "limitation": extension.get("limitation"),
+            "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "source_extension_tree_sha256": source_extension_hash,
+            "staged_extension_tree_sha256": staged_extension_hash,
+            "limitation": limitation,
         }
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, TimeoutError, struct.error, subprocess.SubprocessError):
-        return {"status": "live_unavailable", "limitation": "live Chrome inspection failed closed"}
+        return {
+            **common_evidence,
+            "status": "live_unavailable",
+            "limitation": "live Chrome inspection failed closed",
+        }
     finally:
         if process is not None and not _safe_stop_process(process):
             _LAST_CLEANUP_OK = False
@@ -1050,6 +1256,23 @@ def main() -> int:
         help="require live Chrome inspection and exit nonzero when unavailable",
     )
     parser.add_argument("--launch-chrome", action="store_true", help="explicitly launch isolated Chrome; never implied by default")
+    parser.add_argument(
+        "--operator-assisted",
+        action="store_true",
+        help="use Chrome's documented chrome://extensions Load unpacked UI flow",
+    )
+    parser.add_argument(
+        "--permission-prompt-status",
+        choices=("not_recorded", "recorded", "none_observed"),
+        default="not_recorded",
+        help="operator-recorded permission/policy prompt outcome",
+    )
+    parser.add_argument(
+        "--operator-timeout",
+        type=float,
+        default=DEFAULT_OPERATOR_TIMEOUT,
+        help="seconds to wait for the operator to load the unpacked extension",
+    )
     parser.add_argument("--profile-dir", help="optional absolute disposable profile path inside the system temporary directory")
     parser.add_argument("--chrome-binary")
     parser.add_argument("--debug-port", type=int, default=9222)
@@ -1059,6 +1282,10 @@ def main() -> int:
         parser.error("--launch-chrome requires --headed")
     if args.require_live and not args.headed:
         parser.error("--require-live requires --headed")
+    if args.operator_assisted and (not args.headed or not args.launch_chrome):
+        parser.error("--operator-assisted requires --headed --launch-chrome")
+    if not math.isfinite(args.operator_timeout) or args.operator_timeout <= 0:
+        parser.error("--operator-timeout must be positive and finite")
     artifact_dir = safe_artifact_dir(args.artifact_dir)
     profile_dir = safe_profile_dir(args.profile_dir) if args.profile_dir else None
     manifest = load_manifest()
@@ -1087,7 +1314,17 @@ def main() -> int:
         "limitations": [],
     }
     if args.headed:
-        live = inspect_live(args.debug_port, profile_dir, args.launch_chrome, args.chrome_binary, artifact_dir, manifest)
+        live = inspect_live(
+            args.debug_port,
+            profile_dir,
+            args.launch_chrome,
+            args.chrome_binary,
+            artifact_dir,
+            manifest,
+            operator_assisted=args.operator_assisted,
+            permission_prompt_status=args.permission_prompt_status,
+            operator_timeout=args.operator_timeout,
+        )
         if not _LAST_CLEANUP_OK:
             live = {
                 "status": "live_unavailable",
