@@ -36,6 +36,7 @@ from artifact_envelope import (
     redact_for_persistence,
     repository_relative,
     sha256_bytes,
+    write_bytes_atomic,
     write_json_atomic,
     write_jsonl_atomic,
     write_text_atomic,
@@ -64,6 +65,42 @@ MAX_SPACES = 256
 MAX_RAW_SAMPLE_FILE_BYTES = 7 * 1024 * 1024
 GENERATION_MANIFEST_NAME = "generation-manifest.json"
 COMMIT_MARKER_NAME = "COMMIT"
+RELEASE_GATE_SCHEMA_VERSION = 1
+RELEASE_GATE_CEILINGS: dict[str, dict[str, float]] = {
+    "resource": {
+        "cpu_p95_percent": 80.0,
+        "rss_p95_bytes": 512 * 1024 * 1024,
+        "queue_depth_p95": 1_000.0,
+        "file_descriptors_max": 1_024.0,
+        "threads_max": 256.0,
+        "artifact_bytes": 8 * 1024 * 1024,
+    },
+    "token": {
+        "transport_bytes_p95": 1_000_000.0,
+        "utf8_bytes_p95": 1_000_000.0,
+        "serialized_tokens_p95": 100_000.0,
+        "model_context_tokens_p95": 100_000.0,
+    },
+    "context": {
+        "clean_dom_scans_max": 0.0,
+        "delta_ratio_p50": 0.35,
+        "delta_ratio_p95": 0.60,
+        "actionable_coverage_min": 1.0,
+    },
+    "reliability": {
+        "stale_ref_rate": 0.01,
+        "unknown_outcome_rate": 0.01,
+        "event_lag_p95_ms": 1_000.0,
+        "reconnect_p95_ms": 5_000.0,
+        "human_tab_responsiveness_p95_ms": 500.0,
+        "cross_space_mutations": 0.0,
+        "user_tab_closes": 0.0,
+        "stale_agent_mutations": 0.0,
+        "silent_unknown_success": 0.0,
+        "blind_replays": 0.0,
+        "secret_leaks": 0.0,
+    },
+}
 
 
 class _ParserBudget:
@@ -603,6 +640,71 @@ def summarize(samples: list[dict[str, Any]], record: dict[str, Any], cache_state
     }
 
 
+def offline_release_gates() -> dict[str, Any]:
+    """Return a complete schema whose nulls cannot be mistaken for live measurements."""
+    gates: dict[str, Any] = {}
+    for category, ceilings in RELEASE_GATE_CEILINGS.items():
+        metrics: dict[str, Any] = {}
+        for name, ceiling in ceilings.items():
+            metric = {
+                "value": None,
+                "ceiling": ceiling,
+                "status": "not_measured_offline",
+            }
+            if category == "context" and name == "actionable_coverage_min":
+                metric.pop("ceiling")
+                metric["minimum"] = ceiling
+            metrics[name] = metric
+        if category == "context":
+            metrics["equivalent_coverage"] = {
+                "value": None,
+                "minimum": True,
+                "status": "not_measured_offline",
+            }
+            metrics["truncation_accounted"] = {
+                "value": None,
+                "minimum": True,
+                "status": "not_measured_offline",
+            }
+        gates[category] = {
+            "schema_version": RELEASE_GATE_SCHEMA_VERSION,
+            "status": "not_gateable_offline",
+            "evidence_mode": "offline",
+            "metrics": metrics,
+        }
+    return gates
+
+
+def redact_release_gates(gates: Any) -> Any:
+    """Redact structured gate metrics without confusing the token category with a credential."""
+    if not isinstance(gates, dict):
+        return redact_for_persistence(gates)
+    staged = dict(gates)
+    token_section = staged.pop("token", None)
+    if token_section is not None:
+        staged["token_metrics"] = token_section
+    redacted = redact_for_persistence(staged)
+    if token_section is not None and isinstance(redacted, dict):
+        redacted["token"] = redacted.pop("token_metrics", None)
+    return redacted
+
+
+def redact_benchmark_report(result: dict[str, Any]) -> dict[str, Any]:
+    """Apply central redaction while preserving the allowlisted gate schema."""
+    gates = result.get("release_gates")
+    without_gates = {key: value for key, value in result.items() if key != "release_gates"}
+    redacted = redact_for_persistence(without_gates)
+    if gates is not None:
+        redacted["release_gates"] = redact_release_gates(gates)
+    return redacted
+
+
+def write_benchmark_baseline(path: Path, result: dict[str, Any]) -> None:
+    safe_result = redact_benchmark_report(result)
+    rendered = (json.dumps(safe_result, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode("utf-8")
+    write_bytes_atomic(path, rendered)
+
+
 def markdown_report(result: dict[str, Any]) -> str:
     lines = [
         "# Phase 0 direct benchmark baseline",
@@ -806,7 +908,7 @@ def _publish_benchmark_locked(
     stage = Path(tempfile.mkdtemp(prefix=f".{artifact_dir.name}.staging-", dir=parent))
     moved_previous = False
     try:
-        write_json_atomic(stage / "baseline.json", result)
+        write_benchmark_baseline(stage / "baseline.json", result)
         write_text_atomic(stage / "baseline.md", markdown)
         raw_names: list[str] = []
         seen_raw_names: set[str] = set()
@@ -933,6 +1035,9 @@ def main(argv: list[str] | None = None) -> int:
                     "samples": samples_per_cell,
                     "smoke": args.smoke,
                     "tail_thresholds": {"p95": MIN_P95_SAMPLES, "p99": MIN_P99_SAMPLES},
+                    "evidence_mode": "offline",
+                    "release_eligible": False,
+                    "release_gates": offline_release_gates(),
                     "would_probe_browser": False,
                     "would_launch_browser": False,
                     "would_download_browser": False,
@@ -978,7 +1083,9 @@ def main(argv: list[str] | None = None) -> int:
         "phase": 0,
         "kind": "direct-benchmark-baseline",
         "mode": "offline",
+        "evidence_mode": "offline",
         "status": "offline-smoke" if args.smoke else "offline-baseline",
+        "release_eligible": False,
         "nonce": run_nonce,
         "fixture_set_sha256": fixture_set_hash,
         "baseline_manifest": manifest_metadata,
@@ -1013,6 +1120,7 @@ def main(argv: list[str] | None = None) -> int:
             "scope": "per-cell latency mean",
             "status": "approximate",
         },
+        "release_gates": offline_release_gates(),
     }
     add_envelope(
         result,
@@ -1026,14 +1134,17 @@ def main(argv: list[str] | None = None) -> int:
         },
         nonce=run_nonce,
     )
+    # The category name `token` is an allowlisted gate schema, not a credential.
+    # Restore the complete structured schema after the generic envelope pass;
+    # write_benchmark_baseline() applies the safe schema-specific redaction.
+    result["release_gates"] = offline_release_gates()
 
     if args.artifact_dir:
         try:
             sample_chunks = raw_sample_chunks(raw_samples)
             result["raw_samples_files"] = [name for name, _ in sample_chunks]
             result["raw_sample_declarations"] = _raw_sample_declarations(sample_chunks, len(raw_samples))
-            # Re-apply the central boundary after adding persistence metadata.
-            result.update(redact_for_persistence(result))
+            result = redact_benchmark_report(result)
             publication = publish_benchmark(args.artifact_dir, result, markdown_report(result), sample_chunks)
         except (OSError, ValueError, TypeError) as error:
             print(f"direct benchmark error: {type(error).__name__}", file=sys.stderr)
@@ -1043,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
             f"({len(rows)} cells, {len(raw_samples)} samples, {publication['generation_id']})"
         )
     else:
-        print(json.dumps(redact_for_persistence(result), indent=2, sort_keys=True, allow_nan=False))
+        print(json.dumps(redact_benchmark_report(result), indent=2, sort_keys=True, allow_nan=False))
     return 0
 
 
