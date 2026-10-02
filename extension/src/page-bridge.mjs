@@ -84,12 +84,20 @@ export function validatePageMessage(
   }
   if (
     typeof message.request_id !== "string" ||
+    message.request_id.length < 8 ||
     message.request_id.length > 128
   ) {
     throw new ProtocolError(
       "schema_invalid",
       "page bridge request id is invalid",
     );
+  }
+  if (
+    message.expires_at !== undefined &&
+    (!Number.isSafeInteger(message.expires_at) ||
+      message.expires_at <= Date.now())
+  ) {
+    throw new ProtocolError("proof_expired", "page bridge message is expired");
   }
   if (!PAGE_OPERATIONS.has(message.operation)) {
     throw new ProtocolError(
@@ -122,6 +130,7 @@ export function createPageMessage({
   payload = {},
   requestId = createLogicalId("req"),
   origin,
+  expiresAt,
 } = {}) {
   const message = {
     version: PAGE_BRIDGE_VERSION,
@@ -133,6 +142,7 @@ export function createPageMessage({
     operation,
     payload,
     origin,
+    expires_at: expiresAt,
   };
   for (const key of Object.keys(message))
     if (message[key] === undefined) delete message[key];
@@ -244,6 +254,7 @@ export function installPageBridge({
     try {
       if (event.source !== windowLike) return;
       if (origin && event.origin !== origin) return;
+      if (event.data?.direction !== "extension_to_page") return;
       const message = validatePageMessage(event.data, {
         nonce,
         documentId,
@@ -263,6 +274,7 @@ export function installPageBridge({
         requestId: message.request_id,
         payload: { ok: true, result },
         origin,
+        expiresAt: message.expires_at,
       });
       onResult(response);
       windowLike.postMessage?.(response, origin || "*");
@@ -288,6 +300,7 @@ export function installPageBridge({
           },
         },
         origin,
+        expiresAt: Date.now() + 1000,
       });
       onResult(response);
       windowLike.postMessage?.(response, origin || "*");
