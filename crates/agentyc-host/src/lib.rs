@@ -44,12 +44,15 @@ pub use event_router::{
 pub use events::{EventBatch, EventQuery};
 pub use host::Host;
 pub use leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult};
-pub use ledger::{LEDGER_SCHEMA_VERSION, Ledger, LedgerLimits, LedgerState};
+pub use ledger::{
+    FencePurpose, LEDGER_SCHEMA_VERSION, Ledger, LedgerLimits, LedgerState, PendingFenceRecord,
+    TakeoverProofRecord,
+};
 pub use protocol::{LocalProtocolClient, LocalProtocolServer, ProtocolClient, ProtocolServer};
 pub use refs::{RefInvalidationReason, RefRecord, RefRegistry, RefRegistryLimits, RefTombstone};
 pub use snapshots::{
     CachedSnapshot, PageGeneration, SnapshotCache, SnapshotCacheError, SnapshotCacheRecord,
-    SnapshotRead, empty_snapshot,
+    SnapshotMetadata, SnapshotMetadataRead, SnapshotRead, empty_snapshot,
 };
 pub use waits::{
     CancellationToken, Clock, FakeClock, WaitCondition, WaitEngine, WaitHandle, WaitOutcome,
