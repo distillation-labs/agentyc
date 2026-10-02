@@ -182,6 +182,7 @@ export class NativeMessagingClient {
         expectedConnectionEpoch: this.connectionEpoch,
         expectedWorkerInstanceEpoch: this.workerInstanceEpoch,
         expectedBrowserSessionEpoch: this.browserSessionEpoch,
+        requireEpochs: true,
       });
       this.inboundSequence.accept(message.sequence);
 
