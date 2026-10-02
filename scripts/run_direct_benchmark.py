@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Run the Phase 0 direct-interface benchmark scaffold.
 
 Offline mode measures deterministic local fixture parsing and serialization. It
@@ -24,7 +24,7 @@ from statistics import mean
 from typing import Any, ClassVar
 
 from artifact_envelope import envelope as add_envelope
-from artifact_envelope import write_json_atomic
+from artifact_envelope import write_bytes_atomic, write_json_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "browser-task-spaces"
@@ -109,7 +109,7 @@ def load_fixtures() -> dict[str, dict[str, Any]]:
         name = item.get("name")
         relative = item.get("file")
         if not isinstance(name, str) or not isinstance(relative, str):
-            raise ValueError("fixture entries need string name and file")
+            raise TypeError("fixture entries need string name and file")
         path = FIXTURE_ROOT / relative
         if path.parent != FIXTURE_ROOT or not path.is_file():
             raise ValueError(f"fixture {name!r} is not a local file")
@@ -443,6 +443,46 @@ def markdown_report(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+MAX_RAW_SAMPLE_FILE_BYTES = 7 * 1024 * 1024
+
+
+def raw_sample_chunks(samples: list[dict[str, Any]]) -> list[tuple[str, bytes]]:
+    chunks: list[bytes] = []
+    current = bytearray()
+    for sample in samples:
+        line = (json.dumps(sample, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+        if len(line) > MAX_RAW_SAMPLE_FILE_BYTES:
+            raise ValueError("one raw sample exceeds the bounded artifact limit")
+        if current and len(current) + len(line) > MAX_RAW_SAMPLE_FILE_BYTES:
+            chunks.append(bytes(current))
+            current = bytearray()
+        current.extend(line)
+    if current or not chunks:
+        chunks.append(bytes(current))
+    return [
+        ("raw_samples.jsonl" if index == 0 else f"raw_samples-{index:03d}.jsonl", chunk)
+        for index, chunk in enumerate(chunks)
+    ]
+
+
+def safe_artifact_dir(value: Path) -> Path:
+    requested = value if value.is_absolute() else ROOT / value
+    current = requested
+    while current != current.parent:
+        if current.is_symlink():
+            raise ValueError("artifact path components must not be symlinks")
+        current = current.parent
+    resolved = requested.resolve()
+    artifacts = (ROOT / "artifacts").resolve()
+    try:
+        resolved.relative_to(artifacts)
+    except ValueError as error:
+        raise ValueError("artifact directory must be inside artifacts/") from error
+    if resolved == artifacts:
+        raise ValueError("artifact directory must be a child of artifacts/")
+    return resolved
+
+
 def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Measure local Phase 0 fixtures and emit an honest direct benchmark baseline.",
@@ -475,7 +515,9 @@ def main(argv: list[str] | None = None) -> int:
         cache_states = parse_csv(args.cache_states, "--cache-states")
         spaces = parse_positive_ints(args.spaces, "--spaces")
         selected = [fixtures[name] for name in fixture_names]
-    except (KeyError, ValueError) as exc:
+        if args.artifact_dir is not None:
+            args.artifact_dir = safe_artifact_dir(args.artifact_dir)
+    except (KeyError, TypeError, ValueError) as exc:
         print(f"direct benchmark error: {exc}", file=sys.stderr)
         return 2
 
@@ -556,13 +598,20 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     if args.artifact_dir:
-        add_envelope(result, kind="direct-benchmark")
-        args.artifact_dir.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(args.artifact_dir / "baseline.json", result)
-        (args.artifact_dir / "baseline.md").write_text(markdown_report(result), encoding="utf-8")
-        with (args.artifact_dir / "raw_samples.jsonl").open("w", encoding="utf-8") as handle:
-            for sample in raw_samples:
-                handle.write(json.dumps(sample, sort_keys=True) + "\n")
+        try:
+            sample_chunks = raw_sample_chunks(raw_samples)
+            result["raw_samples_files"] = [name for name, _ in sample_chunks]
+            add_envelope(result, kind="direct-benchmark")
+            args.artifact_dir.mkdir(parents=True, exist_ok=True)
+            for old_path in args.artifact_dir.glob("raw_samples*.jsonl"):
+                old_path.unlink()
+            write_json_atomic(args.artifact_dir / "baseline.json", result)
+            (args.artifact_dir / "baseline.md").write_text(markdown_report(result), encoding="utf-8")
+            for name, content in sample_chunks:
+                write_bytes_atomic(args.artifact_dir / name, content, max_bytes=MAX_RAW_SAMPLE_FILE_BYTES)
+        except (OSError, ValueError) as error:
+            print(f"direct benchmark error: {type(error).__name__}", file=sys.stderr)
+            return 2
         print(f"wrote offline benchmark baseline: {args.artifact_dir} ({len(rows)} cells, {len(raw_samples)} samples)")
     else:
         print(json.dumps(result, indent=2, sort_keys=True))
