@@ -297,12 +297,14 @@ commands:
         "scripts/run_chrome_probe.py",
         "--headed",
         "--require-live",
-        "--profile-dir",
-        "artifacts/p0-extension/profile",
+        "--launch-chrome",
       ]
     cwd: "."
     timeout_seconds: 120
-    prerequisites: ["user-approved headed Chrome and an isolated probe profile"]
+    prerequisites:
+      [
+        "user-approved headed Chrome binary and disposable system-temporary probe profile",
+      ]
     artifacts: ["artifacts/p0-extension/"]
     result:
       success_exit_codes: [0]
@@ -326,8 +328,32 @@ commands:
       failure_is_error: true
       stdout: "console"
       stderr: "console"
-  - id: "native-probe-live-required"
+  - id: "native-probe-host-smoke-required"
     status: "required"
+    layer: "component"
+    environment: ["local"]
+    fixture: "native-messaging-host-smoke"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_native_messaging_probe.py",
+        "--require-host-smoke",
+        "--artifact",
+        "artifacts/p0-native-protocol/host-smoke.json",
+      ]
+    cwd: "."
+    timeout_seconds: 60
+    prerequisites: []
+    artifacts: ["artifacts/p0-native-protocol/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
+  - id: "native-probe-chrome-mediated-live"
+    status: "planned"
     layer: "component"
     environment: ["headed-chrome"]
     fixture: "native-messaging-protocol-live"
@@ -340,13 +366,15 @@ commands:
         "--require-live",
         "--check-install",
         "--extension-origin",
-        "chrome-extension://<registered-id>",
+        "<operator-supplied-extension-id>",
+        "--artifact",
+        "artifacts/p0-native-protocol/live.json",
       ]
     cwd: "."
     timeout_seconds: 60
     prerequisites:
       [
-        "installed platform Native Messaging host manifest and approved Chrome profile",
+        "Chrome-mediated extension runner and installed platform Native Messaging host manifest",
       ]
     artifacts: ["artifacts/p0-native-protocol/"]
     result:
@@ -431,6 +459,44 @@ commands:
       failure_is_error: true
       stdout: "console"
       stderr: "console"
+  - id: "direct-benchmark-live-required"
+    status: "planned"
+    layer: "performance"
+    environment: ["headed-chrome"]
+    fixture: "browser-task-space-live-benchmark"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_direct_benchmark.py",
+        "--mode",
+        "target",
+        "--warmups",
+        "10",
+        "--samples",
+        "1000",
+        "--fixtures",
+        "small-form,dense-admin-table,dynamic-feed,nested-frame",
+        "--cache-states",
+        "cold,clean,dirty,resync",
+        "--spaces",
+        "1,2,4,8",
+        "--artifact-dir",
+        "artifacts/p0-performance-live",
+      ]
+    cwd: "."
+    timeout_seconds: 900
+    prerequisites:
+      [
+        "real headed-Chrome benchmark implementation and resource/token instrumentation",
+      ]
+    artifacts: ["artifacts/p0-performance-live/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
   - id: "existing-chrome-coexistence"
     status: "planned"
     layer: "e2e"
@@ -460,6 +526,29 @@ commands:
       failure_is_error: true
       stdout: "console"
       stderr: "console"
+  - id: "installation-preflight"
+    status: "required"
+    layer: "release"
+    environment: ["isolated-platform-profile"]
+    fixture: "installation-preflight"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_install_drill.py",
+        "--artifact-dir",
+        "artifacts/p0-installation-preflight",
+      ]
+    cwd: "."
+    timeout_seconds: 120
+    prerequisites: []
+    artifacts: ["artifacts/p0-installation-preflight/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
   - id: "installation-drill"
     status: "planned"
     layer: "release"
@@ -471,7 +560,12 @@ commands:
       [
         "python3",
         "scripts/run_install_drill.py",
+        "--drill",
+        "--required",
+        "--extension-id",
+        "<operator-supplied-extension-id>",
         "--clean-profile",
+        "artifacts/p0-installation/profile",
         "--artifact-dir",
         "artifacts/p0-installation",
       ]
@@ -480,6 +574,7 @@ commands:
     prerequisites:
       [
         "P0-T2 extension package",
+        "exact installed extension ID supplied at run time",
         "platform Native Messaging registration fixtures",
       ]
     artifacts: ["artifacts/p0-installation/"]
@@ -560,10 +655,13 @@ test_targets:
   - id: "p0-t3-offline"
     status: "required"
     command_id: "native-probe-offline"
-  - id: "p0-t3-live-required"
+  - id: "p0-t3-host-smoke"
     status: "required"
-    command_id: "native-probe-live-required"
-    prerequisite: "installed platform Native Messaging host manifest"
+    command_id: "native-probe-host-smoke-required"
+  - id: "p0-t3-chrome-mediated-live"
+    status: "planned"
+    command_id: "native-probe-chrome-mediated-live"
+    prerequisite: "Chrome-mediated extension runner and installed platform Native Messaging host manifest"
   - id: "p0-t4-offline"
     status: "required"
     command_id: "capability-matrix-offline"
@@ -578,10 +676,17 @@ test_targets:
   - id: "p0-t6-direct-benchmark"
     status: "required"
     command_id: "direct-benchmark-offline"
+  - id: "p0-t6-live-benchmark"
+    status: "planned"
+    command_id: "direct-benchmark-live-required"
+    prerequisite: "real headed-Chrome benchmark implementation and resource/token instrumentation"
+  - id: "p0-t7-preflight"
+    status: "required"
+    command_id: "installation-preflight"
   - id: "p0-t7-installation"
     status: "planned"
     command_id: "installation-drill"
-    prerequisite: "platform installation fixtures"
+    prerequisite: "exact extension ID, platform installation fixtures, and disposable profile"
   - id: "p0-t8-baseline-review"
     status: "planned"
     command_id: "baseline-addendum-review"
