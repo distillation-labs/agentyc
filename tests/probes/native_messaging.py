@@ -27,6 +27,12 @@ SUPPORTED_VERSION = 1
 DEFAULT_ORIGIN = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 ORIGIN_PATTERN = re.compile(r"^chrome-extension://[a-p]{32}$")
 EXPECTED_FIXTURE = "agentyc P0 probe fixture"
+MAX_FIELD_BYTES = 128
+REQUEST_KEYS = frozenset({"version", "origin", "message_id", "nonce", "kind", "payload"})
+PAYLOAD_KEYS = frozenset({"fixture", "assembly_bytes", "artifact_bytes"})
+HANDSHAKE_KINDS = ("hello", "probe")
+RESPONSE_KIND = "ack"
+RESPONSE_KEYS = frozenset({"accepted", "kind", "message_id", "phase", "nonce", "version"})
 
 
 class RejectCode(str, Enum):
@@ -39,9 +45,11 @@ class RejectCode(str, Enum):
     UNSUPPORTED_VERSION = "unsupported_version"
     INVALID_ENVELOPE = "invalid_envelope"
     BUDGET = "budget_exceeded"
+    DEADLINE = "deadline_exceeded"
+    DISCONNECT = "unexpected_disconnect"
 
 
-class ProtocolError(ValueError):
+class ProtocolError(ValueError, TypeError):
     def __init__(self, code: RejectCode, detail: str = "") -> None:
         self.code = code
         self.detail = detail or code.value
@@ -70,9 +78,10 @@ class FrameDecoder:
     def feed(self, chunk: bytes) -> list[Frame]:
         if not isinstance(chunk, (bytes, bytearray, memoryview)):
             raise TypeError("chunk must be bytes-like")
-        incoming = bytes(chunk)
-        if len(incoming) > MAX_CHUNK_BYTES:
+        incoming_size = chunk.nbytes if isinstance(chunk, memoryview) else len(chunk)
+        if incoming_size > MAX_CHUNK_BYTES:
             raise ProtocolError(RejectCode.BUDGET, "chunk exceeds the read bound")
+        incoming = bytes(chunk)
         self.total_wire_bytes += len(incoming)
         if self.total_wire_bytes > MAX_CUMULATIVE_FRAME_BYTES:
             raise ProtocolError(RejectCode.BUDGET, "cumulative frame budget exceeded")
@@ -132,6 +141,10 @@ class BrokerRegistry:
         return len(self._brokers)
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 class EnvelopeSession:
     def __init__(self, expected_origin: str = DEFAULT_ORIGIN, registry: BrokerRegistry | None = None) -> None:
         if not ORIGIN_PATTERN.fullmatch(expected_origin):
@@ -158,24 +171,30 @@ class EnvelopeSession:
             except UnicodeDecodeError as error:
                 raise ProtocolError(RejectCode.INVALID_UTF8, str(error)) from error
             try:
-                envelope = json.loads(text)
-            except json.JSONDecodeError as error:
+                envelope = json.loads(text, parse_constant=_reject_json_constant)
+            except (ValueError, json.JSONDecodeError) as error:
                 raise ProtocolError(RejectCode.INVALID_JSON, str(error)) from error
             if not isinstance(envelope, dict):
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "envelope must be an object")
-            if envelope.get("version") != SUPPORTED_VERSION:
+            if set(envelope) != REQUEST_KEYS:
+                raise ProtocolError(RejectCode.INVALID_ENVELOPE, "envelope shape is not exact")
+            version = envelope.get("version")
+            if type(version) is not int or version != SUPPORTED_VERSION:
                 raise ProtocolError(RejectCode.UNSUPPORTED_VERSION, "unsupported protocol version")
-            if envelope.get("origin") != self.expected_origin or not ORIGIN_PATTERN.fullmatch(envelope.get("origin", "")):
+            origin = envelope.get("origin")
+            if not isinstance(origin, str) or origin != self.expected_origin or not ORIGIN_PATTERN.fullmatch(origin):
                 raise ProtocolError(RejectCode.WRONG_ORIGIN, "origin is not exactly allowlisted")
             message_id = envelope.get("message_id")
             nonce = envelope.get("nonce")
-            if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
+            if not isinstance(message_id, str) or not message_id or len(message_id) > MAX_FIELD_BYTES:
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "invalid message_id")
             if message_id in self._seen_message_ids:
                 raise ProtocolError(RejectCode.REPLAY, "message_id was already accepted")
-            if not isinstance(nonce, str) or not nonce or len(nonce) > 128:
+            if not isinstance(nonce, str) or not nonce or len(nonce) > MAX_FIELD_BYTES:
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "invalid nonce")
             kind = envelope.get("kind")
+            if not isinstance(kind, str) or kind not in HANDSHAKE_KINDS:
+                raise ProtocolError(RejectCode.INVALID_ENVELOPE, "invalid handshake kind")
             if kind == "hello":
                 if self._nonce is not None or self._phase != 0:
                     raise ProtocolError(RejectCode.REPLAY, "second hello is a replay")
@@ -184,15 +203,16 @@ class EnvelopeSession:
                 raise ProtocolError(RejectCode.REPLAY, "nonce is not bound to this session")
             if (self._phase == 0 and kind != "hello") or (self._phase == 1 and kind != "probe") or self._phase >= 2:
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "unexpected handshake phase")
-            if "payload" not in envelope or not isinstance(envelope["payload"], dict):
-                raise ProtocolError(RejectCode.INVALID_ENVELOPE, "payload must be an object")
-            if envelope["payload"].get("fixture") != EXPECTED_FIXTURE:
+            payload = envelope["payload"]
+            if not isinstance(payload, dict) or not set(payload).issubset(PAYLOAD_KEYS):
+                raise ProtocolError(RejectCode.INVALID_ENVELOPE, "payload shape is not supported")
+            if payload.get("fixture") != EXPECTED_FIXTURE:
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "unexpected fixture identity")
-            assembly_bytes = envelope["payload"].get("assembly_bytes", frame.size)
-            artifact_bytes = envelope["payload"].get("artifact_bytes", 0)
-            if not isinstance(assembly_bytes, int) or assembly_bytes < 0 or assembly_bytes > MAX_ASSEMBLY_BYTES:
+            assembly_bytes = payload.get("assembly_bytes", frame.size)
+            artifact_bytes = payload.get("artifact_bytes", 0)
+            if type(assembly_bytes) is not int or assembly_bytes < 0 or assembly_bytes > MAX_ASSEMBLY_BYTES:
                 raise ProtocolError(RejectCode.BUDGET, "assembly budget exceeded")
-            if not isinstance(artifact_bytes, int) or artifact_bytes < 0 or self.artifact_bytes + artifact_bytes > MAX_ARTIFACT_BYTES:
+            if type(artifact_bytes) is not int or artifact_bytes < 0 or self.artifact_bytes + artifact_bytes > MAX_ARTIFACT_BYTES:
                 raise ProtocolError(RejectCode.BUDGET, "artifact budget exceeded")
             self.artifact_bytes += artifact_bytes
             self._seen_message_ids.add(message_id)
@@ -201,6 +221,36 @@ class EnvelopeSession:
             return envelope
         finally:
             self.in_flight_bytes -= frame.size
+
+
+def validate_host_response(
+    response: Any,
+    *,
+    expected_message_id: str,
+    expected_phase: str,
+    expected_nonce: str,
+    seen_message_ids: set[str],
+) -> dict[str, Any]:
+    """Validate one bounded acknowledgement from the direct host smoke test."""
+    if not isinstance(response, dict) or set(response) != RESPONSE_KEYS:
+        raise ProtocolError(RejectCode.INVALID_ENVELOPE, "host response shape is not exact")
+    if response.get("accepted") is not True or response.get("kind") != RESPONSE_KIND:
+        raise ProtocolError(RejectCode.INVALID_ENVELOPE, "host response is not an acknowledgement")
+    version = response.get("version")
+    if type(version) is not int or version != SUPPORTED_VERSION:
+        raise ProtocolError(RejectCode.UNSUPPORTED_VERSION, "host response version is unsupported")
+    if response.get("phase") != expected_phase:
+        raise ProtocolError(RejectCode.INVALID_ENVELOPE, "host response phase is out of order")
+    message_id = response.get("message_id")
+    if not isinstance(message_id, str) or not message_id or len(message_id) > MAX_FIELD_BYTES:
+        raise ProtocolError(RejectCode.INVALID_ENVELOPE, "host response message_id is invalid")
+    if message_id != expected_message_id or message_id in seen_message_ids:
+        raise ProtocolError(RejectCode.REPLAY, "host response message_id is not unique or expected")
+    nonce = response.get("nonce")
+    if not isinstance(nonce, str) or nonce != expected_nonce or len(nonce) > MAX_FIELD_BYTES:
+        raise ProtocolError(RejectCode.REPLAY, "host response nonce is not bound to the request")
+    seen_message_ids.add(message_id)
+    return response
 
 
 def classify_disconnect(*, parser: FrameDecoder, host_alive: bool) -> str:
