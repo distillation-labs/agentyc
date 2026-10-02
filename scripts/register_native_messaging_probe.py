@@ -19,6 +19,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST_NAME = "com.agentyc.p0_probe"
+DISPLAY_MANIFEST_FILENAME = "native-host-manifest.json"
 HOST_PATH = ROOT / "tests" / "probes" / "native_probe"
 TEMPLATE_PATH = ROOT / "extension" / "probes" / "native_host_manifest.macos.json"
 ORIGIN_PATTERN = re.compile(r"^chrome-extension://[a-p]{32}$")
@@ -39,7 +40,13 @@ def default_manifest_path() -> Path:
 
 
 def safe_host_path(value: str) -> Path:
-    requested = Path(value).expanduser().resolve()
+    raw = Path(value).expanduser()
+    current = raw
+    while current != current.parent:
+        if current.is_symlink():
+            raise ValueError("host path cannot contain symlinks")
+        current = current.parent
+    requested = raw.resolve()
     expected = HOST_PATH.resolve()
     if requested != expected:
         raise ValueError("host path must be the repository test probe")
@@ -48,9 +55,7 @@ def safe_host_path(value: str) -> Path:
     return requested
 
 
-def safe_manifest_path(value: str | None) -> Path | None:
-    if value is None:
-        return None
+def safe_manifest_path(value: str) -> Path:
     requested = Path(value).expanduser()
     if not requested.is_absolute():
         requested = ROOT / requested
@@ -79,7 +84,7 @@ def _manifest(host_path: Path, extension_origin: str) -> dict[str, Any]:
 def _redacted_result(status: str, manifest_path: Path, *, manifest_present: bool = False, host_present: bool = False, origin_matches: bool = False, host_path_matches: bool = False, detail: str | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": status,
-        "manifest_filename": manifest_path.name,
+        "manifest_filename": DISPLAY_MANIFEST_FILENAME,
         "manifest_present": manifest_present,
         "host_present": host_present,
         "origin_matches": origin_matches,
@@ -98,7 +103,7 @@ def check_registration(extension_origin: str, host_path: Path = HOST_PATH, manif
     try:
         validate_origin(extension_origin)
         host_path = safe_host_path(str(host_path))
-        destination = safe_manifest_path(str(manifest_path)) if manifest_path is not None else default_manifest_path()
+        destination = default_manifest_path() if manifest_path is None else safe_manifest_path(str(manifest_path))
     except (ValueError, RuntimeError) as error:
         return _redacted_result("rejected", Path("native-host-manifest.json"), detail=str(error))
 
@@ -137,7 +142,7 @@ def install_registration(extension_origin: str, host_path: Path = HOST_PATH, man
         host_path = safe_host_path(str(host_path))
     except ValueError as error:
         return _redacted_result("rejected", manifest_path or Path("native-host-manifest.json"), detail=str(error))
-    destination = safe_manifest_path(str(manifest_path)) if manifest_path is not None else default_manifest_path()
+    destination = default_manifest_path() if manifest_path is None else safe_manifest_path(str(manifest_path))
     if destination.exists() and destination.is_symlink():
         return _redacted_result("rejected", destination, detail="registration manifest must not be a symlink")
     payload = json.dumps(_manifest(host_path, extension_origin), indent=2, sort_keys=True) + "\n"
@@ -177,9 +182,10 @@ def main() -> int:
     selected = args.action or ("install" if args.install else "check" if args.check else None)
     if selected is None:
         parser.error("choose the explicit install or check action")
+    manifest_path: Path | None = None
     try:
         host_path = safe_host_path(args.host_path)
-        manifest_path = safe_manifest_path(args.manifest_path)
+        manifest_path = safe_manifest_path(args.manifest_path) if args.manifest_path else None
         result = check_registration(args.extension_origin, host_path, manifest_path) if selected == "check" else install_registration(args.extension_origin, host_path, manifest_path, args.replace)
     except (OSError, UnicodeError, ValueError, RuntimeError) as error:
         result = _redacted_result("rejected", manifest_path or Path("native-host-manifest.json"), detail=str(error))
