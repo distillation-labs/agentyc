@@ -1,0 +1,1 @@
+{"schema_version":1,"seed":0,"events":[{"at_ms":0,"kind":"started","payload":{"space_id":"research"}},{"at_ms":5,"kind":"fault","payload":{"token":"redacted-in-output"}}]}
