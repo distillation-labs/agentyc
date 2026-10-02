@@ -2,7 +2,9 @@
 //!
 //! No method in this module accepts or returns a Chrome target, tab, session,
 //! debugger, or process identifier. A real extension/CDP adapter can keep such
-//! values private to its implementation in a later phase.
+//! values private to its implementation in a later phase. The current crate has
+//! no live browser bridge; [`NullBridge`] and [`FakeBridge`] are deterministic
+//! seams only.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -159,6 +161,7 @@ impl Bridge for NullBridge {
 
 #[derive(Debug)]
 struct FakeState {
+    capabilities: Vec<Capability>,
     snapshots: BTreeMap<SpaceId, BTreeMap<PageId, SnapshotEnvelope>>,
     dispatch_results: VecDeque<BridgeDispatchResult>,
     reconcile_results: VecDeque<BridgeReconcileResult>,
@@ -188,6 +191,14 @@ impl FakeBridge {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(FakeState {
+                capabilities: vec![
+                    Capability::Snapshot,
+                    Capability::Action,
+                    Capability::Wait,
+                    Capability::Artifact,
+                    Capability::Evaluate,
+                    Capability::Reconcile,
+                ],
                 snapshots: BTreeMap::new(),
                 dispatch_results: VecDeque::new(),
                 reconcile_results: VecDeque::new(),
@@ -199,6 +210,13 @@ impl FakeBridge {
                 close_count: 0,
                 closed_pages: Vec::new(),
             }),
+        }
+    }
+
+    /// Restrict the capabilities exposed by this deterministic bridge seam.
+    pub fn set_capabilities(&self, capabilities: Vec<Capability>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.capabilities = capabilities;
         }
     }
 
@@ -284,12 +302,10 @@ impl FakeBridge {
 
 impl Bridge for FakeBridge {
     fn capabilities(&self) -> Vec<Capability> {
-        vec![
-            Capability::Snapshot,
-            Capability::Action,
-            Capability::Wait,
-            Capability::Reconcile,
-        ]
+        self.state
+            .lock()
+            .map(|state| state.capabilities.clone())
+            .unwrap_or_default()
     }
 
     fn dispatch(
