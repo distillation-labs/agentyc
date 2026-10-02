@@ -1,8 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import net from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   AgentycError,
+  BatchError,
+  CancelledError,
   UnknownOutcomeError,
   connect,
   isAgentycError,
@@ -198,4 +204,324 @@ test("wire errors map to typed extension and reconciliation errors", async () =>
       error.code === "reconciliation_required" &&
       error.guidance === "reconcile",
   );
+});
+
+function responseFor(requestId, result = {}) {
+  return { request_id: requestId, ok: true, result };
+}
+
+function responseTransport(handler) {
+  const transport = new FakeTransport();
+  transport.handler = handler;
+  return transport;
+}
+
+test("batch correlation rejects duplicate request IDs before dispatch", async () => {
+  const transport = new FakeTransport();
+  const client = await connect({ transport });
+  await assert.rejects(
+    () =>
+      client.batch([
+        { method: "space.list", requestId: "req_same" },
+        { method: "host.status", requestId: "req_same" },
+      ]),
+    (error) => error instanceof AgentycError && error.code === "invalid_json",
+  );
+  assert.equal(transport.calls.length, 0);
+});
+
+test("batch correlation rejects missing, duplicate, and unexpected response IDs", async () => {
+  const cases = [
+    (request) => ({
+      responses: [responseFor(request.requests[0].request_id)],
+    }),
+    (request) => ({
+      responses: [
+        responseFor(request.requests[0].request_id),
+        responseFor(request.requests[0].request_id),
+      ],
+    }),
+    (request) => ({
+      responses: [
+        responseFor(request.requests[0].request_id),
+        responseFor("req_unexpected"),
+      ],
+    }),
+  ];
+  for (const handler of cases) {
+    const client = await connect({ transport: responseTransport(handler) });
+    await assert.rejects(
+      () => client.batch([{ method: "space.list" }, { method: "host.status" }]),
+      (error) => error instanceof AgentycError && error.code === "invalid_json",
+    );
+  }
+});
+
+test("batch failures preserve successful results and logical failure identity", async () => {
+  const transport = responseTransport((request) => ({
+    responses: [
+      responseFor(request.requests[0].request_id, { ok: "first" }),
+      {
+        request_id: request.requests[1].request_id,
+        ok: false,
+        error: { code: "stale_lease", message: "lease changed" },
+      },
+    ],
+  }));
+  const client = await connect({ transport });
+  await assert.rejects(
+    () =>
+      client.batch([
+        { method: "space.list" },
+        {
+          method: "action.execute",
+          params: { action_id: "action_demo" },
+        },
+      ]),
+    (error) => {
+      assert.ok(error instanceof BatchError);
+      assert.deepEqual(error.results[0], { ok: "first" });
+      assert.equal(error.results[1], undefined);
+      assert.equal(
+        error.details.failures[0].request_id,
+        transport.calls[0].requests[1].request_id,
+      );
+      assert.equal(error.details.failures[0].action_id, "action_demo");
+      assert.equal(error.details.failures[0].error.code, "stale_lease");
+      return true;
+    },
+  );
+});
+
+test("central side-effect classification never reconnects lifecycle or page mutations", async () => {
+  const methods = [
+    "space.create",
+    "space.claim",
+    "space.renew",
+    "space.takeover",
+    "space.return",
+    "space.finish",
+    "space.release",
+    "page.create",
+    "page.close",
+    "action.execute",
+    "action.cancel",
+    "action.reconcile",
+    "page.navigate",
+    "page.adopt",
+  ];
+  for (const method of methods) {
+    const transport = new FakeTransport();
+    const client = await connect({ transport });
+    transport.failNext = true;
+    await assert.rejects(
+      () => client.request(method, {}),
+      (error) => error instanceof UnknownOutcomeError,
+      method,
+    );
+    assert.equal(transport.reconnects, 0, method);
+  }
+});
+
+test("unknown outcomes retain request and action identity", async () => {
+  const transport = new FakeTransport();
+  const client = await connect({ transport });
+  transport.failNext = true;
+  await assert.rejects(
+    () =>
+      client.request("action.execute", {
+        action_id: "action_lost",
+      }),
+    (error) => {
+      assert.ok(error instanceof UnknownOutcomeError);
+      assert.equal(error.details.action_id, "action_lost");
+      assert.equal(error.details.requests[0].action_id, "action_lost");
+      assert.match(error.details.request_id, /^req_/);
+      assert.equal(error.guidance, "reconcile");
+      return true;
+    },
+  );
+});
+
+test("AbortSignal distinguishes pre-dispatch cancellation from dispatched mutation loss", async () => {
+  const preDispatchTransport = new FakeTransport();
+  const preDispatchClient = await connect({ transport: preDispatchTransport });
+  const preDispatch = new AbortController();
+  preDispatch.abort();
+  await assert.rejects(
+    () =>
+      preDispatchClient.request(
+        "space.list",
+        {},
+        { signal: preDispatch.signal },
+      ),
+    (error) => error instanceof CancelledError,
+  );
+  assert.equal(preDispatchTransport.calls.length, 0);
+
+  const pendingTransport = new FakeTransport();
+  pendingTransport.handler = () => new Promise(() => {});
+  const pendingClient = await connect({ transport: pendingTransport });
+  const mutation = new AbortController();
+  const request = pendingClient.request(
+    "space.claim",
+    { space_id: "space_demo" },
+    { signal: mutation.signal },
+  );
+  mutation.abort(new Error("caller stopped waiting"));
+  await assert.rejects(
+    () => request,
+    (error) => error instanceof UnknownOutcomeError,
+  );
+});
+
+test("profile-only local connection fails clearly without a configured socket", async () => {
+  await assert.rejects(
+    () =>
+      connect({
+        profile: "default",
+        socketPath: join(tmpdir(), "missing-agentyc-host"),
+      }),
+    (error) =>
+      error instanceof AgentycError && error.code === "native_host_unavailable",
+  );
+});
+
+function frame(envelope) {
+  const payload = Buffer.from(JSON.stringify(envelope), "utf8");
+  const output = Buffer.allocUnsafe(4 + payload.length);
+  output.writeUInt32BE(payload.length, 0);
+  payload.copy(output, 4);
+  return output;
+}
+
+function startProtocolFixture(socketPath) {
+  const server = net.createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4) {
+        const length = buffer.readUInt32BE(0);
+        if (buffer.length < length + 4) return;
+        const payload = buffer.subarray(4, length + 4);
+        buffer = buffer.subarray(length + 4);
+        const envelope = JSON.parse(payload.toString("utf8"));
+        if (envelope.kind === "hello") {
+          server.hellos.push(envelope);
+          socket.write(
+            frame({
+              kind: "hello_ok",
+              protocol: 1,
+              broker_epoch: 4,
+              connection_epoch: 1,
+              capabilities: [],
+              resume: { kind: "accepted" },
+              host_metadata: {
+                host_name: "fixture",
+                host_version: "1",
+                connection_nonce: envelope.client_metadata.connection_nonce,
+                ...(envelope.client_metadata.profile_binding_id
+                  ? {
+                      profile_binding_id:
+                        envelope.client_metadata.profile_binding_id,
+                    }
+                  : {}),
+              },
+            }),
+          );
+        } else if (envelope.kind === "request") {
+          socket.write(
+            frame({
+              kind: "response",
+              protocol: 1,
+              request_id: envelope.request_id,
+              ok: true,
+              result: { method: envelope.method },
+              warnings: [],
+            }),
+          );
+        } else if (envelope.kind === "resume") {
+          socket.write(
+            frame({
+              kind: "event",
+              protocol: 1,
+              broker_epoch: 4,
+              sequence: 7,
+              event_kind: "space_created",
+              scope: { kind: "all" },
+              payload: {},
+            }),
+          );
+          socket.write(
+            frame({
+              kind: "response",
+              protocol: 1,
+              request_id: "req_resume-4-7",
+              ok: true,
+              result: {
+                resume_result: JSON.stringify({ kind: "accepted" }),
+                cursor: JSON.stringify({ broker_epoch: 4, sequence: 7 }),
+                events: JSON.stringify([
+                  {
+                    broker_epoch: 4,
+                    sequence: 7,
+                    event_kind: "space_created",
+                  },
+                ]),
+              },
+              warnings: [],
+            }),
+          );
+        }
+      }
+    });
+  });
+  server.hellos = [];
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => resolve(server));
+  });
+}
+
+test("local protocol transport uses Rust-compatible framing, handshake, events, and resume", async () => {
+  const directory = await mkdtemp("/tmp/ayb-");
+  const socketPath = join(directory, "host.sock");
+  const server = await startProtocolFixture(socketPath);
+  let client;
+  try {
+    client = await connect({ socketPath, profile: "default" });
+    assert.deepEqual(await client.hostStatus(), { method: "host.status" });
+
+    const received = [];
+    const unsubscribe = await client.subscribeEvents(
+      (event) => received.push(event),
+      { afterEpoch: 4, afterSequence: 6 },
+    );
+    assert.equal(received[0].sequence, 7);
+    assert.deepEqual(
+      await client.resumeEvents({ afterEpoch: 4, afterSequence: 6 }),
+      {
+        resume_result: { kind: "accepted" },
+        cursor: { broker_epoch: 4, sequence: 7 },
+        events: [
+          {
+            broker_epoch: 4,
+            sequence: 7,
+            event_kind: "space_created",
+          },
+        ],
+      },
+    );
+    await client.reconnect();
+    assert.deepEqual(server.hellos.at(-1).resume_from, {
+      broker_epoch: 4,
+      sequence: 7,
+    });
+    assert.equal(unsubscribe(), true);
+  } finally {
+    await client?.close();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
 });
