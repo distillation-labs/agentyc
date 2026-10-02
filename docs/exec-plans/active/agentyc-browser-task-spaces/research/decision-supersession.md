@@ -70,16 +70,20 @@ MCP is a compatibility adapter over `agentyc-host` and `agentyc-core`, not the a
 
 The canonical agent surface is the local protocol plus a persistent JSON CLI and a thin typed Node SDK that uses the same envelopes. Both expose task-space-scoped operations and can batch a multi-step script over one connection. The SDK is a client only; it does not embed a second browser runtime or execute arbitrary code inside the host.
 
-Example shape:
+Example shape (planned; aligned to the checked-in ego-lite reference, not an implemented agentyc API):
 
 ```js
 const client = await connect();
-const space = await client.taskSpace("research competitors");
-const page = await space.page("results", { create: true });
-await page.goto(url);
-const snapshot = await page.snapshot({ mode: "min" });
-await page.click(snapshot.refs.submit);
-await page.waitFor({ kind: "url", pattern: "/done" });
+const task = await client.taskSpace("research competitors");
+const results = task.page("p1");
+const scratch = await task.newPage();
+
+await results.goto("https://example.test");
+const snapshot = await results.snapshot({ mode: "min" });
+await results.click(snapshot.refs.submit);
+await results.waitForURL(/\/done$/);
+
+await task.finish({ keep: ["p1"] });
 ```
 
 ### D-17 — Permissions, privacy, and distribution
