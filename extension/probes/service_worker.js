@@ -14,6 +14,29 @@ const REQUEST_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const PROBE_BINDING_FILE = "probe_binding.json";
+const BINDING_STATUSES = new Set([
+  "observed",
+  "fetch_unavailable",
+  "resource_unavailable",
+  "invalid",
+  "read_failed",
+]);
+const NATIVE_ERROR_CODES = new Set([
+  "connect_failed",
+  "hello_send_failed",
+  "probe_send_failed",
+  "handshake_rejected",
+  "handshake_timeout",
+  "host_not_found",
+  "host_manifest_invalid",
+  "host_not_executable",
+  "host_forbidden",
+  "host_exited",
+  "host_communication",
+  "native_messaging_failed",
+  "probe_envelope_exceeds_local_bound",
+  "probe_failed",
+]);
 
 let activeProbe = null;
 let pendingProbe = null;
@@ -35,6 +58,40 @@ function requestIdOrNew(value) {
 function boundedString(value, fallback = null) {
   if (typeof value !== "string") return fallback;
   return value.length <= 256 ? value : value.slice(0, 256);
+}
+
+function boundedBindingStatus(value) {
+  return BINDING_STATUSES.has(value) ? value : "read_failed";
+}
+
+function boundedNativeError(value) {
+  if (value === null || value === undefined) return null;
+  return NATIVE_ERROR_CODES.has(value) ? value : "native_messaging_failed";
+}
+
+function nativeErrorCode(value) {
+  const text =
+    typeof value === "string"
+      ? value.toLowerCase()
+      : value?.message
+        ? String(value.message).toLowerCase()
+        : "";
+  if (text.includes("not found")) return "host_not_found";
+  if (text.includes("manifest") && text.includes("invalid"))
+    return "host_manifest_invalid";
+  if (
+    text.includes("executable") ||
+    text.includes("does not exist") ||
+    text.includes("not executable")
+  )
+    return "host_not_executable";
+  if (text.includes("forbidden") || text.includes("permission"))
+    return "host_forbidden";
+  if (text.includes("exited") || text.includes("exit")) return "host_exited";
+  if (text.includes("communicat") || text.includes("disconnect"))
+    return "host_communication";
+  if (text.includes("connect")) return "connect_failed";
+  return "native_messaging_failed";
 }
 
 function extensionManifest() {
@@ -61,13 +118,14 @@ function boundedPermissions() {
 
 async function readProbeBinding() {
   try {
-    if (typeof fetch !== "function") return null;
+    if (typeof fetch !== "function")
+      return { binding: null, status: "fetch_unavailable" };
     const response = await fetch(chrome.runtime.getURL(PROBE_BINDING_FILE), {
       cache: "no-store",
     });
-    if (!response.ok) return null;
+    if (!response.ok) return { binding: null, status: "resource_unavailable" };
     const bytes = await response.arrayBuffer();
-    if (bytes.byteLength > 1024) return null;
+    if (bytes.byteLength > 1024) return { binding: null, status: "invalid" };
     const value = JSON.parse(new TextDecoder().decode(bytes));
     if (
       !value ||
@@ -75,14 +133,17 @@ async function readProbeBinding() {
       typeof value.source_tree_sha256 !== "string" ||
       !SHA256_PATTERN.test(value.source_tree_sha256)
     ) {
-      return null;
+      return { binding: null, status: "invalid" };
     }
     return {
-      nonce: value.nonce,
-      source_tree_sha256: value.source_tree_sha256.toLowerCase(),
+      binding: {
+        nonce: value.nonce,
+        source_tree_sha256: value.source_tree_sha256.toLowerCase(),
+      },
+      status: "observed",
     };
   } catch (_) {
-    return null;
+    return { binding: null, status: "read_failed" };
   }
 }
 
@@ -93,6 +154,7 @@ function minimalResult(requestId, limitation) {
     request_id: isRequestId(requestId) ? requestId : null,
     binding_nonce: null,
     binding_source_tree_sha256: null,
+    binding_status: "read_failed",
     extension_build_binding_passed: false,
     fixture_identity_passed: false,
     debugger_command_passed: false,
@@ -140,6 +202,7 @@ function safeResult(result) {
       SHA256_PATTERN.test(result.binding_source_tree_sha256)
         ? result.binding_source_tree_sha256.toLowerCase()
         : null,
+    binding_status: boundedBindingStatus(result.binding_status),
     extension_build_binding_passed:
       result.extension_build_binding_passed === true,
     fixture_identity_passed: result.fixture_identity_passed === true,
@@ -156,7 +219,7 @@ function safeResult(result) {
     debugger_event: boundedString(result.debugger_event, "not_observed"),
     tab_group: boundedString(result.tab_group, "not_run"),
     native_messaging: boundedString(result.native_messaging, "not_run"),
-    native_error: boundedString(result.native_error),
+    native_error: boundedNativeError(result.native_error),
     handshake_transcript: transcript,
     metadata: {
       extension_origin: "redacted",
@@ -434,8 +497,8 @@ function sendNativeEnvelope() {
     let port;
     try {
       port = chrome.runtime.connectNative(NATIVE_HOST);
-    } catch (_) {
-      resolve({ status: "unavailable", error: "connect_failed" });
+    } catch (error) {
+      resolve({ status: "unavailable", error: nativeErrorCode(error) });
       return;
     }
     const nonce = crypto.randomUUID();
@@ -515,8 +578,11 @@ function sendNativeEnvelope() {
     };
     onDisconnect = () => {
       if (settled) return;
-      void chrome.runtime.lastError;
-      finish({ status: "unavailable", error: "host_disconnected" });
+      const lastError = chrome.runtime.lastError;
+      finish({
+        status: "unavailable",
+        error: nativeErrorCode(lastError?.message ?? "disconnected"),
+      });
     };
     try {
       port.onMessage.addListener(onMessage);
@@ -556,7 +622,9 @@ async function runProbe(requestId, expectedUrl = null) {
     request_id: requestId,
   };
   try {
-    const binding = await readProbeBinding();
+    const bindingResult = await readProbeBinding();
+    const binding = bindingResult.binding;
+    result.binding_status = bindingResult.status;
     result.binding_nonce = binding?.nonce ?? null;
     result.binding_source_tree_sha256 = binding?.source_tree_sha256 ?? null;
     const tab = await findFixture(expectedUrl);
