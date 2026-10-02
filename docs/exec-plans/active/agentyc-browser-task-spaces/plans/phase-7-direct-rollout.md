@@ -142,13 +142,13 @@ The release artifact records exact Chrome build, OS/architecture, display backen
 - [ ] P7-T4 — Run real headed existing-Chrome acceptance.
   - **Files/surfaces:** extension e2e, `tests/browser_task_spaces_existing_chrome.rs`, local fixture server, CLI/SDK workflows, `scripts/run_existing_chrome.py`.
   - **Done when:** the ten required Phase 0 scenarios pass across supported Chrome/platforms; user-tab/focus safety and takeover evidence exist; no browser launch/download/CDP URL is used.
-  - **Validation:** `python3 scripts/run_existing_chrome.py --headed --spaces 2 --agents 2 --matrix supported --artifact-dir artifacts/p7-existing-chrome`; execute the full manifest scenario set with deterministic seeds, repeat safety scenarios until the signed confidence target is met, and archive screenshots/traces/logs/environment manifests/replay commands.
+  - **Validation:** `python3 scripts/run_existing_chrome.py --headed --require-live --spaces 2 --agents 2 --artifact-dir artifacts/p7-existing-chrome`; execute the full manifest scenario set with deterministic seeds, repeat safety scenarios until the signed confidence target is met, and archive screenshots/traces/logs/environment manifests/replay commands.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P7-T5 — Run context/performance/resource benchmarks.
   - **Files/surfaces:** existing direct benchmark and snapshot/action benchmark outputs from Phase 5, host/extension metrics, existing `scripts/run_direct_benchmark.py`, and the direct-product section of existing `docs/release-gate.md`.
   - **Done when:** token/scan/delta with equivalent coverage, first-action, batch round trips, action/wait, event lag, native artifact, CPU/RSS, queue, reconnect, stale-ref/unknown, and human-tab responsiveness gates meet approved thresholds or a signed decision records a change.
-  - **Validation:** `python3 scripts/run_direct_benchmark.py --warmups 10 --min-samples-p95 200 --min-samples-p99 1000 --spaces 1,2,4,8 --cache-states cold,clean,dirty,resync --artifact-dir artifacts/p7-performance`; archive JSON/Markdown/raw samples/baseline manifest.
+  - **Validation:** `python3 scripts/run_direct_benchmark.py --warmups 10 --samples 1000 --spaces 1,2,4,8 --cache-states cold,clean,dirty,resync --artifact-dir artifacts/p7-performance`; archive JSON/Markdown/raw samples/baseline manifest.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P7-T5a — Run bounded load and saturation tests.
