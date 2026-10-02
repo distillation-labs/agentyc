@@ -16,7 +16,16 @@ import { FramesRegistry } from "./frames.mjs";
 import { PAGE_OPERATIONS } from "./page-bridge.mjs";
 
 const METADATA_KEY = "agentyc_extension_metadata";
-const VERSION = "0.1.0";
+const VERSION = (() => {
+  try {
+    const version = globalThis.chrome?.runtime?.getManifest?.().version;
+    return typeof version === "string" && version.length > 0
+      ? version
+      : "0.1.0";
+  } catch {
+    return "0.1.0";
+  }
+})();
 const CONTENT_DOCUMENT_TTL_MS = 60 * 1000;
 const CONTENT_REQUEST_TTL_MS = 30 * 1000;
 const MAX_SIDE_PANEL_TICKET_LIFETIME_MS = 15 * 60 * 1000;
@@ -100,6 +109,8 @@ export class ServiceWorkerController {
       browserSessionEpoch,
     };
     this.started = false;
+    this.startPromise = null;
+    this.runtimeListenersInstalled = false;
     this.pending = new Map();
     this.inflight = new Map();
     this.fences = new Map();
@@ -164,20 +175,26 @@ export class ServiceWorkerController {
 
   async start() {
     if (this.started) return this;
-    await this.loadMetadata();
-    this.tabs.setIdentity(this.metadata);
-    this.debugger.setIdentity(this.metadata);
-    this.started = true;
-    this.groups.start();
-    await this.tabs.start();
-    this.debugger.start();
+    if (this.startPromise) return this.startPromise;
     this.installRuntimeListener();
-    try {
-      await this.native.connect();
-    } catch {
-      // Reconnect is handled by NativeMessagingClient; pages remain retained.
-    }
-    return this;
+    this.startPromise = (async () => {
+      await this.loadMetadata();
+      this.tabs.setIdentity(this.metadata);
+      this.debugger.setIdentity(this.metadata);
+      this.started = true;
+      this.groups.start();
+      await this.tabs.start();
+      this.debugger.start();
+      try {
+        await this.native.connect();
+      } catch {
+        // Reconnect is handled by NativeMessagingClient; pages remain retained.
+      }
+      return this;
+    })().finally(() => {
+      this.startPromise = null;
+    });
+    return this.startPromise;
   }
 
   async loadMetadata() {
@@ -193,14 +210,16 @@ export class ServiceWorkerController {
       : 0;
     const workerInstanceEpoch =
       this.metadata.workerInstanceEpoch ?? Math.max(1, previousWorker + 1);
+    const previousBrowserSession =
+      Number.isSafeInteger(stored.browser_session_epoch) &&
+      stored.browser_session_epoch >= 1
+        ? stored.browser_session_epoch
+        : 1;
     const browserSessionEpoch =
-      this.metadata.browserSessionEpoch ??
-      Math.max(
-        1,
-        (Number.isSafeInteger(stored.browser_session_epoch)
-          ? stored.browser_session_epoch
-          : 0) + 1,
-      );
+      Number.isSafeInteger(this.metadata.browserSessionEpoch) &&
+      this.metadata.browserSessionEpoch >= 1
+        ? this.metadata.browserSessionEpoch
+        : previousBrowserSession;
     this.metadata = {
       profileInstanceId,
       workerInstanceEpoch,
@@ -222,16 +241,42 @@ export class ServiceWorkerController {
   }
 
   installRuntimeListener() {
+    if (this.runtimeListenersInstalled) return;
+    this.runtimeListenersInstalled = true;
     const event = this.chrome?.runtime?.onMessage;
     if (event?.addListener) {
-      const listener = (message, sender) =>
-        this.handleRuntimeMessage(message, sender);
+      const listener = (message, sender, sendResponse) => {
+        const respond = (value) => {
+          try {
+            sendResponse?.(value);
+          } catch {
+            // Message channels are best effort.
+          }
+        };
+        void Promise.resolve()
+          .then(async () => {
+            if (!this.started && this.startPromise) {
+              await this.startPromise.catch(() => {});
+            }
+            return this.handleRuntimeMessage(message, sender);
+          })
+          .then((response) => respond(response))
+          .catch((error) => respond({ ok: false, error: publicError(error) }));
+        return true;
+      };
       event.addListener(listener);
       this.sidePanelListeners.push(() => event.removeListener?.(listener));
     }
     const startup = this.chrome?.runtime?.onStartup;
     if (startup?.addListener) {
-      const listener = () => void this.advanceBrowserSession("browser_startup");
+      const listener = () => {
+        void Promise.resolve()
+          .then(() =>
+            this.started ? undefined : (this.startPromise ?? this.start()),
+          )
+          .then(() => this.advanceBrowserSession("browser_startup"))
+          .catch(() => {});
+      };
       startup.addListener(listener);
       this.sidePanelListeners.push(() => startup.removeListener?.(listener));
     }
@@ -239,6 +284,8 @@ export class ServiceWorkerController {
 
   stop() {
     for (const remove of this.sidePanelListeners.splice(0)) remove();
+    this.runtimeListenersInstalled = false;
+    this.startPromise = null;
     this.debugger.stop();
     this.tabs.stop();
     this.groups.stop();
