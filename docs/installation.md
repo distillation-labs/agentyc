@@ -78,6 +78,73 @@ registration. They never mutate a Chrome profile, tabs, or user browser state.
 Rollback refuses to delete a changed or unowned manifest. A pre-existing exact
 manifest is reported as already installed and is not removed by the drill.
 
+## Lifecycle evidence record
+
+A drill report always includes a complete, non-green lifecycle shape. Offline or
+preflight values are `not_measured_offline`; they are not equivalent to a pass.
+A real release artifact must include a separately captured, redacted record with
+this shape:
+
+```json
+{
+  "evidence_mode": "live",
+  "lifecycle": {
+    "schema_version": 1,
+    "evidence_mode": "live",
+    "install": "installed",
+    "update": "passed",
+    "uninstall": "passed",
+    "downgrade": "passed",
+    "rollback": "rolled_back"
+  },
+  "rollback_safety": {
+    "schema_version": 1,
+    "evidence_mode": "live",
+    "new_mutations": "paused",
+    "pages_retained": true,
+    "user_tabs_preserved": true,
+    "chrome_process_terminated": false,
+    "global_close_used": false,
+    "incompatible_ledger_refused": true,
+    "kill_switch": {
+      "status": "armed_and_verified",
+      "armed": true,
+      "verified": true
+    }
+  }
+}
+```
+
+Validate this record with the explicit drill:
+
+```bash
+python3 scripts/run_install_drill.py \
+  --drill --required --extension-id <extension-id> --clean-profile \
+  --artifact-dir artifacts/p7-install-rollback \
+  --lifecycle-record artifacts/p7-install-rollback/lifecycle-record.json
+```
+
+The record must be inside the selected artifact directory and must already be
+stable after central redaction. The drill does not execute update, uninstall,
+or downgrade; it rejects missing, skipped, offline, or unsafe lifecycle
+claims. A lifecycle record cannot turn a failed local install/rollback into a
+pass.
+
+## Rollback safety and kill switch
+
+Rollback is an ownership-bounded mutation. It may remove only the exact
+registration payload and journal owned by the current drill. A changed,
+symlinked, unreadable, incompatible, or stale ledger is refused; the unknown
+file remains in place for operator reconciliation. Rollback never closes all
+pages, terminates Chrome, changes a user tab, or performs a profile migration.
+
+Before any direct-product mutation, the operator must arm and verify the
+mutation kill switch. `armed_and_verified` is required evidence, and
+`new_mutations: paused` is required while rollback is active. If the kill
+switch cannot be verified, if page/user-tab preservation is unknown, or if an
+incompatible ledger is detected, stop new mutations and keep the release
+blocked. Do not override the refusal by deleting the registration manually.
+
 For a non-user-mutating test, provide a registration path inside the artifact
 directory:
 
