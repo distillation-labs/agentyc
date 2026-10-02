@@ -47,6 +47,9 @@ from artifact_envelope import write_json_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 EXTENSION_DIR = ROOT / "extension" / "probes"
+NATIVE_HOST_NAME = "com.agentyc.p0_probe"
+NATIVE_HOST_PATH = ROOT / "tests" / "probes" / "native_probe"
+NATIVE_HOST_MANIFEST_TEMPLATE = EXTENSION_DIR / "native_host_manifest.macos.json"
 DEFAULT_ARTIFACT_DIR = ROOT / "artifacts" / "p0-extension"
 REQUIRED_PERMISSIONS = {"debugger", "nativeMessaging", "storage", "tabGroups", "tabs"}
 EXPECTED_EXTENSION_NAME = "agentyc Phase 0 Probe"
@@ -59,6 +62,8 @@ OPERATOR_PERMISSION_STATUSES = frozenset({"recorded", "none_observed"})
 DEFAULT_OPERATOR_TIMEOUT = 180.0
 MAX_EXTENSION_FILES = 64
 MAX_EXTENSION_BYTES = 8 * 1024 * 1024
+CHROME_LOG_TAIL_BYTES = 64 * 1024
+MAX_CHROME_LOG_CATEGORIES = 8
 WEBSOCKET_HEADER_LIMIT = 16 * 1024
 WEBSOCKET_FRAME_LIMIT = 64 * 1024
 RESULT_HANDOFF_LIMIT = 16 * 1024
@@ -66,7 +71,7 @@ WORKER_DISCOVERY_TIMEOUT = 8.0
 WORKER_DISCOVERY_INTERVAL = 0.1
 CONTROL_PAGE_IDENTITY_TIMEOUT = 5.0
 CONTROL_PAGE_RETRY_INTERVAL = 0.1
-WEBSOCKET_GUID = "258EA5-E914-47DA-95CA-C5AB0DC85B11"
+WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _LAST_CLEANUP_OK = True
 
 
@@ -189,6 +194,41 @@ def stage_extension(profile_dir: Path, binding_nonce: str) -> tuple[Path, str, s
         raise ValueError("staged extension hash did not match the repository probe")
     staged_hash = extension_tree_sha256(destination)
     return destination, source_hash, staged_hash
+
+
+def stage_native_host_manifest(profile_dir: Path, extension_id: str) -> Path:
+    """Stage the test host where Chrome resolves hosts for a disposable profile."""
+    if sys.platform not in {"darwin", "linux"}:
+        raise ValueError("disposable Native Messaging staging is unsupported on this platform")
+    if not EXTENSION_ID_PATTERN.fullmatch(extension_id):
+        raise ValueError("native host binding extension ID is invalid")
+    if not NATIVE_HOST_PATH.is_file() or not os.access(NATIVE_HOST_PATH, os.X_OK):
+        raise ValueError("native probe host is missing or not executable")
+    try:
+        template = json.loads(NATIVE_HOST_MANIFEST_TEMPLATE.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("native host manifest template is unreadable") from error
+    if not isinstance(template, dict):
+        raise ValueError("native host manifest template is not an object")
+    if template.get("name") != NATIVE_HOST_NAME or template.get("type") != "stdio":
+        raise ValueError("native host manifest template has the wrong identity")
+    template["path"] = str(NATIVE_HOST_PATH.resolve())
+    template["allowed_origins"] = [f"chrome-extension://{extension_id}/"]
+    directory = profile_dir / "NativeMessagingHosts"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    target = directory / f"{NATIVE_HOST_NAME}.json"
+    payload = (json.dumps(template, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temporary = directory / f".{target.name}.tmp"
+    try:
+        temporary.write_bytes(payload)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return target
 
 
 def safe_artifact_dir(value: str) -> Path:
@@ -752,6 +792,140 @@ def _bounded_worker_diagnostic(field: str, value: Any) -> str | None:
     return bounded
 
 
+_NATIVE_MESSAGING_STATUSES = frozenset({"accepted", "unavailable", "rejected", "timeout", "not_run"})
+_NATIVE_FAILURE_CODES = frozenset(
+    {
+        "connect_failed",
+        "hello_send_failed",
+        "probe_send_failed",
+        "handshake_rejected",
+        "handshake_timeout",
+        "host_not_found",
+        "host_manifest_invalid",
+        "host_not_executable",
+        "host_forbidden",
+        "host_exited",
+        "host_communication",
+        "native_messaging_failed",
+        "probe_envelope_exceeds_local_bound",
+        "probe_failed",
+    }
+)
+_BINDING_STATUSES = frozenset(
+    {"observed", "fetch_unavailable", "resource_unavailable", "invalid", "read_failed"}
+)
+
+
+def _bounded_enum(value: Any, allowed: frozenset[str], fallback: str) -> str:
+    return value if isinstance(value, str) and value in allowed else fallback
+
+
+def _extension_probe_evidence(
+    value: Any,
+    binding_nonce: str | None,
+    source_extension_hash: str | None,
+) -> dict[str, Any]:
+    """Return only bounded, non-secret evidence from the extension result."""
+    if not isinstance(value, dict):
+        return {
+            "binding_status": "read_failed",
+            "binding_nonce_observed": False,
+            "binding_source_tree_hash_observed": False,
+            "binding_nonce_matches": False,
+            "binding_source_tree_hash_matches": False,
+            "extension_build_binding_passed": False,
+            "native_messaging": "not_run",
+            "native_failure_code": "probe_failed",
+        }
+    observed_nonce = value.get("binding_nonce")
+    observed_hash = value.get("binding_source_tree_sha256")
+    nonce_observed = isinstance(observed_nonce, str) and bool(
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            observed_nonce,
+            re.IGNORECASE,
+        )
+    )
+    hash_observed = isinstance(observed_hash, str) and bool(
+        re.fullmatch(r"[0-9a-f]{64}", observed_hash, re.IGNORECASE)
+    )
+    nonce_matches = (
+        isinstance(observed_nonce, str)
+        and nonce_observed
+        and isinstance(binding_nonce, str)
+        and observed_nonce.lower() == binding_nonce.lower()
+    )
+    hash_matches = (
+        isinstance(observed_hash, str)
+        and hash_observed
+        and isinstance(source_extension_hash, str)
+        and observed_hash.lower() == source_extension_hash.lower()
+    )
+    native_messaging = _bounded_enum(
+        value.get("native_messaging"), _NATIVE_MESSAGING_STATUSES, "not_run"
+    )
+    native_error = value.get("native_error")
+    native_failure_code = (
+        None
+        if native_messaging == "accepted" and native_error in {None, ""}
+        else _bounded_enum(native_error, _NATIVE_FAILURE_CODES, "native_messaging_failed")
+    )
+    return {
+        "binding_status": _bounded_enum(value.get("binding_status"), _BINDING_STATUSES, "read_failed"),
+        "binding_nonce_observed": nonce_observed,
+        "binding_source_tree_hash_observed": hash_observed,
+        "binding_nonce_matches": nonce_matches,
+        "binding_source_tree_hash_matches": hash_matches,
+        "extension_build_binding_passed": nonce_matches and hash_matches,
+        "native_messaging": native_messaging,
+        "native_failure_code": native_failure_code,
+    }
+
+
+def _chrome_native_messaging_evidence(
+    log_path: Path | None,
+    log_handle: Any | None = None,
+) -> dict[str, Any]:
+    """Classify Chrome diagnostics without persisting log lines or paths."""
+    if log_path is None:
+        return {"status": "not_collected", "channels": [], "categories": []}
+    try:
+        if log_handle is not None:
+            log_handle.flush()
+        text = log_path.read_bytes()[-CHROME_LOG_TAIL_BYTES:].decode("utf-8", errors="replace")
+    except OSError:
+        return {"status": "unavailable", "channels": [], "categories": []}
+    channels: set[str] = set()
+    categories: set[str] = set()
+    for line in text.splitlines():
+        lowered = line.lower()
+        native_marker = re.search(r"native.?messag", lowered) is not None
+        launch_marker = "launch_context" in lowered
+        if not native_marker and not launch_marker:
+            continue
+        if native_marker:
+            channels.add("native_messaging")
+        if launch_marker:
+            channels.add("launch_context")
+        if "not found" in lowered:
+            categories.add("host_not_found")
+        if "manifest" in lowered and "invalid" in lowered:
+            categories.add("host_manifest_invalid")
+        if any(token in lowered for token in ("executable", "permission", "forbidden", "denied")):
+            categories.add("host_launch_rejected")
+        if any(token in lowered for token in ("launch", "spawn", "start")):
+            categories.add("host_launch")
+        if any(token in lowered for token in ("connect", "pipe", "communicat")):
+            categories.add("host_communication")
+        if any(token in lowered for token in ("exit", "terminate")):
+            categories.add("host_exited")
+    return {
+        "status": "observed" if channels else "not_observed",
+        "channels": sorted(channels),
+        "categories": sorted(categories)[:MAX_CHROME_LOG_CATEGORIES],
+    }
+
+
 def _worker_identity_evidence(
     identity: Any,
     extension_id: str,
@@ -1035,6 +1209,7 @@ def extension_probe_result(
                     "status": "live_unavailable",
                     "candidate_extension_page_count": candidate_count,
                     "verified_extension_page_count": len(verified),
+                    **_extension_probe_evidence(None, binding_nonce, source_extension_hash),
                     "control_page_identity_passed": True,
                     "limitation": "extension result handoff exceeded the probe bound",
                 }
@@ -1045,15 +1220,10 @@ def extension_probe_result(
             permissions_match = isinstance(permissions, list) and set(permissions) == set(manifest.get("permissions", []))
             transcript = value.get("handshake_transcript")
             transcript_valid = transcript == ["hello_accepted", "probe_accepted"]
-            binding_passed = (
-                isinstance(binding_nonce, str)
-                and isinstance(source_extension_hash, str)
-                and value.get("binding_nonce") == binding_nonce
-                and value.get("binding_source_tree_sha256") == source_extension_hash
-            )
+            evidence = _extension_probe_evidence(value, binding_nonce, source_extension_hash)
             required = {
                 "extension_loaded": value.get("extension_loaded") is True,
-                "extension_build_binding_passed": binding_passed,
+                "extension_build_binding_passed": evidence["extension_build_binding_passed"],
                 "fixture_identity_passed": value.get("fixture_identity_passed") is True,
                 "debugger_command_passed": value.get("debugger_command_passed") is True,
                 "debugger_event_received": value.get("debugger_event_received") is True,
@@ -1065,11 +1235,15 @@ def extension_probe_result(
                 "extension_identity_passed": value.get("extension_version") == manifest.get("version") and permissions_match,
                 "control_page_identity_passed": True,
             }
+            common_result = {
+                "candidate_extension_page_count": candidate_count,
+                "verified_extension_page_count": len(verified),
+                **evidence,
+            }
             if value.get("ok") is True and all(required.values()) and transcript_valid:
                 return {
                     "status": "live_passed",
-                    "candidate_extension_page_count": candidate_count,
-                    "verified_extension_page_count": len(verified),
+                    **common_result,
                     **required,
                     "chrome_mediated_native_messaging": True,
                     "screenshots": [{"captured": True, "format": "png"}],
@@ -1077,8 +1251,7 @@ def extension_probe_result(
                 }
             return {
                 "status": "live_unavailable",
-                "candidate_extension_page_count": candidate_count,
-                "verified_extension_page_count": len(verified),
+                **common_result,
                 **required,
                 "handshake_transcript": transcript if isinstance(transcript, list) else [],
                 "limitation": "extension probe returned incomplete evidence",
@@ -1087,6 +1260,7 @@ def extension_probe_result(
             "status": "live_unavailable",
             "candidate_extension_page_count": candidate_count,
             "verified_extension_page_count": len(verified),
+            **_extension_probe_evidence(None, binding_nonce, source_extension_hash),
             "control_page_identity_passed": True,
             "limitation": "extension probe result was not received before the deadline",
         }
@@ -1095,6 +1269,7 @@ def extension_probe_result(
             "status": "live_unavailable",
             "candidate_extension_page_count": candidate_count,
             "verified_extension_page_count": len(verified),
+            **_extension_probe_evidence(None, binding_nonce, source_extension_hash),
             "control_page_identity_passed": True,
             "limitation": "extension result handoff failed closed",
         }
@@ -1152,6 +1327,7 @@ def build_chrome_command(
         "--enable-automation",
         "--disable-background-networking",
         "--enable-logging=stderr",
+        "--log-level=1",
         "--new-window",
     ]
     if operator_assisted:
@@ -1197,14 +1373,31 @@ def navigate_page_target(websocket_url: str, url: str) -> None:
         client.close()
 
 
-def navigate_owned_page(port: int, process: subprocess.Popen[bytes], url: str) -> str:
-    """Navigate only a page in the probe-owned disposable browser."""
-    target = _owned_page_target(port, process)
-    if target is None:
-        raise OSError("probe-owned page target was not observed")
-    websocket_url = target["webSocketDebuggerUrl"]
-    navigate_page_target(websocket_url, url)
-    return websocket_url
+def navigate_owned_page(
+    port: int,
+    process: subprocess.Popen[bytes],
+    url: str,
+    timeout: float = WORKER_DISCOVERY_TIMEOUT,
+) -> str:
+    """Navigate only a page in the probe-owned disposable browser.
+
+    Chrome can expose the debugging endpoint before its initial page appears in
+    ``/json/list``. Poll the owned endpoint instead of treating that normal
+    startup race as a failed live probe.
+    """
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("owned-page navigation timeout must be positive and finite")
+    deadline = time.monotonic() + timeout
+    while True:
+        target = _owned_page_target(port, process)
+        if target is not None:
+            websocket_url = target["webSocketDebuggerUrl"]
+            navigate_page_target(websocket_url, url)
+            return websocket_url
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OSError("probe-owned page target was not observed before the retry deadline")
+        time.sleep(min(CONTROL_PAGE_RETRY_INTERVAL, remaining))
 
 
 def create_owned_target(port: int, process: subprocess.Popen[bytes], url: str) -> str:
@@ -1362,12 +1555,18 @@ def collect_operator_permission_status() -> str:
         end="",
         flush=True,
     )
-    if not sys.stdin.isatty():
-        return "not_recorded"
+    operator_input = sys.stdin
+    controlling_tty = None
     try:
-        value = input().strip()
-    except (EOFError, OSError):
+        if not sys.stdin.isatty():
+            controlling_tty = open("/dev/tty", "r", encoding="utf-8")
+            operator_input = controlling_tty
+        value = operator_input.readline().strip()
+    except (EOFError, OSError, ValueError):
         return "not_recorded"
+    finally:
+        if controlling_tty is not None:
+            controlling_tty.close()
     if value == "none_observed":
         return value
     if value in {"recorded", "shown_accepted", "shown_denied", "policy_blocked"}:
@@ -1483,6 +1682,7 @@ def inspect_live(
             "owned_page_cdp": True,
             "product_transport": "extension_chrome_apis",
         },
+        "chrome_diagnostics": {"status": "not_collected", "channels": [], "categories": []},
     }
     if not launch:
         return {
@@ -1517,9 +1717,19 @@ def inspect_live(
     source_extension_hash: str | None = None
     staged_extension_hash: str | None = None
     binding_nonce = new_request_id()
+    expected_extension_id = _manifest_extension_id(manifest or {})
+    if not isinstance(expected_extension_id, str):
+        raise OSError("probe manifest does not have a pinned extension identity")
     operator_page_websocket: str | None = None
     control_target_id: str | None = None
     launched = False
+
+    def refresh_chrome_diagnostics() -> None:
+        common_evidence["chrome_diagnostics"] = _chrome_native_messaging_evidence(
+            stderr_log_path,
+            stderr_log,
+        )
+
     try:
         if launch:
             executable = chrome_binary(binary)
@@ -1534,6 +1744,7 @@ def inspect_live(
             except (OSError, ValueError):
                 return {**common_evidence, "status": "live_unavailable", "limitation": "the supplied disposable Chrome profile is not empty or is unsafe"}
             loaded_extension_dir, source_extension_hash, staged_extension_hash = stage_extension(profile_dir, binding_nonce)
+            stage_native_host_manifest(profile_dir, expected_extension_id)
             fixture_path = loaded_extension_dir / "fixture.html"
             fixture = fixture_path.resolve().as_uri()
             stderr_log_path = profile_dir / "chrome.stderr.log"
@@ -1555,25 +1766,38 @@ def inspect_live(
             launched = True
         version = wait_for_chrome(port)
         if version is None:
+            refresh_chrome_diagnostics()
             return {**common_evidence, "status": "live_unavailable", "limitation": "Chrome did not expose the requested debug endpoint."}
         if process is None or not _endpoint_belongs_to_process(port, process):
+            refresh_chrome_diagnostics()
             return {**common_evidence, "status": "live_unavailable", "limitation": "the debug endpoint owner could not be bound to the probe-launched Chrome process"}
         if profile_dir is None or fixture_path is None or fixture is None:
             raise OSError("owned probe state is incomplete")
-        expected_extension_id = _manifest_extension_id(manifest or {})
-        if not isinstance(expected_extension_id, str):
-            raise OSError("probe manifest does not have a pinned extension identity")
-
         if operator_assisted:
             operator_page_websocket = navigate_owned_page(port, process, "chrome://extensions/")
             loaded_extension_dir = profile_dir / "extension" / "probes"
             print_operator_instructions(loaded_extension_dir, operator_timeout)
-            common_evidence["permission_prompts"]["status"] = collect_operator_permission_status()
             if operator_page_websocket is None:
                 raise OSError("probe-owned operator page was lost")
+            if wait_for_probe_worker(
+                port,
+                process,
+                timeout=operator_timeout,
+                expected_extension_id=expected_extension_id,
+            ) is None:
+                refresh_chrome_diagnostics()
+                return {
+                    **common_evidence,
+                    "status": "live_unavailable",
+                    "source_extension_tree_sha256": source_extension_hash,
+                    "staged_extension_tree_sha256": staged_extension_hash,
+                    "limitation": "the operator did not load the pinned probe extension before the retry deadline",
+                }
+            common_evidence["permission_prompts"]["status"] = collect_operator_permission_status()
             navigate_page_target(operator_page_websocket, fixture)
 
         if not wait_for_fixture_page(port, process, fixture, timeout=operator_timeout if operator_assisted else WORKER_DISCOVERY_TIMEOUT):
+            refresh_chrome_diagnostics()
             return {
                 **common_evidence,
                 "status": "live_unavailable",
@@ -1584,7 +1808,13 @@ def inspect_live(
 
         control_page_url = f"chrome-extension://{expected_extension_id}/probe.html"
         control_target_id = create_owned_target(port, process, control_page_url)
-        if not wait_for_extension_control_page(port, process, expected_extension_id):
+        if not wait_for_extension_control_page(
+            port,
+            process,
+            expected_extension_id,
+            timeout=operator_timeout if operator_assisted else WORKER_DISCOVERY_TIMEOUT,
+        ):
+            refresh_chrome_diagnostics()
             return {
                 **common_evidence,
                 "status": "live_unavailable",
@@ -1618,6 +1848,7 @@ def inspect_live(
             except (OSError, ValueError):
                 current_staged_hash = None
             if current_staged_hash != staged_extension_hash:
+                refresh_chrome_diagnostics()
                 return {
                     **common_evidence,
                     "status": "live_unavailable",
@@ -1636,6 +1867,7 @@ def inspect_live(
             source_extension_hash=source_extension_hash,
             target_provider=target_provider,
         )
+        refresh_chrome_diagnostics()
         control_page_cleanup_passed = close_owned_target(port, process, control_target_id) if control_target_id else False
         if control_target_id and not control_page_cleanup_passed:
             extension["status"] = "live_unavailable"
@@ -1668,12 +1900,19 @@ def inspect_live(
             "extension_loaded": extension.get("extension_loaded", False),
             "extension_identity_passed": extension.get("extension_identity_passed", False),
             "extension_build_binding_passed": extension.get("extension_build_binding_passed", False),
+            "binding_status": extension.get("binding_status", "read_failed"),
+            "binding_nonce_observed": extension.get("binding_nonce_observed", False),
+            "binding_source_tree_hash_observed": extension.get("binding_source_tree_hash_observed", False),
+            "binding_nonce_matches": extension.get("binding_nonce_matches", False),
+            "binding_source_tree_hash_matches": extension.get("binding_source_tree_hash_matches", False),
             "fixture_identity_passed": extension.get("fixture_identity_passed", False),
             "debugger_command_passed": extension.get("debugger_command_passed", False),
             "debugger_event_received": extension.get("debugger_event_received", False),
             "event_received": extension.get("debugger_event_received", False),
             "tab_group_created": extension.get("tab_group_created", False),
             "native_messaging_passed": extension.get("native_messaging_passed", False),
+            "native_messaging": extension.get("native_messaging", "not_run"),
+            "native_failure_code": extension.get("native_failure_code", "probe_failed"),
             "chrome_mediated_native_messaging": extension.get("chrome_mediated_native_messaging", False),
             "debugger_cleanup_passed": extension.get("debugger_cleanup_passed", False),
             "cleanup_passed": extension.get("cleanup_passed", False),
@@ -1688,6 +1927,7 @@ def inspect_live(
             "limitation": limitation,
         }
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, TimeoutError, struct.error, subprocess.SubprocessError):
+        refresh_chrome_diagnostics()
         return {
             **common_evidence,
             "status": "live_unavailable",
