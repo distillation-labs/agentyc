@@ -1,14 +1,21 @@
-use std::{collections::BTreeMap, fs, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    sync::{Arc, Mutex},
+};
 
 use agentyc_core::{
-    ActionId, ActionOperation, ActionRequest, ActionStatus, BrokerEpoch, ClientMetadata,
-    ConnectionNonce, ContentHash, CoreError, ErrorCode, EventKind, EventScope, HelloEnvelope,
-    IdempotencyKey, LeaseEpoch, PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId, RequestId,
-    ResumeResult, RetentionPolicy, SpaceId, Timestamp, UnknownReason,
+    ActionId, ActionOperation, ActionRequest, ActionStatus, BrokerEpoch, Capability, ClientId,
+    ClientMetadata, ConnectionNonce, ContentHash, CoreError, ErrorCode, EventKind, EventScope,
+    FrameId, FrameVersion, HelloEnvelope, IdempotencyKey, LeaseEpoch, MAX_ARTIFACT_CHUNK_BYTES,
+    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId,
+    RequestId, ResumeResult, RetentionPolicy, SnapshotEnvelope, SpaceId, Timestamp, UnknownReason,
 };
 use agentyc_host::{
-    AuthorityTicket, BridgeDispatchResult, BridgeReconcileResult, Broker, EventQuery, FakeBridge,
-    HostError, Ledger, LedgerError, LedgerLimits, NullBridge, SnapshotRead, canonical_action_hash,
+    AuthorityTicket, Bridge, BridgeDispatchResult, BridgeReconcileResult, Broker, EventQuery,
+    FakeBridge, HostError, Ledger, LedgerError, LedgerLimits, NullBridge, ProtocolClient,
+    ProtocolServer, RefRegistry, SnapshotMetadataRead, SnapshotRead, canonical_action_hash,
+    empty_snapshot,
 };
 use tempfile::tempdir;
 
@@ -21,9 +28,31 @@ fn make_broker(path: &std::path::Path, bridge: Arc<FakeBridge>) -> Broker {
 }
 
 fn authority(broker: &Broker, suffix: &str) -> AuthorityTicket {
-    broker
-        .test_authority(principal(suffix))
-        .expect("test authority")
+    authority_with_profile(broker, suffix, Some("host-test"))
+}
+
+fn authority_with_profile(
+    broker: &Broker,
+    suffix: &str,
+    profile_suffix: Option<&str>,
+) -> AuthorityTicket {
+    let hello = HelloEnvelope {
+        protocol: PROTOCOL_VERSION,
+        supported_protocols: vec![PROTOCOL_VERSION],
+        principal_id: principal(suffix),
+        resume_from: None,
+        client_metadata: Some(ClientMetadata {
+            client_id: Some(ClientId::from_suffix(format!("client-{suffix}")).expect("client")),
+            client_name: Some("host-integration-test".to_owned()),
+            client_version: Some("2".to_owned()),
+            connection_nonce: Some(
+                ConnectionNonce::from_suffix(format!("nonce-{suffix}")).expect("nonce"),
+            ),
+            profile_binding_id: profile_suffix
+                .map(|value| ProfileBindingId::from_suffix(value).expect("profile")),
+        }),
+    };
+    broker.hello(&hello).expect("hello").authority().clone()
 }
 
 fn action_request(
@@ -45,6 +74,20 @@ fn action_request(
         payload: BTreeMap::new(),
         postcondition: None,
     };
+    request.request_hash = canonical_action_hash(&request).expect("canonical request hash");
+    request
+}
+
+fn action_request_with_payload(
+    suffix: &str,
+    space_id: SpaceId,
+    page_id: Option<PageId>,
+    lease_epoch: LeaseEpoch,
+    operation: ActionOperation,
+    payload: BTreeMap<String, String>,
+) -> ActionRequest<BTreeMap<String, String>> {
+    let mut request = action_request(suffix, space_id, page_id, lease_epoch, operation);
+    request.payload = payload;
     request.request_hash = canonical_action_hash(&request).expect("canonical request hash");
     request
 }
@@ -73,31 +116,129 @@ fn managed_page(
     page.page_id
 }
 
+type DispatchHook = Box<dyn Fn(&ActionRequest<BTreeMap<String, String>>) + Send + Sync>;
+type FenceHook = Box<dyn Fn(&SpaceId, LeaseEpoch) -> Result<(), CoreError> + Send + Sync>;
+
+struct ReentrantBridge {
+    delegate: Arc<FakeBridge>,
+    dispatch_hook: Mutex<Option<DispatchHook>>,
+    fence_hook: Mutex<Option<FenceHook>>,
+}
+
+impl ReentrantBridge {
+    fn new(delegate: Arc<FakeBridge>) -> Self {
+        Self {
+            delegate,
+            dispatch_hook: Mutex::new(None),
+            fence_hook: Mutex::new(None),
+        }
+    }
+
+    fn on_dispatch<F>(&self, hook: F)
+    where
+        F: Fn(&ActionRequest<BTreeMap<String, String>>) + Send + Sync + 'static,
+    {
+        *self.dispatch_hook.lock().expect("dispatch hook") = Some(Box::new(hook));
+    }
+
+    fn on_fence<F>(&self, hook: F)
+    where
+        F: Fn(&SpaceId, LeaseEpoch) -> Result<(), CoreError> + Send + Sync + 'static,
+    {
+        *self.fence_hook.lock().expect("fence hook") = Some(Box::new(hook));
+    }
+}
+
+impl Bridge for ReentrantBridge {
+    fn capabilities(&self) -> Vec<Capability> {
+        self.delegate.capabilities()
+    }
+
+    fn dispatch(
+        &self,
+        request: &ActionRequest<BTreeMap<String, String>>,
+    ) -> Result<BridgeDispatchResult, CoreError> {
+        if let Some(hook) = self
+            .dispatch_hook
+            .lock()
+            .map_err(|_| CoreError::new(ErrorCode::ExtensionNotConnected, "hook poisoned"))?
+            .take()
+        {
+            hook(request);
+        }
+        self.delegate.dispatch(request)
+    }
+
+    fn reconcile(
+        &self,
+        receipt: &agentyc_core::ActionReceipt,
+    ) -> Result<BridgeReconcileResult, CoreError> {
+        self.delegate.reconcile(receipt)
+    }
+
+    fn snapshot(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+    ) -> Result<SnapshotEnvelope, CoreError> {
+        self.delegate.snapshot(space_id, page_id)
+    }
+
+    fn fence(
+        &self,
+        space_id: &SpaceId,
+        old_epoch: Option<LeaseEpoch>,
+        new_epoch: LeaseEpoch,
+        broker_epoch: BrokerEpoch,
+    ) -> Result<agentyc_host::FenceResult, CoreError> {
+        let hook = self
+            .fence_hook
+            .lock()
+            .map_err(|_| CoreError::new(ErrorCode::ExtensionNotConnected, "hook poisoned"))?
+            .take();
+        if let Some(hook) = hook {
+            hook(space_id, new_epoch)?;
+        }
+        self.delegate
+            .fence(space_id, old_epoch, new_epoch, broker_epoch)
+    }
+
+    fn close_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+    ) -> Result<(), CoreError> {
+        self.delegate.close_page(space_id, page_id, lease_epoch)
+    }
+}
+
 #[test]
 fn two_spaces_stay_isolated_and_stale_epochs_fail_before_dispatch() {
     let directory = tempdir().expect("tempdir");
     let bridge = Arc::new(FakeBridge::new());
     let broker = make_broker(directory.path(), bridge.clone());
     let one_authority = authority(&broker, "one");
-    let two_authority = authority(&broker, "two");
     let one = broker
         .create_space(&one_authority, "one")
         .expect("space one");
-    let two = broker
-        .create_space(&two_authority, "two")
-        .expect("space two");
     let lease_one = broker
         .acquire_lease(&one.space_id, &one_authority, Timestamp::new(0), 100)
         .expect("lease one");
-    let lease_two = broker
-        .acquire_lease(&two.space_id, &two_authority, Timestamp::new(0), 100)
-        .expect("lease two");
     let page_one = managed_page(
         &broker,
         &one.space_id,
         &one_authority,
         lease_one.lease.lease_epoch,
     );
+
+    let two_authority = authority(&broker, "two");
+    let two = broker
+        .create_space(&two_authority, "two")
+        .expect("space two");
+    let lease_two = broker
+        .acquire_lease(&two.space_id, &two_authority, Timestamp::new(0), 100)
+        .expect("lease two");
 
     let wrong_space = action_request(
         "wrong-space",
@@ -116,6 +257,7 @@ fn two_spaces_stay_isolated_and_stale_epochs_fail_before_dispatch() {
             ..
         })
     ));
+    let one_authority = authority(&broker, "one");
     let stale = action_request(
         "stale",
         one.space_id.clone(),
@@ -144,13 +286,12 @@ fn takeover_monotonically_fences_old_work_and_waits_for_ack() {
     bridge.set_fence_acknowledged(false);
     let broker = make_broker(directory.path(), bridge.clone());
     let one_authority = authority(&broker, "one");
-    let two_authority = authority(&broker, "two");
     let space = broker.create_space(&one_authority, "one").expect("space");
     let first = broker
         .acquire_lease(&space.space_id, &one_authority, Timestamp::new(0), 100)
         .expect("first lease");
     let pending = broker
-        .takeover(&space.space_id, &two_authority, Timestamp::new(1), 100)
+        .takeover(&space.space_id, &one_authority, Timestamp::new(1), 100)
         .expect("pending takeover");
     assert_eq!(pending.lease_epoch.get(), first.lease.lease_epoch.get() + 1);
     assert_eq!(
@@ -172,7 +313,7 @@ fn takeover_monotonically_fences_old_work_and_waits_for_ack() {
         broker
             .create_page_at(
                 &space.space_id,
-                &two_authority,
+                &one_authority,
                 pending.lease_epoch,
                 "blocked",
                 Timestamp::new(2),
@@ -182,13 +323,13 @@ fn takeover_monotonically_fences_old_work_and_waits_for_ack() {
 
     bridge.set_fence_acknowledged(true);
     let ready = broker
-        .acknowledge_fence(&space.space_id, &two_authority, pending.lease_epoch)
+        .acknowledge_fence(&space.space_id, &one_authority, pending.lease_epoch)
         .expect("acknowledge");
     assert_eq!(ready.lifecycle, agentyc_core::SpaceLifecycle::AgentOwned);
     broker
         .create_page_at(
             &space.space_id,
-            &two_authority,
+            &one_authority,
             pending.lease_epoch,
             "allowed",
             Timestamp::new(2),
@@ -203,9 +344,7 @@ fn persistence_recovery_increments_broker_epoch_and_retains_logical_records() {
     let old_broker_epoch;
     {
         let broker = Broker::open(directory.path(), FakeBridge::new()).expect("first broker");
-        let owner_authority = broker
-            .test_authority(principal("owner"))
-            .expect("authority");
+        let owner_authority = authority(&broker, "owner");
         old_broker_epoch = broker.broker_epoch().expect("epoch");
         let space = broker
             .create_space(&owner_authority, "retained")
@@ -222,9 +361,7 @@ fn persistence_recovery_increments_broker_epoch_and_retains_logical_records() {
     }
     let bridge = Arc::new(FakeBridge::new());
     let recovered = make_broker(directory.path(), bridge);
-    let owner_authority = recovered
-        .test_authority(principal("owner"))
-        .expect("authority");
+    let owner_authority = authority(&recovered, "owner");
     assert_eq!(
         recovered.broker_epoch().expect("epoch").get(),
         old_broker_epoch.get() + 1
@@ -524,7 +661,6 @@ fn user_return_requires_current_authority_and_ticketed_reconciliation() {
     let bridge = Arc::new(FakeBridge::new());
     let broker = make_broker(directory.path(), bridge);
     let owner_authority = authority(&broker, "owner");
-    let claimant_authority = authority(&broker, "claimant");
     let space = broker
         .create_space(&owner_authority, "handoff")
         .expect("space");
@@ -540,6 +676,7 @@ fn user_return_requires_current_authority_and_ticketed_reconciliation() {
         )
         .expect("return control");
     assert_eq!(returned.lifecycle, agentyc_core::SpaceLifecycle::UserOwned);
+    let claimant_authority = authority(&broker, "claimant");
     assert!(matches!(
         broker.acquire_lease(&space.space_id, &claimant_authority, Timestamp::new(2), 100),
         Err(HostError::Core(agentyc_core::CoreError {
@@ -625,18 +762,11 @@ fn failed_user_return_remains_fenced_until_explicit_acknowledgement() {
 fn profile_and_bridge_capabilities_are_checked_before_mutation_lease() {
     let directory = tempdir().expect("tempdir");
     let broker = Broker::open(directory.path(), NullBridge).expect("broker");
-    let owner_authority = broker
-        .test_authority(principal("owner"))
-        .expect("authority");
-    let wrong_profile = broker
-        .test_authority_with_profile(
-            principal("owner"),
-            Some(ProfileBindingId::from_suffix("other").expect("profile")),
-        )
-        .expect("authority");
+    let owner_authority = authority(&broker, "owner");
     let space = broker
         .create_space(&owner_authority, "profile")
         .expect("space");
+    let wrong_profile = authority_with_profile(&broker, "owner", Some("other"));
     assert!(matches!(
         broker.acquire_lease(&space.space_id, &wrong_profile, Timestamp::new(0), 100),
         Err(HostError::Core(agentyc_core::CoreError {
@@ -652,7 +782,6 @@ fn canonical_hash_and_principal_reads_are_enforced() {
     let bridge = Arc::new(FakeBridge::new());
     let broker = make_broker(directory.path(), bridge);
     let owner_authority = authority(&broker, "owner");
-    let other_authority = authority(&broker, "other");
     let space = broker
         .create_space(&owner_authority, "idempotency")
         .expect("space");
@@ -674,6 +803,7 @@ fn canonical_hash_and_principal_reads_are_enforced() {
             ..
         }))
     ));
+    let other_authority = authority(&broker, "other");
     assert!(
         broker
             .list_spaces(&other_authority)
@@ -1101,7 +1231,6 @@ fn finish_and_release_require_current_principal_and_lease_epoch() {
     let bridge = Arc::new(FakeBridge::new());
     let broker = make_broker(directory.path(), bridge.clone());
     let owner_authority = authority(&broker, "finish-current-owner");
-    let other_authority = authority(&broker, "finish-other-owner");
     let space = broker
         .create_space(&owner_authority, "current-finish")
         .expect("space");
@@ -1109,6 +1238,7 @@ fn finish_and_release_require_current_principal_and_lease_epoch() {
         .acquire_lease(&space.space_id, &owner_authority, Timestamp::new(0), 100)
         .expect("lease");
 
+    let other_authority = authority(&broker, "finish-other-owner");
     assert!(matches!(
         broker.finish_space(
             &space.space_id,
@@ -1121,6 +1251,7 @@ fn finish_and_release_require_current_principal_and_lease_epoch() {
             ..
         }))
     ));
+    let owner_authority = authority(&broker, "finish-current-owner");
     assert!(matches!(
         broker.finish_space(
             &space.space_id,
@@ -1143,6 +1274,7 @@ fn finish_and_release_require_current_principal_and_lease_epoch() {
             Timestamp::new(2),
         )
         .expect("finish");
+    let other_authority = authority(&broker, "finish-other-owner");
     assert!(matches!(
         broker.release_space(
             &space.space_id,
@@ -1155,6 +1287,7 @@ fn finish_and_release_require_current_principal_and_lease_epoch() {
             ..
         }))
     ));
+    let owner_authority = authority(&broker, "finish-current-owner");
     assert!(matches!(
         broker.release_space(
             &space.space_id,
@@ -1380,4 +1513,426 @@ fn finished_and_released_lifecycles_recover_durably() {
             .lease_epoch,
         lease_epoch
     );
+}
+
+#[test]
+fn sensitive_actions_require_explicit_approval_intent_and_capabilities() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    let broker = make_broker(directory.path(), bridge.clone());
+    let owner = authority(&broker, "sensitive");
+    let space = broker.create_space(&owner, "sensitive").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+
+    for (index, operation) in [
+        ActionOperation::Evaluate,
+        ActionOperation::CookieWrite,
+        ActionOperation::StorageWrite,
+        ActionOperation::Upload,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = action_request(
+            &format!("missing-{index}"),
+            space.space_id.clone(),
+            None,
+            lease.lease.lease_epoch,
+            operation,
+        );
+        assert!(matches!(
+            broker.enqueue_action(request, &owner, Timestamp::new(1)),
+            Err(HostError::Core(agentyc_core::CoreError {
+                code: ErrorCode::InvalidArgument,
+                ..
+            }))
+        ));
+    }
+
+    bridge.set_capabilities(vec![
+        Capability::Snapshot,
+        Capability::Action,
+        Capability::Wait,
+        Capability::Reconcile,
+    ]);
+    let valid_evaluate = action_request_with_payload(
+        "evaluate-capability",
+        space.space_id,
+        None,
+        lease.lease.lease_epoch,
+        ActionOperation::Evaluate,
+        BTreeMap::from([
+            ("approval".to_owned(), "approved".to_owned()),
+            (
+                "user_intent".to_owned(),
+                "inspect the current page".to_owned(),
+            ),
+        ]),
+    );
+    assert!(matches!(
+        broker.enqueue_action(valid_evaluate, &owner, Timestamp::new(1)),
+        Err(HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::CapabilityUnavailable,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn action_dispatch_is_fifo_and_allows_only_one_in_flight_mutation() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    let broker = make_broker(directory.path(), bridge.clone());
+    let owner = authority(&broker, "fifo");
+    let space = broker.create_space(&owner, "fifo").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let first = broker
+        .enqueue_action(
+            action_request(
+                "fifo-first",
+                space.space_id.clone(),
+                None,
+                lease.lease.lease_epoch,
+                ActionOperation::Wait,
+            ),
+            &owner,
+            Timestamp::new(1),
+        )
+        .expect("first");
+    let second = broker
+        .enqueue_action(
+            action_request(
+                "fifo-second",
+                space.space_id.clone(),
+                None,
+                lease.lease.lease_epoch,
+                ActionOperation::Wait,
+            ),
+            &owner,
+            Timestamp::new(1),
+        )
+        .expect("second");
+    assert!(matches!(
+        broker.dispatch_action(
+            &second.action_id,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(2),
+        ),
+        Err(HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::PermissionDenied,
+            ..
+        }))
+    ));
+    broker
+        .dispatch_action(
+            &first.action_id,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(2),
+        )
+        .expect("first dispatch");
+    broker
+        .dispatch_action(
+            &second.action_id,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(2),
+        )
+        .expect("second dispatch");
+
+    let directory = tempdir().expect("mutation directory");
+    let delegate = Arc::new(FakeBridge::new());
+    let reentrant = Arc::new(ReentrantBridge::new(delegate));
+    let broker = Broker::with_shared_bridge(
+        Ledger::open(directory.path()).expect("ledger"),
+        reentrant.clone(),
+    );
+    let owner = authority(&broker, "one-running");
+    let space = broker.create_space(&owner, "one-running").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let page = managed_page(&broker, &space.space_id, &owner, lease.lease.lease_epoch);
+    let first = broker
+        .enqueue_action(
+            action_request(
+                "mutation-first",
+                space.space_id.clone(),
+                Some(page.clone()),
+                lease.lease.lease_epoch,
+                ActionOperation::Click,
+            ),
+            &owner,
+            Timestamp::new(1),
+        )
+        .expect("mutation first");
+    let second = broker
+        .enqueue_action(
+            action_request(
+                "mutation-second",
+                space.space_id.clone(),
+                Some(page),
+                lease.lease.lease_epoch,
+                ActionOperation::Click,
+            ),
+            &owner,
+            Timestamp::new(1),
+        )
+        .expect("mutation second");
+    let nested_error = Arc::new(Mutex::new(None));
+    let nested_error_for_hook = nested_error.clone();
+    let broker_for_hook = broker.clone();
+    let owner_for_hook = owner.clone();
+    let second_id = second.action_id.clone();
+    let epoch = lease.lease.lease_epoch;
+    reentrant.on_dispatch(move |_| {
+        let result =
+            broker_for_hook.dispatch_action(&second_id, &owner_for_hook, epoch, Timestamp::new(2));
+        *nested_error_for_hook.lock().expect("nested result") = Some(result);
+    });
+    broker
+        .dispatch_action(&first.action_id, &owner, epoch, Timestamp::new(2))
+        .expect("first mutation dispatch");
+    let nested_error = nested_error
+        .lock()
+        .expect("nested result")
+        .take()
+        .expect("nested dispatch result");
+    assert!(matches!(
+        nested_error,
+        Err(HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::PermissionDenied,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn fence_completion_is_compare_and_set_against_the_exact_pending_request() {
+    let directory = tempdir().expect("tempdir");
+    let delegate = Arc::new(FakeBridge::new());
+    let bridge = Arc::new(ReentrantBridge::new(delegate));
+    let broker = Broker::with_shared_bridge(
+        Ledger::open(directory.path()).expect("ledger"),
+        bridge.clone(),
+    );
+    let owner = authority(&broker, "fence-race");
+    let space = broker.create_space(&owner, "fence-race").expect("space");
+    broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let broker_for_hook = broker.clone();
+    let owner_for_hook = owner.clone();
+    bridge.on_fence(move |space_id, epoch| {
+        broker_for_hook
+            .acknowledge_fence(space_id, &owner_for_hook, epoch)
+            .map(|_| ())
+            .map_err(|error| error.as_core_error())
+    });
+
+    assert!(matches!(
+        broker.takeover(&space.space_id, &owner, Timestamp::new(1), 100),
+        Err(HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::StaleLease,
+            ..
+        }))
+    ));
+    assert_eq!(
+        broker
+            .describe_space(&owner, &space.space_id)
+            .expect("space")
+            .lifecycle,
+        agentyc_core::SpaceLifecycle::AgentOwned
+    );
+}
+
+#[test]
+fn older_epoch_reconciliation_requires_current_owner_and_takeover_proof() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    bridge.push_dispatch_result(BridgeDispatchResult::Unknown {
+        reason: UnknownReason::LostResponse,
+    });
+    let broker = make_broker(directory.path(), bridge);
+    let owner = authority(&broker, "proof-owner");
+    let space = broker.create_space(&owner, "proof").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let unknown = broker
+        .execute_action(
+            action_request(
+                "proof-action",
+                space.space_id.clone(),
+                None,
+                lease.lease.lease_epoch,
+                ActionOperation::Wait,
+            ),
+            &owner,
+            Timestamp::new(1),
+        )
+        .expect("unknown action")
+        .receipt;
+    let takeover = broker
+        .takeover(&space.space_id, &owner, Timestamp::new(2), 100)
+        .expect("takeover");
+
+    let old_principal = authority(&broker, "proof-old-principal");
+    assert!(matches!(
+        broker.reconcile_action(
+            &unknown.action_id,
+            &old_principal,
+            takeover.lease_epoch,
+            Timestamp::new(3),
+        ),
+        Err(HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::SpaceForbidden,
+            ..
+        }))
+    ));
+
+    let current_owner = authority(&broker, "proof-owner");
+    let reconciled = broker
+        .reconcile_action(
+            &unknown.action_id,
+            &current_owner,
+            takeover.lease_epoch,
+            Timestamp::new(4),
+        )
+        .expect("current owner reconciliation")
+        .receipt;
+    assert_eq!(reconciled.status, ActionStatus::Succeeded);
+}
+
+#[test]
+fn clean_snapshot_metadata_result_contains_no_body_and_does_not_scan() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    let broker = make_broker(directory.path(), bridge.clone());
+    let owner = authority(&broker, "metadata");
+    let space = broker.create_space(&owner, "metadata").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let page = managed_page(&broker, &space.space_id, &owner, lease.lease.lease_epoch);
+    broker
+        .read_snapshot(
+            &space.space_id,
+            &page,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(2),
+        )
+        .expect("initial scan");
+    let metadata: SnapshotMetadataRead = broker
+        .read_snapshot_metadata(
+            &space.space_id,
+            &page,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(2),
+        )
+        .expect("metadata");
+    assert!(!metadata.scan_performed);
+    assert_eq!(metadata.cache_state, agentyc_core::CacheState::Cached);
+    assert_eq!(bridge.snapshot_scan_count(), 1);
+    assert_eq!(metadata.metadata.space_id, space.space_id);
+}
+
+#[test]
+fn refs_require_the_requested_frame_in_the_snapshot_vector() {
+    let space = SpaceId::from_suffix("ref-space").expect("space");
+    let page = PageId::from_suffix("ref-page").expect("page");
+    let frame = FrameId::from_suffix("missing-frame").expect("frame");
+    let mut registry = RefRegistry::default();
+    let mut snapshot = empty_snapshot(space, page);
+    assert!(
+        registry
+            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .is_err()
+    );
+    snapshot
+        .frame_versions
+        .insert(frame.clone(), FrameVersion::new(1));
+    registry
+        .issue(&snapshot, frame, Timestamp::new(1))
+        .expect("frame in vector");
+}
+
+#[test]
+fn oversized_protocol_and_artifact_configuration_is_rejected() {
+    let directory = tempdir().expect("tempdir");
+    let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+    assert!(
+        ProtocolServer::with_max_payload(broker, MAX_CONTROL_FRAME_PAYLOAD_BYTES + 1,).is_err()
+    );
+    assert!(ProtocolClient::with_max_payload(MAX_CONTROL_FRAME_PAYLOAD_BYTES + 1).is_err());
+    assert!(ProtocolClient::with_limits(4096, MAX_ARTIFACT_CHUNK_BYTES + 1).is_err());
+    assert!(ProtocolClient::with_limits(4096, MAX_ARTIFACT_CHUNK_BYTES).is_ok());
+}
+
+#[test]
+fn ledger_rejects_multiple_running_mutations_on_recovery() {
+    let directory = tempdir().expect("tempdir");
+    let action_ids;
+    let space_id;
+    {
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let owner = authority(&broker, "corrupt-running");
+        let space = broker
+            .create_space(&owner, "corrupt-running")
+            .expect("space");
+        let lease = broker
+            .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+            .expect("lease");
+        let first = broker
+            .enqueue_action(
+                action_request(
+                    "corrupt-first",
+                    space.space_id.clone(),
+                    None,
+                    lease.lease.lease_epoch,
+                    ActionOperation::Click,
+                ),
+                &owner,
+                Timestamp::new(1),
+            )
+            .expect("first");
+        let second = broker
+            .enqueue_action(
+                action_request(
+                    "corrupt-second",
+                    space.space_id.clone(),
+                    None,
+                    lease.lease.lease_epoch,
+                    ActionOperation::Click,
+                ),
+                &owner,
+                Timestamp::new(1),
+            )
+            .expect("second");
+        action_ids = [first.action_id, second.action_id];
+        space_id = space.space_id;
+    }
+    let path = directory.path().join("ledger.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).expect("state")).expect("json");
+    let actions = value["actions"].as_object_mut().expect("actions");
+    for action_id in &action_ids {
+        let receipt = actions.get_mut(&action_id.to_string()).expect("receipt");
+        receipt["status"] = serde_json::Value::from("running");
+        receipt["dispatch_state"] = serde_json::Value::from("dispatched");
+    }
+    value["action_queues"][space_id.to_string()] = serde_json::Value::Array(Vec::new());
+    fs::write(&path, serde_json::to_vec_pretty(&value).expect("json")).expect("corrupt state");
+    let recovered = Broker::open(&directory, NullBridge);
+    assert!(matches!(
+        recovered,
+        Err(HostError::Ledger(LedgerError::Corrupt(_)))
+    ));
 }
