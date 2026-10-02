@@ -807,17 +807,10 @@ pub async fn browser_upload_file(
     if id == 0 {
         return Err(anyhow!("Must provide ref, index, or label for upload_file"));
     }
-    // Use DOM.setFileInputFiles
-    cdp(
-        state,
-        "DOM.setFileInputFiles",
-        json!({
-            "files": [path],
-            "backendNodeId": id,
-        }),
-    )
-    .await?;
-    Ok(ok_text(format!("Uploaded file: {path}")))
+    let _ = (state, path, id);
+    Err(anyhow!(
+        "upload_file is disabled in the legacy CDP adapter; file chooser mutations require an explicit user-controlled flow"
+    ))
 }
 
 pub async fn browser_handle_dialog(
