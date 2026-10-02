@@ -38,6 +38,7 @@ EXTENSION_MANIFEST = EXTENSION_DIR / "manifest.json"
 MACOS_TEMPLATE = EXTENSION_DIR / "native_host_manifest.macos.json"
 INSTALL_RECORD = ".install-record.json"
 REPORT_NAME = "report.json"
+DISPLAY_FILENAME = "native-host-manifest.json"
 EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
 PROFILE_MARKERS = {
     "Default",
@@ -107,16 +108,21 @@ def safe_registration_path(value: str | None, artifact_dir: Path) -> tuple[Path,
     if value is None:
         if platform.system() != "Darwin":
             return Path("unsupported"), "unsupported"
-        return (
+        candidate = (
             Path.home()
             / "Library"
             / "Application Support"
             / "Google"
             / "Chrome"
             / "NativeMessagingHosts"
-            / f"{HOST_NAME}.json",
-            "user-level",
+            / f"{HOST_NAME}.json"
         )
+        current = candidate
+        while current != current.parent:
+            if current.is_symlink():
+                raise ValueError("user registration path cannot contain symlinks")
+            current = current.parent
+        return candidate, "user-level"
     requested = Path(value).expanduser()
     if not requested.is_absolute():
         repository_relative = (ROOT / requested).resolve()
@@ -140,7 +146,8 @@ def redacted_path(path: Path, artifact_dir: Path | None = None) -> str:
     """Return a stable non-sensitive label; never serialize an absolute path."""
     resolved = path.resolve()
     if artifact_dir is not None and _path_inside(resolved, artifact_dir, allow_parent=True):
-        return f"artifact/{resolved.relative_to(artifact_dir).as_posix()}"
+        digest = hashlib.sha256(resolved.relative_to(artifact_dir).as_posix().encode("utf-8")).hexdigest()[:12]
+        return f"artifact/item-{digest}"
     if resolved == ROOT or _path_inside(resolved, ROOT, allow_parent=True):
         return f"repo/{resolved.relative_to(ROOT).as_posix()}"
     if resolved == Path.home() or _path_inside(resolved, Path.home(), allow_parent=True):
@@ -299,7 +306,7 @@ def registration_state(path: Path, extension_id: str | None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "not_checked",
         "location": "user-level" if path.parts and "unsupported" not in path.parts else "unsupported",
-        "filename": path.name,
+        "filename": DISPLAY_FILENAME,
         "mutated": False,
     }
     if extension_id is None:
@@ -407,10 +414,13 @@ def install_registration(path: Path, extension_id: str, artifact_dir: Path) -> d
     existing = read_registration(path) if path.exists() else None
     if existing is not None:
         if existing == expected:
-            return {"status": "already_installed", "mutated": False, "filename": path.name}
-        return {"status": "rejected_existing_different_manifest", "mutated": False, "filename": path.name}
+            return {"status": "already_installed", "mutated": False, "filename": DISPLAY_FILENAME}
+        return {"status": "rejected_existing_different_manifest", "mutated": False, "filename": DISPLAY_FILENAME}
     if path.exists():
-        return {"status": "rejected_unreadable_existing_manifest", "mutated": False, "filename": path.name}
+        return {"status": "rejected_unreadable_existing_manifest", "mutated": False, "filename": DISPLAY_FILENAME}
+    record_path = artifact_dir / INSTALL_RECORD
+    if record_path.exists():
+        return {"status": "rejected_stale_drill_record", "mutated": False, "filename": DISPLAY_FILENAME}
     temporary_path: Path | None = None
     registration_written = False
     try:
@@ -423,49 +433,51 @@ def install_registration(path: Path, extension_id: str, artifact_dir: Path) -> d
         registration_written = True
         record = {
             "schema": 1,
-            "filename": path.name,
+            "filename": DISPLAY_FILENAME,
             "payload_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
         }
         write_json_atomic(artifact_dir / INSTALL_RECORD, record)
     except (OSError, ValueError):
+        cleanup_ok = True
         if temporary_path is not None:
             try:
                 temporary_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                cleanup_ok = False
         if registration_written:
             try:
                 path.unlink(missing_ok=True)
             except OSError:
-                pass
-        return {"status": "install_failed", "mutated": registration_written, "filename": path.name, "detail": "registration could not be written"}
-    return {"status": "installed", "mutated": True, "filename": path.name}
+                cleanup_ok = False
+        return {"status": "install_failed", "mutated": not cleanup_ok, "filename": DISPLAY_FILENAME, "detail": "registration cleanup was incomplete" if not cleanup_ok else "registration could not be written"}
+    return {"status": "installed", "mutated": True, "filename": DISPLAY_FILENAME}
 
 
 def rollback_registration(path: Path, extension_id: str, artifact_dir: Path) -> dict[str, Any]:
     record_path = artifact_dir / INSTALL_RECORD
     if not record_path.is_file():
-        return {"status": "no_drill_record", "mutated": False, "filename": path.name}
+        return {"status": "no_drill_record", "mutated": False, "filename": DISPLAY_FILENAME}
     try:
         record = load_json(record_path)
     except (ValueError, TypeError) as error:
-        return {"status": "invalid_drill_record", "mutated": False, "filename": path.name, "detail": str(error)}
+        return {"status": "invalid_drill_record", "mutated": False, "filename": DISPLAY_FILENAME, "detail": str(error)}
     expected_payload = canonical_json(expected_manifest(extension_id)).encode("utf-8")
     expected_hash = hashlib.sha256(expected_payload).hexdigest()
-    if record.get("filename") != path.name or record.get("payload_sha256") != expected_hash:
-        return {"status": "record_target_mismatch", "mutated": False, "filename": path.name}
+    if record.get("filename") != DISPLAY_FILENAME or record.get("payload_sha256") != expected_hash:
+        return {"status": "record_target_mismatch", "mutated": False, "filename": DISPLAY_FILENAME}
     try:
         actual_payload = path.read_bytes()
     except OSError:
-        return {"status": "registration_missing", "mutated": False, "filename": path.name}
+        return {"status": "registration_missing", "mutated": False, "filename": DISPLAY_FILENAME}
     if hashlib.sha256(actual_payload).hexdigest() != expected_hash:
-        return {"status": "refusing_changed_registration", "mutated": False, "filename": path.name}
+        return {"status": "refusing_changed_registration", "mutated": False, "filename": DISPLAY_FILENAME}
     registration_removed = False
     try:
         path.unlink()
         registration_removed = True
         record_path.unlink()
     except OSError:
+        restored = not registration_removed
         if registration_removed:
             temporary_path: Path | None = None
             try:
@@ -473,11 +485,15 @@ def rollback_registration(path: Path, extension_id: str, artifact_dir: Path) -> 
                     temporary.write(actual_payload)
                     temporary_path = Path(temporary.name)
                 os.replace(temporary_path, path)
+                restored = True
             except OSError:
                 if temporary_path is not None:
-                    temporary_path.unlink(missing_ok=True)
-        return {"status": "rollback_failed", "mutated": False, "filename": path.name, "detail": "rollback was restored after cleanup failure"}
-    return {"status": "rolled_back", "mutated": True, "filename": path.name}
+                    try:
+                        temporary_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        return {"status": "rollback_failed", "mutated": not restored, "filename": DISPLAY_FILENAME, "detail": "rollback was restored after cleanup failure" if restored else "rollback cleanup left an uncertain state"}
+    return {"status": "rolled_back", "mutated": True, "filename": DISPLAY_FILENAME}
 
 
 def write_report(artifact_dir: Path, report: dict[str, Any]) -> None:
@@ -550,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
             "action": action,
             "required": bool(args.required or args.clean_profile is not None or explicit_action),
             "status": report["status"],
-            "registration_filename": registration_path.name,
+            "registration_filename": DISPLAY_FILENAME,
         }
     )
 
@@ -574,9 +590,9 @@ def main(argv: list[str] | None = None) -> int:
             if installation["status"] in {"installed", "already_installed"} and installation["status"] == "installed":
                 rollback = rollback_registration(registration_path, extension_id, artifact_dir)
             elif installation["status"] == "already_installed":
-                rollback = {"status": "not_owned", "mutated": False, "filename": registration_path.name}
+                rollback = {"status": "not_owned", "mutated": False, "filename": DISPLAY_FILENAME}
             else:
-                rollback = {"status": "not_run", "mutated": False, "filename": registration_path.name}
+                rollback = {"status": "not_run", "mutated": False, "filename": DISPLAY_FILENAME}
             report["rollback"] = rollback
             report["status"] = "drill_passed" if installation["status"] == "installed" and rollback["status"] == "rolled_back" else "drill_failed"
         report["safety"]["user_registration_mutation"] = bool(
