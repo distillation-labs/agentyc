@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""stdio Native Messaging host fixture; never starts a broker outside this process."""
+
+from __future__ import annotations
+
+import json
+import os
+import struct
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_messaging import (  # noqa: E402
+    DEFAULT_ORIGIN,
+    EnvelopeSession,
+    Frame,
+    FrameDecoder,
+    ProtocolError,
+)
+
+
+def write_message(message: dict[str, object]) -> None:
+    payload = json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    sys.stdout.buffer.write(struct.pack("<I", len(payload)) + payload)
+    sys.stdout.buffer.flush()
+
+
+def main() -> int:
+    expected_origin = os.environ.get("AGENTYC_P0_EXTENSION_ORIGIN", DEFAULT_ORIGIN)
+    session = EnvelopeSession(expected_origin=expected_origin)
+    decoder = FrameDecoder()
+    try:
+        while True:
+            chunk = sys.stdin.buffer.read(4096)
+            if not chunk:
+                decoder.finish()
+                return 0
+            for frame in decoder.feed(chunk):
+                envelope = session.accept(frame)
+                write_message({
+                    "accepted": True,
+                    "message_id": envelope["message_id"],
+                    "version": envelope["version"],
+                })
+    except ProtocolError as error:
+        print(f"native probe rejected input: {error.code.value}", file=sys.stderr)
+        return 2
+    except (BrokenPipeError, OSError):
+        return 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
