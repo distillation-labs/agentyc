@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dense admin table</title></head>
+<body>
+  <main>
+    <h1>Accounts</h1>
+    <label for="search">Search accounts</label>
+    <input id="search" type="search" value="" autocomplete="off">
+    <table>
+      <caption>Deterministic account records</caption>
+      <thead><tr><th scope="col">Name</th><th scope="col">Plan</th><th scope="col">State</th><th scope="col">Action</th></tr></thead>
+      <tbody>
+        <tr><td><a href="#account-001">Aster</a></td><td>Pro</td><td>Active</td><td><button type="button" data-account="001">Inspect</button></td></tr>
+        <tr><td><a href="#account-002">Beryl</a></td><td>Team</td><td>Pending</td><td><button type="button" data-account="002">Inspect</button></td></tr>
+        <tr><td><a href="#account-003">Cobalt</a></td><td>Free</td><td>Suspended</td><td><button type="button" data-account="003">Inspect</button></td></tr>
+        <tr><td><a href="#account-004">Dahlia</a></td><td>Pro</td><td>Active</td><td><button type="button" data-account="004">Inspect</button></td></tr>
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>
