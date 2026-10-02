@@ -21,7 +21,10 @@ import time
 from html.parser import HTMLParser
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import Any, ClassVar
+
+from artifact_envelope import envelope as add_envelope
+from artifact_envelope import write_json_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "browser-task-spaces"
@@ -36,7 +39,7 @@ SMOKE_DEFAULT_SAMPLES = 30
 class ControlCounter(HTMLParser):
     """Count controls and recursively inspect inline ``srcdoc`` frames."""
 
-    CONTROL_TAGS = {"a", "button", "input", "select", "textarea"}
+    CONTROL_TAGS: ClassVar[set[str]] = {"a", "button", "input", "select", "textarea"}
 
     def __init__(self, frame_depth: int = 0) -> None:
         super().__init__()
@@ -72,9 +75,9 @@ class ControlCounter(HTMLParser):
         self.text_chars += len(data)
 
     @property
-    def frame_coverage(self) -> float:
+    def frame_coverage(self) -> float | None:
         if self.frames == 0:
-            return 1.0
+            return None
         return self.frames_scanned / self.frames
 
 
@@ -288,7 +291,6 @@ REQUIRED_SAMPLE_METRICS = (
     "synthetic_action_ms",
     "wait_ms",
     "total_ms",
-    "frame_coverage",
 )
 
 
@@ -297,9 +299,13 @@ def validate_sample(sample: dict[str, Any]) -> str | None:
         value = sample.get(key)
         if not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) < 0:
             return f"missing or invalid metric: {key}"
-    coverage = float(sample["frame_coverage"])
-    if coverage > 1.0:
-        return "frame coverage exceeds 1.0"
+    coverage = sample.get("frame_coverage")
+    if coverage is not None and (
+        not isinstance(coverage, (int, float))
+        or not math.isfinite(float(coverage))
+        or not 0.0 <= float(coverage) <= 1.0
+    ):
+        return "frame coverage is outside [0, 1]"
     return None
 
 
@@ -347,7 +353,7 @@ def summarize(samples: list[dict[str, Any]], record: dict[str, Any], cache_state
     first_valid = valid_samples[0] if valid_samples else {}
     frame_count = max((int(sample.get("frames", 0)) for sample in valid_samples), default=0)
     frames_scanned = max((int(sample.get("frames_scanned", 0)) for sample in valid_samples), default=0)
-    frame_coverage = frames_scanned / frame_count if frame_count else 1.0
+    frame_coverage = frames_scanned / frame_count if frame_count else None
     return {
         "fixture": record["name"],
         "fixture_sha256": record["sha256"],
@@ -414,17 +420,20 @@ def markdown_report(result: dict[str, Any]) -> str:
         "",
         f"- Mode: `{result['mode']}`",
         f"- Fixture set SHA-256: `{result['fixture_set_sha256']}`",
+        f"- Fixture manifest SHA-256: `{result['baseline_manifest']['sha256']}`",
+        "- Confidence intervals: approximate normal 95% intervals for per-cell latency means",
         "- Browser launches: `0`",
         "- Browser downloads: `0`",
         "- CDP URL: `not used`",
         "- Tokenizer: `not available in offline scaffold`",
         "",
-        "| Fixture | Cache | Spaces | Valid samples | Synthetic local action p50 (ms) | Metadata p95 (ms) | Synthetic action p95 (ms) | p95 gate | p99 gate |",
+        "| Fixture | Cache | Spaces | Samples (valid/error/invalid) | Synthetic local action p50 (ms) | Metadata p95 (ms) | Synthetic action p95 (ms) | p95 gate | p99 gate |",
         "|---|---:|---:|---:|---:|---:|---:|---|---|",
     ]
     for row in result["rows"]:
         lines.append(
-            f"| {row['fixture']} | {row['cache_state']} | {row['spaces']} | {row['samples']['valid']} | "
+            f"| {row['fixture']} | {row['cache_state']} | {row['spaces']} | "
+            f"{row['samples']['valid']}/{row['samples']['errors']}/{row['samples']['invalid']} | "
             f"{row['latency_ms']['first_useful_action_ms']['p50']:.4f} (synthetic) | "
             f"{row['latency_ms']['metadata_ms']['p95']:.4f} | "
             f"{row['latency_ms']['action_ms']['p95']:.4f} | "
@@ -513,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
         for cache_state in cache_states:
             for space_count in spaces:
                 for _ in range(args.warmups):
-                    measure_once(record, cache_state, space_count)
+                    measure_sample(record, cache_state, space_count)
                 cell_samples = [measure_sample(record, cache_state, space_count) for _ in range(samples_per_cell)]
                 raw_samples.extend(cell_samples)
                 rows.append(summarize(cell_samples, record, cache_state, space_count))
@@ -547,8 +556,9 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     if args.artifact_dir:
+        add_envelope(result, kind="direct-benchmark")
         args.artifact_dir.mkdir(parents=True, exist_ok=True)
-        (args.artifact_dir / "baseline.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        write_json_atomic(args.artifact_dir / "baseline.json", result)
         (args.artifact_dir / "baseline.md").write_text(markdown_report(result), encoding="utf-8")
         with (args.artifact_dir / "raw_samples.jsonl").open("w", encoding="utf-8") as handle:
             for sample in raw_samples:
