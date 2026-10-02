@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "agentyc Existing Chrome",
+  "version": "0.1.0",
+  "description": "Host-authorized logical task spaces for an existing Chrome profile.",
+  "minimum_chrome_version": "125",
+  "permissions": [
+    "debugger",
+    "nativeMessaging",
+    "storage",
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "sidePanel"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/service-worker.mjs",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open agentyc task spaces"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
