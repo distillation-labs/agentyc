@@ -16,10 +16,10 @@ use std::{
 };
 
 use agentyc_core::{
-    ActionId, ActionOperation, ActionReceipt, ActionRequest, ContentHash, CoreError, ErrorCode,
-    EventCursor, EventKind, EventScope, HelloEnvelope, HelloOkEnvelope, IdempotencyKey, LeaseEpoch,
-    PageId, Postcondition, PrincipalId, RequestId, ResumeResult, SnapshotEnvelope, SpaceId,
-    Timestamp,
+    ActionId, ActionOperation, ActionReceipt, ActionRequest, CacheState, ContentHash, CoreError,
+    ErrorCode, EventCursor, EventKind, EventScope, HelloEnvelope, HelloOkEnvelope, IdempotencyKey,
+    LeaseEpoch, PageId, Postcondition, PrincipalId, RequestId, ResumeResult, SnapshotEnvelope,
+    SpaceId, Timestamp,
 };
 use agentyc_host::{
     ActionResult, AuthorityTicket, Broker, Connection, ControlReturn, ControlTicket, EventBatch,
@@ -152,6 +152,20 @@ impl HostAdapter {
             Ok(space_id) => self.describe_space(&space_id),
             Err(error) => error_result(error, None),
         }
+    }
+
+    /// List logical pages in one visible space.
+    pub fn list_pages(&self, space_id: &SpaceId) -> CallToolResult {
+        host_result(
+            self.broker
+                .describe_space(self.authority(), space_id)
+                .map(|space| {
+                    json!({
+                        "space_id": space.space_id,
+                        "pages": space.pages,
+                    })
+                }),
+        )
     }
 
     /// Finish an agent-owned logical space after page cleanup.
@@ -622,7 +636,7 @@ fn success_value(value: Value) -> CallToolResult {
     }))
 }
 
-fn error_result(error: CoreError, details: Option<Value>) -> CallToolResult {
+pub(crate) fn error_result(error: CoreError, details: Option<Value>) -> CallToolResult {
     let mut body = json!({
         "ok": false,
         "error": {
@@ -658,11 +672,37 @@ fn host_result<T: Serialize>(result: Result<T, HostError>) -> CallToolResult {
 
 fn snapshot_read_result(result: Result<agentyc_host::SnapshotRead, HostError>) -> CallToolResult {
     match result {
-        Ok(read) => success_value(json!({
-            "envelope": read.envelope,
-            "cache_state": read.cache_state,
-            "scan_performed": read.scan_performed,
-        })),
+        Ok(read) => {
+            let mut envelope = match serde_json::to_value(&read.envelope) {
+                Ok(value) => value,
+                Err(error) => {
+                    return error_result(
+                        CoreError::new(
+                            ErrorCode::InvalidJson,
+                            format!("could not encode snapshot envelope: {error}"),
+                        ),
+                        None,
+                    );
+                }
+            };
+            if read.cache_state == CacheState::Cached && !read.scan_performed {
+                let Some(envelope_object) = envelope.as_object_mut() else {
+                    return error_result(
+                        CoreError::new(
+                            ErrorCode::InvalidJson,
+                            "snapshot envelope did not serialize as an object",
+                        ),
+                        None,
+                    );
+                };
+                envelope_object.remove("delta_or_elements");
+            }
+            success_value(json!({
+                "envelope": envelope,
+                "cache_state": read.cache_state,
+                "scan_performed": read.scan_performed,
+            }))
+        }
         Err(error) => error_result(error.as_core_error(), None),
     }
 }
@@ -698,17 +738,43 @@ fn action_receipt_result(receipt: ActionReceipt) -> CallToolResult {
         }
     };
     if let Some(code) = receipt.error_code {
-        return error_result(
+        return action_error_result(
             CoreError {
                 code,
                 retryable: receipt.retryable,
                 guidance: code.guidance(),
                 message: format!("logical action completed with {}", code.as_str()),
             },
-            Some(json!({ "receipt": receipt_value })),
+            receipt_value,
         );
     }
     success_value(json!({ "receipt": receipt_value }))
+}
+
+fn action_error_result(error: CoreError, receipt_value: Value) -> CallToolResult {
+    let action_id = receipt_value
+        .get("action_id")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let reconcile_token = receipt_value
+        .get("reconcile_token")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let next_action = receipt_value
+        .get("next_action")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut result = error_result(error, Some(json!({ "receipt": receipt_value })));
+    if let Some(structured_content) = result.structured_content.as_mut()
+        && let Some(error_object) = structured_content
+            .get_mut("error")
+            .and_then(Value::as_object_mut)
+    {
+        error_object.insert("action_id".to_owned(), action_id);
+        error_object.insert("reconcile_token".to_owned(), reconcile_token);
+        error_object.insert("next_action".to_owned(), next_action);
+    }
+    result
 }
 
 fn event_batch_result(batch: EventBatch) -> CallToolResult {
@@ -878,6 +944,67 @@ mod tests {
     }
 
     #[test]
+    fn clean_cached_snapshot_result_is_metadata_only() {
+        let bridge = Arc::new(FakeBridge::new());
+        let (_directory, broker, adapter) = adapter_with_bridge(bridge);
+        let (space_id, lease_epoch) = setup_space(&broker, &adapter, "snapshots");
+        let page = broker
+            .create_page_at(
+                &space_id,
+                adapter.connection().authority(),
+                lease_epoch,
+                "main",
+                Timestamp::new(1),
+            )
+            .expect("page");
+        broker
+            .bind_page(
+                &space_id,
+                &page.page_id,
+                adapter.connection().authority(),
+                lease_epoch,
+                Timestamp::new(1),
+                Some("https://logical.test".to_owned()),
+                Some("Logical test".to_owned()),
+                1,
+            )
+            .expect("managed page");
+
+        let fresh = adapter.read_snapshot(&space_id, &page.page_id, lease_epoch, Timestamp::new(2));
+        assert_eq!(fresh.is_error, Some(false));
+        assert!(
+            fresh
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.get("result"))
+                .and_then(|value| value.get("envelope"))
+                .and_then(|value| value.get("delta_or_elements"))
+                .is_some()
+        );
+
+        let cached =
+            adapter.read_snapshot(&space_id, &page.page_id, lease_epoch, Timestamp::new(2));
+        assert_eq!(cached.is_error, Some(false));
+        let cached_wire = serde_json::to_value(&cached).expect("cached MCP result");
+        assert_eq!(cached_wire["isError"], false);
+        let result = cached
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("result"))
+            .expect("snapshot result");
+        assert_eq!(
+            result.get("cache_state").and_then(Value::as_str),
+            Some("cached")
+        );
+        assert_eq!(result.get("scan_performed"), Some(&Value::Bool(false)));
+        let envelope = result.get("envelope").expect("snapshot envelope");
+        assert!(envelope.get("delta_or_elements").is_none());
+        assert!(envelope.get("snapshot_hash").is_some());
+        assert!(envelope.get("document_generation").is_some());
+        assert!(envelope.get("cache_state").is_some());
+    }
+
+    #[test]
     fn unknown_outcome_is_an_error_and_reconcile_never_replays_dispatch() {
         let bridge = Arc::new(FakeBridge::new());
         bridge.push_dispatch_result(BridgeDispatchResult::Unknown {
@@ -902,6 +1029,24 @@ mod tests {
         let unknown = adapter.execute_action(request, Timestamp::new(2));
         assert_eq!(unknown.is_error, Some(true));
         assert_eq!(code(&unknown), "unknown_outcome");
+        let unknown_wire = serde_json::to_value(&unknown).expect("unknown MCP result");
+        assert_eq!(unknown_wire["isError"], true);
+        let unknown_error = unknown
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .expect("unknown action error");
+        let receipt = unknown_error
+            .get("details")
+            .and_then(|value| value.get("receipt"))
+            .expect("unknown action receipt");
+        assert_eq!(unknown_error.get("action_id"), receipt.get("action_id"));
+        assert_eq!(
+            unknown_error.get("reconcile_token"),
+            receipt.get("reconcile_token")
+        );
+        assert_eq!(unknown_error.get("next_action"), Some(&json!("reconcile")));
+        assert_eq!(receipt.get("next_action"), Some(&json!("reconcile")));
 
         let action_id = ActionId::from_suffix("action").expect("action");
         let reconciled = adapter.reconcile_action(&action_id, lease_epoch, Timestamp::new(3));
