@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Dynamic feed</title></head>
+<body>
+  <main>
+    <h1>Activity feed</h1>
+    <button id="append-item" type="button">Append deterministic item</button>
+    <ol id="feed" aria-live="polite">
+      <li class="feed-item" data-sequence="1">Initial event</li>
+      <li class="feed-item" data-sequence="2">Second event</li>
+    </ol>
+  </main>
+  <script>
+    const feed = document.querySelector('#feed');
+    document.querySelector('#append-item').addEventListener('click', () => {
+      const sequence = feed.children.length + 1;
+      const item = document.createElement('li');
+      item.className = 'feed-item';
+      item.dataset.sequence = String(sequence);
+      item.textContent = `Deterministic event ${sequence}`;
+      feed.append(item);
+    });
+  </script>
+</body>
+</html>
