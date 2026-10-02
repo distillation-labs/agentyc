@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from artifact_envelope import envelope as add_envelope
-from artifact_envelope import write_json_atomic
+from artifact_envelope import redact_for_persistence, write_json_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "browser-task-spaces"
@@ -28,6 +28,20 @@ DEFAULT_ARTIFACT_ROOT = (ROOT / "artifacts" / "p0-coexistence").resolve()
 MAX_REPORT_BYTES = 64 * 1024
 MAX_ARTIFACT_FILES = 8
 MAX_EXISTING_ARTIFACT_BYTES = 512 * 1024
+
+DESCRIPTOR_SCHEMA_VERSION = 2
+REQUIRED_LIVE_SCENARIOS = (
+    "user-tab-preservation",
+    "two-space-isolation",
+    "focus-stability",
+    "takeover-fence",
+    "return-control-fresh-lease",
+    "agent-page-cleanup",
+    "worker-restart-recovery",
+    "host-restart-recovery",
+    "chrome-restart-recovery",
+    "extension-update-recovery",
+)
 
 EXPECTED_FIXTURES = {
     "small-form": {"file": "small-form.html", "controls": {"name", "role", "save"}},
@@ -70,6 +84,8 @@ _RAW_ID_KEY = re.compile(
 )
 _SECRET_TEXT = re.compile(r"(?i)(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _NETWORK = re.compile(r"(?:https?|wss?)://|\b(?:fetch|XMLHttpRequest|WebSocket)\b", re.IGNORECASE)
+_ABSOLUTE_PATH = re.compile(r"(?i)(?:/(?:Users|home|private|tmp|var|etc|opt|Applications)/|[A-Za-z]:[\\\\/])")
+_BROWSER_ID = re.compile(r"^[a-p]{32}$")
 
 
 class ProbeError(ValueError):
@@ -196,13 +212,18 @@ def redact(value: Any, depth: int = 0) -> Any:
 
 
 def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
-    return redact(
+    executed = live.get("executed") is True and live.get("evidence_status") == "live_passed"
+    return redact_for_persistence(
         {
             "schema_version": 1,
             "phase": 0,
+            "rollout_phase": 7,
             "probe": "existing-chrome-coexistence",
+            "kind": "existing-chrome-coexistence",
             "mode": mode,
+            "evidence_mode": "live" if executed else "offline",
             "status": live.get("status", "offline_passed"),
+            "release_eligible": False,
             "spaces": len(contract["spaces"]),
             "agents": len({item["agent"] for item in contract["spaces"]}),
             "result": {
@@ -211,50 +232,173 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
                 "scenario": contract,
             },
             "live": live,
+            "enrollment": live.get("enrollment"),
+            "scenarios": live.get("scenarios", []),
+            "execution_policy": {
+                "attached": executed,
+                "browser_launch": False,
+                "browser_download": False,
+                "cdp_url_used": False,
+            },
             "safety": {
                 "browser_launch": "never",
                 "browser_download": "never",
-                "user_tab_close": None,
-                "user_tab_closes": None,
-                "focus_theft_outside_user_action": None,
-                "focus_theft": None,
-                "cross_space_mutations": None,
-                "measurement_status": "not_measured_offline",
+                "user_tab_close": 0 if executed else None,
+                "user_tab_closes": 0 if executed else None,
+                "focus_theft_outside_user_action": 0 if executed else None,
+                "focus_theft": 0 if executed else None,
+                "cross_space_mutations": 0 if executed else None,
+                "stale_agent_mutations": 0 if executed else None,
+                "measurement_status": "measured_live" if executed else "not_measured_offline",
                 "raw_browser_ids_logged": False,
                 "secrets_logged": False,
             },
-            "redaction_status": "applied; no page bodies, paths, browser IDs, or secrets retained",
+            "release_gates": live.get("release_gates"),
+            "redaction_status": {
+                "status": "applied",
+                "raw_browser_ids": False,
+                "secrets": False,
+                "absolute_paths": False,
+                "page_bodies": False,
+            },
             "limitations": [
                 "Offline mode validates fixture contracts only; it is not evidence from a live Chrome profile.",
+                "This runner never launches, downloads, or attaches to the product browser; live evidence is caller-supplied from an enrolled host/extension descriptor.",
             ],
         }
     )
 
 
-def load_harness(path_value: str | None) -> dict[str, Any] | None:
+def _descriptor_contains_forbidden_key(value: Any) -> bool:
+    forbidden = {
+        "cdpurl",
+        "websocketurl",
+        "targetid",
+        "sessionid",
+        "tabid",
+        "profilepath",
+        "extensionid",
+        "hostpath",
+        "backendnodeid",
+        "debuggerendpoint",
+    }
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).lower().replace("-", "_")
+            if normalized.replace("_", "") in forbidden:
+                return True
+            if _descriptor_contains_forbidden_key(child):
+                return True
+    elif isinstance(value, list):
+        return any(_descriptor_contains_forbidden_key(item) for item in value)
+    elif isinstance(value, str):
+        if _NETWORK.search(value) or _ABSOLUTE_PATH.search(value) or _BROWSER_ID.fullmatch(value):
+            return True
+    return False
+
+
+def _descriptor_errors(descriptor: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if descriptor.get("schema_version") != DESCRIPTOR_SCHEMA_VERSION:
+        errors.append("descriptor schema_version must be 2")
+    if descriptor.get("kind") != "existing-chrome-enrollment":
+        errors.append("descriptor kind must be existing-chrome-enrollment")
+    if descriptor.get("mode") not in {"existing-chrome", "existing_chrome"}:
+        errors.append("descriptor mode must be existing-chrome")
+    if _descriptor_contains_forbidden_key(descriptor):
+        errors.append("descriptor must not contain raw IDs, paths, or debugger endpoints")
+
+    enrollment = descriptor.get("enrollment")
+    if not isinstance(enrollment, dict):
+        errors.append("explicit enrollment object is required")
+    else:
+        for name, accepted_statuses in {
+            "profile": {"bound", "enrolled"},
+            "host": {"enrolled", "connected"},
+            "extension": {"installed", "enrolled"},
+        }.items():
+            component = enrollment.get(name)
+            if not isinstance(component, dict) or component.get("enrolled") is not True or component.get("status") not in accepted_statuses:
+                errors.append(f"enrollment.{name} must be explicitly enrolled")
+
+    browser = descriptor.get("browser")
+    if not isinstance(browser, dict) or browser.get("status") not in {"already-running", "already_running"}:
+        errors.append("descriptor must identify an already-running browser")
+    elif browser.get("launch") is not False or browser.get("download") is not False or browser.get("cdp_url_used") is not False:
+        errors.append("browser launch, download, and CDP use must all be false")
+
+    safety = descriptor.get("safety")
+    if not isinstance(safety, dict) or safety.get("user_tab_preserved") is not True or safety.get("focus_theft") is not False:
+        errors.append("descriptor must prove user-tab and focus safety")
+
+    evidence = descriptor.get("evidence")
+    if evidence is not None:
+        if not isinstance(evidence, dict) or evidence.get("executed") is not True or evidence.get("status") != "live_passed":
+            errors.append("live evidence must be executed and live_passed")
+        else:
+            scenarios = evidence.get("scenarios")
+            if not isinstance(scenarios, list) or len(scenarios) != len(REQUIRED_LIVE_SCENARIOS) or any(not isinstance(item, dict) for item in scenarios):
+                errors.append("live evidence must include exactly all ten scenarios")
+            else:
+                names = {item.get("name") for item in scenarios}
+                if names != set(REQUIRED_LIVE_SCENARIOS) or any(item.get("status") != "live_passed" for item in scenarios):
+                    errors.append("live scenario evidence is incomplete or skipped")
+    return sorted(set(errors))
+
+
+def load_enrolled_descriptor(path_value: str | None) -> dict[str, Any] | None:
     if not path_value:
         return None
-    path = Path(path_value).expanduser().resolve()
+    path = Path(path_value).expanduser()
     if path.is_dir():
-        path = path / "harness.json"
+        path = path / "enrollment.json"
+    if path.is_symlink():
+        return None
+    try:
+        if path.stat().st_size > MAX_REPORT_BYTES:
+            return None
+        path = path.resolve(strict=True)
+    except OSError:
+        return None
     if path.parent == path or not path.is_file():
         return None
     try:
         descriptor = read_json(path)
     except ProbeError:
         return None
-    if not isinstance(descriptor, dict):
+    if not isinstance(descriptor, dict) or _descriptor_errors(descriptor):
         return None
-    # A descriptor is evidence supplied by the caller, not a command to run.
-    if descriptor.get("schema_version") != 1:
-        return None
-    if descriptor.get("mode") not in {"existing-chrome", "existing_chrome"}:
-        return None
-    if descriptor.get("chrome") != "already-running" or descriptor.get("extension") != "installed":
-        return None
-    if descriptor.get("user_tab_safety") is not True:
-        return None
-    return {"status": "harness_supplied", "evidence": "caller-supplied existing Chrome and installed extension descriptor"}
+    enrollment = descriptor["enrollment"]
+    browser = descriptor["browser"]
+    safety = descriptor["safety"]
+    evidence = descriptor.get("evidence") if isinstance(descriptor.get("evidence"), dict) else None
+    return redact_for_persistence(
+        {
+            "status": "harness_supplied",
+            "descriptor_version": DESCRIPTOR_SCHEMA_VERSION,
+            "enrollment": enrollment,
+            "browser": {
+                "status": browser["status"],
+                "launch": False,
+                "download": False,
+                "cdp_url_used": False,
+            },
+            "safety": {
+                "user_tab_preserved": safety["user_tab_preserved"],
+                "focus_theft": safety["focus_theft"],
+            },
+            "executed": bool(evidence and evidence.get("executed") is True),
+            "evidence_status": evidence.get("status") if evidence else "descriptor_only",
+            "scenarios": evidence.get("scenarios", []) if evidence else [],
+            "release_gates": evidence.get("release_gates") if evidence else None,
+        }
+    )
+
+
+# Backward-compatible function name; the accepted input is now the strict
+# enrollment descriptor above, never an arbitrary CDP/browser handle.
+def load_harness(path_value: str | None) -> dict[str, Any] | None:
+    return load_enrolled_descriptor(path_value)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -286,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"existing-Chrome probe error: {exc}", file=sys.stderr)
         return 2
 
-    live: dict[str, Any] = {"requested": bool(args.headed), "required": bool(args.headed), "status": "not_requested"}
+    live: dict[str, Any] = {"requested": bool(args.headed), "required": bool(args.headed), "status": "not_requested", "executed": False, "evidence_status": "not_requested"}
     status = "offline_passed"
     if args.headed:
         harness = load_harness(args.harness or os.environ.get("AGENTYC_EXISTING_CHROME_HARNESS"))
@@ -296,13 +440,25 @@ def main(argv: list[str] | None = None) -> int:
                 "requested": True,
                 "required": True,
                 "status": status,
-                "reason": "no valid existing-Chrome/extension harness descriptor was supplied",
+                "executed": False,
+                "evidence_status": "descriptor_missing_or_invalid",
+                "reason": "no valid existing-Chrome/extension harness descriptor or enrolled host/extension descriptor was supplied",
             }
         else:
-            # This remains a contract check. The script deliberately does not
-            # claim a live result because no browser process is started here.
-            status = "live_harness_supplied_not_executed"
-            live = {"requested": True, "required": True, **harness}
+            executed = harness.get("executed") is True and harness.get("evidence_status") == "live_passed"
+            status = "live_passed" if executed else "live_descriptor_validated_not_executed"
+            live = {
+                "requested": True,
+                "required": True,
+                "status": status,
+                "executed": executed,
+                "evidence_status": harness.get("evidence_status"),
+                "enrollment": harness.get("enrollment"),
+                "browser": harness.get("browser"),
+                "safety": harness.get("safety"),
+                "scenarios": harness.get("scenarios", []),
+                "release_gates": harness.get("release_gates"),
+            }
 
     report = safe_report(mode="headed" if args.headed else "offline", manifest=manifest, contract=contract, live=live)
     report["status"] = status
@@ -321,10 +477,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"existing-Chrome probe error: cannot write bounded report: {exc.__class__.__name__}", file=sys.stderr)
         return 2
     print(rendered, end="")
-    # A descriptor only proves that a caller claims to have a harness; this
-    # offline script never executes browser actions, so every headed lane must
-    # remain non-zero until real evidence is supplied by a separate runner.
-    return 1 if args.headed else 0
+    # The runner itself never attaches. A headed lane is green only when the
+    # descriptor includes independently captured, executed live evidence.
+    return 0 if (not args.headed or status == "live_passed") else 1
 
 
 if __name__ == "__main__":
