@@ -365,6 +365,54 @@ class ChromeProbeSafetyTests(unittest.TestCase):
             },
         )
 
+    def test_operator_assisted_command_uses_public_extensions_ui_only(self) -> None:
+        command = _chrome.build_chrome_command(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            Path("/tmp/agentyc-p0-profile"),
+            9333,
+            extension_dir=None,
+            fixture_url=None,
+            operator_assisted=True,
+        )
+        self.assertFalse(any("--load-extension" in argument for argument in command))
+        self.assertIn("--remote-debugging-port=9333", command)
+        self.assertNotIn("chrome://extensions", command)
+
+        source = CHROME_SCRIPT.read_text(encoding="utf-8")
+        for forbidden in (
+            "chrome.developerPrivate",
+            "Page.setInterceptFileChooserDialog",
+            "DOM.setFileInputFiles",
+            "extensions-manager",
+            "#loadUnpacked",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_automated_command_requires_explicit_staged_inputs(self) -> None:
+        with self.assertRaises(ValueError):
+            _chrome.build_chrome_command(
+                "chrome",
+                Path("/tmp/agentyc-p0-profile"),
+                9333,
+                extension_dir=None,
+                fixture_url=None,
+                operator_assisted=False,
+            )
+
+    def test_extension_tree_hash_rejects_symlinks_and_is_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "extension"
+            root.mkdir()
+            (root / "manifest.json").write_text("{}", encoding="utf-8")
+            first = _chrome.extension_tree_sha256(root)
+            second = _chrome.extension_tree_sha256(root)
+            self.assertEqual(first, second)
+            outside = Path(temporary) / "outside"
+            outside.write_text("unsafe", encoding="utf-8")
+            (root / "link").symlink_to(outside)
+            with self.assertRaises(ValueError):
+                _chrome.extension_tree_sha256(root)
+
     def test_owned_profile_cleanup_is_reported_and_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "profile"
@@ -566,6 +614,70 @@ setTimeout(() => {
 
 
 class BaselineCheckerSafetyTests(unittest.TestCase):
+    def test_live_extension_gate_requires_operator_install_provenance_and_hashes(self) -> None:
+        live = {
+            "requested": True,
+            "required": True,
+            "status": "live_passed",
+            "launched_by_probe": True,
+            "extension_loaded": True,
+            "extension_identity_passed": True,
+            "fixture_identity_passed": True,
+            "debugger_command_passed": True,
+            "debugger_event_received": True,
+            "tab_group_created": True,
+            "native_messaging_passed": True,
+            "chrome_mediated_native_messaging": True,
+            "debugger_cleanup_passed": True,
+            "cleanup_passed": True,
+            "screenshot_captured": True,
+            "screenshots": [{"captured": True}],
+            "handshake_transcript": ["hello_accepted", "probe_accepted"],
+            "permission_prompts": {"status": "none_observed"},
+        }
+        report = {
+            "probe": "P0-T2",
+            "mode": "headed",
+            "status": "live_passed",
+            "handshake_transcript": ["hello_accepted", "probe_accepted"],
+            "live": live,
+            "safety": {
+                "default_chrome_launch": False,
+                "default_profile_mutation": False,
+                "raw_ids_logged": False,
+                "secrets_logged": False,
+                "fixture_only_mutation": True,
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            destination = root / "artifacts" / "p0-extension"
+            destination.mkdir(parents=True)
+            report_path = destination / "report.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            checker = _checker.Checker(root)
+            self.assertEqual(_checker.validate_extension_gate(checker), "missing")
+            codes = {issue.code for issue in checker.issues}
+            self.assertIn("live-chrome-install-provenance-missing", codes)
+            self.assertIn("live-chrome-build-binding-missing", codes)
+
+            live.update(
+                {
+                    "operator_assisted": True,
+                    "load_method": "chrome_extensions_load_unpacked",
+                    "load_extension_flag_used": False,
+                    "developer_private_used": False,
+                    "extensions_ui_dom_access": False,
+                    "runner_sha256": "a" * 64,
+                    "source_extension_tree_sha256": "b" * 64,
+                    "staged_extension_tree_sha256": "c" * 64,
+                }
+            )
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            checker = _checker.Checker(root)
+            self.assertEqual(_checker.validate_extension_gate(checker), "passed")
+            self.assertEqual(checker.issues, [])
+
     def test_success_markers_cannot_be_forged_in_nested_transcript_data(self) -> None:
         forged = {"transcript": [{"extension_loaded": True}]}
         self.assertFalse(_checker.has_marker(forged, ("extension_loaded",)))
