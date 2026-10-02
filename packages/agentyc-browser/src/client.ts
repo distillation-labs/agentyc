@@ -3,6 +3,7 @@
 export type {
   BrowserClient,
   ConnectOptions,
+  RequestOptions,
   LogicalActionId,
   LogicalPageId,
   LogicalSpaceId,
