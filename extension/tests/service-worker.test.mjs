@@ -144,7 +144,7 @@ test("cleanup requires host proof and group drift never destroys a logical page"
   });
   await wait();
   assert.equal(worker.groups.listHints()[0].drift, true);
-  chrome.tabGroups.onRemoved.emit(rawGroupId);
+  chrome.tabGroups.onRemoved.emit({ id: rawGroupId });
   await wait();
   assert.equal(worker.tabs.getInternalByPage("page_one") !== undefined, true);
 
@@ -235,15 +235,17 @@ test("stale fence rejects old mutations before debugger dispatch", async () => {
   worker.stop();
 });
 
-test("worker restart rehydrates metadata but does not replay browser mutations", async () => {
+test("worker restart rehydrates metadata, preserves browser session epoch, and does not replay browser mutations", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://user.test/" }],
   });
   const first = await boot(chrome);
   const firstWorkerEpoch = first.hello.worker_instance_epoch;
+  const firstBrowserSessionEpoch = first.hello.browser_session_epoch;
   first.worker.stop();
   const second = await boot(chrome);
   assert.equal(second.hello.worker_instance_epoch, firstWorkerEpoch + 1);
+  assert.equal(second.hello.browser_session_epoch, firstBrowserSessionEpoch);
   assert.equal(
     second.worker.tabs.inventory().some((tab) => tab.ownership === "unmanaged"),
     true,
@@ -253,4 +255,52 @@ test("worker restart rehydrates metadata but does not replay browser mutations",
     0,
   );
   second.worker.stop();
+});
+
+test("runtime listeners register before metadata await, onMessage uses literal true/sendResponse, and onStartup advances browser session", async () => {
+  const chrome = new FakeChrome();
+  let resolveMetadata;
+  chrome.storage.local.get = () =>
+    new Promise((resolve) => {
+      resolveMetadata = resolve;
+    });
+
+  const worker = createServiceWorker({
+    chromeApi: chrome,
+    autoReconnect: false,
+  });
+  const start = worker.start();
+
+  assert.equal(chrome.runtime.onMessage.listeners.size, 1);
+  assert.equal(chrome.runtime.onStartup.listeners.size, 1);
+
+  const runtimeListener = [...chrome.runtime.onMessage.listeners][0];
+  let responded = false;
+  let response;
+  const returned = runtimeListener(
+    { type: "agentyc.unknown" },
+    { id: chrome.runtime.id },
+    (value) => {
+      responded = true;
+      response = value;
+    },
+  );
+  assert.equal(returned, true);
+  assert.equal(responded, false);
+
+  resolveMetadata({ agentyc_extension_metadata: {} });
+  await start;
+  await wait();
+  assert.equal(responded, true);
+  assert.equal(response, undefined);
+
+  const beforeStartupEpoch = worker.metadata.browserSessionEpoch;
+  chrome.runtime.onStartup.emit();
+  for (let i = 0; i < 5; i += 1) {
+    if (worker.metadata.browserSessionEpoch === beforeStartupEpoch + 1) break;
+    await wait();
+  }
+  assert.equal(worker.metadata.browserSessionEpoch, beforeStartupEpoch + 1);
+
+  worker.stop();
 });
