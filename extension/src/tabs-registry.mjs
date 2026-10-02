@@ -20,7 +20,26 @@ async function chromeCall(fn, ...args) {
   return fn(...args);
 }
 
-function logicalProof(proof, { spaceId, pageId, leaseEpoch, kind } = {}) {
+const MAX_PROOF_ID = 128;
+const MAX_PROOF_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const MAX_USED_PROOFS = 1024;
+
+function logicalProof(
+  proof,
+  {
+    spaceId,
+    pageId,
+    leaseEpoch,
+    kind,
+    purpose,
+    requireExpiry = false,
+    targetGeneration,
+    tabHint,
+    profileInstanceId,
+    browserSessionEpoch,
+    now = Date.now(),
+  } = {},
+) {
   if (!proof || typeof proof !== "object" || Array.isArray(proof)) {
     throw new ProtocolError(
       "permission_denied",
@@ -30,7 +49,8 @@ function logicalProof(proof, { spaceId, pageId, leaseEpoch, kind } = {}) {
   if (
     proof.issued_by_host !== true ||
     typeof proof.proof_id !== "string" ||
-    proof.proof_id.length < 8
+    !/^[A-Za-z0-9._:-]{8,128}$/.test(proof.proof_id) ||
+    proof.proof_id.length > MAX_PROOF_ID
   ) {
     throw new ProtocolError(
       "permission_denied",
@@ -50,6 +70,62 @@ function logicalProof(proof, { spaceId, pageId, leaseEpoch, kind } = {}) {
     throw new ProtocolError(
       "stale_lease",
       `${kind} proof lease does not match the command`,
+    );
+  }
+  const proofPurpose = proof.purpose ?? proof.kind;
+  if (purpose !== undefined && proofPurpose !== purpose) {
+    throw new ProtocolError(
+      "permission_denied",
+      `${kind} proof purpose is invalid`,
+    );
+  }
+  const expiry = proof.expires_at ?? proof.expires_at_ms;
+  if (expiry !== undefined) {
+    if (
+      !Number.isSafeInteger(expiry) ||
+      expiry <= now ||
+      expiry > now + MAX_PROOF_LIFETIME_MS
+    ) {
+      throw new ProtocolError(
+        "proof_expired",
+        `${kind} proof expiry is invalid`,
+      );
+    }
+  } else if (requireExpiry) {
+    throw new ProtocolError("proof_expired", `${kind} proof must expire`);
+  }
+  if (
+    targetGeneration !== undefined &&
+    (proof.target_generation ?? proof.generation) !== targetGeneration
+  ) {
+    throw new ProtocolError(
+      "stale_generation",
+      `${kind} proof generation is not current`,
+    );
+  }
+  if (
+    profileInstanceId !== undefined &&
+    proof.profile_instance_id !== undefined &&
+    proof.profile_instance_id !== profileInstanceId
+  ) {
+    throw new ProtocolError(
+      "permission_denied",
+      `${kind} proof profile does not match the live profile`,
+    );
+  }
+  if (
+    browserSessionEpoch !== undefined &&
+    proof.browser_session_epoch !== browserSessionEpoch
+  ) {
+    throw new ProtocolError(
+      "stale_epoch",
+      `${kind} proof browser session does not match`,
+    );
+  }
+  if (tabHint !== undefined && proof.tab_hint !== tabHint) {
+    throw new ProtocolError(
+      "permission_denied",
+      `${kind} proof tab scope does not match`,
     );
   }
   return proof;
@@ -77,17 +153,29 @@ export class TabsRegistry {
     onEvent = () => {},
     hintSalt = "",
     now = () => Date.now(),
+    profileInstanceId,
+    browserSessionEpoch,
+    assertFence = () => {},
+    onLifecycle = () => {},
   } = {}) {
     this.chrome = chromeApiOrGlobal(chromeApi);
     this.groups = groups;
     this.onEvent = onEvent;
     this.hintSalt = hintSalt;
     this.now = now;
+    this.profileInstanceId = profileInstanceId;
+    this.browserSessionEpoch = browserSessionEpoch;
+    this.assertFence = assertFence;
+    this.onLifecycle = onLifecycle;
     this.byRawTab = new Map();
     this.byPage = new Map();
     this.windowHints = new Map();
     this.fenceEpochs = new Map();
-    this.usedCleanupProofs = new Set();
+    this.usedCleanupProofs = new Map();
+    this.usedAdoptionProofs = new Map();
+    this.usedIntentTickets = new Map();
+    this.retiredRawTabIds = new Set();
+    this.hostCreatedTabIds = new Set();
     this.removeListeners = [];
     this.started = false;
   }
@@ -115,6 +203,74 @@ export class TabsRegistry {
   stop() {
     for (const remove of this.removeListeners.splice(0)) remove();
     this.started = false;
+  }
+
+  setIdentity({ profileInstanceId, browserSessionEpoch } = {}) {
+    if (profileInstanceId !== undefined)
+      this.profileInstanceId = profileInstanceId;
+    if (browserSessionEpoch !== undefined)
+      this.browserSessionEpoch = browserSessionEpoch;
+  }
+
+  pruneProofs() {
+    const now = this.now();
+    for (const used of [
+      this.usedCleanupProofs,
+      this.usedAdoptionProofs,
+      this.usedIntentTickets,
+    ]) {
+      for (const [id, expiresAt] of used) {
+        if (expiresAt <= now) used.delete(id);
+      }
+    }
+  }
+
+  consumeProof(used, proofId, expiresAt) {
+    this.pruneProofs();
+    if (used.has(proofId)) {
+      throw new ProtocolError("replay_rejected", "proof was already consumed");
+    }
+    if (used.size >= MAX_USED_PROOFS)
+      throw new ProtocolError(
+        "resource_exhausted",
+        "proof replay cache is full",
+      );
+    used.set(proofId, expiresAt);
+  }
+
+  resetSession(browserSessionEpoch) {
+    if (browserSessionEpoch !== undefined)
+      this.browserSessionEpoch = browserSessionEpoch;
+    for (const record of this.byPage.values()) {
+      this.retiredRawTabIds.add(record.rawTabId);
+      this.onLifecycle("session_reset", record.rawTabId, record);
+      record.lifecycle = "target_lost";
+      record.bindingState = "lost";
+      this.emit("page.lost", record, { reason: "browser_session_changed" });
+    }
+    this.byRawTab.clear();
+    this.byPage.clear();
+    this.windowHints.clear();
+    this.hostCreatedTabIds.clear();
+    this.usedCleanupProofs.clear();
+    this.usedAdoptionProofs.clear();
+    this.usedIntentTickets.clear();
+  }
+
+  async refreshSession() {
+    if (!this.chrome?.tabs?.query) return;
+    try {
+      const tabs = await chromeCall(
+        this.chrome.tabs.query.bind(this.chrome.tabs),
+        {},
+      );
+      for (const tab of tabs ?? []) this.observeTab(tab, "session_refresh");
+    } catch {
+      this.onEvent("tabs.inventory_failed", {
+        code: "tabs_unavailable",
+        message: "Chrome tab inventory is unavailable",
+      });
+    }
   }
 
   installListeners() {
@@ -146,7 +302,24 @@ export class TabsRegistry {
 
   observeTab(tab, reason = "observed") {
     if (!tab || !Number.isInteger(tab.id)) return undefined;
-    const existing = this.byRawTab.get(tab.id);
+    let existing = this.byRawTab.get(tab.id);
+    if (existing && reason === "created") {
+      this.retiredRawTabIds.add(tab.id);
+      this.onLifecycle("raw_id_reused", tab.id, existing);
+      if (existing.pageId) this.byPage.delete(existing.pageId);
+      this.byRawTab.delete(tab.id);
+      existing = undefined;
+    }
+    if (
+      existing &&
+      this.browserSessionEpoch !== undefined &&
+      existing.sessionEpoch !== this.browserSessionEpoch
+    ) {
+      this.retiredRawTabIds.add(tab.id);
+      if (existing.pageId) this.byPage.delete(existing.pageId);
+      this.byRawTab.delete(tab.id);
+      existing = undefined;
+    }
     const record = existing ?? {
       rawTabId: tab.id,
       rawWindowId: Number.isInteger(tab.windowId) ? tab.windowId : undefined,
@@ -157,6 +330,10 @@ export class TabsRegistry {
       lifecycle: "unmanaged",
       bindingState: "unbound",
       leaseEpoch: undefined,
+      sessionEpoch: this.browserSessionEpoch,
+      targetGeneration: 1,
+      navigationGeneration: 1,
+      documentGeneration: 1,
       generation: 1,
       url: undefined,
       title: undefined,
@@ -180,6 +357,8 @@ export class TabsRegistry {
     record.frozen = Boolean(tab.frozen ?? record.frozen);
     record.lastObservedAt = this.now();
     if (record.incognito && record.ownership === "agent") {
+      const priorPageId = record.pageId;
+      if (priorPageId) this.byPage.delete(priorPageId);
       record.ownership = "unmanaged";
       record.lifecycle = "unmanaged";
       record.bindingState = "rebind_required";
@@ -220,6 +399,9 @@ export class TabsRegistry {
     leaseEpoch,
     ownershipProof,
     generation = 1,
+    targetGeneration,
+    navigationGeneration,
+    documentGeneration,
     url,
     title,
   } = {}) {
@@ -235,6 +417,7 @@ export class TabsRegistry {
       pageId,
       leaseEpoch,
       kind: "page claim",
+      now: this.now(),
     });
     const rawTabId = tabId ?? tab?.id;
     if (!Number.isInteger(rawTabId))
@@ -242,6 +425,17 @@ export class TabsRegistry {
         "schema_invalid",
         "managed binding requires a tab",
       );
+    if (
+      this.retiredRawTabIds.has(rawTabId) &&
+      !this.hostCreatedTabIds.has(rawTabId) &&
+      proof.rebind !== true
+    ) {
+      throw new ProtocolError(
+        "stale_target",
+        "raw tab identity was retired and requires an explicit rebind",
+      );
+    }
+    this.assertFence({ spaceId, leaseEpoch });
     const record = this.observeTab(
       { ...(tab ?? {}), id: rawTabId, url, title },
       "managed",
@@ -264,15 +458,58 @@ export class TabsRegistry {
     record.lifecycle = "managed";
     record.bindingState = "bound";
     record.leaseEpoch = leaseEpoch;
-    record.generation =
-      Number.isSafeInteger(generation) && generation > 0
-        ? generation
-        : record.generation;
+    record.targetGeneration =
+      Number.isSafeInteger(targetGeneration) && targetGeneration > 0
+        ? targetGeneration
+        : Number.isSafeInteger(generation) && generation > 0
+          ? generation
+          : record.targetGeneration;
+    record.navigationGeneration =
+      Number.isSafeInteger(navigationGeneration) && navigationGeneration > 0
+        ? navigationGeneration
+        : record.navigationGeneration;
+    record.documentGeneration =
+      Number.isSafeInteger(documentGeneration) && documentGeneration > 0
+        ? documentGeneration
+        : record.documentGeneration;
+    record.generation = record.targetGeneration;
+    record.sessionEpoch = this.browserSessionEpoch;
     record.claimProofId = proof.proof_id;
+    this.hostCreatedTabIds.delete(rawTabId);
     this.byPage.set(pageId, record);
     this.groups?.claimTab(spaceId, rawTabId);
     this.emit("page.bound", record, { reason: "host_claim" });
     return this.publicRecord(record);
+  }
+
+  async rollbackCreatedTab(tab, originalError) {
+    if (!tab || !Number.isInteger(tab.id)) return;
+    this.hostCreatedTabIds.delete(tab.id);
+    if (tab.active === true) {
+      const record = this.observeTab(tab, "claim_rollback_skipped_focus");
+      record.lifecycle = "unmanaged";
+      record.ownership = "unmanaged";
+      record.bindingState = "unbound";
+      return;
+    }
+    if (typeof this.chrome?.tabs?.remove !== "function") {
+      throw unknownDispatch(
+        "created tab claim failed and cleanup is unavailable",
+        {
+          cause:
+            originalError instanceof Error
+              ? originalError.message
+              : String(originalError),
+        },
+      );
+    }
+    try {
+      await this.chrome.tabs.remove(tab.id);
+    } catch (error) {
+      throw unknownDispatch("created tab claim rollback was not confirmed", {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async createAgentPage({
@@ -283,13 +520,16 @@ export class TabsRegistry {
     title,
     ownershipProof,
     windowHint,
+    onDispatch = () => {},
   } = {}) {
     assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
+    const creationSessionEpoch = this.browserSessionEpoch;
     logicalProof(ownershipProof, {
       spaceId,
       pageId,
       leaseEpoch,
       kind: "page creation",
+      now: this.now(),
     });
     if (isRestrictedUrl(url))
       throw new ProtocolError(
@@ -312,8 +552,10 @@ export class TabsRegistry {
     }
     if (rawWindowId !== undefined) options.windowId = rawWindowId;
     if (typeof url === "string" && url.length > 0) options.url = url;
+    this.assertFence({ spaceId, leaseEpoch });
     let tab;
     try {
+      onDispatch();
       tab = await chromeCall(
         this.chrome.tabs.create.bind(this.chrome.tabs),
         options,
@@ -326,24 +568,41 @@ export class TabsRegistry {
     if (!tab || !Number.isInteger(tab.id)) {
       throw unknownDispatch("Chrome did not return a created tab identity");
     }
+    this.hostCreatedTabIds.add(tab.id);
+    if (this.browserSessionEpoch !== creationSessionEpoch) {
+      const sessionError = new ProtocolError(
+        "stale_epoch",
+        "browser session changed during page creation",
+      );
+      await this.rollbackCreatedTab(tab, sessionError);
+      throw sessionError;
+    }
     if (tab.active === true) {
       const record = this.observeTab(tab, "focus_theft");
       record.lifecycle = "unmanaged";
       record.ownership = "unmanaged";
+      this.hostCreatedTabIds.delete(tab.id);
       throw new ProtocolError(
         "focus_theft",
         "Chrome activated an agent tab; it was not claimed",
       );
     }
-    const publicRecord = this.bindManagedTab({
-      tab,
-      spaceId,
-      pageId,
-      leaseEpoch,
-      ownershipProof,
-      url,
-      title,
-    });
+    let publicRecord;
+    try {
+      this.assertFence({ spaceId, leaseEpoch });
+      publicRecord = this.bindManagedTab({
+        tab,
+        spaceId,
+        pageId,
+        leaseEpoch,
+        ownershipProof,
+        url,
+        title,
+      });
+    } catch (error) {
+      await this.rollbackCreatedTab(tab, error);
+      throw error;
+    }
     try {
       await this.groups?.presentSpace({
         spaceId,
@@ -364,6 +623,7 @@ export class TabsRegistry {
     leaseEpoch,
     ownershipProof,
     intentTicket,
+    onDispatch = () => {},
   } = {}) {
     assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
     logicalProof(ownershipProof, {
@@ -371,6 +631,11 @@ export class TabsRegistry {
       pageId,
       leaseEpoch,
       kind: "adoption",
+      purpose: "adoption",
+      requireExpiry: true,
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
+      now: this.now(),
     });
     if (
       !intentTicket ||
@@ -382,9 +647,34 @@ export class TabsRegistry {
         "adoption requires a host-issued intent ticket",
       );
     }
+    const ticketProof = { ...intentTicket, proof_id: intentTicket.ticket_id };
+    logicalProof(ticketProof, {
+      spaceId,
+      pageId,
+      leaseEpoch,
+      kind: "adoption intent",
+      purpose: "adoption",
+      requireExpiry: true,
+      tabHint,
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
+      now: this.now(),
+    });
+    this.pruneProofs();
+    if (
+      this.usedAdoptionProofs.has(ownershipProof.proof_id) ||
+      this.usedIntentTickets.has(intentTicket.ticket_id)
+    ) {
+      throw new ProtocolError(
+        "replay_rejected",
+        "adoption proof or intent ticket was already consumed",
+      );
+    }
     const candidates = [...this.byRawTab.values()].filter(
       (record) =>
         record.ownership === "unmanaged" &&
+        record.sessionEpoch === this.browserSessionEpoch &&
+        !this.retiredRawTabIds.has(record.rawTabId) &&
         browserHint(record.rawTabId, this.hintSalt) === tabHint &&
         !record.incognito,
     );
@@ -394,14 +684,55 @@ export class TabsRegistry {
         "tab cannot be adopted conservatively",
       );
     }
-    return this.bindManagedTab({
-      tab: { id: candidates[0].rawTabId },
+    const candidate = candidates[0];
+    logicalProof(ownershipProof, {
+      spaceId,
+      pageId,
+      leaseEpoch,
+      kind: "adoption",
+      purpose: "adoption",
+      requireExpiry: true,
+      targetGeneration: candidate.targetGeneration,
+      tabHint,
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
+      now: this.now(),
+    });
+    logicalProof(ticketProof, {
+      spaceId,
+      pageId,
+      leaseEpoch,
+      kind: "adoption intent",
+      purpose: "adoption",
+      requireExpiry: true,
+      targetGeneration: candidate.targetGeneration,
+      tabHint,
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
+      now: this.now(),
+    });
+    onDispatch();
+    const record = this.bindManagedTab({
+      tab: { id: candidate.rawTabId },
       spaceId,
       pageId,
       leaseEpoch,
       ownershipProof,
-      generation: candidates[0].generation,
+      targetGeneration: candidate.targetGeneration,
+      navigationGeneration: candidate.navigationGeneration,
+      documentGeneration: candidate.documentGeneration,
     });
+    this.consumeProof(
+      this.usedAdoptionProofs,
+      ownershipProof.proof_id,
+      ownershipProof.expires_at ?? ownershipProof.expires_at_ms,
+    );
+    this.consumeProof(
+      this.usedIntentTickets,
+      intentTicket.ticket_id,
+      intentTicket.expires_at ?? intentTicket.expires_at_ms,
+    );
+    return record;
   }
 
   assertPageDispatch({
@@ -409,12 +740,24 @@ export class TabsRegistry {
     pageId,
     leaseEpoch,
     expectedGeneration,
+    expectedTargetGeneration,
+    expectedNavigationGeneration,
+    expectedDocumentGeneration,
     mutation = false,
   } = {}) {
     assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
     const record = this.byPage.get(pageId);
     if (!record || record.spaceId !== spaceId)
       throw new ProtocolError("page_not_found", "logical page is not bound");
+    if (
+      this.browserSessionEpoch !== undefined &&
+      record.sessionEpoch !== this.browserSessionEpoch
+    ) {
+      throw new ProtocolError(
+        "stale_epoch",
+        "page belongs to another browser session",
+      );
+    }
     const fenced = this.fenceEpochs.get(spaceId) ?? 0;
     if (
       !Number.isSafeInteger(leaseEpoch) ||
@@ -432,13 +775,37 @@ export class TabsRegistry {
     }
     if (
       expectedGeneration !== undefined &&
-      expectedGeneration !== record.generation
+      expectedGeneration !== record.targetGeneration
     ) {
       throw new ProtocolError(
         "stale_generation",
         "command generation is not current",
       );
     }
+    if (
+      expectedTargetGeneration !== undefined &&
+      expectedTargetGeneration !== record.targetGeneration
+    )
+      throw new ProtocolError(
+        "stale_generation",
+        "target generation is not current",
+      );
+    if (
+      expectedNavigationGeneration !== undefined &&
+      expectedNavigationGeneration !== record.navigationGeneration
+    )
+      throw new ProtocolError(
+        "stale_generation",
+        "navigation generation is not current",
+      );
+    if (
+      expectedDocumentGeneration !== undefined &&
+      expectedDocumentGeneration !== record.documentGeneration
+    )
+      throw new ProtocolError(
+        "stale_generation",
+        "document generation is not current",
+      );
     if (mutation && isRestrictedUrl(record.url)) {
       throw new ProtocolError(
         "restricted_url",
@@ -488,48 +855,116 @@ export class TabsRegistry {
     pageId,
     leaseEpoch,
     expectedGeneration,
+    expectedNavigationGeneration,
+    expectedDocumentGeneration,
     cleanupProof,
+    onDispatch = () => {},
   } = {}) {
+    this.pruneProofs();
+    if (
+      cleanupProof?.proof_id &&
+      this.usedCleanupProofs.has(cleanupProof.proof_id)
+    ) {
+      throw new ProtocolError(
+        "replay_rejected",
+        "cleanup proof was already consumed",
+      );
+    }
     const record = this.assertPageDispatch({
       spaceId,
       pageId,
       leaseEpoch,
       expectedGeneration,
+      expectedNavigationGeneration,
+      expectedDocumentGeneration,
       mutation: true,
     });
+    const expectedTabHint = browserHint(record.rawTabId, this.hintSalt);
     const proof = logicalProof(cleanupProof, {
       spaceId,
       pageId,
       leaseEpoch,
       kind: "cleanup",
+      purpose: "cleanup",
+      requireExpiry: true,
+      targetGeneration: record.targetGeneration,
+      tabHint: expectedTabHint,
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
+      now: this.now(),
     });
-    if (
-      proof.generation !== undefined &&
-      proof.generation !== record.generation
-    ) {
-      throw new ProtocolError(
-        "stale_generation",
-        "cleanup proof generation is not current",
-      );
-    }
     if (proof.ownership !== "agent") {
       throw new ProtocolError(
         "permission_denied",
         "cleanup proof does not prove agent ownership",
       );
     }
+    this.pruneProofs();
     if (this.usedCleanupProofs.has(proof.proof_id)) {
       throw new ProtocolError(
         "replay_rejected",
         "cleanup proof was already consumed",
       );
     }
-    this.usedCleanupProofs.add(proof.proof_id);
+    if (typeof this.chrome?.tabs?.get !== "function") {
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Chrome tabs.get is unavailable for cleanup verification",
+      );
+    }
+    if (typeof this.chrome?.tabs?.remove !== "function") {
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Chrome tabs.remove is unavailable",
+      );
+    }
+    let liveTab;
     try {
-      await chromeCall(
-        this.chrome.tabs.remove.bind(this.chrome.tabs),
+      liveTab = await chromeCall(
+        this.chrome.tabs.get.bind(this.chrome.tabs),
         record.rawTabId,
       );
+    } catch (error) {
+      throw new ProtocolError("stale_target", "managed tab is no longer live", {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (
+      !liveTab ||
+      liveTab.id !== record.rawTabId ||
+      Boolean(liveTab.incognito) !== Boolean(record.incognito) ||
+      (record.url !== undefined &&
+        liveTab.url !== undefined &&
+        safeText(liveTab.url, 4096) !== record.url) ||
+      liveTab.active === true
+    ) {
+      throw new ProtocolError(
+        liveTab?.active === true ? "user_control_required" : "stale_target",
+        "live tab identity or user-control state changed",
+      );
+    }
+    const current = this.byPage.get(pageId);
+    if (
+      current !== record ||
+      current.targetGeneration !== record.targetGeneration ||
+      current.sessionEpoch !== this.browserSessionEpoch ||
+      current.bindingState !== "bound" ||
+      current.ownership !== "agent"
+    ) {
+      throw new ProtocolError(
+        "stale_generation",
+        "managed tab changed during cleanup verification",
+      );
+    }
+    this.assertFence({ spaceId, leaseEpoch });
+    this.consumeProof(
+      this.usedCleanupProofs,
+      proof.proof_id,
+      proof.expires_at ?? proof.expires_at_ms,
+    );
+    try {
+      onDispatch();
+      await this.chrome.tabs.remove(record.rawTabId);
     } catch (error) {
       throw unknownDispatch("tab close dispatch was not confirmed", {
         cause: error instanceof Error ? error.message : String(error),
@@ -551,7 +986,7 @@ export class TabsRegistry {
   }
 
   getPageGeneration(pageId) {
-    return this.byPage.get(pageId)?.generation;
+    return this.byPage.get(pageId)?.targetGeneration;
   }
 
   inventory() {
@@ -574,7 +1009,11 @@ export class TabsRegistry {
       lifecycle: record.lifecycle,
       binding_state: record.bindingState,
       generation: record.generation,
+      target_generation: record.targetGeneration,
+      navigation_generation: record.navigationGeneration,
+      document_generation: record.documentGeneration,
       lease_epoch: record.leaseEpoch,
+      browser_session_epoch: record.sessionEpoch,
       url: record.url,
       title: record.title,
       incognito: record.incognito,
@@ -589,14 +1028,24 @@ export class TabsRegistry {
   }
 
   async handleUpdated(tabId, changeInfo = {}, tab) {
+    const previous = this.byRawTab.get(tabId);
+    const previousUrl = previous?.url;
     const record = tab
       ? this.observeTab({ ...tab, id: tabId }, "updated")
       : await this.hydrateTab(tabId);
     if (!record) return;
-    if (changeInfo.url !== undefined) {
-      record.url = safeText(changeInfo.url, 4096);
-      record.generation += 1;
-      if (record.pageId) record.bindingState = "bound";
+    const nextUrl =
+      changeInfo.url === undefined
+        ? record.url
+        : safeText(changeInfo.url, 4096);
+    const urlChanged = changeInfo.url !== undefined && nextUrl !== previousUrl;
+    if (urlChanged) {
+      record.url = nextUrl;
+      record.navigationGeneration += 1;
+      record.documentGeneration += 1;
+      record.generation = record.targetGeneration;
+    } else if (changeInfo.status === "loading") {
+      record.documentGeneration += 1;
     }
     if (changeInfo.title !== undefined)
       record.title = safeText(changeInfo.title, 512);
@@ -606,6 +1055,8 @@ export class TabsRegistry {
       record.rawGroupId = changeInfo.groupId;
       this.groups?.observeTabMembership(tabId, changeInfo.groupId);
     }
+    if (record.pageId && (urlChanged || changeInfo.status === "loading"))
+      this.onLifecycle("document_changed", tabId, record);
     this.emit(record.pageId ? "page.changed" : "tab.observed", record, {
       reason: "updated",
     });
@@ -613,8 +1064,13 @@ export class TabsRegistry {
 
   handleRemoved(tabId, removeInfo = {}) {
     const record = this.byRawTab.get(tabId);
+    this.retiredRawTabIds.add(tabId);
+    this.hostCreatedTabIds.delete(tabId);
+    this.onLifecycle("removed", tabId, record);
     if (!record) return;
     if (record.pageId) {
+      record.targetGeneration += 1;
+      record.generation = record.targetGeneration;
       record.lifecycle = "target_lost";
       record.bindingState = "lost";
       this.emit("page.lost", record, { reason: "tab_removed" });
@@ -626,7 +1082,22 @@ export class TabsRegistry {
 
   handleReplaced(addedTabId, removedTabId) {
     const prior = this.byRawTab.get(removedTabId);
+    const replacement =
+      addedTabId === removedTabId ? prior : this.byRawTab.get(addedTabId);
+    if (replacement && replacement !== prior) {
+      this.retiredRawTabIds.add(addedTabId);
+      this.onLifecycle("replacement_existing", addedTabId, replacement);
+      if (replacement.pageId) this.byPage.delete(replacement.pageId);
+      this.byRawTab.delete(addedTabId);
+      this.groups?.removeTab(addedTabId);
+    }
+    this.retiredRawTabIds.add(removedTabId);
+    this.hostCreatedTabIds.delete(removedTabId);
+    this.onLifecycle("replaced", removedTabId, prior);
+    this.onLifecycle("replacement", addedTabId, undefined);
     if (prior?.pageId) {
+      prior.targetGeneration += 1;
+      prior.generation = prior.targetGeneration;
       prior.lifecycle = "target_lost";
       prior.bindingState = "rebind_required";
       this.emit("page.replaced", prior, { reason: "tab_replaced" });
@@ -646,7 +1117,8 @@ export class TabsRegistry {
     const record = this.byRawTab.get(tabId);
     if (!record) return;
     record.rawWindowId = attachInfo.newWindowId ?? record.rawWindowId;
-    record.generation += 1;
+    record.targetGeneration += 1;
+    record.generation = record.targetGeneration;
     record.bindingState = record.pageId ? "lost" : record.bindingState;
     this.emit(record.pageId ? "page.changed" : "tab.observed", record, {
       reason: "tab_attached",
@@ -656,7 +1128,8 @@ export class TabsRegistry {
   handleDetached(tabId, detachInfo = {}) {
     const record = this.byRawTab.get(tabId);
     if (!record) return;
-    record.generation += 1;
+    record.targetGeneration += 1;
+    record.generation = record.targetGeneration;
     if (record.pageId) record.bindingState = "lost";
     this.emit(record.pageId ? "page.changed" : "tab.observed", record, {
       reason: "tab_detached",
