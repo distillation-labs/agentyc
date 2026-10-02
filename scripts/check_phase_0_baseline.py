@@ -375,6 +375,7 @@ def validate_extension_gate(checker: Checker) -> str:
         ("event_received", "debugger_event_received", "event"),
         ("tab_group_created", "tab_group"),
         ("native_messaging_passed", "native_messaging", "handshake"),
+        ("cleanup_passed", "cleanup"),
     )
     if any(not has_marker(report, alternatives) for alternatives in required_markers):
         checker.add("live-chrome-evidence-incomplete", "extension report lacks explicit extension, debugger, event, tab-group, or Native Messaging evidence", path, gate="live_chrome")
@@ -523,11 +524,11 @@ def performance_report_passed(data: dict[str, Any]) -> bool:
             return False
         if not isinstance(live_only, dict) or live_only.get("status") == "not_measured_offline":
             return False
-        if not any(
-            isinstance(live_only.get(key), (int, float)) and not isinstance(live_only.get(key), bool)
-            for key in ("chrome_cpu_percent", "chrome_rss_bytes", "host_rss_bytes", "event_lag_ms", "human_tab_responsiveness_ms")
-        ):
-            return False
+        required_live_metrics = ("chrome_cpu_percent", "chrome_rss_bytes", "host_rss_bytes", "event_lag_ms", "human_tab_responsiveness_ms")
+        for key in required_live_metrics:
+            metric = live_only.get(key)
+            if not isinstance(metric, (int, float)) or isinstance(metric, bool) or metric < 0:
+                return False
     return True
 
 
