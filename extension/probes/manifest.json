@@ -3,6 +3,7 @@
   "name": "agentyc Phase 0 Probe",
   "version": "0.0.1",
   "description": "Test-only MV3 debugger, tab-group, and Native Messaging probe.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs96wxilbOvjiE5WGPcqZC2fqGfEdCT8DqBdUECGojHWdYzeCGY8Ovlv38bOl5Alw53QDk/mW/M/DxX6AudzPN+RZeDtbIngeqo00TlJBRM73rYzpVM42tQ4ZkGS/QkUD262kZKKFdtqZqpflEFkCQ+HkHa9b6cNzAbvFSr/QOcGTxtB8wD8YPcURxIjaRx+p20xmvpF0JCNP4Ey6Z0n5UFYTBILHRaTYOpjHEANNACH3ntJS4fs44/StXx2WNkBg8gnQ86oFH7+ilUy6Ix+rN8USAdwtYcVlpcYmAcN8yiXvGL2qOMujKQiWaDmTuOFiC/mTivfYOhDh7l38mrAWiQIDAQAB",
   "permissions": [
     "debugger",
     "nativeMessaging",
