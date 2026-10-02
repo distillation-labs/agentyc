@@ -35,6 +35,7 @@ impl McpProcess {
         assert!(binary.exists(), "Binary not found at {}", binary.display());
         let mut proc = Command::new(&binary)
             .arg("mcp")
+            .arg("--legacy-cdp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -226,6 +227,7 @@ fn test_navigate_blocked_by_allowed_domains() {
     let binary = binary_path();
     let mut proc = Command::new(&binary)
         .arg("mcp")
+        .arg("--legacy-cdp")
         .env("AGENTYC_ALLOWED_DOMAINS", "example.com")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
