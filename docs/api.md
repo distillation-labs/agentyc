@@ -67,17 +67,16 @@ with `--cdp-url`.
 
 ## MCP Server
 
-The server is `agentyc_mcp::BrowserServer`, run via `agentyc_mcp::run_stdio`
-(stdio) or an `axum`-hosted `StreamableHttpService` (HTTP). It implements
-`rmcp`'s `ServerHandler` and advertises tools only — no resources or prompts.
+The default server is the host-backed logical task-space adapter, served over stdio. The legacy direct-CDP BrowserServer remains an explicit compatibility mode and is not the existing-Chrome product authority.
 
-Startup path:
+Startup paths:
 
-1. `crates/agentyc/src/main.rs` parses the CLI.
-2. MCP mode calls `agentyc_mcp::run_stdio(cdp_url)`.
-3. `BrowserServer::new()` composes six tool routers (61 tools) and slims their
-   input schemas.
-4. `rmcp` routes each `tools/call` to the matching `#[rmcp::tool]` handler.
+1. main.rs parses the CLI.
+2. agentyc and agentyc mcp use the host-backed adapter; mcp --legacy-cdp selects the explicit legacy server.
+3. agentyc serve requires an explicit --cdp-url and is legacy compatibility HTTP.
+4. HostBrowserServer exposes logical host tools; BrowserServer composes the legacy six routers.
+5. rmcp routes each tools/call to the matching handler.
+
 
 ## MCP Tools
 
