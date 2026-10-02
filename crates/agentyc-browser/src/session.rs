@@ -236,8 +236,17 @@ impl BrowserSession {
     }
 
     /// Close a tab and select another live page if the closed tab was active.
+    ///
+    /// An externally attached browser is user-owned by default. Without a
+    /// host-owned task-space record and explicit adoption proof, closing one of
+    /// its tabs would be an unsafe mutation, so this method refuses it.
     pub async fn close_tab(&self, tab_id: &str) -> Result<()> {
         let _lifecycle = self.lifecycle.lock().await;
+        if self.launched_browser.lock().await.is_none() {
+            return Err(anyhow!(
+                "refusing to close a tab in an externally attached browser; ownership proof is required"
+            ));
+        }
         let tab = self.resolve_tab(tab_id).await?;
         let was_active = self
             .active_page
@@ -294,16 +303,29 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Close all page targets and then release any locally owned browser.
+    /// Release this session and close page targets only for a browser process
+    /// that this session launched and owns.
+    ///
+    /// For an externally attached browser, cleanup detaches from the active
+    /// target and leaves every user tab open. Chrome tab groups and a CDP
+    /// endpoint are not ownership proofs.
     pub async fn close_all(&self) -> Result<()> {
         let _lifecycle = self.lifecycle.lock().await;
-        let tabs = self.list_tabs().await.unwrap_or_default();
-        for tab in tabs {
-            self.send_browser::<Value>("Target.closeTarget", json!({"targetId": tab.target_id}))
+        let owns_browser = self.launched_browser.lock().await.is_some();
+        if owns_browser {
+            let tabs = self.list_tabs().await.unwrap_or_default();
+            for tab in tabs {
+                self.send_browser::<Value>(
+                    "Target.closeTarget",
+                    json!({"targetId": tab.target_id}),
+                )
                 .await
                 .ok();
+            }
+            *self.active_page.lock().await = None;
+        } else {
+            self.detach_active_locked().await;
         }
-        *self.active_page.lock().await = None;
         let launched = self.launched_browser.lock().await.take();
         if let Some(launched) = launched {
             launched.kill().await;
