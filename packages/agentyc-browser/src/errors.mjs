@@ -8,6 +8,7 @@ export class AgentycError extends Error {
     retryable = false,
     guidance = DEFAULT_GUIDANCE,
     details = undefined,
+    transportFailure = false,
   }) {
     super(message);
     this.name = "AgentycError";
@@ -15,6 +16,7 @@ export class AgentycError extends Error {
     this.retryable = Boolean(retryable);
     this.guidance = guidance;
     this.details = details;
+    this.transportFailure = Boolean(transportFailure);
   }
 }
 
@@ -66,6 +68,19 @@ export class UnknownOutcomeError extends AgentycError {
   }
 }
 
+export class CancelledError extends AgentycError {
+  constructor(message = "the request was cancelled", details) {
+    super({
+      code: "cancelled",
+      message,
+      retryable: false,
+      guidance: "none",
+      details,
+    });
+    this.name = "CancelledError";
+  }
+}
+
 export class ReconciliationRequiredError extends AgentycError {
   constructor(
     message = "the action must be reconciled before another mutation",
@@ -108,10 +123,53 @@ export class StaleReferenceError extends AgentycError {
   }
 }
 
+function errorRecord(error) {
+  if (error instanceof AgentycError) {
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+      guidance: error.guidance,
+      details: error.details,
+    };
+  }
+  return {
+    code: "native_host_unavailable",
+    message: error instanceof Error ? error.message : String(error),
+    retryable: true,
+    guidance: "retry",
+  };
+}
+
+export class BatchError extends AgentycError {
+  constructor({ failures, results }) {
+    const serializedFailures = failures.map((failure) => ({
+      index: failure.index,
+      request_id: failure.request_id,
+      action_id: failure.action_id,
+      error: errorRecord(failure.error),
+    }));
+    super({
+      code: "batch_failed",
+      message: "one or more batched requests failed",
+      retryable: false,
+      guidance: "none",
+      details: {
+        failures: serializedFailures,
+        partial_results: results,
+      },
+    });
+    this.name = "BatchError";
+    this.failures = failures;
+    this.results = results;
+  }
+}
+
 const ERROR_TYPES = {
   extension_not_connected: ExtensionNotConnectedError,
   capability_unavailable: CapabilityUnavailableError,
   unknown_outcome: UnknownOutcomeError,
+  cancelled: CancelledError,
   reconciliation_required: ReconciliationRequiredError,
   stale_lease: StaleLeaseError,
   stale_ref: StaleReferenceError,
@@ -141,22 +199,48 @@ export function mapWireError(error) {
 /** Map a transport failure without guessing whether a side effect occurred. */
 export function mapTransportError(
   error,
-  { mayHaveSideEffects = false, details = undefined } = {},
+  {
+    mayHaveSideEffects = false,
+    details = undefined,
+    transportFailure = false,
+  } = {},
 ) {
-  if (error instanceof AgentycError) return error;
+  const isTransportFailure =
+    transportFailure ||
+    !(error instanceof AgentycError) ||
+    error.transportFailure;
+  if (!isTransportFailure && error instanceof AgentycError) return error;
+
   const message = error instanceof Error ? error.message : String(error);
+  const cause = { ...details, cause: message };
+  if (error?.cancelled) {
+    if (mayHaveSideEffects)
+      return new UnknownOutcomeError(
+        "a side-effecting request was cancelled after dispatch",
+        cause,
+      );
+    return new CancelledError("the request was cancelled", cause);
+  }
   if (mayHaveSideEffects)
     return new UnknownOutcomeError(
       "local transport disconnected after a side-effecting request",
-      { ...details, cause: message },
+      cause,
     );
+  if (error instanceof AgentycError) return error;
   return new AgentycError({
     code: "native_host_unavailable",
     message: `local host transport unavailable: ${message}`,
     retryable: true,
     guidance: "retry",
-    details: { cause: message },
+    details: cause,
   });
+}
+
+/** Attach logical request/action identity without exposing browser identity. */
+export function withRequestIdentity(error, identity) {
+  if (!(error instanceof AgentycError)) return error;
+  error.details = { ...(error.details ?? {}), ...identity };
+  return error;
 }
 
 export function isAgentycError(error) {
