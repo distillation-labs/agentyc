@@ -7,8 +7,9 @@ fail-closed direct-product gate pass. The direct gate is implemented in
 `mcp-compatibility-gate` with its own versioned report and artifact; MCP
 adapter/package publication depends on that gate, but direct binary publication
 does not silently claim MCP compatibility-release evidence.
-The legacy `release-gate` job remains a compatibility baseline and does not
-enforce the full production matrix by itself.
+The legacy `release-gate` job remains a compatibility baseline. The planned gate
+policy does not enforce the full production matrix through that legacy job by
+itself; `direct-release-gate` owns the direct-product policy.
 
 ## What Is Gated
 
