@@ -8,8 +8,13 @@ use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod commands;
 mod frontend;
 
+use commands::direct::{
+    ActionCommand as DirectActionCommand, DirectCommand, DirectOptions, EventsArgs, HostCommand,
+    PageCommand as DirectPageCommand, SnapshotArgs, SpaceCommand,
+};
 use frontend::{Action, dispatch, render_error, render_json, runtime_config};
 
 const SKILL_MD: &str = include_str!("../../../SKILL.md");
@@ -23,6 +28,15 @@ const SKILL_MD: &str = include_str!("../../../SKILL.md");
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
+    /// Durable state directory for direct host-backed commands.
+    #[arg(long, global = true, value_name = "PATH")]
+    state_dir: Option<String>,
+    /// Logical principal suffix or complete `principal_` identity.
+    #[arg(long, global = true, value_name = "PRINCIPAL")]
+    principal: Option<String>,
+    /// Use the explicit deterministic fake-host seam for direct commands.
+    #[arg(long, global = true)]
+    offline: bool,
 }
 
 #[derive(Subcommand)]
@@ -82,6 +96,30 @@ enum Cmd {
         #[arg(long)]
         headless: Option<bool>,
     },
+    /// Manage logical task spaces through the host broker.
+    Space {
+        #[command(subcommand)]
+        command: SpaceCommand,
+    },
+    /// Manage logical pages through the host broker.
+    Page {
+        #[command(subcommand)]
+        command: DirectPageCommand,
+    },
+    /// Read a logical page snapshot through the host broker.
+    Snapshot(SnapshotArgs),
+    /// Inspect or reconcile a durable action receipt.
+    Action {
+        #[command(subcommand)]
+        command: DirectActionCommand,
+    },
+    /// Resume logical host events.
+    Events(EventsArgs),
+    /// Inspect the direct host lifecycle and bridge.
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
 }
 
 #[tokio::main]
@@ -96,6 +134,11 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let direct_options = DirectOptions {
+        state_dir: cli.state_dir.clone(),
+        principal: cli.principal.clone(),
+        offline: cli.offline,
+    };
 
     match cli.command {
         None => agentyc_mcp::run_stdio(None).await,
@@ -132,6 +175,24 @@ async fn main() -> Result<()> {
             action,
         }) => run_action(cdp_url, headless, action).await,
         Some(Cmd::Repl { cdp_url, headless }) => run_repl(cdp_url, headless).await,
+        Some(Cmd::Space { command }) => {
+            commands::direct::run(DirectCommand::Space(command), direct_options)
+        }
+        Some(Cmd::Page { command }) => {
+            commands::direct::run(DirectCommand::Page(command), direct_options)
+        }
+        Some(Cmd::Snapshot(args)) => {
+            commands::direct::run(DirectCommand::Snapshot(args), direct_options)
+        }
+        Some(Cmd::Action { command }) => {
+            commands::direct::run(DirectCommand::Action(command), direct_options)
+        }
+        Some(Cmd::Events(args)) => {
+            commands::direct::run(DirectCommand::Events(args), direct_options)
+        }
+        Some(Cmd::Host { command }) => {
+            commands::direct::run(DirectCommand::Host(command), direct_options)
+        }
     }
 }
 
