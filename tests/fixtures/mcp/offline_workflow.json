@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "phase-0-offline-baseline",
+  "deterministic": true,
+  "network": "none",
+  "steps": [
+    {"operation":"load_fixture","fixture":"small-form"},
+    {"operation":"get_state","mode":"full"},
+    {"operation":"click","target":"save"},
+    {"operation":"get_state","mode":"delta","since":"previous"},
+    {"operation":"load_fixture","fixture":"nested-frame"},
+    {"operation":"list_frames"}
+  ],
+  "expected": {
+    "external_requests": 0,
+    "browser_launches": 0,
+    "cdp_urls": 0,
+    "raw_browser_ids_in_primary_output": 0
+  }
+}
