@@ -1,7 +1,7 @@
 # Phase 0 baseline — P0-T1
 
 **Captured:** 2026-10-02T00:47:49Z UTC baseline start; browser probes completed immediately afterward.
-**Scope:** P0-T1 only. Production crates and plan files were not edited. This report and files under `artifacts/p0-current/` are the only task-owned outputs.
+**Scope:** Historical P0-T1 capture. The addendum in section 7 is the current evidence after the host/core implementation slices were added. Historical statements below remain attributed to the original capture and must not be read as current implementation status.
 
 ## 1. Build tuple
 
@@ -144,3 +144,25 @@ Evidence: `artifacts/p0-current/test-path-inventory.txt` and the cited source pa
 | Isolated headless local browser probe                                                   | Passed; local `data:`/`about:blank` only; redacted raw-ID output and successful global close.                                                                                                                                                    |
 
 All archived outputs are under `artifacts/p0-current/`. Paths, host name, endpoints, raw browser IDs, process IDs, temporary profile paths, metrics identifiers, cookies, and tokens were redacted or omitted.
+
+## 7. Current addendum — implementation and live-gate status
+
+**Captured:** 2026-10-02 current checkout after implementation slices and safety audits.
+
+The following deterministic implementation surfaces now exist and pass their focused checks:
+
+- `crates/agentyc-core`: transport-neutral logical IDs, lifecycle/error/protocol/snapshot/action/event contracts and negative fixtures.
+- `crates/agentyc-host`: locked atomic ledger, leases/fencing, action journal, reconciliation, event resume, snapshot cache, refs, waits, actionability, and context budget seams.
+- `extension/`: production MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests.
+- Direct CLI/SDK, rollout evidence tooling, and the host-backed MCP compatibility adapter.
+
+The live isolated probe was rerun with the installed branded Chrome `154.0.8037.93`. It launched only a disposable profile and recorded the exact refusal `--load-extension is not allowed in Google Chrome, ignoring.`. `/json/list` exposed one service-worker-shaped built-in Google Network Speech target; exact manifest/name/version/runtime identity checks rejected it. The probe removed its disposable profile and reported `disposable_cleanup_passed: true`. It did not weaken identity checks, attach to an existing endpoint, mutate user tabs, or claim Native Messaging evidence.
+
+Current Phase 0 status remains **blocked/active** for these evidence gates:
+
+- branded-Chrome MV3 extension load and Chrome-mediated Native Messaging;
+- two-space enrolled existing-Chrome coexistence and user-tab safety;
+- real installation/update/uninstall/downgrade/rollback;
+- live performance/resource/token/context measurements.
+
+Offline and deterministic tests are not substitutes for those gates. The next live action is to supply an already-installed supported unbranded/Chromium test binary or an operator-captured enrolled existing-Chrome harness; no browser download is implied by this record.
