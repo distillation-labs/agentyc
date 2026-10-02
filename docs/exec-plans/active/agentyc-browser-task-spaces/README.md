@@ -50,7 +50,7 @@ See `research/decision-supersession.md` for the old-plan mapping and `research/d
 
 ## Evidence status
 
-This document is an execution plan, not a shipped capability list. Phase 0 is active and Phases 1–8 remain pending. No agentyc implementation, production rollout, or live Chrome evidence is claimed for the target path.
+This document is an execution plan and evidence registry. Phase 0 remains active; the canonical registry still keeps Phases 1–8 pending until their predecessor gates are closed. Implementation slices for the core/host, MV3 extension, context/reliability, direct CLI/SDK, rollout gates, and host-backed MCP adapter now exist and have deterministic tests, but no production rollout or live existing-Chrome evidence is claimed for the target path.
 
 **Proven by repository/source inspection:**
 
