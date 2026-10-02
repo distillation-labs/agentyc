@@ -31,9 +31,26 @@ jobs:
       - run: cargo build --release -p agentyc --locked
       - run: cargo test --workspace --release --locked -- --test-threads=4
 
+  direct-release-gate:
+    name: direct-release-gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run rollout unit checks
+        run: python3 -m unittest discover -s tests/rollout -p 'test_*.py'
+      - name: Run fail-closed direct release gate
+        run: python3 scripts/run_release_gate.py --require-live --artifact-dir artifacts/p7-release-gate
+      - name: Upload direct gate artifacts after failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p7-release-gate-${{ github.run_id }}
+          path: artifacts/p7-release-gate
+          if-no-files-found: ignore
+
   publish-binaries:
     name: publish-${{ matrix.target }}
-    needs: release-gate
+    needs: [release-gate, direct-release-gate]
     if: github.event_name == 'release'
     runs-on: ${{ matrix.os }}
     strategy:
