@@ -60,6 +60,20 @@ const RAW_BROWSER_KEYS = new Set([
   "raw_window_id",
   "rawframeid",
   "raw_frame_id",
+  "objectid",
+  "object_id",
+  "requestid",
+  "scriptid",
+  "script_id",
+]);
+
+const RAW_CDP_IDENTIFIER_REDACTION_KEYS = new Set([
+  "objectid",
+  "object_id",
+  "requestid",
+  "request_id",
+  "scriptid",
+  "script_id",
 ]);
 
 function normalizedKey(key) {
@@ -80,6 +94,19 @@ function isRawBrowserKey(key, parentKey = "") {
       parent.startsWith("loader") ||
       parent.startsWith("backend_node") ||
       parent.startsWith("backendnode"))
+  );
+}
+
+function isRedactedBrowserKey(key, parentKey = "") {
+  const normalized = normalizedKey(key);
+  if (isRawBrowserKey(key, parentKey)) return true;
+  if (RAW_CDP_IDENTIFIER_REDACTION_KEYS.has(normalized)) return true;
+  const parent = normalizedKey(parentKey);
+  return (
+    normalized === "id" &&
+    (parent.startsWith("object") ||
+      parent.startsWith("request") ||
+      parent.startsWith("script"))
   );
 }
 
@@ -484,7 +511,7 @@ export function redactBrowserIdentifiers(value, parentKey = "") {
   if (value === null || typeof value !== "object") return value;
   const output = {};
   for (const [key, child] of Object.entries(value)) {
-    if (isRawBrowserKey(key, parentKey)) continue;
+    if (isRedactedBrowserKey(key, parentKey)) continue;
     output[key] = redactBrowserIdentifiers(child, key);
   }
   return output;
@@ -585,6 +612,12 @@ export const RAW_BROWSER_IDENTIFIER_KEYS = Object.freeze([
   "execution_context_id",
   "loaderId",
   "loader_id",
+  "objectId",
+  "object_id",
+  "requestId",
+  "request_id",
+  "scriptId",
+  "script_id",
   "rawTabId",
   "raw_tab_id",
   "rawTargetId",
