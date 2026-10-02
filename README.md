@@ -16,13 +16,13 @@
 
 ## What It Is
 
-`agentyc` is a single native binary that runs a stdio MCP server for browser automation. It talks CDP directly to Chrome — no Playwright, no Python, no LLM in the loop. Every tool is deterministic, every response is compact, and the default path works with zero API keys.
+`agentyc` is a single native binary with a host-backed stdio MCP adapter for logical browser task spaces. The existing-Chrome product path uses the enrolled MV3 extension and Native Messaging bridge; it does not launch Chrome or attach to a copied CDP URL. The direct-CDP server remains an explicit legacy compatibility mode. Every tool is deterministic, every response is compact, and no API key is required.
 
 Cold start: **~5ms**. Binary: **~8MB**. Idle RSS: **~3MB**.
 
 ```bash
 # Download the binary for your platform, then:
-agentyc           # starts the MCP server — that's it
+agentyc           # starts the host-backed MCP adapter
 agentyc init      # writes agentyc-skill.md — point your agent at it
 # Or install the portable agent plugin bundle:
 # plugins/agentyc-browser-automation/plugin.json
@@ -101,13 +101,13 @@ The host/core contracts, production MV3 extension package, direct CLI/SDK, conte
 
 ## Legacy MCP Compatibility Surface: 61 Tools
 
-This section documents the current compatibility implementation, not the planned existing-Chrome task-space product. The legacy path may launch a managed temporary profile when no explicit `--cdp-url` is supplied; the target path will use the host/extension/space architecture described in the task-space plan. Legacy raw tab/target/ref identifiers remain deprecated adapter details and are not the target public identity model.
+This section documents the explicit legacy compatibility implementation, not the existing-Chrome task-space product. Select it with `agentyc mcp --legacy-cdp`; pass `--cdp-url <endpoint>` for an operator-supplied browser, or omit it only for the separately selected legacy managed-test lifecycle. The default command uses the host/extension/space architecture described in the task-space plan. Legacy raw tab/target/ref identifiers remain deprecated adapter details and are not the target public identity model.
 
 ### Navigation & State (11 tools)
 
 | Tool                            | What it does                                                                           |
 | ------------------------------- | -------------------------------------------------------------------------------------- |
-| `browser_navigate`              | Navigate to URL; returns page title. Auto-launches Chrome.                             |
+| `browser_navigate`              | Navigate to URL; returns page title in the explicit legacy compatibility server.       |
 | `browser_go_back`               | History back                                                                           |
 | `browser_go_forward`            | History forward                                                                        |
 | `browser_refresh`               | Reload current page                                                                    |
@@ -131,22 +131,22 @@ This section documents the current compatibility implementation, not the planned
 
 ### Interaction (14 tools)
 
-| Tool                           | What it does                                                  |
-| ------------------------------ | ------------------------------------------------------------- |
-| `browser_click`                | Click by ref, index, label, or coordinates; optional URL-wait |
-| `browser_right_click`          | Right-click to open context menu                              |
-| `browser_double_click`         | Double-click                                                  |
-| `browser_hover`                | Hover to trigger `:hover` states and menus                    |
-| `browser_drag_to`              | Drag source to target                                         |
-| `browser_type`                 | Clear and type into a field (React/Vue-compatible)            |
-| `browser_fill_form`            | Batch text, selects, checkboxes in one round trip             |
-| `browser_press_key`            | Send key or shortcut (`Enter`, `Tab`, `Control+a`)            |
-| `browser_scroll`               | Scroll page or element                                        |
-| `browser_scroll_to_text`       | Bring text into viewport                                      |
-| `browser_select_option`        | Pick a `<select>` option by visible text                      |
-| `browser_get_dropdown_options` | Inspect all options in a combobox                             |
-| `browser_upload_file`          | Upload a file to a file input                                 |
-| `browser_handle_dialog`        | Accept/dismiss JS dialogs                                     |
+| Tool                           | What it does                                                           |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `browser_click`                | Click by ref, index, label, or coordinates; optional URL-wait          |
+| `browser_right_click`          | Right-click to open context menu                                       |
+| `browser_double_click`         | Double-click                                                           |
+| `browser_hover`                | Hover to trigger `:hover` states and menus                             |
+| `browser_drag_to`              | Drag source to target                                                  |
+| `browser_type`                 | Clear and type into a field (React/Vue-compatible)                     |
+| `browser_fill_form`            | Batch text, selects, checkboxes in one round trip                      |
+| `browser_press_key`            | Send key or shortcut (`Enter`, `Tab`, `Control+a`)                     |
+| `browser_scroll`               | Scroll page or element                                                 |
+| `browser_scroll_to_text`       | Bring text into viewport                                               |
+| `browser_select_option`        | Pick a `<select>` option by visible text                               |
+| `browser_get_dropdown_options` | Inspect all options in a combobox                                      |
+| `browser_upload_file`          | Legacy adapter returns a typed denial; no implicit file-input mutation |
+| `browser_handle_dialog`        | Accept/dismiss JS dialogs                                              |
 
 ### Inspection & Extraction (7 tools)
 
