@@ -28,7 +28,7 @@ The direct command tree is:
 - `events [--after-epoch EPOCH] [--after-sequence SEQUENCE] [--space-id SPACE_ID] [--page-id PAGE_ID]`
 - `host status`
 
-Global direct options are `--state-dir PATH`, `--principal PRINCIPAL`, and the explicit `--offline` fake-host seam. `AGENTYC_STATE_DIR`, `AGENTYC_PRINCIPAL`, and `AGENTYC_FAKE_HOST=1` are equivalent environment configuration where applicable.
+Global direct options are `--state-dir PATH`, `--principal PRINCIPAL`, `--offline`, and `--json`. `--json` emits the same structured record in compact form; without it the record is pretty-printed. `AGENTYC_STATE_DIR`, `AGENTYC_PRINCIPAL`, and `AGENTYC_FAKE_HOST=1` are equivalent environment configuration where applicable. Stdout contains one JSON value; diagnostics go to stderr.
 
 ## Structured results
 
@@ -59,6 +59,8 @@ Failures have stable typed fields:
 ```
 
 The direct output contains logical `space_id`, `page_id`, and `action_id` values only. It does not print browser target, tab, session, debugger, or process identities, and it never uses `[id] name` formatting.
+
+Direct command failures retain the JSON error record and use stable exit codes: `2` usage/invalid argument, `3` host/protocol/transport unavailable, `4` permission or capability, `5` other runtime failure, `6` timeout/cancelled, and `7` unknown outcome.
 
 ## Browser and extension behavior
 
