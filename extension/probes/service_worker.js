@@ -2,6 +2,8 @@ const PROTOCOL_VERSION = 1;
 const NATIVE_HOST = "com.agentyc.p0_probe";
 const FIXTURE_TITLE = "agentyc P0 probe fixture";
 const FIXTURE_MARKER = "agentyc_p0_probe";
+const FIXTURE_SHA256 =
+  "fc8ff011514dc69192ec3f383821a38d9c6f584d2756d8013446cbfe80b902e6";
 const FIXTURE_TEXT =
   "This local fixture contains no user data and is the only tab the live probe may mutate.";
 const MAX_NATIVE_BYTES = 64 * 1024;
@@ -50,7 +52,9 @@ async function findFixture(tabId) {
         return (
           candidate.title === FIXTURE_TITLE &&
           url.protocol === "file:" &&
-          url.searchParams.get(FIXTURE_MARKER) === "1"
+          url.pathname.endsWith("/fixture.html") &&
+          url.searchParams.get(FIXTURE_MARKER) === "1" &&
+          url.searchParams.get("agentyc_p0_fixture_sha256") === FIXTURE_SHA256
         );
       } catch (_) {
         return false;
@@ -62,7 +66,8 @@ async function findFixture(tabId) {
     isFixture =
       url.protocol === "file:" &&
       url.pathname.endsWith("/fixture.html") &&
-      url.searchParams.get(FIXTURE_MARKER) === "1";
+      url.searchParams.get(FIXTURE_MARKER) === "1" &&
+      url.searchParams.get("agentyc_p0_fixture_sha256") === FIXTURE_SHA256;
   } catch (_) {
     isFixture = false;
   }
