@@ -340,7 +340,7 @@ commands:
         "--require-live",
         "--check-install",
         "--extension-origin",
-        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "chrome-extension://<registered-id>",
       ]
     cwd: "."
     timeout_seconds: 60
