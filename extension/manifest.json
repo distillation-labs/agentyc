@@ -13,9 +13,20 @@
     "scripting",
     "sidePanel"
   ],
-  "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*"
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/page-bridge-content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/content-bridge.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
   ],
   "background": {
     "service_worker": "src/service-worker.mjs",
