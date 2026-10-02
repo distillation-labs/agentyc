@@ -16,6 +16,8 @@ name = "agentyc"
 path = "src/main.rs"
 
 [dependencies]
+agentyc-core    = { workspace = true }
+agentyc-host    = { workspace = true }
 agentyc-mcp     = { workspace = true }
 agentyc-cdp     = { workspace = true }
 agentyc-browser = { workspace = true }
@@ -27,6 +29,8 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 mimalloc = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
+dirs = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 rmcp = { workspace = true }
