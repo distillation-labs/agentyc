@@ -14,11 +14,14 @@ version = "2.0.0"
 dependencies = [
  "agentyc-browser",
  "agentyc-cdp",
+ "agentyc-core",
+ "agentyc-host",
  "agentyc-mcp",
  "agentyc-runtime",
  "anyhow",
  "axum",
  "clap",
+ "dirs",
  "mimalloc",
  "reqwest",
  "rmcp",
@@ -27,6 +30,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -70,6 +74,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentyc-core"
+version = "2.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "agentyc-dom"
 version = "2.0.0"
 dependencies = [
@@ -87,11 +100,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentyc-host"
+version = "2.0.0"
+dependencies = [
+ "agentyc-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "agentyc-mcp"
 version = "2.0.0"
 dependencies = [
  "agentyc-browser",
  "agentyc-cdp",
+ "agentyc-core",
+ "agentyc-host",
  "agentyc-runtime",
  "agentyc-tools",
  "anyhow",
@@ -105,6 +131,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "url",
