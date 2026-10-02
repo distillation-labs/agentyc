@@ -66,6 +66,8 @@ This document is an execution plan and evidence registry. Phase 0 remains active
 
 Offline source inspection and reference tests do not close live Chrome, installation, production, context, or reliability gates.
 
+**Current Phase 0 blocker:** the branded Chrome lane now uses the supported operator-assisted `chrome://extensions` Developer mode + Load unpacked flow. The runner waits for the pinned worker, verifies the staged binding, and requires a post-load permission/policy acknowledgement without using `--load-extension` or Chrome private APIs. The negative lane has passed; the positive lane still requires an operator to load the printed directory, install the exact user-level Native Messaging host, and complete the acknowledgement. P0-T5 coexistence, P0-T6 live benchmark/resource/token evidence, and P0-T7 lifecycle evidence remain blocked. Owner: Japneet Kalkat. Release posture: Phase 0 remains active and no live gate is closed. Next action: run the documented operator lane, then capture independently enrolled existing-Chrome, lifecycle, and live benchmark artifacts.
+
 ## Planned capability target — not yet proven
 
 Every bullet below is a target or requirement for the staged work, not a statement that agentyc implements it or that live Chrome has validated it. It remains gated by Phase 0 and the later production phases.
