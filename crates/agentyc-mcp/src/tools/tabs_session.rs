@@ -388,5 +388,7 @@ pub async fn browser_close_all(state: &SharedState) -> Result<CallToolResult> {
     state.dialog_handler_started = false;
     state.capture_started = false;
     state.clear_browser_scoped_state();
-    Ok(ok_text("All sessions closed"))
+    Ok(ok_text(
+        "Browser sessions released; externally owned tabs were preserved",
+    ))
 }
