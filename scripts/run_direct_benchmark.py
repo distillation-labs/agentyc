@@ -306,7 +306,7 @@ def validate_sample(sample: dict[str, Any]) -> str | None:
 def measure_sample(record: dict[str, Any], cache_state: str, spaces: int) -> dict[str, Any]:
     try:
         sample = measure_once(record, cache_state, spaces)
-    except Exception as exc:
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
         return sample_error(record, cache_state, spaces, exc)
     invalid_reason = validate_sample(sample)
     if invalid_reason is not None:
@@ -345,8 +345,8 @@ def summarize(samples: list[dict[str, Any]], record: dict[str, Any], cache_state
 
     valid_samples = [sample for sample in samples if sample.get("sample_status") == "valid"]
     first_valid = valid_samples[0] if valid_samples else {}
-    frame_count = sum(int(sample.get("frames", 0)) for sample in valid_samples)
-    frames_scanned = sum(int(sample.get("frames_scanned", 0)) for sample in valid_samples)
+    frame_count = max((int(sample.get("frames", 0)) for sample in valid_samples), default=0)
+    frames_scanned = max((int(sample.get("frames_scanned", 0)) for sample in valid_samples), default=0)
     frame_coverage = frames_scanned / frame_count if frame_count else 1.0
     return {
         "fixture": record["name"],
@@ -387,6 +387,7 @@ def summarize(samples: list[dict[str, Any]], record: dict[str, Any], cache_state
             "frames_discovered": frame_count,
             "frames_scanned": frames_scanned,
             "nested_frame_coverage": frame_coverage,
+            "max_frame_depth": max((int(sample.get("max_frame_depth", 0)) for sample in valid_samples), default=0),
         },
         "live_only": {
             "chrome_cpu_percent": None,
@@ -400,8 +401,8 @@ def summarize(samples: list[dict[str, Any]], record: dict[str, Any], cache_state
             "status": "not_measured_offline",
         },
         "tail_gates": {
-            "p95": {"status": p95_gate, "minimum_samples": min_p95},
-            "p99": {"status": p99_gate, "minimum_samples": min_p99},
+            "p95": {"status": p95_gate, "minimum_samples": MIN_P95_SAMPLES},
+            "p99": {"status": p99_gate, "minimum_samples": MIN_P99_SAMPLES},
             "note": "Tail thresholds are fixed at 200 valid samples for p95 and 1000 valid samples for p99; smoke runs are explicitly non-gating.",
         },
     }
