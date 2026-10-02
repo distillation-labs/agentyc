@@ -15,15 +15,23 @@ only: no absolute paths, extension IDs, browser IDs, secrets, or page data.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import errno
 import hashlib
 import json
 import os
 import platform
 import re
+import secrets
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no fcntl
+    fcntl = None
 
 from artifact_envelope import envelope as add_envelope
 from artifact_envelope import write_json_atomic
@@ -36,9 +44,14 @@ HOST_PATH = ROOT / "tests" / "probes" / "native_probe"
 EXTENSION_DIR = ROOT / "extension" / "probes"
 EXTENSION_MANIFEST = EXTENSION_DIR / "manifest.json"
 MACOS_TEMPLATE = EXTENSION_DIR / "native_host_manifest.macos.json"
-INSTALL_RECORD = ".install-record.json"
+# Internal transaction state is not a published evidence JSON artifact.
+INSTALL_RECORD = ".install-journal"
+INSTALL_OWNER = ".install-owner"
+INSTALL_LOCK = ".install-lock"
+INSTALL_SCHEMA = 2
 REPORT_NAME = "report.json"
 DISPLAY_FILENAME = "native-host-manifest.json"
+JOURNAL_STATES = frozenset({"prepared", "temp_written", "installed", "removing", "removed"})
 EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
 PROFILE_MARKERS = {
     "Default",
@@ -48,6 +61,195 @@ PROFILE_MARKERS = {
     "SingletonLock",
     "SingletonSocket",
 }
+
+
+class InstallationBusy(RuntimeError):
+    """Another explicit install or rollback owns the registration lock."""
+
+
+class JournalError(ValueError):
+    """An install journal cannot be trusted for reconciliation."""
+
+
+def _assert_no_symlink_components(path: Path, *, message: str) -> None:
+    current = path
+    while current != current.parent:
+        try:
+            if current.is_symlink():
+                raise ValueError(message)
+        except OSError as error:
+            raise ValueError(message) from error
+        current = current.parent
+
+
+def _canonical_target(path: Path) -> Path:
+    requested = Path(path).expanduser()
+    _assert_no_symlink_components(requested, message="registration target components must not be symlinks")
+    resolved = requested.resolve(strict=False)
+    if resolved.exists() and resolved.is_dir():
+        raise ValueError("registration target must be a file")
+    return resolved
+
+
+def _native_host_available() -> bool:
+    try:
+        _assert_no_symlink_components(HOST_PATH, message="native host path components must not be symlinks")
+    except ValueError:
+        return False
+    return HOST_PATH.is_file() and os.access(HOST_PATH, os.X_OK)
+
+
+def _fsync_directory(directory: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(str(directory), flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_bytes(path: Path, rendered: bytes, *, mode: int = 0o600) -> None:
+    """Write and publish a file with a durable replacement and no symlink follow."""
+    target = Path(path)
+    _assert_no_symlink_components(target, message="atomic target components must not be symlinks")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    descriptor: int | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.tmp-", dir=target.parent)
+        os.close(descriptor)
+        descriptor = None
+        temporary = Path(temporary_name)
+        with temporary.open("wb") as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
+        os.replace(temporary, target)
+        temporary = None
+        _fsync_directory(target.parent)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    rendered = (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+    _atomic_bytes(path, rendered)
+
+
+def _owner_token(artifact_dir: Path, *, create: bool) -> bytes | None:
+    """Read or create the private transaction token bound to an artifact set."""
+    path = artifact_dir / INSTALL_OWNER
+    _assert_no_symlink_components(path, message="install owner path components must not be symlinks")
+    try:
+        metadata = path.stat()
+        if not path.is_file() or (hasattr(os, "getuid") and metadata.st_uid != os.getuid()) or metadata.st_mode & 0o077:
+            raise JournalError("install owner file ownership or permissions are invalid")
+        token = path.read_bytes()
+        if len(token) != 32:
+            raise JournalError("install owner token is invalid")
+        return token
+    except FileNotFoundError:
+        if not create:
+            return None
+    if not create:
+        return None
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_bytes(32)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(str(path), flags, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(token)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _fsync_directory(artifact_dir)
+        return token
+    except FileExistsError:
+        return _owner_token(artifact_dir, create=False)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _unlink_durable(path: Path) -> bool:
+    target = Path(path)
+    _assert_no_symlink_components(target, message="cleanup target components must not be symlinks")
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return False
+    _fsync_directory(target.parent)
+    return True
+
+
+@contextlib.contextmanager
+def installation_lock(lock_path: Path):
+    """Take a non-blocking lock for the whole explicit mutation transaction."""
+    target = Path(lock_path)
+    _assert_no_symlink_components(target, message="installation lock components must not be symlinks")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    remove_fallback_lock = False
+    try:
+        if fcntl is None:
+            flags |= os.O_EXCL
+            remove_fallback_lock = True
+        descriptor = os.open(str(target), flags, 0o600)
+        handle = os.fdopen(descriptor, "a+b")
+        descriptor = None
+        try:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as error:
+                    if error.errno in {errno.EACCES, errno.EAGAIN}:
+                        raise InstallationBusy("installation lock is held") from error
+                    raise
+            yield handle
+        finally:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+    except FileExistsError as error:
+        raise InstallationBusy("installation lock is held") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if remove_fallback_lock:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+
+
+@contextlib.contextmanager
+def installation_transaction(target: Path, artifact_dir: Path):
+    """Lock both the journal and its canonical registration target."""
+    paths = sorted(
+        {artifact_dir / INSTALL_LOCK, target.parent / INSTALL_LOCK},
+        key=lambda path: str(path),
+    )
+    with contextlib.ExitStack() as stack:
+        for path in paths:
+            stack.enter_context(installation_lock(path))
+        yield
 
 
 def _path_inside(path: Path, parent: Path, *, allow_parent: bool = False) -> bool:
@@ -264,7 +466,7 @@ def artifact_metadata(artifact_dir: Path) -> list[dict[str, Any]]:
         return []
     result: list[dict[str, Any]] = []
     for path in sorted(artifact_dir.iterdir(), key=lambda item: item.name):
-        if path.name == REPORT_NAME or path.is_symlink():
+        if path.name in {REPORT_NAME, INSTALL_RECORD, INSTALL_OWNER, INSTALL_LOCK} or path.is_symlink():
             continue
         if path.is_file():
             result.append(file_metadata(path, artifact_dir))
@@ -281,6 +483,8 @@ def artifact_metadata(artifact_dir: Path) -> list[dict[str, Any]]:
 
 def expected_manifest(extension_id: str) -> dict[str, Any]:
     validate_extension_id(extension_id)
+    if not _native_host_available():
+        raise ValueError("the repository Native Messaging host is missing, not executable, or uses a symlink")
     return {
         "name": HOST_NAME,
         "description": "Test-only agentyc Phase 0 Native Messaging host fixture",
@@ -294,12 +498,35 @@ def canonical_json(value: dict[str, Any]) -> str:
     return json.dumps(value, indent=2, sort_keys=True) + "\n"
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 def read_registration(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeError, json.JSONDecodeError):
+        value = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
+    except (FileNotFoundError, OSError, UnicodeError, ValueError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def registration_file_state(path: Path) -> tuple[str, dict[str, Any] | None]:
+    """Return absent, unreadable, non-object, or object without changing the file."""
+    try:
+        if path.is_symlink():
+            return "symlink", None
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "absent", None
+    except (OSError, UnicodeError):
+        return "unreadable", None
+    try:
+        value = json.loads(raw, parse_constant=_reject_json_constant)
+    except (ValueError, json.JSONDecodeError):
+        return "unreadable", None
+    if not isinstance(value, dict):
+        return "non_object", None
+    return "object", value
 
 
 def registration_state(path: Path, extension_id: str | None) -> dict[str, Any]:
@@ -312,9 +539,18 @@ def registration_state(path: Path, extension_id: str | None) -> dict[str, Any]:
     if extension_id is None:
         result.update({"status": "extension_id_required"})
         return result
-    actual = read_registration(path)
-    if actual is None:
+    file_status, actual = registration_file_state(path)
+    if file_status == "absent":
         result.update({"status": "absent"})
+        return result
+    if file_status == "symlink":
+        result.update({"status": "rejected", "detail": "registration path must not be a symlink"})
+        return result
+    if file_status == "non_object":
+        result.update({"status": "rejected", "detail": "registration JSON must be an object"})
+        return result
+    if file_status != "object" or actual is None:
+        result.update({"status": "rejected", "detail": "registration manifest is unreadable"})
         return result
     try:
         expected = expected_manifest(extension_id)
@@ -351,8 +587,8 @@ def build_preflight(
         },
         "fixtures": {"status": "not_checked"},
         "native_host": {
-            "status": "installed_and_executable" if HOST_PATH.is_file() and os.access(HOST_PATH, os.X_OK) else "absent_or_not_executable",
-            "executable_present": HOST_PATH.is_file() and os.access(HOST_PATH, os.X_OK),
+            "status": "installed_and_executable" if _native_host_available() else "absent_or_not_executable",
+            "executable_present": _native_host_available(),
         },
         "registration": {"status": "not_checked", "scope": registration_scope, "mutated": False},
         "clean_profile": clean_profile_state(profile_dir),
@@ -407,93 +643,352 @@ def build_preflight(
         "artifact_metadata": artifact_metadata(artifact_dir),
     }
 
+def _target_state(path: Path) -> tuple[str, str | None]:
+    try:
+        if path.is_symlink():
+            return "symlink", None
+        if not path.exists():
+            return "absent", None
+        if not path.is_file():
+            return "other", None
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return "present", digest
+    except (OSError, UnicodeError):
+        return "unreadable", None
+
+
+def _journal_path(artifact_dir: Path) -> Path:
+    return artifact_dir / INSTALL_RECORD
+
+
+def _path_digest(path: Path) -> str:
+    """Bind journal state to a canonical path without persisting that path."""
+    canonical = str(path.resolve(strict=False)).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _load_install_journal(path: Path) -> dict[str, Any] | None:
+    if path.is_symlink():
+        raise JournalError("install journal must not be a symlink")
+    if not path.exists():
+        return None
+    try:
+        metadata = path.stat()
+        if not path.is_file() or (hasattr(os, "getuid") and metadata.st_uid != os.getuid()) or metadata.st_mode & 0o077:
+            raise JournalError("install journal ownership or permissions are invalid")
+        value = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise JournalError("install journal is unreadable") from error
+    if not isinstance(value, dict):
+        raise JournalError("install journal must be an object")
+    if value.get("schema") != INSTALL_SCHEMA or value.get("filename") != DISPLAY_FILENAME:
+        raise JournalError("install journal schema is unsupported")
+    if value.get("state") not in JOURNAL_STATES:
+        raise JournalError("install journal state is unsupported")
+    ownership_digest = value.get("ownership_digest")
+    if not isinstance(ownership_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", ownership_digest):
+        raise JournalError("install journal ownership digest is invalid")
+    for field in ("target_digest", "target_parent_digest", "payload_sha256"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise JournalError(f"install journal {field} is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", value["payload_sha256"]):
+        raise JournalError("install journal payload hash is invalid")
+    if type(value.get("payload_bytes")) is not int or value["payload_bytes"] < 0:
+        raise JournalError("install journal payload size is invalid")
+    if value["state"] in {"prepared", "temp_written"}:
+        temp_name = value.get("temp_name")
+        if not isinstance(temp_name, str) or not temp_name or Path(temp_name).name != temp_name:
+            raise JournalError("install journal temporary target is invalid")
+    return value
+
+
+def _journal_target_matches(
+    record: dict[str, Any], target: Path, artifact_dir: Path, payload_hash: str, owner_token: bytes
+) -> bool:
+    expected_ownership = hashlib.sha256(
+        owner_token
+        + _path_digest(artifact_dir).encode("ascii")
+        + _path_digest(target).encode("ascii")
+        + payload_hash.encode("ascii")
+    ).hexdigest()
+    return (
+        record.get("target_digest") == _path_digest(target)
+        and record.get("target_parent_digest") == _path_digest(target.parent)
+        and record.get("payload_sha256") == payload_hash
+        and record.get("ownership_digest") == expected_ownership
+    )
+
+
+def _journal_temp_path(record: dict[str, Any], target: Path) -> Path | None:
+    temp_name = record.get("temp_name")
+    if not temp_name:
+        return None
+    if not isinstance(temp_name, str) or Path(temp_name).name != temp_name:
+        raise JournalError("install journal temporary target is invalid")
+    temporary = target.parent / temp_name
+    _assert_no_symlink_components(temporary, message="install temporary target components must not be symlinks")
+    return temporary
+
+
+def _remove_owned_temp(record: dict[str, Any], target: Path) -> None:
+    temporary = _journal_temp_path(record, target)
+    if temporary is None:
+        return
+    status, digest = _target_state(temporary)
+    if status == "absent":
+        return
+    if status != "present" or digest != record.get("payload_sha256"):
+        raise JournalError("install temporary target is not owned by this journal")
+    _unlink_durable(temporary)
+
+
+def _write_owned_temp(path: Path, payload: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(str(path), flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _fsync_directory(path.parent)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _remove_journal(path: Path) -> None:
+    if path.exists() or path.is_symlink():
+        _unlink_durable(path)
+
+
+def _reconcile_install_journal(
+    target: Path,
+    artifact_dir: Path,
+    payload: bytes,
+    payload_hash: str,
+    owner_token: bytes | None = None,
+) -> str:
+    """Reconcile a prior crash without ever acting on a different canonical target."""
+    journal_path = _journal_path(artifact_dir)
+    record = _load_install_journal(journal_path)
+    if record is None:
+        return "none"
+    owner_token = owner_token or _owner_token(artifact_dir, create=False)
+    if owner_token is None or not _journal_target_matches(record, target, artifact_dir, payload_hash, owner_token):
+        return "record_target_mismatch"
+    state = record["state"]
+    target_status, target_hash = _target_state(target)
+    if target_status == "symlink":
+        return "target_symlink"
+    if target_status == "unreadable" or target_status == "other":
+        return "target_changed"
+    if state in {"prepared", "temp_written"}:
+        if target_status == "present" and target_hash == payload_hash:
+            _remove_owned_temp(record, target)
+            record.update({"state": "installed", "temp_name": ""})
+            _atomic_json(journal_path, record)
+            return "installed"
+        if target_status == "present":
+            return "target_changed"
+        _remove_owned_temp(record, target)
+        _remove_journal(journal_path)
+        return "clean"
+    if state == "installed":
+        if target_status == "absent":
+            _remove_journal(journal_path)
+            return "clean"
+        return "installed" if target_hash == payload_hash else "target_changed"
+    if state in {"removing", "removed"}:
+        if target_status == "present" and target_hash != payload_hash:
+            return "target_changed"
+        if target_status == "present" and not _remove_owned_registration(target, payload_hash):
+            return "target_changed"
+        _remove_journal(journal_path)
+        return "clean"
+    raise JournalError("install journal state cannot be reconciled")
+
+
+def _remove_owned_registration(target: Path, expected_hash: str) -> bool:
+    """Remove only the exact owned payload without clobbering a concurrent replacement."""
+    quarantine = target.parent / f".{target.name}.rollback-{secrets.token_hex(8)}"
+    _assert_no_symlink_components(quarantine, message="rollback quarantine components must not be symlinks")
+    os.rename(target, quarantine)
+    status, digest = _target_state(quarantine)
+    if status == "present" and digest == expected_hash:
+        _unlink_durable(quarantine)
+        return True
+    # A concurrent replacement won the target path. Restore the moved object
+    # only if nobody has recreated the path; otherwise leave the quarantine for
+    # explicit reconciliation rather than deleting an unknown file.
+    if not target.exists() and not target.is_symlink():
+        os.rename(quarantine, target)
+        _fsync_directory(target.parent)
+    return False
+
+
+def _new_install_journal(
+    target: Path, artifact_dir: Path, payload_hash: str, temporary_name: str, owner_token: bytes | None = None
+) -> dict[str, Any]:
+    owner_token = owner_token or secrets.token_bytes(32)
+    target_digest = _path_digest(target)
+    return {
+        "schema": INSTALL_SCHEMA,
+        "state": "prepared",
+        "filename": DISPLAY_FILENAME,
+        "ownership_digest": hashlib.sha256(
+            owner_token
+            + _path_digest(artifact_dir).encode("ascii")
+            + target_digest.encode("ascii")
+            + payload_hash.encode("ascii")
+        ).hexdigest(),
+        "target_digest": target_digest,
+        "target_parent_digest": _path_digest(target.parent),
+        "payload_sha256": payload_hash,
+        "payload_bytes": None,
+        "temp_name": temporary_name,
+    }
+
+
+def _install_result(status: str, *, mutated: bool = False, detail: str | None = None, **extra: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {"status": status, "mutated": mutated, "filename": DISPLAY_FILENAME, **extra}
+    if detail:
+        result["detail"] = detail
+    return result
+
 
 def install_registration(path: Path, extension_id: str, artifact_dir: Path) -> dict[str, Any]:
-    expected = expected_manifest(extension_id)
-    payload = canonical_json(expected)
-    existing = read_registration(path) if path.exists() else None
-    if existing is not None:
-        if existing == expected:
-            return {"status": "already_installed", "mutated": False, "filename": DISPLAY_FILENAME}
-        return {"status": "rejected_existing_different_manifest", "mutated": False, "filename": DISPLAY_FILENAME}
-    if path.exists():
-        return {"status": "rejected_unreadable_existing_manifest", "mutated": False, "filename": DISPLAY_FILENAME}
-    record_path = artifact_dir / INSTALL_RECORD
-    if record_path.exists():
-        return {"status": "rejected_stale_drill_record", "mutated": False, "filename": DISPLAY_FILENAME}
-    temporary_path: Path | None = None
-    registration_written = False
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
-            temporary.write(payload)
-            temporary_path = Path(temporary.name)
-        temporary_path.chmod(0o644)
-        os.replace(temporary_path, path)
-        registration_written = True
-        record = {
-            "schema": 1,
-            "filename": DISPLAY_FILENAME,
-            "payload_sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
-        }
-        write_json_atomic(artifact_dir / INSTALL_RECORD, record)
-    except (OSError, ValueError):
-        cleanup_ok = True
-        if temporary_path is not None:
+        expected = expected_manifest(extension_id)
+    except (OSError, ValueError) as error:
+        return _install_result("install_failed", detail=str(error))
+    payload = canonical_json(expected).encode("utf-8")
+    payload_hash = hashlib.sha256(payload).hexdigest()
+    try:
+        target = _canonical_target(path)
+        artifact_dir = Path(artifact_dir).expanduser()
+        _assert_no_symlink_components(artifact_dir, message="artifact directory components must not be symlinks")
+        with installation_transaction(target, artifact_dir):
+            owner_token = _owner_token(artifact_dir, create=True)
+            assert owner_token is not None
+            reconciled = _reconcile_install_journal(target, artifact_dir, payload, payload_hash, owner_token)
+            if reconciled == "installed":
+                return _install_result("already_installed", reconciled=True)
+            if reconciled in {"record_target_mismatch", "target_changed", "target_symlink"}:
+                return _install_result("rejected_stale_drill_record", detail="owned installation state does not match the requested target")
+            target_status, _ = _target_state(target)
+            if target_status == "symlink":
+                return _install_result("rejected_symlink_target", detail="registration target must not be a symlink")
+            if target_status == "present":
+                file_status, actual = registration_file_state(target)
+                if file_status == "non_object":
+                    return _install_result("rejected_non_object_manifest", detail="registration JSON must be an object")
+                if file_status != "object" or actual is None:
+                    return _install_result("rejected_unreadable_existing_manifest")
+                if actual == expected:
+                    return _install_result("already_installed")
+                return _install_result("rejected_existing_different_manifest")
+            if target_status != "absent":
+                return _install_result("install_failed", detail="registration target is not writable")
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.parent / f".{target.name}.install-{secrets.token_hex(8)}"
+            record_path = _journal_path(artifact_dir)
+            record = _new_install_journal(target, artifact_dir, payload_hash, temporary.name, owner_token)
+            record["payload_bytes"] = len(payload)
+            _atomic_json(record_path, record)
             try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                cleanup_ok = False
-        if registration_written:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                cleanup_ok = False
-        return {"status": "install_failed", "mutated": not cleanup_ok, "filename": DISPLAY_FILENAME, "detail": "registration cleanup was incomplete" if not cleanup_ok else "registration could not be written"}
-    return {"status": "installed", "mutated": True, "filename": DISPLAY_FILENAME}
+                _write_owned_temp(temporary, payload)
+                record["state"] = "temp_written"
+                _atomic_json(record_path, record)
+                # Link the fully written temporary file into place so a
+                # concurrent creator cannot be overwritten. A crash before the
+                # temporary unlink is reconciled by its content hash.
+                os.link(temporary, target, follow_symlinks=False)
+                _fsync_directory(target.parent)
+                _unlink_durable(temporary)
+                record["state"] = "installed"
+                record["temp_name"] = ""
+                _atomic_json(record_path, record)
+            except (OSError, ValueError, JournalError):
+                try:
+                    reconciled = _reconcile_install_journal(target, artifact_dir, payload, payload_hash, owner_token)
+                except (OSError, ValueError, JournalError):
+                    reconciled = "uncertain"
+                if reconciled == "installed":
+                    return _install_result("installed", mutated=True, reconciled=True)
+                cleanup_ok = True
+                try:
+                    if temporary.exists() or temporary.is_symlink():
+                        _unlink_durable(temporary)
+                    if _target_state(target)[0] == "present":
+                        cleanup_ok = False
+                    if cleanup_ok:
+                        _remove_journal(record_path)
+                except (OSError, ValueError):
+                    cleanup_ok = False
+                return _install_result(
+                    "install_uncertain" if not cleanup_ok or reconciled == "uncertain" else "install_failed",
+                    mutated=not cleanup_ok,
+                    detail="installation state requires reconciliation" if not cleanup_ok or reconciled == "uncertain" else "registration could not be written",
+                )
+            return _install_result("installed", mutated=True)
+    except InstallationBusy:
+        return _install_result("installation_busy", detail="another install or rollback is in progress")
+    except (OSError, ValueError, JournalError) as error:
+        return _install_result("install_failed", detail=str(error))
 
 
 def rollback_registration(path: Path, extension_id: str, artifact_dir: Path) -> dict[str, Any]:
-    record_path = artifact_dir / INSTALL_RECORD
-    if not record_path.is_file():
-        return {"status": "no_drill_record", "mutated": False, "filename": DISPLAY_FILENAME}
     try:
-        record = load_json(record_path)
-    except (ValueError, TypeError) as error:
-        return {"status": "invalid_drill_record", "mutated": False, "filename": DISPLAY_FILENAME, "detail": str(error)}
-    expected_payload = canonical_json(expected_manifest(extension_id)).encode("utf-8")
+        expected_payload = canonical_json(expected_manifest(extension_id)).encode("utf-8")
+    except (OSError, ValueError) as error:
+        return _install_result("rollback_failed", detail=str(error))
     expected_hash = hashlib.sha256(expected_payload).hexdigest()
-    if record.get("filename") != DISPLAY_FILENAME or record.get("payload_sha256") != expected_hash:
-        return {"status": "record_target_mismatch", "mutated": False, "filename": DISPLAY_FILENAME}
     try:
-        actual_payload = path.read_bytes()
-    except OSError:
-        return {"status": "registration_missing", "mutated": False, "filename": DISPLAY_FILENAME}
-    if hashlib.sha256(actual_payload).hexdigest() != expected_hash:
-        return {"status": "refusing_changed_registration", "mutated": False, "filename": DISPLAY_FILENAME}
-    registration_removed = False
-    try:
-        path.unlink()
-        registration_removed = True
-        record_path.unlink()
-    except OSError:
-        restored = not registration_removed
-        if registration_removed:
-            temporary_path: Path | None = None
+        target = _canonical_target(path)
+        artifact_dir = Path(artifact_dir).expanduser()
+        _assert_no_symlink_components(artifact_dir, message="artifact directory components must not be symlinks")
+        with installation_transaction(target, artifact_dir):
+            owner_token = _owner_token(artifact_dir, create=False)
+            reconciled = _reconcile_install_journal(target, artifact_dir, expected_payload, expected_hash, owner_token)
+            if reconciled == "record_target_mismatch":
+                return _install_result("record_target_mismatch")
+            if reconciled in {"target_changed", "target_symlink"}:
+                return _install_result("refusing_changed_registration")
+            record_path = _journal_path(artifact_dir)
+            record = _load_install_journal(record_path)
+            if record is None:
+                return _install_result("no_drill_record")
+            if (
+                owner_token is None
+                or record.get("state") != "installed"
+                or not _journal_target_matches(record, target, artifact_dir, expected_hash, owner_token)
+            ):
+                return _install_result("invalid_drill_record")
+            target_status, target_hash = _target_state(target)
+            if target_status == "absent":
+                _remove_journal(record_path)
+                return _install_result("already_rolled_back")
+            if target_status != "present" or target_hash != expected_hash:
+                return _install_result("refusing_changed_registration")
+            record["state"] = "removing"
+            _atomic_json(record_path, record)
             try:
-                with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as temporary:
-                    temporary.write(actual_payload)
-                    temporary_path = Path(temporary.name)
-                os.replace(temporary_path, path)
-                restored = True
-            except OSError:
-                if temporary_path is not None:
-                    try:
-                        temporary_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-        return {"status": "rollback_failed", "mutated": not restored, "filename": DISPLAY_FILENAME, "detail": "rollback was restored after cleanup failure" if restored else "rollback cleanup left an uncertain state"}
-    return {"status": "rolled_back", "mutated": True, "filename": DISPLAY_FILENAME}
+                if not _remove_owned_registration(target, expected_hash):
+                    return _install_result("refusing_changed_registration", mutated=False)
+                record["state"] = "removed"
+                _atomic_json(record_path, record)
+                _remove_journal(record_path)
+            except (OSError, ValueError, JournalError) as error:
+                return _install_result("rollback_failed", mutated=True, detail=str(error))
+            return _install_result("rolled_back", mutated=True)
+    except InstallationBusy:
+        return _install_result("installation_busy", detail="another install or rollback is in progress")
+    except (OSError, ValueError, JournalError) as error:
+        return _install_result("rollback_failed", detail=str(error))
 
 
 def write_report(artifact_dir: Path, report: dict[str, Any]) -> None:
@@ -595,6 +1090,19 @@ def main(argv: list[str] | None = None) -> int:
                 rollback = {"status": "not_run", "mutated": False, "filename": DISPLAY_FILENAME}
             report["rollback"] = rollback
             report["status"] = "drill_passed" if installation["status"] == "installed" and rollback["status"] == "rolled_back" else "drill_failed"
+        if action == "drill":
+            report["lifecycle"] = {
+                "install": report.get("installation", {}).get("status", "not_run"),
+                "update": "not_implemented",
+                "uninstall": "not_implemented",
+                "downgrade": "not_implemented",
+                "rollback": report.get("rollback", {}).get("status", "not_run"),
+            }
+            if report["status"] == "drill_passed":
+                report["status"] = "drill_incomplete"
+                report.setdefault("limitations", []).append(
+                    "install/rollback smoke passed, but update, uninstall, and downgrade evidence is not implemented"
+                )
         report["safety"]["user_registration_mutation"] = bool(
             report.get("installation", {}).get("mutated") or report.get("rollback", {}).get("mutated")
         )
