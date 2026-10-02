@@ -23,6 +23,7 @@ import os
 import platform
 import re
 import secrets
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -51,6 +52,8 @@ INSTALL_LOCK = ".install-lock"
 INSTALL_SCHEMA = 2
 REPORT_NAME = "report.json"
 DISPLAY_FILENAME = "native-host-manifest.json"
+REGISTRATION_MODE = 0o644
+PRIVATE_TRANSACTION_MODE = 0o600
 JOURNAL_STATES = frozenset({"prepared", "temp_written", "installed", "removing", "removed"})
 LIFECYCLE_SCHEMA_VERSION = 1
 OFFLINE_EVIDENCE_STATUS = "not_measured_offline"
@@ -111,7 +114,7 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
-def _atomic_bytes(path: Path, rendered: bytes, *, mode: int = 0o600) -> None:
+def _atomic_bytes(path: Path, rendered: bytes, *, mode: int = PRIVATE_TRANSACTION_MODE) -> None:
     """Write and publish a file with a durable replacement and no symlink follow."""
     target = Path(path)
     _assert_no_symlink_components(target, message="atomic target components must not be symlinks")
@@ -892,15 +895,16 @@ def _remove_owned_temp(record: dict[str, Any], target: Path) -> None:
     _unlink_durable(temporary)
 
 
-def _write_owned_temp(path: Path, payload: bytes) -> None:
+def _write_owned_temp(path: Path, payload: bytes, *, mode: int = PRIVATE_TRANSACTION_MODE) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    descriptor = os.open(str(path), flags, 0o600)
+    descriptor = os.open(str(path), flags, PRIVATE_TRANSACTION_MODE)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = -1
             handle.write(payload)
+            os.fchmod(handle.fileno(), mode)
             handle.flush()
             os.fsync(handle.fileno())
         _fsync_directory(path.parent)
@@ -912,6 +916,32 @@ def _write_owned_temp(path: Path, payload: bytes) -> None:
 def _remove_journal(path: Path) -> None:
     if path.exists() or path.is_symlink():
         _unlink_durable(path)
+
+
+def _registration_mode(path: Path) -> int | None:
+    try:
+        metadata = path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode):
+        return None
+    return stat.S_IMODE(metadata.st_mode)
+
+
+def _repair_registration_mode(path: Path) -> None:
+    """Repair an exact existing manifest without following a replacement symlink."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(str(path), flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("registration target is not a regular file")
+        os.fchmod(descriptor, REGISTRATION_MODE)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _reconcile_install_journal(
@@ -1046,7 +1076,14 @@ def install_registration(path: Path, extension_id: str, artifact_dir: Path) -> d
                 if file_status != "object" or actual is None:
                     return _install_result("rejected_unreadable_existing_manifest")
                 if actual == expected:
-                    return _install_result("already_installed")
+                    mode_repaired = False
+                    if _registration_mode(target) != REGISTRATION_MODE:
+                        try:
+                            _repair_registration_mode(target)
+                        except (OSError, ValueError):
+                            return _install_result("install_failed", detail="existing registration manifest permissions could not be repaired")
+                        mode_repaired = True
+                    return _install_result("already_installed", mutated=mode_repaired, mode_repaired=mode_repaired)
                 return _install_result("rejected_existing_different_manifest")
             if target_status != "absent":
                 return _install_result("install_failed", detail="registration target is not writable")
@@ -1058,7 +1095,7 @@ def install_registration(path: Path, extension_id: str, artifact_dir: Path) -> d
             record["payload_bytes"] = len(payload)
             _atomic_json(record_path, record)
             try:
-                _write_owned_temp(temporary, payload)
+                _write_owned_temp(temporary, payload, mode=REGISTRATION_MODE)
                 record["state"] = "temp_written"
                 _atomic_json(record_path, record)
                 # Link the fully written temporary file into place so a
