@@ -320,11 +320,6 @@ class ChromeProbeSafetyTests(unittest.TestCase):
             "hlnmcimoechnbccahemchokemgceaffp",
         )
         extension_id = "a" * 32
-        target = {
-            "type": "service_worker",
-            "url": f"chrome-extension://{extension_id}/service_worker.js",
-            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/worker",
-        }
         identity = {
             "runtime_id": extension_id,
             "manifest_version": 3,
@@ -334,18 +329,114 @@ class ChromeProbeSafetyTests(unittest.TestCase):
             "origin": f"chrome-extension://{extension_id}",
             "pathname": "/service_worker.js",
         }
+        self.assertFalse(_chrome._is_expected_worker(identity, extension_id, manifest))
+        evidence = _chrome._worker_identity_evidence(identity, extension_id, manifest)
+        self.assertEqual(evidence["observed_name"], "Google Network Speech")
+        self.assertFalse(evidence["manifest_key_id_matches_target"])
+        self.assertNotIn(extension_id, json.dumps(evidence, sort_keys=True))
+
+    def test_control_page_identity_retries_with_fresh_target_after_lifecycle_race(self) -> None:
+        manifest = _chrome.load_manifest()
+        extension_id = _chrome._manifest_extension_id(manifest)
+        self.assertIsNotNone(extension_id)
+        stale_target = {
+            "type": "page",
+            "url": f"chrome-extension://{extension_id}/probe.html",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/stale",
+        }
+        fresh_target = {
+            **stale_target,
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/fresh",
+        }
+        identity = {
+            "runtime_id": extension_id,
+            "manifest_version": 3,
+            "name": manifest["name"],
+            "version": manifest["version"],
+            "service_worker": "service_worker.js",
+            "origin": f"chrome-extension://{extension_id}",
+            "pathname": "/probe.html",
+        }
+        request_id = "11111111-1111-4111-8111-111111111111"
+        source_hash = "b" * 64
+        probe_value = {
+            "ok": True,
+            "request_id": request_id,
+            "binding_nonce": "22222222-2222-4222-8222-222222222222",
+            "binding_source_tree_sha256": source_hash,
+            "extension_loaded": True,
+            "extension_version": manifest["version"],
+            "permissions": manifest["permissions"],
+            "fixture_identity_passed": True,
+            "debugger_command_passed": True,
+            "debugger_event_received": True,
+            "tab_group_created": True,
+            "native_messaging_passed": True,
+            "debugger_cleanup_passed": True,
+            "cleanup_passed": True,
+            "screenshot_captured": True,
+            "handshake_transcript": ["hello_accepted", "probe_accepted"],
+        }
+        stale_client = mock.Mock()
+        stale_client.command.side_effect = OSError("target closed")
+        fresh_client = mock.Mock()
+        fresh_client.command.side_effect = [
+            None,
+            {"result": {"value": identity}},
+            {"result": {"value": True}},
+            {"result": {"value": probe_value}},
+        ]
+        refreshed = []
+
+        def target_provider() -> list[dict[str, Any]]:
+            refreshed.append(True)
+            return [fresh_target]
+
+        with (
+            mock.patch.object(_chrome, "new_request_id", return_value=request_id),
+            mock.patch.object(_chrome, "DevToolsSocket", side_effect=[stale_client, fresh_client]),
+            mock.patch.object(_chrome.time, "sleep"),
+        ):
+            result = _chrome.extension_probe_result(
+                9222,
+                [stale_target],
+                expected_manifest=manifest,
+                binding_nonce=probe_value["binding_nonce"],
+                source_extension_hash=source_hash,
+                target_provider=target_provider,
+            )
+
+        self.assertEqual(result["status"], "live_passed")
+        self.assertGreaterEqual(len(refreshed), 1)
+        stale_client.close.assert_called_once_with()
+        fresh_client.close.assert_called_once_with()
+
+    def test_control_page_identity_failure_diagnostics_are_bounded_and_redacted(self) -> None:
+        manifest = _chrome.load_manifest()
+        extension_id = _chrome._manifest_extension_id(manifest)
+        target = {
+            "type": "page",
+            "url": f"chrome-extension://{extension_id}/probe.html",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/private",
+        }
         client = mock.Mock()
-        client.command.side_effect = [None, {"result": {"value": identity}}]
-        with mock.patch.object(_chrome, "DevToolsSocket", return_value=client):
-            result = _chrome.extension_probe_result(9222, [target], expected_manifest=manifest)
+        client.command.side_effect = OSError("target closed")
+        with (
+            mock.patch.object(_chrome, "DevToolsSocket", return_value=client),
+            mock.patch.object(_chrome.time, "monotonic", side_effect=[0.0, 5.0]),
+        ):
+            result = _chrome.extension_probe_result(
+                9222,
+                [target],
+                expected_manifest=manifest,
+                target_provider=lambda: [target],
+            )
 
         self.assertEqual(result["status"], "live_unavailable")
-        self.assertEqual(result["candidate_worker_count"], 1)
-        self.assertEqual(result["verified_worker_count"], 0)
-        self.assertIn("exact probe manifest checks", result["limitation"])
-        self.assertEqual(result["worker_diagnostics"][0]["observed_name"], "Google Network Speech")
-        self.assertFalse(result["worker_diagnostics"][0]["manifest_key_id_matches_target"])
+        self.assertEqual(result["candidate_extension_page_count"], 1)
+        self.assertEqual(result["identity_diagnostics"][0]["phase"], "control_page_connect")
         self.assertNotIn(extension_id, json.dumps(result, sort_keys=True))
+        self.assertNotIn("ws://", json.dumps(result, sort_keys=True))
         client.close.assert_called_once_with()
 
     def test_chrome_load_extension_refusal_is_reported_without_raw_log(self) -> None:
@@ -549,13 +640,15 @@ setTimeout(() => {
             with self.subTest(resolved_host=resolved_host):
                 family = _chrome.socket.AF_INET6 if ":" in resolved_host else _chrome.socket.AF_INET
                 sockaddr = (resolved_host, 9222, 0, 0) if family == _chrome.socket.AF_INET6 else (resolved_host, 9222)
-                with mock.patch.object(
-                    _chrome.socket,
-                    "getaddrinfo",
-                    return_value=[(family, _chrome.socket.SOCK_STREAM, 6, "", sockaddr)],
+                with (
+                    mock.patch.object(
+                        _chrome.socket,
+                        "getaddrinfo",
+                        return_value=[(family, _chrome.socket.SOCK_STREAM, 6, "", sockaddr)],
+                    ),
+                    self.assertRaisesRegex(ValueError, "hostname is not loopback"),
                 ):
-                    with self.assertRaisesRegex(ValueError, "hostname is not loopback"):
-                        _chrome.DevToolsSocket("ws://localhost:9222/devtools/page/worker")
+                    _chrome.DevToolsSocket("ws://localhost:9222/devtools/page/worker")
 
     def test_worker_discovery_polls_until_ready_and_fails_closed_at_deadline(self) -> None:
         process = object()
