@@ -21,6 +21,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from artifact_envelope import envelope as add_envelope
+from artifact_envelope import write_json_atomic
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "browser-task-spaces"
 MCP_ROOT = ROOT / "tests" / "fixtures" / "mcp"
@@ -222,8 +225,8 @@ def build_matrix(mode: str, fixtures: list[dict[str, Any]], tools: list[dict[str
 
 
 def write_matrix(path: Path, matrix: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(matrix, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    add_envelope(matrix, kind="capability-matrix")
+    write_json_atomic(path, matrix)
 
 
 def parser() -> argparse.ArgumentParser:
