@@ -42,6 +42,11 @@ def safe_artifact_path(value: str) -> Path:
     requested = Path(value)
     if not requested.is_absolute():
         requested = ROOT / requested
+    current = requested
+    while current != current.parent:
+        if current.is_symlink():
+            raise SystemExit("artifact path components must not be symlinks")
+        current = current.parent
     requested = requested.resolve()
     allowed = (ROOT / "artifacts" / "p0-native-protocol").resolve()
     if requested != allowed and allowed not in requested.parents:
@@ -53,10 +58,14 @@ def safe_host_path(value: str) -> Path:
     requested = Path(value)
     if not requested.is_absolute():
         requested = ROOT / requested
+    current = requested
+    while current != current.parent:
+        if current.is_symlink():
+            raise SystemExit("host path components must not be symlinks")
+        current = current.parent
     requested = requested.resolve()
-    allowed = (ROOT / "tests" / "probes").resolve()
-    if allowed not in requested.parents:
-        raise SystemExit("host must be inside tests/probes/")
+    if requested != HOST_PATH.resolve():
+        raise SystemExit("host must be the repository test probe")
     return requested
 
 
@@ -189,6 +198,10 @@ def main() -> int:
         parser.error("--timeout must be positive")
     if not args.extension_origin:
         args.extension_origin = DEFAULT_ORIGIN
+    if args.extension_origin == "chrome-extension://<registered-id>":
+        args.extension_origin = os.environ.get("AGENTYC_EXTENSION_ORIGIN", "")
+        if not args.extension_origin:
+            parser.error("the registered extension origin must be supplied via AGENTYC_EXTENSION_ORIGIN")
     if not ORIGIN_PATTERN.fullmatch(args.extension_origin):
         parser.error("--extension-origin must be chrome-extension://<id> without a trailing slash")
     artifact = safe_artifact_path(args.artifact)
@@ -213,7 +226,10 @@ def main() -> int:
         live = framed_host_smoke(host_path, args.extension_origin, args.timeout)
         report["live"] = {"requested": True, "required": bool(args.require_live), **live}
         if live["status"] == "passed":
-            report["status"] = "live_passed"
+            smoke_status = "live_passed" if args.require_live else "host_smoke_passed"
+            live["status"] = smoke_status
+            report["live"]["status"] = smoke_status
+            report["status"] = smoke_status
         else:
             report["status"] = "live_required_unavailable" if args.require_live else "live_optional_unavailable"
             report["limitations"].append("Live host handshake did not pass; Chrome was not launched.")
