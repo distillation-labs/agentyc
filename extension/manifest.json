@@ -10,17 +10,9 @@
     "storage",
     "tabs",
     "tabGroups",
-    "scripting",
     "sidePanel"
   ],
-  "host_permissions": ["http://*/*", "https://*/*"],
   "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["src/page-bridge-content.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
-    },
     {
       "matches": ["http://*/*", "https://*/*"],
       "js": ["src/content-bridge.js"],
