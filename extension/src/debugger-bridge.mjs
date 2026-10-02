@@ -35,10 +35,6 @@ export const DEBUGGER_DOMAIN_ALLOWLIST = Object.freeze({
     "requestChildNodes",
     "requestNode",
     "resolveNode",
-    "setAttributeValue",
-    "setAttributesAsText",
-    "setFileInputFiles",
-    "setOuterHTML",
   ]),
   DOMSnapshot: Object.freeze([
     "captureSnapshot",
@@ -64,22 +60,12 @@ export const DEBUGGER_DOMAIN_ALLOWLIST = Object.freeze({
     "stopViolationsReport",
   ]),
   Network: Object.freeze([
-    "clearBrowserCache",
-    "clearBrowserCookies",
     "disable",
-    "emulateNetworkConditions",
     "enable",
     "getRequestPostData",
     "getResponseBody",
-    "setBlockedURLs",
-    "setCacheDisabled",
-    "setCookie",
-    "setCookies",
   ]),
   Page: Object.freeze([
-    "addScriptToEvaluateOnLoad",
-    "addScriptToEvaluateOnNewDocument",
-    "bringToFront",
     "captureScreenshot",
     "disable",
     "enable",
@@ -92,48 +78,19 @@ export const DEBUGGER_DOMAIN_ALLOWLIST = Object.freeze({
     "navigateToHistoryEntry",
     "printToPDF",
     "reload",
-    "removeScriptToEvaluateOnLoad",
-    "removeScriptToEvaluateOnNewDocument",
     "stopLoading",
   ]),
   Runtime: Object.freeze([
-    "addBinding",
-    "awaitPromise",
-    "callFunctionOn",
-    "compileScript",
     "disable",
-    "discardConsoleEntries",
     "enable",
-    "getIsolateId",
     "getHeapUsage",
-    "getProperties",
     "globalLexicalScopeNames",
-    "queryObjects",
-    "releaseObject",
-    "releaseObjectGroup",
-    "removeBinding",
     "evaluate",
-    "runIfWaitingForDebugger",
-    "runScript",
-  ]),
-  Target: Object.freeze([
-    "activateTarget",
-    "attachToTarget",
-    "autoAttachRelated",
-    "closeTarget",
-    "detachFromTarget",
-    "getTargetInfo",
-    "getTargets",
-    "setAutoAttach",
   ]),
 });
 
 const MUTATING_DEBUGGER_METHODS = new Set([
   "DOM.focus",
-  "DOM.setAttributeValue",
-  "DOM.setAttributesAsText",
-  "DOM.setFileInputFiles",
-  "DOM.setOuterHTML",
   "Input.cancelDragging",
   "Input.dispatchKeyEvent",
   "Input.dispatchMouseEvent",
@@ -141,34 +98,22 @@ const MUTATING_DEBUGGER_METHODS = new Set([
   "Input.emulateTouchFromMouseEvent",
   "Input.insertText",
   "Input.setIgnoreInputEvents",
-  "Network.clearBrowserCache",
-  "Network.clearBrowserCookies",
-  "Network.emulateNetworkConditions",
-  "Network.setBlockedURLs",
-  "Network.setCacheDisabled",
-  "Network.setCookie",
-  "Network.setCookies",
-  "Page.addScriptToEvaluateOnLoad",
-  "Page.addScriptToEvaluateOnNewDocument",
-  "Page.bringToFront",
   "Page.handleJavaScriptDialog",
   "Page.navigate",
   "Page.navigateToHistoryEntry",
   "Page.reload",
-  "Page.removeScriptToEvaluateOnLoad",
-  "Page.removeScriptToEvaluateOnNewDocument",
   "Page.stopLoading",
-  "Runtime.addBinding",
-  "Runtime.callFunctionOn",
   "Runtime.evaluate",
-  "Runtime.compileScript",
-  "Runtime.removeBinding",
-  "Runtime.runIfWaitingForDebugger",
-  "Runtime.runScript",
-  "Target.activateTarget",
-  "Target.closeTarget",
-  "Target.detachFromTarget",
-  "Target.setAutoAttach",
+]);
+
+const RUNTIME_EVALUATE_PARAMETER_ALLOWLIST = new Set([
+  "expression",
+  "script",
+  "awaitPromise",
+  "returnByValue",
+  "userGesture",
+  "silent",
+  "throwOnSideEffect",
 ]);
 
 function chromeApiOrGlobal(chromeApi) {
@@ -552,8 +497,24 @@ export class DebuggerBridge {
       pageId,
       leaseEpoch,
     });
-    if (method === "Runtime.evaluate" || method === "Runtime.callFunctionOn") {
-      if (method === "Runtime.callFunctionOn" || capability !== "evaluate") {
+    if (method === "Runtime.evaluate") {
+      const expression = params?.expression ?? params?.script;
+      if (
+        !params ||
+        typeof params !== "object" ||
+        Array.isArray(params) ||
+        typeof expression !== "string" ||
+        expression.length === 0 ||
+        Object.keys(params).some(
+          (key) => !RUNTIME_EVALUATE_PARAMETER_ALLOWLIST.has(key),
+        )
+      ) {
+        throw new ProtocolError(
+          "schema_invalid",
+          "runtime evaluation parameters are not allowlisted",
+        );
+      }
+      if (capability !== "evaluate") {
         throw new ProtocolError(
           "evaluate_denied",
           "runtime evaluation requires an explicit capability",
