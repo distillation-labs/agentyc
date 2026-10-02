@@ -70,6 +70,15 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 - Changing default CLI/MCP behavior.
 - Choosing visual branding beyond functional side-panel states.
 
+## Installation evidence split (planned contract; unproven)
+
+Installation evidence has two separate targets and statuses:
+
+- **Installation preflight:** a read-only registration/origin/host prerequisite check. It is required before the live Native Messaging probe. `--check-install` only checks prerequisites; it does not prove installation, update, uninstall, downgrade, rollback, or user-tab preservation.
+- **Explicit installation drill:** a separate planned release-evidence target using a clean profile to exercise install, update, uninstall, downgrade, and rollback, and to verify that the user's existing Chrome and tabs remain untouched. This is the P0-T7 drill, not the P0-T3 preflight.
+
+The test-manifest contract must name preflight and drill targets separately, record separate statuses, and express the live Native Messaging probe's dependency on the read-only preflight. No combined live-probe target may treat `--check-install` as installation evidence. Neither target is claimed to have run.
+
 ## Affected surfaces
 
 - **Files/tests:** add test-only probes under `extension/probes/` and `tests/probes/`; use the existing `crates/agentyc-tests` target or a standalone probe harness, not the not-yet-created `agentyc-host` crate; add local fixtures under `tests/fixtures/browser-task-spaces/` and `tests/fixtures/mcp/`; add `tests/test-manifest.yaml`, `tests/harness/`, `tests/replay/`, and `tests/fixtures/browser-task-spaces/`; write `research/phase-0-baseline.md` and artifacts under `artifacts/`.
@@ -94,7 +103,7 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 
 - [ ] P0-T0 — Bootstrap the plan's validation, deterministic harness, and artifact layout.
   - **Files/surfaces:** workspace `rust-toolchain.toml` or equivalent pinned toolchain file; `.gitignore`; `tests/test-manifest.yaml`; `tests/harness/`; `tests/replay/`; `tests/fixtures/browser-task-spaces/`; `tests/fixtures/mcp/`; `tests/probes/`; `artifacts/.gitkeep`; `scripts/check_exec_plan.py`; `scripts/check_test_manifest.py`; `crates/agentyc-tests/Cargo.toml` only for test targets that already have their required dependencies; `docs/exec-plans/active/agentyc-browser-task-spaces/plans/PLAN_INDEX.md`.
-  - **Done when:** planned versus existing paths are explicit, artifacts are ignored/redacted by policy, Rust and Node/npm/Chrome test floors are pinned or their ceilings are recorded, every Phase 0 command has a runnable target or named prerequisite, and the manifest rejects missing commands, silent skips, swallowed results, unbounded timeouts, and missing artifact declarations.
+  - **Done when:** planned versus existing paths are explicit, artifacts are ignored/redacted by policy, Rust and Node/npm/Chrome test floors are pinned or their ceilings are recorded, every Phase 0 command has a runnable target or named prerequisite, the manifest names installation preflight and installation drill as separate targets with separate statuses and dependencies, and the manifest rejects missing commands, silent skips, swallowed results, unbounded timeouts, and missing artifact declarations.
   - **Validation:** `cargo metadata --no-deps --format-version 1 --locked`; `cargo build -p agentyc --locked`; `cargo test -p agentyc-tests --test mcp_protocol --locked`; `npm --version`; `node --version`; `python3 scripts/check_exec_plan.py docs/exec-plans/active/agentyc-browser-task-spaces`; `python3 scripts/check_test_manifest.py tests/test-manifest.yaml`; `git check-ignore artifacts/p0-current/secret.log`.
   - **Owner:** Japneet Kalkat.
 
@@ -107,13 +116,13 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 - [ ] P0-T2 — Build a test-only extension/native-host vertical slice.
   - **Files/surfaces:** `extension/probes/manifest.json`, service worker, debugger/tabs/native messaging probe; `tests/probes/native_probe`; `scripts/run_chrome_probe.py`; platform manifest fixtures; no production host crate changes.
   - **Done when:** the probe connects to a real Chrome tab, sends one allowed debugger command, receives an event, creates a tab group, and sends a validated envelope through Native Messaging to a local test host.
-  - **Validation:** `python3 scripts/run_chrome_probe.py --headed --require-live --profile-dir artifacts/p0-extension/profile`; capture extension version, Chrome version, permission prompts, handshake transcript without secrets, and screenshots in `artifacts/p0-extension/`.
+  - **Validation:** `python3 scripts/run_chrome_probe.py --headed --require-live --launch-chrome`; the live probe must launch only a short-lived system-temporary profile, remove it after the run, and never attach to an arbitrary existing debug endpoint. Capture extension version, Chrome version, permission prompts, handshake transcript without secrets, and screenshots in `artifacts/p0-extension/`.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T3 — Measure Native Messaging framing, origin, reconnect, and limits.
   - **Files/surfaces:** test host protocol harness, `extension/probes`, `tests/probes/native_messaging.rs`, `scripts/run_native_messaging_probe.py`, or an explicitly registered `agentyc-tests` target.
   - **Done when:** fragmented/truncated/invalid UTF-8/invalid JSON/wrong-origin/replayed/oversized/unsupported-version messages fail closed; clean EOF and host crash are distinguishable; reconnect does not create a second broker.
-  - **Validation:** `python3 scripts/run_native_messaging_probe.py --require-live --check-install --extension-origin chrome-extension://<registered-id> --artifact artifacts/p0-native-protocol/report.json`; real Chrome host logs; verify bounded allocation below Chrome's documented limits using the Phase 0 source ledger, and enforce cumulative frame/chunk/artifact/assembly/in-flight-byte budgets.
+  - **Validation:** run the direct host-only smoke as `python3 scripts/run_native_messaging_probe.py --live-host --artifact artifacts/p0-native-protocol/host-smoke.json`; classify it as `host_smoke_passed`, never Chrome-mediated live evidence. The Chrome-mediated Native Messaging handshake is gated by P0-T2's extension probe; any separate `--require-live --check-install` lane remains planned until it is driven through `chrome.runtime.connectNative`. `--check-install` is only a read-only prerequisite and is not an installation drill. Use real Chrome host logs; verify bounded allocation below Chrome's documented limits using the Phase 0 source ledger, and enforce cumulative frame/chunk/artifact/assembly/in-flight-byte budgets.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T4 — Build the Chrome capability matrix.
@@ -131,13 +140,13 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 - [ ] P0-T6 — Measure context, latency, and resource baselines.
   - **Files/surfaces:** `tests/benchmark.rs`; new registered `tests/direct_benchmark.rs`, `tests/browser_task_spaces_existing_chrome.rs`; `scripts/run_direct_benchmark.py`; test tokenizer adapter; `docs/release-gate.md`.
   - **Done when:** report includes time to first useful action, warm metadata/action/wait p50/p95/p99, SDK batch versus separate CLI calls, transport/UTF-8/serialized/model-context token counts with tokenizer metadata, clean-snapshot DOM scans, delta/full actionable-control coverage, Chrome CPU/RSS, host RSS, event lag, reconnect time, stale-ref/unknown rates, and human-tab responsiveness. It contains a committed baseline manifest with environment, fixture hash, cache state, concurrency, sample count, and confidence intervals.
-  - **Validation:** `python3 scripts/run_direct_benchmark.py --warmups 10 --samples 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`; archive JSON/Markdown/raw samples/manifest under the artifact directory. Thirty samples are smoke-only and cannot gate p95/p99.
+  - **Validation:** the current offline scaffold is `python3 scripts/run_direct_benchmark.py --mode offline --warmups 10 --samples 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`; the planned live lane uses the same matrix with `--mode target` only after a real headed-Chrome benchmark implementation exists. Archive JSON/Markdown/raw samples/manifest under the artifact directory. Offline output cannot close live resource/context gates; thirty samples are smoke-only and cannot gate p95/p99.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P0-T7 — Verify packaging and installation rollback.
+- [ ] P0-T7 — Run the explicit installation drill, separate from installation preflight.
   - **Files/surfaces:** planned `install/native-messaging/`, extension package metadata, `scripts/run_install_drill.py`, `docs/installation.md`; no default rollout changes. The task must publish macOS/Linux/Windows registration, signing, update, uninstall, and downgrade assumptions even when a platform is deferred.
-  - **Done when:** macOS user-level registration works; Linux/Windows support is either tested or explicitly deferred with an owner; stable/unpacked extension IDs and host manifests are documented; uninstall/upgrade/rollback leave user Chrome and tabs unchanged.
-  - **Validation:** `python3 scripts/run_install_drill.py --clean-profile --artifact-dir artifacts/p0-installation`; archive platform logs.
+  - **Done when:** macOS user-level registration works; Linux/Windows support is either tested or explicitly deferred with an owner; stable/unpacked extension IDs and host manifests are documented; install, update, uninstall, downgrade, and rollback leave user Chrome and tabs unchanged.
+  - **Validation:** planned explicit run `python3 scripts/run_install_drill.py --drill --required --extension-id <operator-supplied-extension-id> --clean-profile artifacts/p0-installation/profile --registration-path artifacts/p0-installation/registration.json --artifact-dir artifacts/p0-installation`; archive platform logs. This is planned release evidence and is not claimed to have run.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T8 — Freeze the baseline addendum and phase gates.
