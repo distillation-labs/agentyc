@@ -48,7 +48,27 @@ The default path does **not** download a browser, launch a second browser, requi
 
 See `research/decision-supersession.md` for the old-plan mapping and `research/decision-closure.md` for active decisions D-09–D-18.
 
-## Build-now complete capability set
+## Evidence status
+
+This document is an execution plan, not a shipped capability list. Phase 0 is active and Phases 1–8 remain pending. No agentyc implementation, production rollout, or live Chrome evidence is claimed for the target path.
+
+**Proven by repository/source inspection:**
+
+- Current agentyc legacy behavior and its one-shot/active-page constraints are recorded in the Phase 0 plan.
+- The checked-in ego-lite API/schema/source/tests establish reference behavior for task/page handles, output handling, page discovery, and error classification; that reference does not prove agentyc behavior.
+- The checked-in plan and manifest checker definitions establish required validation structure; they do not prove that the planned targets have run or passed.
+
+**Planned and unproven:**
+
+- The agentyc host, extension, Native Messaging product path, persistent direct CLI/SDK, durable task spaces/pages, and live existing-Chrome coexistence.
+- Installation, update, uninstall, downgrade/rollback, user-tab preservation, performance/context budgets, and reliability gates.
+- Production readiness, rollout, and MCP compatibility through the planned host-backed path.
+
+Offline source inspection and reference tests do not close live Chrome, installation, production, context, or reliability gates.
+
+## Planned capability target — not yet proven
+
+Every bullet below is a target or requirement for the staged work, not a statement that agentyc implements it or that live Chrome has validated it. It remains gated by Phase 0 and the later production phases.
 
 ### Agent and task-space experience
 
@@ -86,6 +106,16 @@ See `research/decision-supersession.md` for the old-plan mapping and `research/d
 - Legacy `tab_id`/`target_id` fields are adapter-only and deprecated; compatibility calls resolve through a selected/default space but cannot bypass leases.
 - Existing direct CDP/temporary-browser workflows remain explicit legacy/test modes and never become the default fallback.
 
+## Canonical space, page, and Chrome tab-group semantics
+
+- `space` is the only canonical logical task-space object.
+- `page` is a durable logical child/label of a space, not a Chrome tab or raw target.
+- Chrome tab, target, debugger-session, and extension runtime IDs are inventory/reconciliation hints only; they are not public logical identity.
+- A Chrome tab group is visual presentation only. Its title, color, collapsed state, membership, and movement are non-authoritative.
+- A visual group may be missing, renamed, regrouped, or changed by the user without invalidating the logical space or its durable pages.
+- `group_id` is only a deprecated compatibility alias or an explicitly named visual-group hint. It is never a second logical object, an authorization proof, or a storage-isolation boundary.
+- Mixed user/agent groups are never cleanup units; cleanup requires proof of individual agent ownership.
+
 ## Explicit non-goals and deferred work
 
 - Cookie/storage isolation between logical spaces inside one ordinary Chrome profile. This requires a separate product decision for isolated profiles/contexts and must not be claimed by tab groups.
@@ -117,6 +147,39 @@ Reopen deferred items only on a documented trigger in `research/decision-superse
 | Rollback          | Mutation kill switch pauses spaces without closing user tabs or killing user Chrome; incompatible binaries refuse the ledger                                                            | Rollback drill                                               |
 
 Targets marked initial are provisional until Phase 0 records real Chrome, model-token, and end-to-end baselines.
+
+## Output lifecycle (reference behavior; agentyc contract planned)
+
+The following behavior is proven by the checked-in ego-lite source and tests, but remains a planned contract for agentyc:
+
+- Business output is buffered until a round completes, and the flush happens at most once.
+- Clean completion flushes buffered business output first, then emits final unhandled-page notices.
+- Hard stops discard buffered business output and notices; a swallowed hard stop emits owned guidance once, while a thrown hard stop stays silent so the propagating error is not duplicated.
+- Unhandled-page notices are round-local and keyed by space/target; notices merge and refresh, observing a page suppresses its final notice, and each notice is consumed once.
+- Lifecycle handling uses `beforeExit` and `exit`; fd-backed output uses synchronous writes.
+
+The exact agentyc output schema, stream framing, and lifecycle hooks remain unfrozen until implementation and tests; no agentyc runtime evidence is claimed.
+
+## Context and reliability gates (planned and unproven)
+
+These gates apply to the planned agentyc path and remain unproven until Phase 0, Phase 5, and Phase 7 evidence exists.
+
+### Context gates
+
+- A valid clean cache returns zero DOM/accessibility scans and no element payload.
+- A delta is used only when its measured serialized cost is lower than a valid full/min representation and actionable-control/ref coverage is equivalent; otherwise the result is full/min or an explicit resync.
+- Transport bytes, UTF-8 bytes, serialized tokens, and deployed model-context tokens are reported separately with tokenizer metadata.
+- Partial multi-frame snapshots cannot issue actionable refs.
+- Tail gates use at least 200 valid samples for p95 and 1,000 valid samples for p99 with confidence intervals; thirty samples are smoke-only.
+
+### Reliability gates
+
+- Routing is generation- and provenance-aware across space, page, frame, document, snapshot, and action identities.
+- Actionability is checked before dispatch, and a lost response after dispatch is typed `unknown`.
+- Mutating actions are never blindly replayed after an uncertain dispatch.
+- User takeover is a hard stop and non-retry condition until the user explicitly returns control.
+- Event watermarks, deadlines, cancellation, and reconnect/resume behavior are explicit and bounded.
+- Cleanup proves individual agent ownership and never closes an unowned or user tab.
 
 ## Production-grade validation bar
 
