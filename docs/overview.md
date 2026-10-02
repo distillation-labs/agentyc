@@ -32,12 +32,11 @@ there is no model in the loop at all.
 
 ## Default Behavior
 
-- The `agentyc` command (or `agentyc mcp`) starts the stdio MCP server.
-- `crates/agentyc/src/main.rs` is the CLI entrypoint; it dispatches MCP mode
-  into `agentyc_mcp::run_stdio`.
-- Browser sessions are created lazily on first browser tool use.
-- The default server launches a local browser unless `--cdp-url` is provided.
-- Deterministic extraction is the default and only public MCP extraction mode.
+- The `agentyc` command (or `agentyc mcp`) starts the host-backed stdio MCP adapter.
+- `crates/agentyc/src/main.rs` is the CLI entrypoint; the default path does not launch Chrome or attach to a copied CDP URL.
+- The existing-Chrome product path uses the enrolled extension/Native Messaging bridge; live enrollment remains separately gated in Phase 0.
+- The legacy direct-CDP server is explicit via `agentyc mcp --legacy-cdp`; attached legacy HTTP requires `--cdp-url`.
+- Deterministic extraction remains the compatibility server's extraction mode.
 - No API key is required.
 
 ## Primary Use Cases
