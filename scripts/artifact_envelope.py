@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Bounded, redacted envelopes for Phase 0 evidence artifacts."""
 
 from __future__ import annotations
@@ -6,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
@@ -20,6 +21,9 @@ _SECRET_FLAGS = {
     "--profile-dir",
     "--registration-path",
     "--chrome-binary",
+    "--artifact",
+    "--artifact-dir",
+    "--matrix",
 }
 
 
@@ -95,18 +99,28 @@ def envelope(
     return report
 
 
-def write_json_atomic(path: Path, value: dict[str, Any], *, max_bytes: int = MAX_ARTIFACT_BYTES) -> None:
-    """Write a bounded JSON artifact without exposing a partial report."""
-    rendered = (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+def write_bytes_atomic(path: Path, rendered: bytes, *, max_bytes: int = MAX_ARTIFACT_BYTES) -> None:
+    """Write bounded bytes without exposing a partial artifact."""
     if len(rendered) > max_bytes:
         raise ValueError("artifact exceeds the bounded write limit")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary: Path | None = None
     try:
-        temporary.write_bytes(rendered)
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.tmp-", delete=False) as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
         temporary.replace(path)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def write_json_atomic(path: Path, value: dict[str, Any], *, max_bytes: int = MAX_ARTIFACT_BYTES) -> None:
+    """Write a bounded JSON artifact without exposing a partial report."""
+    rendered = (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("utf-8")
+    write_bytes_atomic(path, rendered, max_bytes=max_bytes)
