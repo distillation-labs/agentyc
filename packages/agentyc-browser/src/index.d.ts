@@ -13,14 +13,21 @@ export class AgentycError extends Error {
   readonly retryable: boolean;
   readonly guidance: Guidance | string;
   readonly details?: unknown;
+  readonly transportFailure: boolean;
   constructor(input: {
     code: ErrorCode;
     message: string;
     retryable?: boolean;
     guidance?: Guidance | string;
     details?: unknown;
+    transportFailure?: boolean;
   });
 }
+export class BatchError extends AgentycError {
+  readonly failures: readonly BatchFailure[];
+  readonly results: readonly unknown[];
+}
+export class CancelledError extends AgentycError {}
 export class ExtensionNotConnectedError extends AgentycError {}
 export class CapabilityUnavailableError extends AgentycError {}
 export class UnknownOutcomeError extends AgentycError {}
@@ -28,6 +35,26 @@ export class ReconciliationRequiredError extends AgentycError {}
 export class StaleLeaseError extends AgentycError {}
 export class StaleReferenceError extends AgentycError {}
 export function isAgentycError(error: unknown): error is AgentycError;
+export function methodMayHaveSideEffects(
+  method: string,
+  requested?: boolean,
+): boolean;
+export function withRequestIdentity(
+  error: AgentycError,
+  identity: RequestIdentity,
+): AgentycError;
+
+export interface RequestIdentity {
+  request_id: string;
+  action_id?: string;
+  idempotency_key?: string;
+}
+export interface BatchFailure {
+  index: number;
+  request_id: string;
+  action_id?: string;
+  error: AgentycError;
+}
 
 export type LogicalSpaceId = string & {
   readonly __logicalSpaceId: unique symbol;
@@ -50,6 +77,9 @@ export interface WireRequest {
   }>;
 }
 export interface WireResponse {
+  kind?: "response";
+  protocol?: number;
+  request_id?: string;
   ok?: boolean;
   result?: unknown;
   error?: {
@@ -71,17 +101,66 @@ export interface WireResponse {
     result?: unknown;
     error?: WireResponse["error"];
   }>;
+  warnings?: string[];
+}
+export interface TransportRequestOptions {
+  signal?: AbortSignal;
 }
 export interface LocalTransport<R = WireRequest, S = WireResponse> {
-  request(payload: R): Promise<S>;
+  readonly connected?: boolean;
+  request(payload: R, options?: TransportRequestOptions): Promise<S>;
   reconnect?(): Promise<void>;
   close?(): Promise<void>;
+  cancel?(requestIds: string[] | string, reason?: string): Promise<void>;
+  resume?(options?: EventsOptions): Promise<unknown>;
+  subscribe?(
+    listener: (event: unknown) => void,
+    options?: EventsOptions,
+  ): Promise<() => boolean | void>;
+  onEvent?(listener: (event: unknown) => void): () => boolean | void;
+}
+export interface LocalProtocolOptions {
+  socketPath?: string;
+  profile?: string;
+  principal?: string;
+  clientId?: string;
+  clientName?: string;
+  clientVersion?: string;
+  maxPayloadBytes?: number;
+}
+export class LocalProtocolTransport implements LocalTransport<
+  WireRequest,
+  WireResponse
+> {
+  constructor(options?: LocalProtocolOptions);
+  readonly connected: boolean;
+  connect(): Promise<void>;
+  request(
+    payload: WireRequest,
+    options?: TransportRequestOptions,
+  ): Promise<WireResponse>;
+  cancel(requestIds: string[] | string, reason?: string): Promise<void>;
+  resume(options?: EventsOptions): Promise<unknown>;
+  onEvent(listener: (event: unknown) => void): () => boolean;
+  subscribe(
+    listener: (event: unknown) => void,
+    options?: EventsOptions,
+  ): Promise<() => boolean>;
+  reconnect(): Promise<void>;
+  close(): Promise<void>;
 }
 export function createLocalTransport<R = WireRequest, S = WireResponse>(
-  handler: LocalTransport<R, S> | ((payload: R) => Promise<S>),
+  handler:
+    | LocalTransport<R, S>
+    | ((payload: R, options?: TransportRequestOptions) => Promise<S>),
 ): LocalTransport<R, S>;
+export function createLocalProtocolTransport(
+  options?: LocalProtocolOptions,
+): LocalProtocolTransport;
+export const PROTOCOL_VERSION: number;
+export const DEFAULT_MAX_PAYLOAD_BYTES: number;
 
-export interface ConnectOptions {
+export interface ConnectOptions extends LocalProtocolOptions {
   transport?: LocalTransport;
   handler?: LocalTransport["request"];
   reconnect?: boolean;
@@ -120,16 +199,19 @@ export interface ActionReceipt {
   next_action?: string;
   [key: string]: unknown;
 }
-export interface PageOptions {
+export interface RequestOptions {
+  signal?: AbortSignal;
+}
+export interface PageOptions extends RequestOptions {
   leaseEpoch?: number;
   now?: number;
 }
-export interface LeaseOptions {
+export interface LeaseOptions extends RequestOptions {
   ttl?: number;
   now?: number;
   leaseEpoch?: number;
 }
-export interface SpaceTransitionOptions {
+export interface SpaceTransitionOptions extends RequestOptions {
   leaseEpoch?: number;
   now?: number;
 }
@@ -156,14 +238,14 @@ export class Page {
   waitFor(condition: unknown, options?: WaitOptions): Promise<unknown>;
 }
 
-export interface EventsOptions {
+export interface EventsOptions extends RequestOptions {
   afterEpoch?: number;
   afterSequence?: number;
   spaceId?: LogicalSpaceId;
   pageId?: LogicalPageId;
   limit?: number;
 }
-export interface WaitOptions {
+export interface WaitOptions extends RequestOptions {
   timeoutMs?: number;
   after?: unknown;
 }
@@ -175,14 +257,17 @@ export class TaskSpace {
   readonly leaseEpoch?: number;
   page(labelOrId: string): Page;
   newPage(label: string, options?: PageOptions): Promise<Page>;
-  listPages(): Promise<Page[]>;
+  listPages(options?: RequestOptions): Promise<Page[]>;
   claim(options?: LeaseOptions): Promise<unknown>;
   renew(options?: LeaseOptions): Promise<unknown>;
   takeover(options?: LeaseOptions): Promise<unknown>;
   returnControl(options?: LeaseOptions): Promise<unknown>;
   finish(options?: SpaceTransitionOptions): Promise<unknown>;
   release(options?: SpaceTransitionOptions): Promise<unknown>;
-  actionStatus(actionId: LogicalActionId): Promise<ActionReceipt | unknown>;
+  actionStatus(
+    actionId: LogicalActionId,
+    options?: RequestOptions,
+  ): Promise<ActionReceipt | unknown>;
   reconcileAction(
     actionId: LogicalActionId,
     options?: PageOptions,
@@ -197,15 +282,24 @@ export class BrowserClient {
   taskSpace(spaceId: LogicalSpaceId): TaskSpace;
   createSpace(
     label: string,
-    options?: { retention?: unknown },
+    options?: { retention?: unknown; signal?: AbortSignal },
   ): Promise<TaskSpace>;
-  hostStatus(): Promise<unknown>;
+  hostStatus(options?: RequestOptions): Promise<unknown>;
   events(options?: EventsOptions): Promise<unknown>;
-  actionStatus(actionId: LogicalActionId): Promise<ActionReceipt | unknown>;
+  resumeEvents(options?: EventsOptions): Promise<unknown>;
+  subscribeEvents(
+    listener: (event: unknown) => void,
+    options?: EventsOptions,
+  ): Promise<() => boolean | void>;
+  actionStatus(
+    actionId: LogicalActionId,
+    options?: RequestOptions,
+  ): Promise<ActionReceipt | unknown>;
   reconcileAction(
     actionId: LogicalActionId,
     leaseEpoch: number,
     now?: number,
+    options?: RequestOptions,
   ): Promise<ActionReceipt | unknown>;
   submitAction(
     request: Record<string, unknown>,
@@ -214,8 +308,9 @@ export class BrowserClient {
   request<T = unknown>(
     method: string,
     params?: Record<string, unknown>,
-    options?: {
+    options?: RequestOptions & {
       mayHaveSideEffects?: boolean;
+      requestId?: string;
       deadlineMs?: number;
       idempotencyKey?: string;
     },
@@ -225,10 +320,14 @@ export class BrowserClient {
       method: string;
       params?: Record<string, unknown>;
       mayHaveSideEffects?: boolean;
+      requestId?: string;
       deadlineMs?: number;
       idempotencyKey?: string;
+      signal?: AbortSignal;
     }>,
+    options?: RequestOptions,
   ): Promise<T[]>;
+  cancel(requestId: string | string[], reason?: string): Promise<void>;
   reconnect(): Promise<void>;
   close(): Promise<void>;
 }
@@ -236,12 +335,14 @@ export class BrowserClient {
 export function actionStatus(
   client: BrowserClient,
   actionId: LogicalActionId,
+  options?: RequestOptions,
 ): Promise<ActionReceipt | unknown>;
 export function reconcileAction(
   client: BrowserClient,
   actionId: LogicalActionId,
   leaseEpoch: number,
   now?: number,
+  options?: RequestOptions,
 ): Promise<ActionReceipt | unknown>;
 export function submitAction(
   client: BrowserClient,
@@ -251,6 +352,15 @@ export function readEvents(
   client: BrowserClient,
   options?: EventsOptions,
 ): Promise<unknown>;
+export function resumeEvents(
+  client: BrowserClient,
+  options?: EventsOptions,
+): Promise<unknown>;
+export function subscribeEvents(
+  client: BrowserClient,
+  listener: (event: unknown) => void,
+  options?: EventsOptions,
+): Promise<() => boolean | void>;
 export function eventCursor(result: unknown): {
   broker_epoch: number;
   sequence: number;
