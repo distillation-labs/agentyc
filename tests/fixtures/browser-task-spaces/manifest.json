@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "fixture_set": "phase-0-browser-task-spaces",
+  "deterministic": true,
+  "network": "local-only",
+  "external_resources": false,
+  "browser_policy": {
+    "target": "attach only to an already running, user-approved headed Chrome",
+    "managed": "explicit test lane; no implicit launch or download",
+    "cdp_url": "not required"
+  },
+  "fixtures": [
+    {
+      "name": "small-form",
+      "file": "small-form.html",
+      "purpose": "stable form controls and an explicit mutation",
+      "expected_controls": ["name", "role", "save"]
+    },
+    {
+      "name": "dense-admin-table",
+      "file": "dense-admin-table.html",
+      "purpose": "repeated rows, links, and row actions",
+      "expected_controls": ["search", "row-actions"]
+    },
+    {
+      "name": "dynamic-feed",
+      "file": "dynamic-feed.html",
+      "purpose": "deterministic feed update without timers or network",
+      "expected_controls": ["append-item", "feed-item"]
+    },
+    {
+      "name": "nested-frame",
+      "file": "nested-frame.html",
+      "purpose": "same-origin nested frame fixture using inline srcdoc",
+      "expected_controls": ["outer-action", "inner-action"]
+    }
+  ]
+}
