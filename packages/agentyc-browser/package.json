@@ -1,0 +1,23 @@
+{
+  "name": "@agentyc/browser",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Typed logical task-space client for the agentyc local host protocol.",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "types": "./src/index.d.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test",
+    "typecheck": "node scripts/typecheck.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "license": "MIT"
+}
