@@ -1,0 +1,9 @@
+{
+  "name": "com.agentyc.p0_probe",
+  "description": "Test-only agentyc Phase 0 Native Messaging host fixture",
+  "path": "__ABSOLUTE_PATH_TO_REPOSITORY__/tests/probes/native_probe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__UNPACKED_EXTENSION_ID__/"
+  ]
+}
