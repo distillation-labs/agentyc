@@ -10,9 +10,10 @@ use std::{
 
 use agentyc_core::{
     ActionId, ActionOperation, ActionReceipt, ActionRequest, ActionStatus, BrokerEpoch,
-    CompletionSource, ConnectionEpoch, DispatchState, EventRecord, EventSequence, IdempotencyKey,
-    PageBindingState, PageId, PageLifecycle, PageOwnership, ProfileBindingState, ReconcileToken,
-    ReconciliationState, SpaceDescriptor, SpaceId, SpaceLifecycle, UnknownReason,
+    CompletionSource, ConnectionEpoch, ConnectionNonce, DispatchState, EventRecord, EventSequence,
+    IdempotencyKey, LeaseEpoch, PageBindingState, PageId, PageLifecycle, PageOwnership,
+    PrincipalId, ProfileBindingId, ProfileBindingState, ReconcileToken, ReconciliationState,
+    SpaceDescriptor, SpaceId, SpaceLifecycle, UnknownReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +49,52 @@ pub struct LedgerLimits {
     pub max_ledger_bytes: usize,
     /// Maximum serialized bytes for one cached snapshot.
     pub max_snapshot_bytes: usize,
+}
+
+/// Purpose of a durable fence request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FencePurpose {
+    /// A new agent lease is waiting for bridge acknowledgement.
+    Takeover,
+    /// An agent lease is being returned to user control.
+    ReturnControl,
+}
+
+/// Exact durable identity of a fence request whose bridge completion is pending.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingFenceRecord {
+    /// Logical space covered by the fence.
+    pub space_id: SpaceId,
+    /// Broker epoch that created the request.
+    pub broker_epoch: BrokerEpoch,
+    /// Exact host request identity used for compare-and-set completion.
+    pub request_token: ReconcileToken,
+    /// Epoch being invalidated, when one exists.
+    pub old_epoch: Option<LeaseEpoch>,
+    /// New fence epoch.
+    pub fence_epoch: LeaseEpoch,
+    /// Principal that must complete the fence.
+    pub principal_id: PrincipalId,
+    /// Transition waiting for completion.
+    pub purpose: FencePurpose,
+}
+
+/// Durable proof that a takeover fence completed for an older lease epoch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TakeoverProofRecord {
+    /// Logical space covered by the proof.
+    pub space_id: SpaceId,
+    /// Broker epoch that issued the proof.
+    pub broker_epoch: BrokerEpoch,
+    /// Epoch of actions that may be reconciled with this proof.
+    pub previous_epoch: LeaseEpoch,
+    /// Current lease epoch established by the takeover.
+    pub current_epoch: LeaseEpoch,
+    /// Principal that owns the current lease.
+    pub principal_id: PrincipalId,
+    /// Exact fence request that produced the proof.
+    pub request_token: ReconcileToken,
 }
 
 /// Durable one-time handoff proof retained while a space is user-owned.
@@ -87,6 +134,15 @@ pub struct LedgerState {
     pub broker_epoch: BrokerEpoch,
     /// Monotonic local connection epoch counter.
     pub connection_epoch: ConnectionEpoch,
+    /// Principal bound to the current connection epoch.
+    #[serde(default)]
+    pub(crate) connection_principal_id: Option<PrincipalId>,
+    /// Nonce bound to the current connection epoch.
+    #[serde(default)]
+    pub(crate) connection_nonce: Option<ConnectionNonce>,
+    /// Profile bound to the current connection epoch.
+    #[serde(default)]
+    pub(crate) connection_profile_binding_id: Option<ProfileBindingId>,
     /// Host-assigned logical identity counters.
     pub next_space_number: u64,
     /// Host-assigned logical identity counter for pages.
@@ -110,6 +166,12 @@ pub struct LedgerState {
     /// One-time control proofs retained for user-owned spaces.
     #[serde(default)]
     pub control_tickets: BTreeMap<SpaceId, ControlTicketRecord>,
+    /// At most one exact fence request may be pending per logical space.
+    #[serde(default)]
+    pub pending_fences: BTreeMap<SpaceId, PendingFenceRecord>,
+    /// Durable proofs retained for current-owner reconciliation after takeover.
+    #[serde(default)]
+    pub takeover_proofs: BTreeMap<SpaceId, Vec<TakeoverProofRecord>>,
     /// Profile bindings retained without exposing profile handles in core records.
     #[serde(default)]
     pub profile_bindings: BTreeMap<SpaceId, agentyc_core::ProfileBindingId>,
@@ -124,6 +186,9 @@ impl LedgerState {
             schema_version: LEDGER_SCHEMA_VERSION,
             broker_epoch,
             connection_epoch: ConnectionEpoch::new(0),
+            connection_principal_id: None,
+            connection_nonce: None,
+            connection_profile_binding_id: None,
             next_space_number: 0,
             next_page_number: 0,
             event_sequence: EventSequence::new(0),
@@ -135,6 +200,8 @@ impl LedgerState {
             events: Vec::new(),
             snapshots: BTreeMap::new(),
             control_tickets: BTreeMap::new(),
+            pending_fences: BTreeMap::new(),
+            takeover_proofs: BTreeMap::new(),
             profile_bindings: BTreeMap::new(),
             space_generations: BTreeMap::new(),
         }
@@ -213,6 +280,9 @@ impl Ledger {
                 .checked_next()
                 .ok_or_else(|| LedgerError::Incompatible("broker epoch overflow".to_owned()))?;
             state.connection_epoch = ConnectionEpoch::new(0);
+            state.connection_principal_id = None;
+            state.connection_nonce = None;
+            state.connection_profile_binding_id = None;
             state.event_sequence = EventSequence::new(0);
             state.events.clear();
             recover_after_restart(&mut state)?;
@@ -343,6 +413,20 @@ fn validate_state_with_limits(
             LEDGER_SCHEMA_VERSION, state.schema_version
         )));
     }
+    let connection_metadata_present = state.connection_principal_id.is_some()
+        || state.connection_nonce.is_some()
+        || state.connection_profile_binding_id.is_some();
+    if state.connection_epoch.get() == 0 {
+        if connection_metadata_present {
+            return Err(LedgerError::Corrupt(
+                "connection metadata exists without a connection epoch".to_owned(),
+            ));
+        }
+    } else if state.connection_principal_id.is_none() || state.connection_nonce.is_none() {
+        return Err(LedgerError::Corrupt(
+            "current connection metadata is incomplete".to_owned(),
+        ));
+    }
     if state.spaces.len() > limits.max_spaces {
         return Err(LedgerError::BoundExceeded("space count".to_owned()));
     }
@@ -354,6 +438,11 @@ fn validate_state_with_limits(
     }
     if state.control_tickets.len() > state.spaces.len() {
         return Err(LedgerError::Corrupt("too many control tickets".to_owned()));
+    }
+    if state.pending_fences.len() > state.spaces.len()
+        || state.takeover_proofs.len() > state.spaces.len()
+    {
+        return Err(LedgerError::Corrupt("too many fence indexes".to_owned()));
     }
 
     let mut page_ids = BTreeSet::new();
@@ -450,6 +539,20 @@ fn validate_state_with_limits(
         ));
     }
 
+    for (space_id, space) in &state.spaces {
+        if matches!(
+            space.lifecycle,
+            SpaceLifecycle::FencePending
+                | SpaceLifecycle::FenceDispatched
+                | SpaceLifecycle::FenceAcknowledged
+        ) && !state.pending_fences.contains_key(space_id)
+        {
+            return Err(LedgerError::Corrupt(
+                "fence lifecycle has no pending fence record".to_owned(),
+            ));
+        }
+    }
+
     for (space_id, ticket) in &state.control_tickets {
         if ticket.space_id != *space_id
             || ticket.broker_epoch != state.broker_epoch
@@ -464,6 +567,82 @@ fn validate_state_with_limits(
             return Err(LedgerError::Corrupt(
                 "control ticket does not match user-owned space".to_owned(),
             ));
+        }
+    }
+
+    for (space_id, pending) in &state.pending_fences {
+        let Some(space) = state.spaces.get(space_id) else {
+            return Err(LedgerError::Corrupt(
+                "pending fence references unknown space".to_owned(),
+            ));
+        };
+        let Some(lease) = space.lease.as_ref() else {
+            return Err(LedgerError::Corrupt(
+                "pending fence has no lease".to_owned(),
+            ));
+        };
+        if pending.space_id != *space_id
+            || pending.broker_epoch != state.broker_epoch
+            || pending.fence_epoch != lease.lease_epoch
+            || pending.principal_id != lease.principal_id
+            || space.lifecycle != SpaceLifecycle::FencePending
+            || pending
+                .old_epoch
+                .is_some_and(|old| old >= pending.fence_epoch)
+        {
+            return Err(LedgerError::Corrupt(
+                "pending fence does not match space lease".to_owned(),
+            ));
+        }
+        let valid_purpose = match pending.purpose {
+            FencePurpose::Takeover => lease.state == LeaseState::Active,
+            FencePurpose::ReturnControl => {
+                lease.state == LeaseState::Fenced && pending.old_epoch.is_some()
+            }
+        };
+        if !valid_purpose {
+            return Err(LedgerError::Corrupt(
+                "pending fence purpose does not match lease state".to_owned(),
+            ));
+        }
+    }
+
+    for (space_id, proofs) in &state.takeover_proofs {
+        let Some(space) = state.spaces.get(space_id) else {
+            return Err(LedgerError::Corrupt(
+                "takeover proof references unknown space".to_owned(),
+            ));
+        };
+        if proofs.is_empty() || proofs.len() > 64 {
+            return Err(LedgerError::BoundExceeded(
+                "takeover proof count".to_owned(),
+            ));
+        }
+        let mut proof_epochs = BTreeSet::new();
+        for proof in proofs {
+            if proof.space_id != *space_id
+                || proof.broker_epoch != state.broker_epoch
+                || proof.previous_epoch >= proof.current_epoch
+                || !proof_epochs.insert((proof.previous_epoch, proof.current_epoch))
+                || proof.principal_id != space.owner
+            {
+                return Err(LedgerError::Corrupt(
+                    "takeover proof is inconsistent".to_owned(),
+                ));
+            }
+            if proof.current_epoch
+                == space
+                    .lease
+                    .as_ref()
+                    .map_or(LeaseEpoch::new(0), |lease| lease.lease_epoch)
+                && space.lease.as_ref().is_none_or(|lease| {
+                    lease.principal_id != proof.principal_id || lease.state != LeaseState::Active
+                })
+            {
+                return Err(LedgerError::Corrupt(
+                    "current takeover proof does not match lease".to_owned(),
+                ));
+            }
         }
     }
 
@@ -501,6 +680,7 @@ fn validate_state_with_limits(
         ));
     }
     let mut idempotency_ids = BTreeSet::new();
+    let mut running_mutations = BTreeSet::new();
     for (action_id, receipt) in &state.actions {
         if &receipt.action_id != action_id {
             return Err(LedgerError::Corrupt(
@@ -526,6 +706,7 @@ fn validate_state_with_limits(
             ));
         }
         validate_public_payload_shape(&request.payload, 65_536)?;
+        validate_action_payload_contract(receipt.operation, &request.payload)?;
         let space = state
             .spaces
             .get(&receipt.space_id)
@@ -571,6 +752,13 @@ fn validate_state_with_limits(
                 {
                     return Err(LedgerError::Corrupt(
                         "running action state is inconsistent".to_owned(),
+                    ));
+                }
+                if is_mutating_action(receipt.operation)
+                    && !running_mutations.insert(receipt.space_id.clone())
+                {
+                    return Err(LedgerError::Corrupt(
+                        "more than one mutating action is running in a space".to_owned(),
                     ));
                 }
             }
@@ -845,6 +1033,42 @@ pub(crate) fn canonical_action_hash(
     Ok(agentyc_core::ContentHash::from_bytes(&bytes))
 }
 
+pub(crate) fn validate_action_payload_contract(
+    operation: ActionOperation,
+    payload: &BTreeMap<String, String>,
+) -> Result<(), LedgerError> {
+    if !matches!(
+        operation,
+        ActionOperation::Evaluate
+            | ActionOperation::CookieWrite
+            | ActionOperation::StorageWrite
+            | ActionOperation::Upload
+    ) {
+        return Ok(());
+    }
+    let approval = payload.get("approval").ok_or_else(|| {
+        LedgerError::Corrupt("sensitive action requires explicit approval".to_owned())
+    })?;
+    if !matches!(approval.as_str(), "true" | "approved" | "confirm") {
+        return Err(LedgerError::Corrupt(
+            "sensitive action approval must be explicit".to_owned(),
+        ));
+    }
+    let intent = payload.get("user_intent").ok_or_else(|| {
+        LedgerError::Corrupt("sensitive action requires explicit user intent".to_owned())
+    })?;
+    if intent.is_empty()
+        || intent.len() > 512
+        || intent.chars().any(char::is_control)
+        || matches!(intent.as_str(), "false" | "none" | "unspecified")
+    {
+        return Err(LedgerError::Corrupt(
+            "sensitive action user intent is not explicit".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_public_payload_shape(
     payload: &BTreeMap<String, String>,
     max_value_bytes: usize,
@@ -882,6 +1106,8 @@ pub(crate) fn validate_public_payload_shape(
 }
 
 fn recover_after_restart(state: &mut LedgerState) -> Result<(), LedgerError> {
+    state.pending_fences.clear();
+    state.takeover_proofs.clear();
     for ticket in state.control_tickets.values_mut() {
         ticket.broker_epoch = state.broker_epoch;
     }
@@ -898,6 +1124,7 @@ fn recover_after_restart(state: &mut LedgerState) -> Result<(), LedgerError> {
                 | SpaceLifecycle::HandoffRequested
                 | SpaceLifecycle::Draining
                 | SpaceLifecycle::Recovering
+                | SpaceLifecycle::FencePending
                 | SpaceLifecycle::FenceAcknowledged
                 | SpaceLifecycle::FenceDispatched
         ) {
@@ -959,6 +1186,13 @@ fn recover_after_restart(state: &mut LedgerState) -> Result<(), LedgerError> {
         }
     }
     Ok(())
+}
+
+fn is_mutating_action(operation: ActionOperation) -> bool {
+    !matches!(
+        operation,
+        ActionOperation::Wait | ActionOperation::Screenshot
+    )
 }
 
 fn bump_page_generations(page: &mut agentyc_core::PageDescriptor) -> Result<(), LedgerError> {
