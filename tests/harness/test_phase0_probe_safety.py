@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -173,12 +174,52 @@ class InstallationProbeSafetyTests(unittest.TestCase):
             registration = root / "native-host.json"
             first = _module.install_registration(registration, self.extension_id, artifact_dir)
             self.assertEqual(first["status"], "installed")
+            self.assertEqual(stat.S_IMODE(registration.stat().st_mode), _module.REGISTRATION_MODE)
+            self.assertEqual(
+                stat.S_IMODE((artifact_dir / _module.INSTALL_RECORD).stat().st_mode),
+                _module.PRIVATE_TRANSACTION_MODE,
+            )
             second = _module.install_registration(registration, self.extension_id, artifact_dir)
             self.assertEqual(second["status"], "already_installed")
             self.assertFalse(second["mutated"])
             rollback = _module.rollback_registration(registration, self.extension_id, artifact_dir)
             self.assertEqual(rollback["status"], "rolled_back")
             self.assertFalse(registration.exists())
+
+    def test_existing_identical_manifest_with_incorrect_mode_is_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact_dir = root / "artifacts"
+            artifact_dir.mkdir()
+            registration = root / "native-host.json"
+            registration.write_text(_module.canonical_json(_module.expected_manifest(self.extension_id)), encoding="utf-8")
+            registration.chmod(_module.PRIVATE_TRANSACTION_MODE)
+
+            result = _module.install_registration(registration, self.extension_id, artifact_dir)
+
+            self.assertEqual(result["status"], "already_installed")
+            self.assertTrue(result["mutated"])
+            self.assertTrue(result["mode_repaired"])
+            self.assertEqual(stat.S_IMODE(registration.stat().st_mode), _module.REGISTRATION_MODE)
+
+    def test_registration_script_repairs_identical_manifest_with_incorrect_mode(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            manifest = Path(temporary) / "native-host.json"
+            expected = _register_module._manifest(
+                _register_module.HOST_PATH,
+                "chrome-extension://" + self.extension_id,
+            )
+            manifest.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            manifest.chmod(_register_module.MANIFEST_MODE ^ 0o200)
+
+            result = _register_module.install_registration(
+                "chrome-extension://" + self.extension_id,
+                manifest_path=manifest,
+            )
+
+            self.assertEqual(result["status"], "installed")
+            self.assertTrue(result["mode_matches"])
+            self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), _register_module.MANIFEST_MODE)
 
     def test_rollback_refuses_a_changed_registration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -312,6 +353,19 @@ class ChromeProbeSafetyTests(unittest.TestCase):
         self.assertEqual(len(request_ids), 8)
         for request_id in request_ids:
             self.assertEqual(uuid.UUID(request_id).version, 4)
+
+    def test_operator_ack_uses_controlling_tty_when_stdin_is_not_a_tty(self) -> None:
+        stdin = mock.Mock()
+        stdin.isatty.return_value = False
+        tty = mock.Mock()
+        tty.readline.return_value = "none_observed\n"
+        with (
+            mock.patch.object(_chrome.sys, "stdin", stdin),
+            mock.patch.object(_chrome, "open", return_value=tty, create=True) as open_tty,
+        ):
+            self.assertEqual(_chrome.collect_operator_permission_status(), "none_observed")
+        open_tty.assert_called_once_with("/dev/tty", "r", encoding="utf-8")
+        tty.close.assert_called_once_with()
 
     def test_pinned_manifest_id_and_identity_diagnostics_reject_same_shaped_worker(self) -> None:
         manifest = _chrome.load_manifest()
@@ -456,6 +510,42 @@ class ChromeProbeSafetyTests(unittest.TestCase):
             },
         )
 
+    def test_chrome_native_messaging_logs_are_classified_without_raw_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log_path = Path(temporary) / "chrome.stderr.log"
+            log_path.write_text(
+                "[native_messaging] launch_context: host not found at /private/user/secret\\n",
+                encoding="utf-8",
+            )
+            evidence = _chrome._chrome_native_messaging_evidence(log_path)
+        self.assertEqual(evidence["status"], "observed")
+        self.assertEqual(evidence["channels"], ["launch_context", "native_messaging"])
+        self.assertIn("host_not_found", evidence["categories"])
+        self.assertIn("host_launch", evidence["categories"])
+        self.assertNotIn("/private/user/secret", json.dumps(evidence))
+
+    def test_extension_result_evidence_reports_binding_and_native_failure_codes(self) -> None:
+        nonce = "11111111-1111-4111-8111-111111111111"
+        source_hash = "a" * 64
+        evidence = _chrome._extension_probe_evidence(
+            {
+                "binding_status": "observed",
+                "binding_nonce": nonce,
+                "binding_source_tree_sha256": source_hash,
+                "native_messaging": "unavailable",
+                "native_error": "host_not_found",
+            },
+            nonce,
+            source_hash,
+        )
+        self.assertTrue(evidence["binding_nonce_observed"])
+        self.assertTrue(evidence["binding_source_tree_hash_observed"])
+        self.assertTrue(evidence["binding_nonce_matches"])
+        self.assertTrue(evidence["binding_source_tree_hash_matches"])
+        self.assertEqual(evidence["native_failure_code"], "host_not_found")
+        self.assertNotIn(nonce, json.dumps(evidence))
+        self.assertNotIn(source_hash, json.dumps(evidence))
+
     def test_operator_assisted_command_uses_public_extensions_ui_only(self) -> None:
         command = _chrome.build_chrome_command(
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -467,6 +557,8 @@ class ChromeProbeSafetyTests(unittest.TestCase):
         )
         self.assertFalse(any("--load-extension" in argument for argument in command))
         self.assertIn("--remote-debugging-port=9333", command)
+        self.assertIn("--enable-logging=stderr", command)
+        self.assertIn("--log-level=1", command)
         self.assertNotIn("chrome://extensions", command)
 
         source = CHROME_SCRIPT.read_text(encoding="utf-8")
@@ -517,6 +609,17 @@ class ChromeProbeSafetyTests(unittest.TestCase):
                 source_hash,
             )
             self.assertNotEqual(staged_hash, source_hash)
+
+    def test_disposable_profile_stages_native_host_manifest_for_chrome_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "profile"
+            profile.mkdir()
+            target = _chrome.stage_native_host_manifest(profile, "a" * 32)
+            manifest = json.loads(target.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["name"], _chrome.NATIVE_HOST_NAME)
+            self.assertEqual(manifest["type"], "stdio")
+            self.assertEqual(manifest["allowed_origins"], [f"chrome-extension://{'a' * 32}/"])
+            self.assertEqual(manifest["path"], str(_chrome.NATIVE_HOST_PATH.resolve()))
 
     def test_owned_profile_cleanup_is_reported_and_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -700,7 +803,29 @@ setTimeout(() => {
             self.assertIsNone(_chrome.wait_for_probe_worker(9222, process, timeout=0.25))
             self.assertEqual(clock[0], 0.25)
 
+    def test_owned_page_navigation_waits_for_initial_page(self) -> None:
+        process = object()
+        target = {
+            "type": "page",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/owned",
+        }
+        with (
+            mock.patch.object(_chrome, "_owned_page_target", side_effect=[None, target]),
+            mock.patch.object(_chrome, "navigate_page_target") as navigate,
+            mock.patch.object(_chrome.time, "monotonic", return_value=0.0),
+            mock.patch.object(_chrome.time, "sleep") as sleep,
+        ):
+            result = _chrome.navigate_owned_page(9222, process, "chrome://extensions/")
+
+        self.assertEqual(result, target["webSocketDebuggerUrl"])
+        navigate.assert_called_once_with(target["webSocketDebuggerUrl"], "chrome://extensions/")
+        sleep.assert_called_once_with(_chrome.CONTROL_PAGE_RETRY_INTERVAL)
+
     def test_websocket_handshake_accept_and_server_frame_validation(self) -> None:
+        self.assertEqual(
+            _chrome.WEBSOCKET_GUID,
+            "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
+        )
         key = base64.b64encode(b"0123456789abcdef").decode("ascii")
         accept = base64.b64encode(
             hashlib.sha1((key + _chrome.WEBSOCKET_GUID).encode("ascii")).digest()
