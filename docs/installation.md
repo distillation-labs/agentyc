@@ -59,9 +59,25 @@ The ID is validated but is never written to the report. The drill:
 It never launches Chrome or downloads anything. It does not install the
 extension or claim that the extension UI, Native Messaging handshake, or
 headed coexistence workflow passed. Those require a separately captured,
-user-approved Chrome run. If a different manifest is already present, the
-script refuses to replace it. Use `--install` or `--rollback` separately only
-for an explicit, operator-controlled action:
+user-approved Chrome run. For branded Chrome, the supported unpacked-extension
+validation lane is operator-assisted:
+
+```bash
+python3 scripts/run_chrome_probe.py \
+  --headed --require-live --launch-chrome --operator-assisted \
+  --permission-prompt-status none_observed \
+  --artifact-dir artifacts/p0-extension
+```
+
+The runner opens an owned disposable Chrome window, navigates to
+`chrome://extensions`, prints the exact staged directory, and waits for the
+operator to enable Developer mode and click **Load unpacked**. It does not pass
+`--load-extension`, call `chrome.developerPrivate`, inspect the internal
+extensions page DOM, or automate the native file picker. Native Messaging must
+be installed separately before this run, and the operator must record whether a
+permission/policy prompt was observed. If a different manifest is already
+present, the script refuses to replace it. Use `--install` or `--rollback`
+separately only for an explicit, operator-controlled action:
 
 ```bash
 python3 scripts/run_install_drill.py --install \
