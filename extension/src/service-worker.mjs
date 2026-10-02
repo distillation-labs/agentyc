@@ -13,9 +13,24 @@ import { DebuggerBridge, debuggerOperationError } from "./debugger-bridge.mjs";
 import { TabsRegistry, unknownDispatch } from "./tabs-registry.mjs";
 import { GroupsRegistry } from "./groups.mjs";
 import { FramesRegistry } from "./frames.mjs";
+import { PAGE_OPERATIONS } from "./page-bridge.mjs";
 
 const METADATA_KEY = "agentyc_extension_metadata";
 const VERSION = "0.1.0";
+const CONTENT_DOCUMENT_TTL_MS = 60 * 1000;
+const CONTENT_REQUEST_TTL_MS = 30 * 1000;
+const MAX_SIDE_PANEL_TICKET_LIFETIME_MS = 15 * 60 * 1000;
+const MAX_MUTATION_QUEUES = 256;
+const MAX_CONTENT_PENDING = 256;
+const MAX_SIDE_PANEL_TICKETS = 1024;
+const DESTRUCTIVE_SIDE_PANEL_ACTIONS = new Set([
+  "stop",
+  "takeover",
+  "return_control",
+  "handoff",
+  "finish",
+  "release",
+]);
 
 function chromeApiOrGlobal(chromeApi) {
   return chromeApi ?? globalThis.chrome;
@@ -88,7 +103,11 @@ export class ServiceWorkerController {
     this.pending = new Map();
     this.inflight = new Map();
     this.fences = new Map();
+    this.mutationTails = new Map();
     this.contentPending = new Map();
+    this.contentDocuments = new Map();
+    this.usedSidePanelTickets = new Map();
+    this.sessionAdvancePromise = null;
     this.sidePanelListeners = [];
 
     const hintSalt = `worker:${workerInstanceEpoch ?? 0}`;
@@ -102,6 +121,12 @@ export class ServiceWorkerController {
       groups: this.groups,
       hintSalt,
       now,
+      profileInstanceId,
+      browserSessionEpoch,
+      assertFence: ({ spaceId, leaseEpoch }) =>
+        this.assertFence(spaceId, leaseEpoch),
+      onLifecycle: (kind, tabId, record) =>
+        this.handleTabLifecycle(kind, tabId, record),
       onEvent: (event, payload) => this.handleExtensionEvent(event, payload),
     });
     this.frames = new FramesRegistry({
@@ -116,6 +141,9 @@ export class ServiceWorkerController {
       onEvent: (payload) => this.handleDebuggerEvent(payload),
       onStateChange: (state, payload) =>
         this.handleExtensionEvent(`debugger.${state}`, payload),
+      now,
+      profileInstanceId,
+      browserSessionEpoch,
     });
     this.native =
       nativeClient ??
@@ -137,6 +165,8 @@ export class ServiceWorkerController {
   async start() {
     if (this.started) return this;
     await this.loadMetadata();
+    this.tabs.setIdentity(this.metadata);
+    this.debugger.setIdentity(this.metadata);
     this.started = true;
     this.groups.start();
     await this.tabs.start();
@@ -165,9 +195,12 @@ export class ServiceWorkerController {
       this.metadata.workerInstanceEpoch ?? Math.max(1, previousWorker + 1);
     const browserSessionEpoch =
       this.metadata.browserSessionEpoch ??
-      (Number.isSafeInteger(stored.browser_session_epoch)
-        ? stored.browser_session_epoch
-        : 1);
+      Math.max(
+        1,
+        (Number.isSafeInteger(stored.browser_session_epoch)
+          ? stored.browser_session_epoch
+          : 0) + 1,
+      );
     this.metadata = {
       profileInstanceId,
       workerInstanceEpoch,
@@ -190,11 +223,18 @@ export class ServiceWorkerController {
 
   installRuntimeListener() {
     const event = this.chrome?.runtime?.onMessage;
-    if (!event?.addListener) return;
-    const listener = (message, sender) =>
-      this.handleRuntimeMessage(message, sender);
-    event.addListener(listener);
-    this.sidePanelListeners.push(() => event.removeListener?.(listener));
+    if (event?.addListener) {
+      const listener = (message, sender) =>
+        this.handleRuntimeMessage(message, sender);
+      event.addListener(listener);
+      this.sidePanelListeners.push(() => event.removeListener?.(listener));
+    }
+    const startup = this.chrome?.runtime?.onStartup;
+    if (startup?.addListener) {
+      const listener = () => void this.advanceBrowserSession("browser_startup");
+      startup.addListener(listener);
+      this.sidePanelListeners.push(() => startup.removeListener?.(listener));
+    }
   }
 
   stop() {
@@ -205,7 +245,103 @@ export class ServiceWorkerController {
     this.native.stop();
     this.pending.clear();
     this.inflight.clear();
+    this.mutationTails.clear();
+    this.contentPending.clear();
+    this.contentDocuments.clear();
+    this.usedSidePanelTickets.clear();
     this.started = false;
+  }
+
+  handleTabLifecycle(kind, tabId, record) {
+    if (kind === "document_changed") {
+      if (Number.isInteger(tabId))
+        this.debugger?.handleDocumentChange(tabId, record);
+    } else if (Number.isInteger(tabId)) {
+      this.debugger?.invalidateTab(tabId, kind);
+    }
+    if (Number.isInteger(tabId)) {
+      this.contentDocuments.delete(tabId);
+      for (const [requestId, pending] of this.contentPending) {
+        if (pending.rawTabId === tabId) this.contentPending.delete(requestId);
+      }
+    }
+  }
+
+  async advanceBrowserSession(reason = "extension_lifecycle") {
+    if (this.sessionAdvancePromise) return this.sessionAdvancePromise;
+    this.sessionAdvancePromise = (async () => {
+      const nextEpoch =
+        (Number.isSafeInteger(this.metadata.browserSessionEpoch)
+          ? this.metadata.browserSessionEpoch
+          : 0) + 1;
+      const unknownActions = [...this.inflight.keys()];
+      this.inflight.clear();
+      for (const actionId of unknownActions) {
+        this.handleExtensionEvent("action.unknown", {
+          action_id: actionId,
+          outcome: "unknown",
+          code: "unknown_outcome",
+          reason: "browser session changed",
+        });
+      }
+      this.fences.clear();
+      this.mutationTails.clear();
+      this.contentPending.clear();
+      this.contentDocuments.clear();
+      this.usedSidePanelTickets.clear();
+      this.debugger.resetSession(nextEpoch);
+      this.tabs.resetSession(nextEpoch);
+      this.metadata.browserSessionEpoch = nextEpoch;
+      this.native.browserSessionEpoch = nextEpoch;
+      await storageSet(this.storage, {
+        [METADATA_KEY]: {
+          profile_instance_id: this.metadata.profileInstanceId,
+          worker_instance_epoch: this.metadata.workerInstanceEpoch,
+          browser_session_epoch: nextEpoch,
+          ui_version: VERSION,
+        },
+      });
+      this.handleExtensionEvent("browser.session_changed", {
+        browser_session_epoch: nextEpoch,
+        reason,
+      });
+      if (this.started && this.native?.stop && this.native?.connect) {
+        this.native.stop();
+        this.native.stopped = false;
+        await this.native.connect().catch(() => {});
+      }
+      await this.tabs.refreshSession();
+      return nextEpoch;
+    })().finally(() => {
+      this.sessionAdvancePromise = null;
+    });
+    return this.sessionAdvancePromise;
+  }
+
+  enqueueMutation(spaceId, operation) {
+    if (
+      !this.mutationTails.has(spaceId) &&
+      this.mutationTails.size >= MAX_MUTATION_QUEUES
+    )
+      return Promise.reject(
+        new ProtocolError("resource_exhausted", "mutation queue bound reached"),
+      );
+    const previous = this.mutationTails.get(spaceId) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(operation);
+    this.mutationTails.set(spaceId, current);
+    void current
+      .finally(() => {
+        if (this.mutationTails.get(spaceId) === current)
+          this.mutationTails.delete(spaceId);
+      })
+      .catch(() => {});
+    return current;
+  }
+
+  markActionDispatched(actionId) {
+    if (!actionId) return;
+    const pending = this.inflight.get(actionId);
+    if (pending) pending.dispatched = true;
   }
 
   handleNativeState(state, detail) {
@@ -283,7 +419,12 @@ export class ServiceWorkerController {
           actionId: message.action_id,
           ok: false,
           error: safeError,
-          mutation: isMutationMethod(message.method),
+          mutation:
+            isMutationMethod(message.method) ||
+            isFenceMethod(
+              message.method ??
+                (message.kind === "fence" ? "fence" : undefined),
+            ),
         });
       }
       return { ok: false, error: safeError };
@@ -301,10 +442,50 @@ export class ServiceWorkerController {
       );
     const requestId = message.request_id ?? createLogicalId("req");
     const actionId = message.action_id;
-    const mutation = isMutationMethod(method);
+    const mutation = isMutationMethod(method) || isFenceMethod(method);
     const spaceId = valueOf(message, params, "space_id", "spaceId");
     const pageId = valueOf(message, params, "page_id", "pageId");
     const leaseEpoch = valueOf(message, params, "lease_epoch", "leaseEpoch");
+    if (mutation) {
+      assertLogicalScope({ spaceId });
+      return this.enqueueMutation(spaceId, () =>
+        this.handleHostRequestSerialized({
+          message,
+          params,
+          method,
+          requestId,
+          actionId,
+          mutation: isMutationMethod(method),
+          spaceId,
+          pageId,
+          leaseEpoch,
+        }),
+      );
+    }
+    return this.handleHostRequestSerialized({
+      message,
+      params,
+      method,
+      requestId,
+      actionId,
+      mutation: false,
+      spaceId,
+      pageId,
+      leaseEpoch,
+    });
+  }
+
+  async handleHostRequestSerialized({
+    message,
+    params,
+    method,
+    requestId,
+    actionId,
+    mutation,
+    spaceId,
+    pageId,
+    leaseEpoch,
+  }) {
     if (isFenceMethod(method)) {
       return this.handleFence({
         message,
@@ -389,6 +570,7 @@ export class ServiceWorkerController {
           title: params.title,
           ownershipProof: params.ownership_proof,
           windowHint: params.window_hint,
+          onDispatch: () => this.markActionDispatched(actionId),
         });
       case "page.adopt":
         return this.tabs.adoptExistingTab({
@@ -398,6 +580,7 @@ export class ServiceWorkerController {
           leaseEpoch,
           ownershipProof: params.ownership_proof,
           intentTicket: params.intent_ticket,
+          onDispatch: () => this.markActionDispatched(actionId),
         });
       case "page.close":
         return this.tabs.closeManagedPage({
@@ -405,21 +588,29 @@ export class ServiceWorkerController {
           pageId,
           leaseEpoch,
           expectedGeneration: params.expected_generation,
+          expectedNavigationGeneration: params.expected_navigation_generation,
+          expectedDocumentGeneration: params.expected_document_generation,
           cleanupProof: params.cleanup_proof,
+          onDispatch: () => this.markActionDispatched(actionId),
         });
       case "debugger.attach":
-        return this.debugger.attach({ spaceId, pageId, leaseEpoch });
+        return this.debugger.attach({
+          spaceId,
+          pageId,
+          leaseEpoch,
+          onDispatch: () => this.markActionDispatched(actionId),
+        });
       case "debugger.detach":
         return this.debugger.detach({
           spaceId,
           pageId,
           leaseEpoch,
           reason: params.reason,
+          onDispatch: () => this.markActionDispatched(actionId),
         });
       case "debugger.command": {
         const debuggerMethod = params.method;
-        const pending = actionId ? this.inflight.get(actionId) : undefined;
-        if (pending) pending.dispatched = true;
+        this.assertFence(spaceId, leaseEpoch);
         return this.debugger.sendCommand({
           spaceId,
           pageId,
@@ -427,9 +618,13 @@ export class ServiceWorkerController {
           method: debuggerMethod,
           params: params.params ?? {},
           expectedGeneration: params.expected_generation,
+          expectedTargetGeneration: params.expected_target_generation,
+          expectedNavigationGeneration: params.expected_navigation_generation,
+          expectedDocumentGeneration: params.expected_document_generation,
           commandId: params.command_id ?? actionId ?? requestId,
           capability: params.capability,
           approval: params.approval,
+          onDispatch: () => this.markActionDispatched(actionId),
         });
       }
       case "group.present": {
@@ -446,12 +641,14 @@ export class ServiceWorkerController {
         });
       }
       case "content.request":
+        this.assertFence(spaceId, leaseEpoch);
         return this.sendContentRequest({
           spaceId,
           pageId,
           leaseEpoch,
           params,
           requestId,
+          onDispatch: () => this.markActionDispatched(actionId),
         });
       default:
         throw new ProtocolError(
@@ -461,7 +658,14 @@ export class ServiceWorkerController {
     }
   }
 
-  async sendContentRequest({ spaceId, pageId, leaseEpoch, params, requestId }) {
+  async sendContentRequest({
+    spaceId,
+    pageId,
+    leaseEpoch,
+    params,
+    requestId,
+    onDispatch = () => {},
+  }) {
     const record = this.tabs.assertPageDispatch({
       spaceId,
       pageId,
@@ -473,17 +677,85 @@ export class ServiceWorkerController {
         "capability_unavailable",
         "content messaging is unavailable",
       );
+    if (!PAGE_OPERATIONS.has(params.operation))
+      throw new ProtocolError(
+        "capability_unavailable",
+        "content operation is not allowlisted",
+      );
+    const document = this.contentDocuments.get(record.rawTabId);
+    if (
+      !document ||
+      document.spaceId !== spaceId ||
+      document.pageId !== pageId ||
+      document.sessionEpoch !== this.metadata.browserSessionEpoch ||
+      document.targetGeneration !== record.targetGeneration ||
+      document.navigationGeneration !== record.navigationGeneration ||
+      document.documentGeneration !== record.documentGeneration ||
+      document.expiresAt <= this.now()
+    ) {
+      throw new ProtocolError(
+        "capability_unavailable",
+        "content bridge is not ready for the current document",
+      );
+    }
+    if (
+      (params.nonce !== undefined && params.nonce !== document.nonce) ||
+      (params.document_id !== undefined &&
+        params.document_id !== document.documentId)
+    ) {
+      throw new ProtocolError(
+        "stale_generation",
+        "content document scope does not match the live page",
+      );
+    }
+    const expiresAt =
+      params.expires_at === undefined
+        ? this.now() + CONTENT_REQUEST_TTL_MS
+        : params.expires_at;
+    if (
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= this.now() ||
+      expiresAt > this.now() + CONTENT_REQUEST_TTL_MS
+    ) {
+      throw new ProtocolError(
+        "proof_expired",
+        "content request expiry is invalid",
+      );
+    }
     const message = {
       type: "agentyc.content.request",
       version: 1,
-      nonce: params.nonce,
-      document_id: params.document_id,
+      nonce: document.nonce,
+      document_id: document.documentId,
       request_id: requestId,
       operation: params.operation,
       payload: params.payload ?? {},
+      expires_at: expiresAt,
     };
-    this.contentPending.set(requestId, { spaceId, pageId });
+    assertNoRawBrowserIdentifiers(message.payload);
+    if (
+      !this.contentPending.has(requestId) &&
+      this.contentPending.size >= MAX_CONTENT_PENDING
+    )
+      throw new ProtocolError(
+        "resource_exhausted",
+        "content request bound reached",
+      );
+    this.contentPending.set(requestId, {
+      spaceId,
+      pageId,
+      rawTabId: record.rawTabId,
+      nonce: document.nonce,
+      documentId: document.documentId,
+      operation: params.operation,
+      expiresAt,
+      sessionEpoch: this.metadata.browserSessionEpoch,
+      targetGeneration: record.targetGeneration,
+      navigationGeneration: record.navigationGeneration,
+      documentGeneration: record.documentGeneration,
+    });
     try {
+      onDispatch();
       await this.chrome.tabs.sendMessage(record.rawTabId, message);
     } catch (error) {
       this.contentPending.delete(requestId);
@@ -491,7 +763,7 @@ export class ServiceWorkerController {
         cause: error instanceof Error ? error.message : String(error),
       });
     }
-    return { accepted: true, request_id: requestId };
+    return { accepted: true, request_id: requestId, expires_at: expiresAt };
   }
 
   handleFence({ message, params, requestId, actionId, spaceId, leaseEpoch }) {
@@ -621,26 +893,167 @@ export class ServiceWorkerController {
 
   async handleRuntimeMessage(message, sender) {
     if (!message || typeof message !== "object") return undefined;
-    if (
-      sender?.id &&
-      this.chrome?.runtime?.id &&
-      sender.id !== this.chrome.runtime.id
-    )
-      return undefined;
+    if (sender?.id !== this.chrome?.runtime?.id) return undefined;
+    if (message.type === "agentyc.content.ready")
+      return this.handleContentReady(message, sender);
     if (message.type === "agentyc.content.result")
-      return this.handleContentResult(message);
+      return this.handleContentResult(message, sender);
+    if (message.type === "agentyc.content.closed")
+      return this.handleContentClosed(message, sender);
     if (message.type === "agentyc.sidepanel.request")
       return this.handleSidePanelRequest(message);
     return undefined;
   }
 
-  handleContentResult(message) {
+  senderTabRecord(sender) {
+    const rawTabId = sender?.tab?.id;
+    if (!Number.isInteger(rawTabId)) return undefined;
+    const record = this.tabs.getInternalByTab(rawTabId);
+    if (!record || record.ownership !== "agent" || !record.pageId)
+      return undefined;
+    if (sender?.url && record.url) {
+      try {
+        if (new URL(sender.url).origin !== new URL(record.url).origin)
+          return undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return record;
+  }
+
+  pruneContentState() {
+    const now = this.now();
+    for (const [tabId, document] of this.contentDocuments) {
+      if (document.expiresAt <= now) this.contentDocuments.delete(tabId);
+    }
+    for (const [requestId, pending] of this.contentPending) {
+      if (pending.expiresAt <= now) this.contentPending.delete(requestId);
+    }
+  }
+
+  handleContentReady(message, sender) {
+    this.pruneContentState();
+    const record = this.senderTabRecord(sender);
+    if (!record)
+      return {
+        ok: false,
+        error: errorResult(
+          "permission_denied",
+          "content sender is not a managed page",
+        ),
+      };
+    if (
+      message.version !== 1 ||
+      typeof message.nonce !== "string" ||
+      message.nonce.length < 8 ||
+      message.nonce.length > 128 ||
+      typeof message.document_id !== "string" ||
+      message.document_id.length < 8 ||
+      message.document_id.length > 128
+    ) {
+      return {
+        ok: false,
+        error: errorResult(
+          "schema_invalid",
+          "content document identity is invalid",
+        ),
+      };
+    }
+    const expiresAt =
+      message.expires_at === undefined
+        ? this.now() + CONTENT_DOCUMENT_TTL_MS
+        : message.expires_at;
+    if (
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= this.now() ||
+      expiresAt > this.now() + CONTENT_DOCUMENT_TTL_MS
+    ) {
+      return {
+        ok: false,
+        error: errorResult(
+          "proof_expired",
+          "content document registration is expired",
+        ),
+      };
+    }
+    this.contentDocuments.set(record.rawTabId, {
+      spaceId: record.spaceId,
+      pageId: record.pageId,
+      rawTabId: record.rawTabId,
+      nonce: message.nonce,
+      documentId: message.document_id,
+      expiresAt,
+      sessionEpoch: this.metadata.browserSessionEpoch,
+      targetGeneration: record.targetGeneration,
+      navigationGeneration: record.navigationGeneration,
+      documentGeneration: record.documentGeneration,
+    });
+    return { ok: true };
+  }
+
+  handleContentClosed(message, sender) {
+    const record = this.senderTabRecord(sender);
+    if (!record)
+      return {
+        ok: false,
+        error: errorResult("permission_denied", "content sender is invalid"),
+      };
+    const document = this.contentDocuments.get(record.rawTabId);
+    if (
+      document &&
+      document.nonce === message.nonce &&
+      document.documentId === message.document_id
+    ) {
+      this.contentDocuments.delete(record.rawTabId);
+      for (const [requestId, pending] of this.contentPending) {
+        if (pending.rawTabId === record.rawTabId)
+          this.contentPending.delete(requestId);
+      }
+    }
+    return { ok: true };
+  }
+
+  handleContentResult(message, sender) {
+    this.pruneContentState();
     const pending = this.contentPending.get(message.request_id);
     if (!pending)
       return {
         ok: false,
         error: errorResult("stale_request", "content result is not pending"),
       };
+    const record = this.senderTabRecord(sender);
+    if (
+      !record ||
+      record.rawTabId !== pending.rawTabId ||
+      record.spaceId !== pending.spaceId ||
+      record.pageId !== pending.pageId ||
+      record.targetGeneration !== pending.targetGeneration ||
+      record.navigationGeneration !== pending.navigationGeneration ||
+      record.documentGeneration !== pending.documentGeneration ||
+      pending.sessionEpoch !== this.metadata.browserSessionEpoch ||
+      message.version !== 1 ||
+      message.nonce !== pending.nonce ||
+      message.document_id !== pending.documentId ||
+      message.operation !== pending.operation ||
+      !Number.isSafeInteger(message.expires_at) ||
+      message.expires_at <= this.now() ||
+      message.expires_at > pending.expiresAt
+    ) {
+      return {
+        ok: false,
+        error: errorResult(
+          "stale_generation",
+          "content result scope is not current",
+        ),
+      };
+    }
+    try {
+      if (message.ok) assertNoRawBrowserIdentifiers(message.result ?? {});
+      else assertNoRawBrowserIdentifiers(message.error ?? {});
+    } catch (error) {
+      return { ok: false, error: publicError(error) };
+    }
     this.contentPending.delete(message.request_id);
     this.handleExtensionEvent("content.result", {
       space_id: pending.spaceId,
@@ -652,6 +1065,65 @@ export class ServiceWorkerController {
         : { error: message.error }),
     });
     return { ok: true };
+  }
+
+  pruneSidePanelTickets() {
+    const now = this.now();
+    for (const [ticketId, expiresAt] of this.usedSidePanelTickets) {
+      if (expiresAt <= now) this.usedSidePanelTickets.delete(ticketId);
+    }
+  }
+
+  validateSidePanelTicket(ticket, action, params) {
+    if (
+      !ticket ||
+      ticket.issued_by_host !== true ||
+      typeof ticket.ticket_id !== "string" ||
+      !/^[A-Za-z0-9._:-]{8,128}$/.test(ticket.ticket_id) ||
+      ticket.purpose !== "sidepanel" ||
+      ticket.action !== action
+    ) {
+      throw new ProtocolError(
+        "user_confirmation_required",
+        "destructive side-panel action requires a host intent ticket",
+      );
+    }
+    const expiresAt = ticket.expires_at ?? ticket.expires_at_ms;
+    if (
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= this.now() ||
+      expiresAt > this.now() + MAX_SIDE_PANEL_TICKET_LIFETIME_MS
+    ) {
+      throw new ProtocolError(
+        "proof_expired",
+        "side-panel intent ticket is expired",
+      );
+    }
+    const spaceId = params.space_id ?? params.spaceId;
+    if (
+      ticket.space_id !== spaceId ||
+      (ticket.profile_instance_id !== undefined &&
+        ticket.profile_instance_id !== this.metadata.profileInstanceId) ||
+      (ticket.browser_session_epoch !== undefined &&
+        ticket.browser_session_epoch !== this.metadata.browserSessionEpoch)
+    ) {
+      throw new ProtocolError(
+        "permission_denied",
+        "side-panel intent ticket scope is not current",
+      );
+    }
+    this.pruneSidePanelTickets();
+    if (this.usedSidePanelTickets.has(ticket.ticket_id))
+      throw new ProtocolError(
+        "replay_rejected",
+        "side-panel intent ticket was already consumed",
+      );
+    if (this.usedSidePanelTickets.size >= MAX_SIDE_PANEL_TICKETS)
+      throw new ProtocolError(
+        "resource_exhausted",
+        "side-panel ticket cache is full",
+      );
+    this.usedSidePanelTickets.set(ticket.ticket_id, expiresAt);
   }
 
   handleSidePanelRequest(message) {
@@ -681,6 +1153,8 @@ export class ServiceWorkerController {
         : {};
     try {
       assertNoRawBrowserIdentifiers(params);
+      if (DESTRUCTIVE_SIDE_PANEL_ACTIONS.has(action))
+        this.validateSidePanelTicket(message.intent_ticket, action, params);
       const requestId = createLogicalId("req");
       const method = `space.${action}`;
       const actionId = createLogicalId("action");
