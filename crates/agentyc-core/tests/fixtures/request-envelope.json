@@ -1,0 +1,1 @@
+{"kind":"request","protocol":1,"request_id":"req_demo","method":"space.describe","params":{"mode":"compact","space_id":"space_demo"},"deadline_ms":30000,"idempotency_key":null}
