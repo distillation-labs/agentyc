@@ -80,10 +80,10 @@ The current CLI opens and closes a broker for each invocation. A restart fences 
 
 The existing compatibility commands remain explicit:
 
-- `agentyc mcp [--cdp-url ...]`
-- `agentyc serve [--cdp-url ...]`
+- `agentyc mcp --legacy-cdp [--cdp-url ...]`
+- `agentyc serve --cdp-url ...`
 - `agentyc browser`
-- `agentyc run [--cdp-url ...] ...`
-- `agentyc repl [--cdp-url ...]`
+- `agentyc run --cdp-url ... ...`
+- `agentyc repl --cdp-url ...`
 
-Those commands retain their legacy CDP/runtime behavior. The direct commands above are separate and do not accept `--cdp-url`.
+Those commands retain their legacy CDP/runtime behavior only when explicitly selected. The `serve`, `run`, and `repl` forms require an explicit endpoint; `mcp --legacy-cdp` may use its separately selected managed-test lifecycle. The host-backed `agentyc`/`agentyc mcp` path remains the default and never falls back to that lifecycle.
