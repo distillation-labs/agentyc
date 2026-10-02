@@ -308,6 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     report["status"] = status
     if status != "offline_passed":
         report["limitations"].append("No browser action was executed by this probe; live evidence must come from the supplied harness.")
+    add_envelope(report, kind="existing-chrome-coexistence")
     rendered = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     encoded = rendered.encode("utf-8")
     if len(encoded) > MAX_REPORT_BYTES:
@@ -315,9 +316,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        add_envelope(report, kind="existing-chrome-coexistence")
         write_json_atomic(artifact_dir / "report.json", report, max_bytes=MAX_REPORT_BYTES)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"existing-Chrome probe error: cannot write bounded report: {exc.__class__.__name__}", file=sys.stderr)
         return 2
     print(rendered, end="")
