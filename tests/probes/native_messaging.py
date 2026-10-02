@@ -9,6 +9,7 @@ bounded envelope policy before any message can reach a broker.
 from __future__ import annotations
 
 import json
+import re
 import struct
 import unittest
 from dataclasses import dataclass
@@ -23,7 +24,9 @@ MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_CUMULATIVE_FRAME_BYTES = 4 * MAX_FRAME_BYTES
 MAX_IN_FLIGHT_BYTES = 2 * 1024 * 1024
 SUPPORTED_VERSION = 1
-DEFAULT_ORIGIN = "chrome-extension://p0probe"
+DEFAULT_ORIGIN = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ORIGIN_PATTERN = re.compile(r"^chrome-extension://[a-p]{32}$")
+EXPECTED_FIXTURE = "agentyc P0 probe fixture"
 
 
 class RejectCode(str, Enum):
@@ -131,10 +134,13 @@ class BrokerRegistry:
 
 class EnvelopeSession:
     def __init__(self, expected_origin: str = DEFAULT_ORIGIN, registry: BrokerRegistry | None = None) -> None:
+        if not ORIGIN_PATTERN.fullmatch(expected_origin):
+            raise ProtocolError(RejectCode.WRONG_ORIGIN, "origin is not an exact Chrome extension origin")
         self.expected_origin = expected_origin
         self.registry = registry or BrokerRegistry()
         self.broker_id = self.registry.connect("p0")
         self._nonce: str | None = None
+        self._phase = 0
         self._seen_message_ids: set[str] = set()
         self.accepted_count = 0
         self.in_flight_bytes = 0
@@ -159,7 +165,7 @@ class EnvelopeSession:
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "envelope must be an object")
             if envelope.get("version") != SUPPORTED_VERSION:
                 raise ProtocolError(RejectCode.UNSUPPORTED_VERSION, "unsupported protocol version")
-            if envelope.get("origin") != self.expected_origin:
+            if envelope.get("origin") != self.expected_origin or not ORIGIN_PATTERN.fullmatch(envelope.get("origin", "")):
                 raise ProtocolError(RejectCode.WRONG_ORIGIN, "origin is not exactly allowlisted")
             message_id = envelope.get("message_id")
             nonce = envelope.get("nonce")
@@ -169,14 +175,19 @@ class EnvelopeSession:
                 raise ProtocolError(RejectCode.REPLAY, "message_id was already accepted")
             if not isinstance(nonce, str) or not nonce or len(nonce) > 128:
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "invalid nonce")
-            if envelope.get("kind") == "hello":
-                if self._nonce is not None:
+            kind = envelope.get("kind")
+            if kind == "hello":
+                if self._nonce is not None or self._phase != 0:
                     raise ProtocolError(RejectCode.REPLAY, "second hello is a replay")
                 self._nonce = nonce
             elif self._nonce != nonce:
                 raise ProtocolError(RejectCode.REPLAY, "nonce is not bound to this session")
+            if (self._phase == 0 and kind != "hello") or (self._phase == 1 and kind != "probe") or self._phase >= 2:
+                raise ProtocolError(RejectCode.INVALID_ENVELOPE, "unexpected handshake phase")
             if "payload" not in envelope or not isinstance(envelope["payload"], dict):
                 raise ProtocolError(RejectCode.INVALID_ENVELOPE, "payload must be an object")
+            if envelope["payload"].get("fixture") != EXPECTED_FIXTURE:
+                raise ProtocolError(RejectCode.INVALID_ENVELOPE, "unexpected fixture identity")
             assembly_bytes = envelope["payload"].get("assembly_bytes", frame.size)
             artifact_bytes = envelope["payload"].get("artifact_bytes", 0)
             if not isinstance(assembly_bytes, int) or assembly_bytes < 0 or assembly_bytes > MAX_ASSEMBLY_BYTES:
@@ -185,6 +196,7 @@ class EnvelopeSession:
                 raise ProtocolError(RejectCode.BUDGET, "artifact budget exceeded")
             self.artifact_bytes += artifact_bytes
             self._seen_message_ids.add(message_id)
+            self._phase += 1
             self.accepted_count += 1
             return envelope
         finally:
@@ -209,7 +221,7 @@ def _envelope(message_id: str, nonce: str = "n-1", *, origin: str = DEFAULT_ORIG
         "message_id": message_id,
         "nonce": nonce,
         "kind": kind,
-        "payload": {"fixture": "offline"},
+        "payload": {"fixture": EXPECTED_FIXTURE},
     }
 
 
@@ -254,6 +266,10 @@ def run_deterministic_suite() -> dict[str, Any]:
     replay_session.accept(Frame(replay_payload))
     rejected("replayed_message", lambda: replay_session.accept(Frame(replay_payload)), RejectCode.REPLAY)
     rejected("unsupported_version", lambda: EnvelopeSession().accept(Frame(encode_json(_envelope("v2", version=2))[4:])), RejectCode.UNSUPPORTED_VERSION)
+    nonce_session = EnvelopeSession()
+    nonce_session.accept(Frame(encode_json(_envelope("nonce-hello", kind="hello"))[4:]))
+    rejected("wrong_nonce", lambda: nonce_session.accept(Frame(encode_json(_envelope("nonce-probe", nonce="n-other"))[4:])), RejectCode.REPLAY)
+    rejected("invalid_phase_payload", lambda: nonce_session.accept(Frame(encode_json(_envelope("phase-probe", kind="unknown"))[4:])), RejectCode.INVALID_ENVELOPE)
     oversized_header = struct.pack("<I", MAX_FRAME_BYTES + 1)
     rejected("oversized_frame", lambda: FrameDecoder().feed(oversized_header), RejectCode.OVERSIZE)
     rejected("oversized_envelope", lambda: EnvelopeSession().accept(Frame(b"{" + b"x" * MAX_ENVELOPE_BYTES + b"}")), RejectCode.OVERSIZE)
@@ -269,6 +285,14 @@ def run_deterministic_suite() -> dict[str, Any]:
     if first != second or registry.broker_count != 1:
         raise AssertionError("reconnect created a second broker")
     cases["reconnect_single_broker"] = "passed"
+    extra_frame = encode_json(_envelope("extra", nonce="n-extra", kind="hello")) + encode_json(_envelope("extra-2", nonce="n-extra", kind="probe")) + encode_json(_envelope("extra-3", nonce="n-extra", kind="probe"))
+    extra_decoder = FrameDecoder()
+    extra_session = EnvelopeSession()
+    for frame in extra_decoder.feed(extra_frame):
+        if extra_session.accepted_count == 2:
+            rejected("extra_frame", lambda frame=frame: extra_session.accept(frame), RejectCode.INVALID_ENVELOPE)
+            break
+        extra_session.accept(frame)
     return {
         "status": "passed",
         "limits": {
