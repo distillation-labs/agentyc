@@ -12,8 +12,8 @@ use std::{
 };
 
 use agentyc_core::{
-    ActionId, BrokerEpoch, ClientId, ConnectionNonce, CoreError, EventSequence, HelloEnvelope,
-    PROTOCOL_VERSION, PageId, PrincipalId, SpaceId, Timestamp,
+    ActionId, BrokerEpoch, ClientId, ConnectionNonce, CoreError, ErrorCode, EventSequence,
+    HelloEnvelope, PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId, SpaceId, Timestamp,
 };
 use agentyc_host::{Broker, FakeBridge, HostError, NullBridge};
 use anyhow::{Result, anyhow};
@@ -38,6 +38,8 @@ pub struct DirectOptions {
     pub principal: Option<String>,
     /// Use the explicit deterministic in-process fake bridge seam.
     pub offline: bool,
+    /// Emit compact JSON instead of the default pretty JSON record.
+    pub json: bool,
 }
 
 /// Direct command tree exposed by the CLI.
@@ -273,43 +275,47 @@ impl DirectContext {
         let state_dir = resolve_state_dir(options.state_dir.as_deref())?;
         let offline = options.offline || explicit_fake_host_env();
         let bridge = if offline {
-            BridgeKind::Fake(FakeBridge::new())
+            BridgeKind::Fake(Box::new(FakeBridge::new()))
         } else {
             BridgeKind::Null(NullBridge)
         };
         let broker = match bridge {
-            BridgeKind::Fake(fake) => Broker::open(&state_dir, fake),
+            BridgeKind::Fake(fake) => Broker::open(&state_dir, *fake),
             BridgeKind::Null(null) => Broker::open(&state_dir, null),
         }
         .map_err(host_error)?;
         let principal = principal_id(options.principal.as_deref())?;
-        let authority = if offline {
-            broker.test_authority(principal).map_err(host_error)?
+        let nonce = ConnectionNonce::from_suffix(format!("cli-{}", Uuid::new_v4().simple()))
+            .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
+        let profile_binding_id = if offline {
+            Some(
+                ProfileBindingId::from_suffix("cli-offline")
+                    .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
+            )
         } else {
-            let nonce = ConnectionNonce::from_suffix(format!("cli-{}", Uuid::new_v4().simple()))
-                .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
-            let hello = HelloEnvelope {
-                protocol: PROTOCOL_VERSION,
-                supported_protocols: vec![PROTOCOL_VERSION],
-                principal_id: principal,
-                resume_from: None,
-                client_metadata: Some(agentyc_core::ClientMetadata {
-                    client_id: Some(
-                        ClientId::from_suffix("cli")
-                            .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
-                    ),
-                    client_name: Some("agentyc-cli".to_owned()),
-                    client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                    connection_nonce: Some(nonce),
-                    profile_binding_id: None,
-                }),
-            };
-            broker
-                .hello(&hello)
-                .map_err(host_error)?
-                .authority()
-                .clone()
+            None
         };
+        let hello = HelloEnvelope {
+            protocol: PROTOCOL_VERSION,
+            supported_protocols: vec![PROTOCOL_VERSION],
+            principal_id: principal,
+            resume_from: None,
+            client_metadata: Some(agentyc_core::ClientMetadata {
+                client_id: Some(
+                    ClientId::from_suffix("cli")
+                        .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
+                ),
+                client_name: Some("agentyc-cli".to_owned()),
+                client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                connection_nonce: Some(nonce),
+                profile_binding_id,
+            }),
+        };
+        let authority = broker
+            .hello(&hello)
+            .map_err(host_error)?
+            .authority()
+            .clone();
         Ok(Self {
             broker,
             authority,
@@ -320,28 +326,116 @@ impl DirectContext {
 }
 
 enum BridgeKind {
-    Fake(FakeBridge),
+    Fake(Box<FakeBridge>),
     Null(NullBridge),
 }
 
+/// A direct command failure with a stable process exit code.
+#[derive(Debug)]
+pub struct DirectCommandError {
+    code: String,
+    exit_code: i32,
+}
+
+impl DirectCommandError {
+    fn new(code: impl Into<String>, exit_code: i32) -> Self {
+        Self {
+            code: code.into(),
+            exit_code,
+        }
+    }
+
+    /// Return the process exit code assigned to this direct failure.
+    pub const fn exit_code(&self) -> i32 {
+        self.exit_code
+    }
+}
+
+impl std::fmt::Display for DirectCommandError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "direct command failed: {}", self.code)
+    }
+}
+
+impl std::error::Error for DirectCommandError {}
+
+/// Map a core error to the stable direct CLI exit-code contract.
+pub const fn exit_code_for(error: ErrorCode) -> i32 {
+    match error {
+        ErrorCode::InvalidArgument => 2,
+        ErrorCode::NativeHostUnavailable
+        | ErrorCode::ExtensionNotConnected
+        | ErrorCode::HostDraining
+        | ErrorCode::LedgerIncompatible
+        | ErrorCode::ProtocolMismatch
+        | ErrorCode::TruncatedFrame
+        | ErrorCode::InvalidUtf8
+        | ErrorCode::InvalidJson
+        | ErrorCode::MessageTooLarge => 3,
+        ErrorCode::PermissionDenied
+        | ErrorCode::CapabilityUnavailable
+        | ErrorCode::ProfileNotFound
+        | ErrorCode::SpaceForbidden
+        | ErrorCode::UserControlRequired => 4,
+        ErrorCode::Timeout | ErrorCode::Cancelled => 6,
+        ErrorCode::UnknownOutcome => 7,
+        _ => 5,
+    }
+}
+
+pub fn exit_code_for_name(code: &str) -> i32 {
+    match code {
+        "invalid_argument" => 2,
+        "native_host_unavailable"
+        | "extension_not_connected"
+        | "host_draining"
+        | "ledger_incompatible"
+        | "protocol_mismatch"
+        | "truncated_frame"
+        | "invalid_utf8"
+        | "invalid_json"
+        | "message_too_large" => 3,
+        "permission_denied"
+        | "capability_unavailable"
+        | "profile_not_found"
+        | "space_forbidden"
+        | "user_control_required" => 4,
+        "timeout" | "cancelled" => 6,
+        "unknown_outcome" => 7,
+        _ => 5,
+    }
+}
+
+fn serialize_response(response: &Value, compact: bool) -> Result<String> {
+    if compact {
+        serde_json::to_string(response).map_err(|error| anyhow!(error))
+    } else {
+        serde_json::to_string_pretty(response).map_err(|error| anyhow!(error))
+    }
+}
+
 /// Run one direct command and print exactly one JSON value to stdout.
-pub fn run(command: DirectCommand, options: DirectOptions) -> Result<()> {
+pub fn run(
+    command: DirectCommand,
+    options: DirectOptions,
+) -> std::result::Result<(), DirectCommandError> {
     let response =
         match DirectContext::open(&options).and_then(|context| execute(&context, command)) {
             Ok(result) => success(result),
             Err(error) => failure(&error),
         };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&response).map_err(|error| anyhow!(error))?
-    );
+    let compact = options.json;
+    let output = serialize_response(&response, compact).map_err(|_error| {
+        DirectCommandError::new("invalid_json", exit_code_for(ErrorCode::InvalidJson))
+    })?;
+    println!("{output}");
     if response.get("ok") == Some(&Value::Bool(false)) {
         let code = response
             .get("error")
             .and_then(|error| error.get("code"))
             .and_then(Value::as_str)
             .unwrap_or("invalid_argument");
-        return Err(anyhow!("direct command failed: {code}"));
+        return Err(DirectCommandError::new(code, exit_code_for_name(code)));
     }
     Ok(())
 }
@@ -467,6 +561,7 @@ mod tests {
             state_dir: Some(path.display().to_string()),
             principal: Some("principal_test".to_owned()),
             offline: true,
+            json: false,
         }
     }
 
@@ -483,11 +578,10 @@ mod tests {
         .expect("create");
         let space_id = space["space_id"].as_str().expect("logical space id");
         assert!(space_id.starts_with("space_"));
-        assert!(
-            !serde_json::to_string(&space)
-                .expect("json")
-                .contains("target_id")
-        );
+        let serialized = serde_json::to_string(&space).expect("json");
+        for forbidden in ["target_id", "tab_id", "session_id", "debugger_id", "cdp"] {
+            assert!(!serialized.contains(forbidden), "unexpected {forbidden}");
+        }
         drop(context);
 
         let reopened = DirectContext::open(&options(directory.path())).expect("reopen");
@@ -607,6 +701,34 @@ mod tests {
             !serde_json::to_string(&failure(&error))
                 .expect("json")
                 .contains("cdp")
+        );
+    }
+
+    #[test]
+    fn direct_exit_codes_cover_the_structured_error_contract() {
+        assert_eq!(exit_code_for(ErrorCode::InvalidArgument), 2);
+        assert_eq!(exit_code_for(ErrorCode::NativeHostUnavailable), 3);
+        assert_eq!(exit_code_for(ErrorCode::MessageTooLarge), 3);
+        assert_eq!(exit_code_for(ErrorCode::PermissionDenied), 4);
+        assert_eq!(exit_code_for(ErrorCode::Timeout), 6);
+        assert_eq!(exit_code_for(ErrorCode::UnknownOutcome), 7);
+        assert_eq!(exit_code_for_name("not_yet_known"), 5);
+    }
+
+    #[test]
+    fn direct_serialization_has_compact_and_pretty_machine_forms() {
+        let response = success(json!({"space_id": "space_test"}));
+        let compact = serialize_response(&response, true).expect("compact json");
+        let pretty = serialize_response(&response, false).expect("pretty json");
+        assert_eq!(compact, r#"{"ok":true,"result":{"space_id":"space_test"}}"#);
+        assert!(pretty.contains('\n'));
+        assert_eq!(
+            serde_json::from_str::<Value>(&compact).expect("compact value"),
+            response
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&pretty).expect("pretty value"),
+            response
         );
     }
 }
