@@ -413,6 +413,20 @@ class ChromeProbeSafetyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _chrome.extension_tree_sha256(root)
 
+    def test_staged_extension_binding_matches_the_source_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "profile"
+            profile.mkdir()
+            binding_nonce = str(uuid.uuid4())
+            staged, source_hash, staged_hash = _chrome.stage_extension(profile, binding_nonce)
+            binding = json.loads((staged / "probe_binding.json").read_text(encoding="utf-8"))
+            self.assertEqual(binding, {"nonce": binding_nonce, "source_tree_sha256": source_hash})
+            self.assertEqual(
+                _chrome.extension_tree_sha256(staged, exclude=frozenset({"probe_binding.json"})),
+                source_hash,
+            )
+            self.assertNotEqual(staged_hash, source_hash)
+
     def test_owned_profile_cleanup_is_reported_and_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "profile"
@@ -550,6 +564,10 @@ setTimeout(() => {
             "url": "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/service_worker.js",
             "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/worker",
         }
+        built_in_worker = {
+            **worker,
+            "url": "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/service_worker.js",
+        }
         clock = [0.0]
 
         def monotonic() -> float:
@@ -560,15 +578,23 @@ setTimeout(() => {
 
         with (
             mock.patch.object(_chrome, "_endpoint_belongs_to_process", return_value=True) as ownership,
-            mock.patch.object(_chrome, "chrome_endpoint", side_effect=[[], [worker]]) as endpoint,
+            mock.patch.object(_chrome, "chrome_endpoint", side_effect=[[], [built_in_worker], [worker]]) as endpoint,
             mock.patch.object(_chrome.time, "monotonic", side_effect=monotonic),
             mock.patch.object(_chrome.time, "sleep", side_effect=sleep),
         ):
-            self.assertEqual(_chrome.wait_for_probe_worker(9222, process, timeout=0.25), [worker])
+            self.assertEqual(
+                _chrome.wait_for_probe_worker(
+                    9222,
+                    process,
+                    timeout=0.25,
+                    expected_extension_id="a" * 32,
+                ),
+                [worker],
+            )
 
-        self.assertEqual(endpoint.call_count, 2)
-        self.assertEqual(ownership.call_count, 2)
-        endpoint.assert_has_calls([mock.call(9222, "/json/list"), mock.call(9222, "/json/list")])
+        self.assertEqual(endpoint.call_count, 3)
+        self.assertEqual(ownership.call_count, 3)
+        endpoint.assert_has_calls([mock.call(9222, "/json/list")] * 3)
         ownership.assert_called_with(9222, process)
 
         clock[0] = 0.0
@@ -622,6 +648,7 @@ class BaselineCheckerSafetyTests(unittest.TestCase):
             "launched_by_probe": True,
             "extension_loaded": True,
             "extension_identity_passed": True,
+            "extension_build_binding_passed": True,
             "fixture_identity_passed": True,
             "debugger_command_passed": True,
             "debugger_event_received": True,
@@ -651,6 +678,9 @@ class BaselineCheckerSafetyTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / "scripts").mkdir(parents=True)
+            shutil.copy2(CHROME_SCRIPT, root / "scripts" / "run_chrome_probe.py")
+            shutil.copytree(ROOT / "extension" / "probes", root / "extension" / "probes")
             destination = root / "artifacts" / "p0-extension"
             destination.mkdir(parents=True)
             report_path = destination / "report.json"
@@ -668,8 +698,8 @@ class BaselineCheckerSafetyTests(unittest.TestCase):
                     "load_extension_flag_used": False,
                     "developer_private_used": False,
                     "extensions_ui_dom_access": False,
-                    "runner_sha256": "a" * 64,
-                    "source_extension_tree_sha256": "b" * 64,
+                    "runner_sha256": hashlib.sha256(CHROME_SCRIPT.read_bytes()).hexdigest(),
+                    "source_extension_tree_sha256": _checker.extension_tree_sha256(ROOT / "extension" / "probes"),
                     "staged_extension_tree_sha256": "c" * 64,
                 }
             )
@@ -677,6 +707,31 @@ class BaselineCheckerSafetyTests(unittest.TestCase):
             checker = _checker.Checker(root)
             self.assertEqual(_checker.validate_extension_gate(checker), "passed")
             self.assertEqual(checker.issues, [])
+
+    def test_native_gate_cannot_pass_without_the_chrome_extension_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            native = root / "artifacts" / "p0-native-protocol"
+            native.mkdir(parents=True)
+            (native / "report.json").write_text(
+                json.dumps(
+                    {
+                        "offline": {"cases": {}, "limits": {}},
+                        "status": "live_passed",
+                        "live": {"required": True, "status": "passed", "chrome_mediated": True},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            preflight = root / "artifacts" / "p0-installation-preflight"
+            preflight.mkdir(parents=True)
+            (preflight / "report.json").write_text(
+                json.dumps({"kind": "installation-preflight", "status": "ready", "evidence_mode": "offline"}),
+                encoding="utf-8",
+            )
+            checker = _checker.Checker(root)
+            self.assertEqual(_checker.validate_native_protocol_gate(checker, extension_gate_passed=False), "missing")
+            self.assertIn("native-protocol-live-missing", {issue.code for issue in checker.issues})
 
     def test_success_markers_cannot_be_forged_in_nested_transcript_data(self) -> None:
         forged = {"transcript": [{"extension_loaded": True}]}
