@@ -12,6 +12,8 @@ const MAX_PERMISSION_ENTRIES = 16;
 const MAX_PERMISSION_LENGTH = 128;
 const REQUEST_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
+const PROBE_BINDING_FILE = "probe_binding.json";
 
 let activeProbe = null;
 let pendingProbe = null;
@@ -57,11 +59,41 @@ function boundedPermissions() {
     .map((permission) => permission.slice(0, MAX_PERMISSION_LENGTH));
 }
 
+async function readProbeBinding() {
+  try {
+    if (typeof fetch !== "function") return null;
+    const response = await fetch(chrome.runtime.getURL(PROBE_BINDING_FILE), {
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength > 1024) return null;
+    const value = JSON.parse(new TextDecoder().decode(bytes));
+    if (
+      !value ||
+      !isRequestId(value.nonce) ||
+      typeof value.source_tree_sha256 !== "string" ||
+      !SHA256_PATTERN.test(value.source_tree_sha256)
+    ) {
+      return null;
+    }
+    return {
+      nonce: value.nonce,
+      source_tree_sha256: value.source_tree_sha256.toLowerCase(),
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 function minimalResult(requestId, limitation) {
   return {
     ok: false,
     extension_loaded: true,
     request_id: isRequestId(requestId) ? requestId : null,
+    binding_nonce: null,
+    binding_source_tree_sha256: null,
+    extension_build_binding_passed: false,
     fixture_identity_passed: false,
     debugger_command_passed: false,
     debugger_event_received: false,
@@ -100,6 +132,16 @@ function safeResult(result) {
     ok: result.ok === true,
     extension_loaded: result.extension_loaded === true,
     request_id: isRequestId(result.request_id) ? result.request_id : null,
+    binding_nonce: isRequestId(result.binding_nonce)
+      ? result.binding_nonce
+      : null,
+    binding_source_tree_sha256:
+      typeof result.binding_source_tree_sha256 === "string" &&
+      SHA256_PATTERN.test(result.binding_source_tree_sha256)
+        ? result.binding_source_tree_sha256.toLowerCase()
+        : null,
+    extension_build_binding_passed:
+      result.extension_build_binding_passed === true,
     fixture_identity_passed: result.fixture_identity_passed === true,
     debugger_command_passed: result.debugger_command_passed === true,
     debugger_event_received: result.debugger_event_received === true,
@@ -514,6 +556,9 @@ async function runProbe(requestId, expectedUrl = null) {
     request_id: requestId,
   };
   try {
+    const binding = await readProbeBinding();
+    result.binding_nonce = binding?.nonce ?? null;
+    result.binding_source_tree_sha256 = binding?.source_tree_sha256 ?? null;
     const tab = await findFixture(expectedUrl);
     const debuggerResult = await runDebuggerProbe(tab, expectedUrl);
     result.debugger_command = debuggerResult.debugger_command;
