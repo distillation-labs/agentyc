@@ -14,6 +14,7 @@ import errno
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover - Windows has no fcntl
 ROOT = Path(__file__).resolve().parents[1]
 HOST_NAME = "com.agentyc.p0_probe"
 DISPLAY_MANIFEST_FILENAME = "native-host-manifest.json"
+MANIFEST_MODE = 0o644
 HOST_PATH = ROOT / "tests" / "probes" / "native_probe"
 TEMPLATE_PATH = ROOT / "extension" / "probes" / "native_host_manifest.macos.json"
 ORIGIN_PATTERN = re.compile(r"^chrome-extension://[a-p]{32}$")
@@ -112,7 +114,7 @@ def _atomic_write(path: Path, payload: bytes, *, replace: bool = True) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), 0o644)
+            os.fchmod(handle.fileno(), MANIFEST_MODE)
         if replace:
             os.replace(temporary, target)
         else:
@@ -211,7 +213,15 @@ def _resolve_manifest_path(manifest_path: Path | None) -> Path:
     return safe_manifest_path(str(requested))
 
 
-def _redacted_result(status: str, manifest_path: Path, *, manifest_present: bool = False, host_present: bool = False, origin_matches: bool = False, host_path_matches: bool = False, detail: str | None = None) -> dict[str, Any]:
+def _manifest_mode_matches(path: Path) -> bool:
+    try:
+        metadata = path.stat()
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and stat.S_IMODE(metadata.st_mode) == MANIFEST_MODE
+
+
+def _redacted_result(status: str, manifest_path: Path, *, manifest_present: bool = False, host_present: bool = False, origin_matches: bool = False, host_path_matches: bool = False, mode_matches: bool = False, detail: str | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": status,
         "manifest_filename": DISPLAY_MANIFEST_FILENAME,
@@ -219,6 +229,7 @@ def _redacted_result(status: str, manifest_path: Path, *, manifest_present: bool
         "host_present": host_present,
         "origin_matches": origin_matches,
         "host_path_matches": host_path_matches,
+        "mode_matches": mode_matches,
         "chrome_launch": "never",
         "chrome_download": "never",
         "secrets_logged": False,
@@ -251,12 +262,14 @@ def check_registration(extension_origin: str, host_path: Path = HOST_PATH, manif
     origin_matches = actual.get("allowed_origins") == [f"{extension_origin}/"]
     host_path_matches = actual.get("path") == str(host_path.resolve())
     host_present = host_path.is_file() and os.access(host_path, os.X_OK)
+    mode_matches = _manifest_mode_matches(destination)
     valid = (
         actual.get("name") == HOST_NAME
         and actual.get("type") == "stdio"
         and origin_matches
         and host_path_matches
         and host_present
+        and mode_matches
     )
     return _redacted_result(
         "installed" if valid else "rejected",
@@ -265,7 +278,8 @@ def check_registration(extension_origin: str, host_path: Path = HOST_PATH, manif
         host_present=host_present,
         origin_matches=origin_matches,
         host_path_matches=host_path_matches,
-        detail=None if valid else "registration does not match the requested exact origin and host",
+        mode_matches=mode_matches,
+        detail=None if valid else "registration does not match the requested exact origin, host, or permissions",
     )
 
 
@@ -292,6 +306,8 @@ def install_registration(extension_origin: str, host_path: Path = HOST_PATH, man
                 if not isinstance(current, dict):
                     return _redacted_result("rejected", destination, manifest_present=True, detail="registration JSON must be an object")
                 if current == json.loads(payload.decode("utf-8")):
+                    if not _manifest_mode_matches(destination):
+                        _atomic_write(destination, payload, replace=True)
                     return check_registration(extension_origin, host_path, destination)
                 if not replace:
                     return _redacted_result("rejected", destination, manifest_present=True, detail="manifest exists; pass --replace for explicit replacement")
