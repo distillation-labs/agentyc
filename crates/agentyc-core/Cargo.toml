@@ -1,0 +1,19 @@
+[package]
+name = "agentyc-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Transport-neutral task-space, protocol, snapshot, action, and event contracts for agentyc."
+keywords = ["browser", "automation", "protocol", "contracts"]
+categories = ["development-tools", "web-programming"]
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
