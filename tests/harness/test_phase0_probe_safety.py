@@ -313,6 +313,67 @@ class ChromeProbeSafetyTests(unittest.TestCase):
         for request_id in request_ids:
             self.assertEqual(uuid.UUID(request_id).version, 4)
 
+    def test_pinned_manifest_id_and_identity_diagnostics_reject_same_shaped_worker(self) -> None:
+        manifest = _chrome.load_manifest()
+        self.assertEqual(
+            _chrome._manifest_extension_id(manifest),
+            "hlnmcimoechnbccahemchokemgceaffp",
+        )
+        extension_id = "a" * 32
+        target = {
+            "type": "service_worker",
+            "url": f"chrome-extension://{extension_id}/service_worker.js",
+            "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/worker",
+        }
+        identity = {
+            "runtime_id": extension_id,
+            "manifest_version": 3,
+            "name": "Google Network Speech",
+            "version": "1.0",
+            "service_worker": "service_worker.js",
+            "origin": f"chrome-extension://{extension_id}",
+            "pathname": "/service_worker.js",
+        }
+        client = mock.Mock()
+        client.command.side_effect = [None, {"result": {"value": identity}}]
+        with mock.patch.object(_chrome, "DevToolsSocket", return_value=client):
+            result = _chrome.extension_probe_result(9222, [target], expected_manifest=manifest)
+
+        self.assertEqual(result["status"], "live_unavailable")
+        self.assertEqual(result["candidate_worker_count"], 1)
+        self.assertEqual(result["verified_worker_count"], 0)
+        self.assertIn("exact probe manifest checks", result["limitation"])
+        self.assertEqual(result["worker_diagnostics"][0]["observed_name"], "Google Network Speech")
+        self.assertFalse(result["worker_diagnostics"][0]["manifest_key_id_matches_target"])
+        self.assertNotIn(extension_id, json.dumps(result, sort_keys=True))
+        client.close.assert_called_once_with()
+
+    def test_chrome_load_extension_refusal_is_reported_without_raw_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log_path = Path(temporary) / "chrome.stderr.log"
+            log_path.write_text(
+                "WARNING: --load-extension is not allowed in Google Chrome, ignoring.\\n",
+                encoding="utf-8",
+            )
+            evidence = _chrome._chrome_load_extension_evidence(log_path)
+        self.assertEqual(
+            evidence,
+            {
+                "status": "refused",
+                "reason": "branded_google_chrome_rejected_load_extension",
+                "message": _chrome.CHROME_LOAD_EXTENSION_REFUSAL,
+            },
+        )
+
+    def test_owned_profile_cleanup_is_reported_and_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "profile"
+            profile.mkdir()
+            with mock.patch.object(_chrome, "_LAST_CLEANUP_OK", True):
+                self.assertTrue(_chrome._cleanup_owned_profile(profile))
+                self.assertFalse(profile.exists())
+                self.assertTrue(_chrome._LAST_CLEANUP_OK)
+
     def test_headed_without_launch_refuses_existing_debug_endpoint(self) -> None:
         with mock.patch.object(
             _chrome,
