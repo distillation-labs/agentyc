@@ -30,6 +30,7 @@ export class FramesRegistry {
     pageId,
     targetGeneration = 1,
     documentGeneration = 1,
+    navigationGeneration = 1,
   } = {}) {
     if (!Number.isInteger(tabId))
       throw new ProtocolError(
@@ -43,7 +44,7 @@ export class FramesRegistry {
       pageId,
       targetGeneration,
       documentGeneration,
-      navigationGeneration: 1,
+      navigationGeneration,
       frameTopologyVersion: 1,
       sessionIds: new Set(),
     };
@@ -59,6 +60,7 @@ export class FramesRegistry {
     pageId,
     targetGeneration = 1,
     documentGeneration = 1,
+    navigationGeneration = 1,
   } = {}) {
     if (
       !Number.isInteger(tabId) ||
@@ -84,7 +86,7 @@ export class FramesRegistry {
       pageId,
       targetGeneration,
       documentGeneration,
-      navigationGeneration: 1,
+      navigationGeneration,
       frameTopologyVersion: 1,
       sessionIds: new Set(),
     };
@@ -267,6 +269,49 @@ export class FramesRegistry {
 
   getInternalBinding(tabId, sessionId) {
     return this.sessions.get(sessionKey(tabId, sessionId));
+  }
+
+  invalidateDocument(
+    tabId,
+    documentGeneration,
+    navigationGeneration,
+    reason = "document_changed",
+  ) {
+    const binding = this.tabs.get(tabId);
+    if (!binding) return null;
+    for (const key of [...this.sessions.keys()]) {
+      if (key.startsWith(`${tabId}:`) && key !== sessionKey(tabId))
+        this.sessions.delete(key);
+    }
+    for (const key of [...this.frames.keys()]) {
+      if (key.startsWith(`${tabId}:`)) this.frames.delete(key);
+    }
+    for (const key of [...this.contexts.keys()]) {
+      if (key.startsWith(`${tabId}:`)) this.contexts.delete(key);
+    }
+    binding.documentGeneration = documentGeneration;
+    binding.navigationGeneration = navigationGeneration;
+    binding.frameTopologyVersion += 1;
+    binding.sessionIds.clear();
+    const event = {
+      event: "debugger.document_changed",
+      reason,
+      space_id: binding.spaceId,
+      page_id: binding.pageId,
+      target_generation: binding.targetGeneration,
+      document_generation: binding.documentGeneration,
+      navigation_generation: binding.navigationGeneration,
+    };
+    this.onEvent(event);
+    return event;
+  }
+
+  reset(reason = "session_reset") {
+    this.tabs.clear();
+    this.sessions.clear();
+    this.frames.clear();
+    this.contexts.clear();
+    this.onEvent({ event: "debugger.mappings_reset", reason });
   }
 
   publicBinding(binding) {
