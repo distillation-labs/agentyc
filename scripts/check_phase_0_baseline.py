@@ -400,6 +400,24 @@ def validate_extension_gate(checker: Checker) -> str:
     permission_prompts = live.get("permission_prompts") if isinstance(live, dict) else None
     if not isinstance(permission_prompts, dict) or permission_prompts.get("status") not in {"recorded", "none_observed"}:
         checker.add("live-chrome-permission-evidence-missing", "Chrome permission prompt outcome was not manually recorded", path, gate="live_chrome")
+    operator_provenance = {
+        "operator_assisted": True,
+        "load_method": "chrome_extensions_load_unpacked",
+        "load_extension_flag_used": False,
+        "developer_private_used": False,
+        "extensions_ui_dom_access": False,
+    }
+    if not isinstance(live, dict) or any(live.get(key) != expected for key, expected in operator_provenance.items()):
+        checker.add(
+            "live-chrome-install-provenance-missing",
+            "live extension evidence must use the documented operator-assisted Load unpacked flow",
+            path,
+            gate="live_chrome",
+        )
+    for hash_name in ("runner_sha256", "source_extension_tree_sha256", "staged_extension_tree_sha256"):
+        if not isinstance(live, dict) or not SHA256_RE.fullmatch(str(live.get(hash_name, ""))):
+            checker.add("live-chrome-build-binding-missing", "live extension evidence lacks a bounded runner or staged-tree hash", path, gate="live_chrome")
+            break
     if not isinstance(safety, dict) or any(safety.get(key) is not False for key in ("default_chrome_launch", "default_profile_mutation", "raw_ids_logged", "secrets_logged")) or safety.get("fixture_only_mutation") is not True:
         checker.add("live-chrome-safety-schema", "extension report lacks the required safety assertions", path, gate="live_chrome")
     return "passed" if not any(issue.gate == "live_chrome" for issue in checker.issues) else "missing"
