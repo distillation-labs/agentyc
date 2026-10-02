@@ -1,0 +1,1 @@
+{"base_snapshot_version":1,"base_hash":"fnv1a64:4d9f0704adb5a43b","result_snapshot_version":2,"result_hash":"fnv1a64:04cc653932618869","delta_sequence":1,"chain_depth":1,"operations":[{"op":"remove","key":"element_b"},{"op":"upsert","key":"element_c","element":{"key":"element_c","parent":null,"kind":"text","text":"C","attributes":{},"order":1}}]}
