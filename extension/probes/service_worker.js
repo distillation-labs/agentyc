@@ -1,133 +1,239 @@
 const PROTOCOL_VERSION = 1;
 const NATIVE_HOST = "com.agentyc.p0_probe";
 const FIXTURE_TITLE = "agentyc P0 probe fixture";
-const FIXTURE_MARKER = "agentyc_p0_probe";
-const FIXTURE_SHA256 =
-  "fc8ff011514dc69192ec3f383821a38d9c6f584d2756d8013446cbfe80b902e6";
+const FIXTURE_PATH_SUFFIX = "/extension/probes/fixture.html";
 const FIXTURE_TEXT =
   "This local fixture contains no user data and is the only tab the live probe may mutate.";
 const MAX_NATIVE_BYTES = 64 * 1024;
+const MAX_RESULT_BYTES = 16 * 1024;
+const MAX_SCREENSHOT_BASE64_CHARS = 4 * 1024 * 1024;
+const MAX_TRANSCRIPT_ENTRIES = 8;
+const MAX_PERMISSION_ENTRIES = 16;
+const MAX_PERMISSION_LENGTH = 128;
+const REQUEST_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+let activeProbe = null;
+let pendingProbe = null;
+let probeSequence = 0;
+let latestProbeSequence = 0;
 
 function extensionOrigin() {
   return `chrome-extension://${chrome.runtime.id}`;
 }
 
-function safeResult(result) {
+function isRequestId(value) {
+  return typeof value === "string" && REQUEST_ID_PATTERN.test(value);
+}
+
+function requestIdOrNew(value) {
+  return isRequestId(value) ? value : crypto.randomUUID();
+}
+
+function boundedString(value, fallback = null) {
+  if (typeof value !== "string") return fallback;
+  return value.length <= 256 ? value : value.slice(0, 256);
+}
+
+function extensionManifest() {
+  try {
+    const manifest = chrome.runtime.getManifest();
+    return manifest && typeof manifest === "object" ? manifest : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function boundedManifestVersion() {
+  return boundedString(extensionManifest().version, "unknown") ?? "unknown";
+}
+
+function boundedPermissions() {
+  const permissions = extensionManifest().permissions;
+  if (!Array.isArray(permissions)) return [];
+  return permissions
+    .filter((permission) => typeof permission === "string")
+    .slice(0, MAX_PERMISSION_ENTRIES)
+    .map((permission) => permission.slice(0, MAX_PERMISSION_LENGTH));
+}
+
+function minimalResult(requestId, limitation) {
   return {
-    ok: Boolean(result.ok),
+    ok: false,
     extension_loaded: true,
-    request_id: result.request_id ?? null,
-    debugger_command_passed: result.debugger_command_passed === true,
-    debugger_event_received: result.debugger_event_received === true,
-    tab_group_created: result.tab_group_created === true,
-    native_messaging_passed: result.native_messaging_passed === true,
-    cleanup_passed: result.cleanup_passed === true,
-    extension_version: chrome.runtime.getManifest().version,
-    permissions: chrome.runtime.getManifest().permissions ?? [],
-    debugger_command: result.debugger_command ?? "not_run",
-    debugger_event: result.debugger_event ?? "not_observed",
-    tab_group: result.tab_group ?? "not_run",
-    native_messaging: result.native_messaging ?? "not_run",
-    native_error: result.native_error ?? null,
-    handshake_transcript: Array.isArray(result.handshake_transcript)
-      ? result.handshake_transcript.slice(0, 8)
-      : [],
+    request_id: isRequestId(requestId) ? requestId : null,
+    fixture_identity_passed: false,
+    debugger_command_passed: false,
+    debugger_event_received: false,
+    tab_group_created: false,
+    native_messaging_passed: false,
+    debugger_cleanup_passed: false,
+    cleanup_passed: false,
+    screenshot_captured: false,
+    extension_version: boundedManifestVersion(),
+    permissions: boundedPermissions(),
+    debugger_command: "not_run",
+    debugger_event: "not_observed",
+    tab_group: "not_run",
+    native_messaging: "not_run",
+    native_error: "probe_failed",
+    handshake_transcript: [],
     metadata: {
       extension_origin: "redacted",
       chrome_launch: "never",
       chrome_download: "never",
       secrets_logged: false,
     },
-    limitation: result.limitation ?? null,
+    limitation: boundedString(limitation, "Live probe failed closed."),
   };
 }
 
-async function findFixture(tabId) {
-  const tabs = await chrome.tabs.query({});
-  const tab =
-    tabs.find((candidate) => candidate.id === tabId) ??
-    tabs.find((candidate) => {
-      try {
-        const url = new URL(candidate.url ?? "");
-        return (
-          candidate.title === FIXTURE_TITLE &&
-          url.protocol === "file:" &&
-          url.pathname.endsWith("/fixture.html") &&
-          url.searchParams.get(FIXTURE_MARKER) === "1" &&
-          url.searchParams.get("agentyc_p0_fixture_sha256") === FIXTURE_SHA256
-        );
-      } catch (_) {
-        return false;
-      }
-    });
-  let isFixture = false;
+function safeResult(result) {
+  const transcript = Array.isArray(result.handshake_transcript)
+    ? result.handshake_transcript
+        .filter(
+          (entry) => entry === "hello_accepted" || entry === "probe_accepted",
+        )
+        .slice(0, MAX_TRANSCRIPT_ENTRIES)
+    : [];
+  const output = {
+    ok: result.ok === true,
+    extension_loaded: result.extension_loaded === true,
+    request_id: isRequestId(result.request_id) ? result.request_id : null,
+    fixture_identity_passed: result.fixture_identity_passed === true,
+    debugger_command_passed: result.debugger_command_passed === true,
+    debugger_event_received: result.debugger_event_received === true,
+    tab_group_created: result.tab_group_created === true,
+    native_messaging_passed: result.native_messaging_passed === true,
+    debugger_cleanup_passed: result.debugger_cleanup_passed === true,
+    cleanup_passed: result.cleanup_passed === true,
+    screenshot_captured: result.screenshot_captured === true,
+    extension_version: boundedManifestVersion(),
+    permissions: boundedPermissions(),
+    debugger_command: boundedString(result.debugger_command, "not_run"),
+    debugger_event: boundedString(result.debugger_event, "not_observed"),
+    tab_group: boundedString(result.tab_group, "not_run"),
+    native_messaging: boundedString(result.native_messaging, "not_run"),
+    native_error: boundedString(result.native_error),
+    handshake_transcript: transcript,
+    metadata: {
+      extension_origin: "redacted",
+      chrome_launch: "never",
+      chrome_download: "never",
+      secrets_logged: false,
+    },
+    limitation: boundedString(result.limitation),
+  };
   try {
-    const url = new URL(tab?.url ?? "");
-    isFixture =
-      url.protocol === "file:" &&
-      url.pathname.endsWith("/fixture.html") &&
-      url.searchParams.get(FIXTURE_MARKER) === "1" &&
-      url.searchParams.get("agentyc_p0_fixture_sha256") === FIXTURE_SHA256;
+    if (
+      new TextEncoder().encode(JSON.stringify(output)).byteLength <=
+      MAX_RESULT_BYTES
+    ) {
+      return output;
+    }
   } catch (_) {
-    isFixture = false;
+    // Return the bounded failure below.
   }
-  if (!tab || tab.title !== FIXTURE_TITLE || !isFixture) {
-    throw new Error("refusing to mutate a non-probe tab");
+  return minimalResult(
+    output.request_id,
+    "Probe result exceeded the local handoff bound.",
+  );
+}
+
+function isCanonicalFixture(tab, expectedUrl = null) {
+  if (!tab || !Number.isInteger(tab.id) || tab.title !== FIXTURE_TITLE)
+    return false;
+  if (typeof expectedUrl !== "string") return false;
+  try {
+    const expected = new URL(expectedUrl);
+    return (
+      expected.protocol === "file:" &&
+      expected.hostname === "" &&
+      expected.search === "" &&
+      expected.hash === "" &&
+      expected.pathname.endsWith(FIXTURE_PATH_SUFFIX) &&
+      tab.url === expectedUrl
+    );
+  } catch (_) {
+    return false;
   }
-  return tab;
+}
+
+async function findFixture(expectedUrl = null) {
+  const tabs = await chrome.tabs.query({});
+  const fixtures = tabs.filter((tab) => isCanonicalFixture(tab, expectedUrl));
+  if (fixtures.length !== 1) {
+    throw new Error(
+      fixtures.length === 0
+        ? "canonical probe fixture was not observed"
+        : "canonical probe fixture is ambiguous",
+    );
+  }
+  return fixtures[0];
 }
 
 function waitForDebuggerEvent(tabId, method, timeoutMs = 1500) {
   return new Promise((resolve) => {
     let finished = false;
+    let timer = null;
     const finish = (value) => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer);
-      chrome.debugger.onEvent.removeListener(onEvent);
+      if (timer !== null) clearTimeout(timer);
+      try {
+        chrome.debugger.onEvent.removeListener(onEvent);
+      } catch (_) {}
       resolve(value);
     };
     const onEvent = (source, eventMethod) => {
-      if (source.tabId === tabId && eventMethod === method) finish(true);
+      if (source?.tabId === tabId && eventMethod === method) finish(true);
     };
-    const timer = setTimeout(() => finish(false), timeoutMs);
     chrome.debugger.onEvent.addListener(onEvent);
+    timer = setTimeout(() => finish(false), timeoutMs);
   });
 }
 
-async function runDebuggerProbe(tab) {
+function evaluatedValue(response) {
+  if (!response || response.exceptionDetails) {
+    throw new Error("debugger evaluation failed");
+  }
+  const remote = response.result;
+  if (!remote || !Object.prototype.hasOwnProperty.call(remote, "value")) {
+    throw new Error("debugger evaluation returned no value");
+  }
+  return remote.value;
+}
+
+async function runDebuggerProbe(tab, expectedUrl = null) {
   const target = { tabId: tab.id };
   let attached = false;
+  let operationError = null;
+  let detachError = false;
+  let output = null;
   try {
     await chrome.debugger.attach(target, "1.3");
     attached = true;
     await chrome.debugger.sendCommand(target, "Runtime.enable");
-    const evaluation = await chrome.debugger.sendCommand(
-      target,
-      "Runtime.evaluate",
-      {
-        expression: "document.title",
+    const identity = evaluatedValue(
+      await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression:
+          "(() => ({ url: location.href, protocol: location.protocol, pathname: location.pathname, search: location.search, hash: location.hash, title: document.title, heading: document.querySelector('h1')?.textContent, body: document.querySelector('p')?.textContent, body_child_count: document.body?.children.length }))()",
         returnByValue: true,
-      },
+      }),
     );
-    if (evaluation?.result?.result?.value !== FIXTURE_TITLE) {
-      throw new Error("fixture title did not round-trip");
-    }
-    const identity = await chrome.debugger.sendCommand(
-      target,
-      "Runtime.evaluate",
-      {
-        expression: `({title: document.title, heading: document.querySelector("h1")?.textContent, body: document.querySelector("p")?.textContent})`,
-        returnByValue: true,
-      },
-    );
-    const identityValue = identity?.result?.result?.value;
     if (
-      identityValue?.title !== FIXTURE_TITLE ||
-      identityValue?.heading !== FIXTURE_TITLE ||
-      identityValue?.body !== FIXTURE_TEXT
+      (expectedUrl
+        ? identity?.url !== expectedUrl
+        : identity?.protocol !== "file:") ||
+      (!expectedUrl && !identity.pathname?.endsWith(FIXTURE_PATH_SUFFIX)) ||
+      identity.search !== "" ||
+      identity.hash !== "" ||
+      identity.title !== FIXTURE_TITLE ||
+      identity.heading !== FIXTURE_TITLE ||
+      identity.body !== FIXTURE_TEXT ||
+      identity.body_child_count !== 2
     ) {
-      throw new Error("fixture identity did not round-trip");
+      throw new Error("canonical fixture identity did not round-trip");
     }
     const eventPromise = waitForDebuggerEvent(tab.id, "Page.loadEventFired");
     await chrome.debugger.sendCommand(target, "Page.enable");
@@ -136,40 +242,148 @@ async function runDebuggerProbe(tab) {
     });
     const eventSeen = await eventPromise;
     if (!eventSeen) throw new Error("debugger event was not observed");
-    return {
+    const revalidated = await findFixture(expectedUrl);
+    if (revalidated.id !== tab.id) {
+      throw new Error("fixture tab identity changed during debugger probe");
+    }
+    const screenshot = await chrome.debugger.sendCommand(
+      target,
+      "Page.captureScreenshot",
+      { format: "png" },
+    );
+    if (
+      typeof screenshot?.data !== "string" ||
+      screenshot.data.length === 0 ||
+      screenshot.data.length > MAX_SCREENSHOT_BASE64_CHARS
+    ) {
+      throw new Error("bounded screenshot capture failed");
+    }
+    output = {
       debugger_command: "Runtime.evaluate",
       debugger_command_passed: true,
       debugger_event: "Page.loadEventFired",
       debugger_event_received: true,
+      fixture_identity_passed: true,
+      debugger_cleanup_passed: true,
+      screenshot_captured: true,
     };
+  } catch (error) {
+    operationError = error;
   } finally {
     if (attached) {
       try {
         await chrome.debugger.detach(target);
       } catch (_) {
-        throw new Error("debugger detach failed");
+        detachError = true;
       }
     }
   }
+  if (detachError) throw new Error("debugger detach failed");
+  if (operationError) throw operationError;
+  if (!output) throw new Error("debugger probe returned no result");
+  return output;
 }
 
-async function runTabGroupProbe(tab) {
-  const originalGroupId = typeof tab.groupId === "number" ? tab.groupId : -1;
-  const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
-  await chrome.tabGroups.update(groupId, { title: "agentyc P0 probe" });
-  let cleaned = false;
+async function runTabGroupProbe(tab, expectedUrl = null) {
+  const before = await findFixture(expectedUrl);
+  if (before.id !== tab.id) {
+    throw new Error("fixture tab identity changed before tab-group mutation");
+  }
+  const originalGroupId =
+    Number.isInteger(before.groupId) && before.groupId >= 0
+      ? before.groupId
+      : -1;
+  let tabChanged = false;
+  const onUpdated = (updatedTabId, changeInfo) => {
+    if (
+      updatedTabId === tab.id &&
+      (typeof changeInfo?.url === "string" || changeInfo?.status === "loading")
+    ) {
+      tabChanged = true;
+    }
+  };
+  chrome.tabs.onUpdated.addListener(onUpdated);
+  const assertStableFixture = async () => {
+    if (tabChanged)
+      throw new Error("fixture tab changed during tab-group probe");
+    const current = await findFixture(expectedUrl);
+    if (current.id !== tab.id)
+      throw new Error("fixture tab identity changed during tab-group probe");
+    return current;
+  };
+  let groupId = null;
+  let grouped = false;
+  let ungrouped = false;
+  let restored = originalGroupId < 0;
+  let operationError = null;
+  let cleanupError = null;
   try {
-    await chrome.tabs.ungroup(tab.id);
-    if (originalGroupId >= 0)
-      await chrome.tabs.group({ groupId: originalGroupId, tabIds: [tab.id] });
-    cleaned = true;
-  } catch (_) {
-    throw new Error("tab-group cleanup failed");
+    await assertStableFixture();
+    groupId = await chrome.tabs.group({ tabIds: [tab.id] });
+    grouped = true;
+    if (!Number.isInteger(groupId) || groupId < 0) {
+      throw new Error("tab-group creation returned an invalid group");
+    }
+    await chrome.tabGroups.update(groupId, { title: "agentyc P0 probe" });
+    const groupedTab = await assertStableFixture();
+    if (groupedTab.groupId !== groupId) {
+      throw new Error("fixture tab group changed before cleanup");
+    }
+  } catch (error) {
+    operationError = error;
+  } finally {
+    if (grouped) {
+      try {
+        const groupedTab = await assertStableFixture();
+        if (groupedTab.groupId !== groupId) {
+          throw new Error("fixture tab group ownership changed before cleanup");
+        }
+        await chrome.tabs.ungroup(tab.id);
+        ungrouped = true;
+      } catch (error) {
+        cleanupError = error;
+      }
+      if (originalGroupId >= 0) {
+        try {
+          const ungroupedTab = await assertStableFixture();
+          if (ungroupedTab.groupId !== -1) {
+            throw new Error("fixture tab was regrouped by another actor");
+          }
+          await chrome.tabs.group({
+            groupId: originalGroupId,
+            tabIds: [tab.id],
+          });
+          restored = true;
+        } catch (error) {
+          cleanupError = cleanupError ?? error;
+        }
+      } else {
+        restored = ungrouped;
+      }
+      try {
+        const after = await assertStableFixture();
+        if (after.id !== tab.id) {
+          cleanupError =
+            cleanupError ??
+            new Error("fixture tab identity changed during tab-group cleanup");
+        }
+      } catch (error) {
+        cleanupError = cleanupError ?? error;
+      }
+    }
+  }
+  try {
+    chrome.tabs.onUpdated.removeListener(onUpdated);
+  } catch (error) {
+    cleanupError = cleanupError ?? error;
+  }
+  if (operationError || cleanupError || !restored) {
+    throw new Error("tab-group probe or restoration failed closed");
   }
   return {
-    status: cleaned ? "created_and_cleaned" : "cleanup_failed",
+    status: "created_and_cleaned",
     created: true,
-    cleaned,
+    cleaned: true,
   };
 }
 
@@ -202,24 +416,40 @@ function sendNativeEnvelope() {
     let phase = "hello";
     const transcript = [];
     let settled = false;
+    let timer = null;
+    let onMessage;
+    let onDisconnect;
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       try {
+        if (onMessage) port.onMessage.removeListener(onMessage);
+        if (onDisconnect) port.onDisconnect.removeListener(onDisconnect);
         port.disconnect();
       } catch (_) {}
       resolve(value);
     };
-    const timer = setTimeout(
-      () => finish({ status: "timeout", error: "handshake_timeout" }),
-      1500,
-    );
-    port.onMessage.addListener((message) => {
-      const expected = phase === "hello" ? hello : probe;
+    const expectedMessage = () => (phase === "hello" ? hello : probe);
+    onMessage = (message) => {
+      const expected = expectedMessage();
       const expectedPhase = phase;
+      const responseKeys = [
+        "accepted",
+        "kind",
+        "message_id",
+        "phase",
+        "nonce",
+        "version",
+      ];
+      const actualKeys =
+        message && typeof message === "object"
+          ? Object.keys(message).sort()
+          : [];
       if (
+        actualKeys.join("|") !== responseKeys.slice().sort().join("|") ||
         message?.accepted !== true ||
+        message?.kind !== "ack" ||
         message?.message_id !== expected.message_id ||
         message?.nonce !== expected.nonce ||
         message?.version !== expected.version ||
@@ -240,23 +470,36 @@ function sendNativeEnvelope() {
         transcript.push("probe_accepted");
         finish({ status: "accepted", transcript });
       }
-    });
-    port.onDisconnect.addListener(() => {
+    };
+    onDisconnect = () => {
       if (settled) return;
       void chrome.runtime.lastError;
       finish({ status: "unavailable", error: "host_disconnected" });
-    });
-    const encodedSize =
-      new TextEncoder().encode(JSON.stringify(hello)).byteLength +
-      new TextEncoder().encode(JSON.stringify(probe)).byteLength;
-    if (encodedSize > MAX_NATIVE_BYTES) {
-      finish({
-        status: "rejected",
-        error: "probe_envelope_exceeds_local_bound",
-      });
-      return;
-    }
+    };
     try {
+      port.onMessage.addListener(onMessage);
+      port.onDisconnect.addListener(onDisconnect);
+      const helloBytes = new TextEncoder().encode(
+        JSON.stringify(hello),
+      ).byteLength;
+      const probeBytes = new TextEncoder().encode(
+        JSON.stringify(probe),
+      ).byteLength;
+      if (
+        helloBytes > MAX_NATIVE_BYTES ||
+        probeBytes > MAX_NATIVE_BYTES ||
+        helloBytes + probeBytes > MAX_NATIVE_BYTES
+      ) {
+        finish({
+          status: "rejected",
+          error: "probe_envelope_exceeds_local_bound",
+        });
+        return;
+      }
+      timer = setTimeout(
+        () => finish({ status: "timeout", error: "handshake_timeout" }),
+        1500,
+      );
       port.postMessage(hello);
     } catch (_) {
       finish({ status: "unavailable", error: "hello_send_failed" });
@@ -264,63 +507,172 @@ function sendNativeEnvelope() {
   });
 }
 
-async function runProbe(tabId, requestId = null) {
-  const result = { ok: false, request_id: requestId };
+async function runProbe(requestId, expectedUrl = null) {
+  const result = {
+    ok: false,
+    extension_loaded: true,
+    request_id: requestId,
+  };
   try {
-    const tab = await findFixture(tabId);
-    const debuggerResult = await runDebuggerProbe(tab);
+    const tab = await findFixture(expectedUrl);
+    const debuggerResult = await runDebuggerProbe(tab, expectedUrl);
     result.debugger_command = debuggerResult.debugger_command;
     result.debugger_command_passed =
       debuggerResult.debugger_command_passed === true;
     result.debugger_event = debuggerResult.debugger_event;
     result.debugger_event_received =
       debuggerResult.debugger_event_received === true;
-    const tabGroupResult = await runTabGroupProbe(tab);
+    result.fixture_identity_passed =
+      debuggerResult.fixture_identity_passed === true;
+    result.debugger_cleanup_passed =
+      debuggerResult.debugger_cleanup_passed === true;
+    result.screenshot_captured = debuggerResult.screenshot_captured === true;
+    if (!result.debugger_cleanup_passed) {
+      throw new Error("debugger cleanup failed");
+    }
+
+    const tabGroupResult = await runTabGroupProbe(tab, expectedUrl);
     result.tab_group = tabGroupResult.status;
     result.tab_group_created = tabGroupResult.created === true;
     result.cleanup_passed = tabGroupResult.cleaned === true;
+
     const nativeResult = await sendNativeEnvelope();
     result.native_messaging = nativeResult.status;
     result.native_messaging_passed = nativeResult.status === "accepted";
     result.handshake_transcript = nativeResult.transcript ?? [];
     result.native_error = nativeResult.error ?? null;
     result.ok =
+      result.fixture_identity_passed &&
       result.debugger_command_passed &&
       result.debugger_event_received &&
       result.tab_group_created &&
       result.cleanup_passed &&
+      result.debugger_cleanup_passed &&
+      result.screenshot_captured &&
       result.native_messaging_passed;
     if (result.native_messaging !== "accepted") {
       result.limitation =
         "Native host is not installed or did not accept the exact extension origin.";
     }
   } catch (_) {
-    result.native_error = "probe_failed";
+    result.native_error = result.native_error ?? "probe_failed";
     result.limitation = "Live probe failed closed before reporting success.";
   }
-  const output = safeResult(result);
-  await chrome.storage.local.set({ last_probe: output });
-  return output;
+  return safeResult(result);
+}
+
+function failedResult(requestId, limitation) {
+  return safeResult({
+    ok: false,
+    extension_loaded: true,
+    request_id: requestId,
+    limitation,
+  });
+}
+
+async function persistResult(output) {
+  let boundedOutput = output;
+  try {
+    const encoded = new TextEncoder().encode(JSON.stringify(output));
+    if (encoded.byteLength > MAX_RESULT_BYTES) {
+      boundedOutput = failedResult(
+        output.request_id,
+        "Probe result exceeded the local handoff bound.",
+      );
+    }
+    await chrome.storage.local.set({ last_probe: boundedOutput });
+    return boundedOutput;
+  } catch (_) {
+    return failedResult(
+      output.request_id,
+      "Probe result handoff failed closed.",
+    );
+  }
+}
+
+function makeProbeEntry(requestId, fixtureUrl = null) {
+  let resolve;
+  const promise = new Promise((finish) => {
+    resolve = finish;
+  });
+  return {
+    requestId,
+    fixtureUrl,
+    sequence: ++probeSequence,
+    promise,
+    resolve,
+  };
+}
+
+async function executeProbeEntry(entry) {
+  activeProbe = entry;
+  let output;
+  try {
+    output = await runProbe(entry.requestId, entry.fixtureUrl);
+    if (entry.sequence === latestProbeSequence) {
+      output = await persistResult(output);
+    }
+  } catch (_) {
+    output = failedResult(
+      entry.requestId,
+      "Live probe failed closed before reporting success.",
+    );
+    if (entry.sequence === latestProbeSequence) {
+      output = await persistResult(output);
+    }
+  }
+  entry.resolve(output);
+  if (activeProbe === entry) activeProbe = null;
+  if (pendingProbe) {
+    const next = pendingProbe;
+    pendingProbe = null;
+    void executeProbeEntry(next);
+  }
+}
+
+function scheduleProbe(requestId, fixtureUrl = null) {
+  const normalizedRequestId = requestIdOrNew(requestId);
+  if (activeProbe?.requestId === normalizedRequestId)
+    return activeProbe.promise;
+  if (pendingProbe?.requestId === normalizedRequestId)
+    return pendingProbe.promise;
+  if (activeProbe && pendingProbe) {
+    return Promise.resolve(
+      failedResult(
+        normalizedRequestId,
+        "Another probe is already queued; refusing an unbounded trigger.",
+      ),
+    );
+  }
+  const entry = makeProbeEntry(normalizedRequestId, fixtureUrl);
+  latestProbeSequence = entry.sequence;
+  if (!activeProbe) {
+    void executeProbeEntry(entry);
+    return entry.promise;
+  }
+  pendingProbe = entry;
+  return entry.promise;
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes.run_probe?.newValue) return;
-  void runProbe(
-    changes.run_probe.newValue.tab_id ?? null,
-    changes.run_probe.newValue.request_id ?? null,
-  );
+  const trigger = changes.run_probe.newValue;
+  if (!trigger || typeof trigger !== "object") return;
+  void scheduleProbe(trigger.request_id, trigger.fixture_url);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (sender.id !== chrome.runtime.id || message?.type !== "run-probe")
+  if (sender?.id !== chrome.runtime.id || message?.type !== "run-probe")
     return false;
-  runProbe(message.tab_id)
-    .then(sendResponse)
-    .catch(() =>
-      sendResponse({
-        ok: false,
-        limitation: "Live probe failed closed before reporting success.",
-      }),
-    );
+  void scheduleProbe(message.request_id, message.fixture_url).then(
+    sendResponse,
+    () =>
+      sendResponse(
+        failedResult(
+          message.request_id,
+          "Live probe failed closed before reporting success.",
+        ),
+      ),
+  );
   return true;
 });
