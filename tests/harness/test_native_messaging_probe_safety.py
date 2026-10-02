@@ -77,6 +77,27 @@ class NativeMessagingRunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["disconnect"], "clean_eof")
 
+    def test_real_host_accepts_chrome_origin_serialization_with_trailing_slash(self) -> None:
+        result = _module.framed_host_smoke(
+            _module.HOST_PATH,
+            ORIGIN,
+            1.0,
+            host_argument_origin=f"{ORIGIN}/",
+        )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["disconnect"], "clean_eof")
+
+    def test_real_host_processes_frames_before_stdin_eof(self) -> None:
+        result = _module.framed_host_smoke(
+            _module.HOST_PATH,
+            ORIGIN,
+            1.0,
+            host_argument_origin=f"{ORIGIN}/",
+            keep_stdin_open=True,
+        )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["messages"], 2)
+
     def test_malformed_response_shape_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             result = _module.framed_host_smoke(_host_script(Path(temporary), "malformed"), ORIGIN, 1.0)
