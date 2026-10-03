@@ -2,7 +2,20 @@
 
 import unittest
 
-from deterministic import DeterministicScheduler, Redactor, VirtualClock, stable_json
+try:
+    from .deterministic import (
+        DeterministicScheduler,
+        Redactor,
+        VirtualClock,
+        stable_json,
+    )
+except ImportError:
+    from deterministic import (
+        DeterministicScheduler,
+        Redactor,
+        VirtualClock,
+        stable_json,
+    )
 
 
 class DeterministicHarnessTests(unittest.TestCase):
