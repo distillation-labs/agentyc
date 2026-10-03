@@ -33,6 +33,12 @@ if _register_spec is None or _register_spec.loader is None:
     raise RuntimeError("could not load registration probe")
 _register_module = importlib.util.module_from_spec(_register_spec)
 _register_spec.loader.exec_module(_register_module)
+REGISTER_HOST_SCRIPT = ROOT / "scripts" / "register_native_host.py"
+_register_host_spec = importlib.util.spec_from_file_location("phase0_register_host", REGISTER_HOST_SCRIPT)
+if _register_host_spec is None or _register_host_spec.loader is None:
+    raise RuntimeError("could not load production host registration")
+_register_host_module = importlib.util.module_from_spec(_register_host_spec)
+_register_host_spec.loader.exec_module(_register_host_module)
 
 CHROME_SCRIPT = ROOT / "scripts" / "run_chrome_probe.py"
 _chrome_spec = importlib.util.spec_from_file_location("phase0_chrome_probe", CHROME_SCRIPT)
@@ -345,6 +351,14 @@ class InstallationProbeSafetyTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "rejected")
             self.assertFalse((outside / "native-host.json").exists())
+
+    def test_production_manifest_has_a_stable_identity_and_probe_identity_is_rejected(self) -> None:
+        self.assertEqual(
+            _register_host_module.extension_id_from_manifest(ROOT / "extension"),
+            "jgbllikljnllangilfgkhncepiockppj",
+        )
+        with self.assertRaises(ValueError):
+            _register_host_module.extension_id_from_manifest(ROOT / "extension" / "probes")
 
 
 class ChromeProbeSafetyTests(unittest.TestCase):
