@@ -74,7 +74,7 @@ RAW_ID_RE = re.compile(
 
 SUCCESS_STATUSES = {"passed", "pass", "success", "completed", "live_passed"}
 LIVE_SUCCESS_STATUSES = {"passed", "success", "completed", "live_passed", "live_baseline", "live-baseline"}
-REQUIRED_COEXISTENCE_SCENARIOS = {
+REQUIRED_COEXISTENCE_SCENARIOS_ORDERED = (
     "user-tab-preservation",
     "two-space-isolation",
     "focus-stability",
@@ -85,7 +85,15 @@ REQUIRED_COEXISTENCE_SCENARIOS = {
     "host-restart-recovery",
     "chrome-restart-recovery",
     "extension-update-recovery",
-}
+)
+REQUIRED_COEXISTENCE_SCENARIOS = set(REQUIRED_COEXISTENCE_SCENARIOS_ORDERED)
+LIVE_BROWSER_RECEIPT_SOURCES = {"browser", "browser_current_run", "live_browser"}
+COEXISTENCE_SAFETY_COUNTERS = (
+    "user_tab_closes",
+    "focus_theft",
+    "cross_space_mutations",
+    "stale_agent_mutations",
+)
 
 
 class Issue:
@@ -393,8 +401,8 @@ def validate_artifact_envelope(checker: Checker) -> None:
             continue
         if data.get("schema_version") != 1 or not isinstance(data.get("build_tuple"), dict) or not isinstance(data.get("environment"), dict):
             checker.add("artifact-envelope-schema", "structured artifact envelope has invalid types", path)
-        if not isinstance(data.get("timestamp"), str) or not data["timestamp"].endswith("Z"):
-            checker.add("artifact-envelope-timestamp", "structured artifact timestamp is not UTC", path)
+        if not _valid_timestamp(data.get("timestamp")):
+            checker.add("artifact-envelope-timestamp", "structured artifact timestamp is missing, invalid, or stale", path)
         if not isinstance(data.get("command"), list) or any(not isinstance(item, str) for item in data["command"]):
             checker.add("artifact-envelope-command", "structured artifact command is not a bounded argv list", path)
         redaction = data.get("redaction_status")
@@ -442,6 +450,22 @@ def validate_extension_gate(checker: Checker) -> str:
     )
     if not isinstance(live, dict) or any(live.get(field) is not True for field in required_fields):
         checker.add("live-chrome-evidence-incomplete", "extension report lacks exact identity, debugger, event, tab-group, Chrome-mediated Native Messaging, or cleanup evidence", path, gate="live_chrome")
+    required_binding_fields = {
+        "binding_status": "observed",
+        "binding_nonce_observed": True,
+        "binding_source_tree_hash_observed": True,
+        "binding_nonce_matches": True,
+        "binding_source_tree_hash_matches": True,
+    }
+    if not isinstance(live, dict) or any(
+        live.get(field) != expected for field, expected in required_binding_fields.items()
+    ):
+        checker.add(
+            "live-chrome-build-binding-unobserved",
+            "extension report lacks observed current-run nonce and source-tree binding evidence",
+            path,
+            gate="live_chrome",
+        )
     if not isinstance(live, dict) or live.get("launched_by_probe") is not True:
         checker.add("live-chrome-isolation-missing", "live extension evidence is not bound to the probe-launched isolated browser", path, gate="live_chrome")
     screenshots = live.get("screenshots") if isinstance(live, dict) else None
@@ -611,6 +635,85 @@ def validate_directory_gate(checker: Checker, name: str, *, gate: str, descripti
     return "present"
 
 
+def _current_enrollment(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(value.get(component), dict)
+        and value[component].get("enrolled") is True
+        and value[component].get("observed") is True
+        and value[component].get("current_run") is True
+        and isinstance(value[component].get("source"), str)
+        and value[component]["source"].endswith("_current_run")
+        and value[component].get("status") in {"bound", "connected", "installed", "enrolled"}
+        for component in ("profile", "host", "extension")
+    )
+
+
+def _browser_policy_is_current(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("observed") is True
+        and value.get("current_run") is True
+        and value.get("attached") is True
+        and value.get("launch") is False
+        and value.get("download") is False
+        and value.get("cdp_url_used") is False
+    )
+
+
+def _current_browser_receipts(value: Any) -> dict[str, dict[str, Any]] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    receipts: dict[str, dict[str, Any]] = {}
+    for receipt in value:
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(receipt.get("operation"), str)
+            or not receipt["operation"]
+            or receipt["operation"] in receipts
+            or not isinstance(receipt.get("source"), str)
+            or receipt.get("source") not in LIVE_BROWSER_RECEIPT_SOURCES
+            or receipt.get("current_run") is not True
+            or receipt.get("observed") is not True
+            or receipt.get("browser_observed") is not True
+        ):
+            return None
+        receipts[receipt["operation"]] = receipt
+    return receipts
+
+
+def _scenario_receipts_are_current(scenarios: Any, receipts: dict[str, dict[str, Any]] | None) -> bool:
+    if not isinstance(scenarios, list) or len(scenarios) != len(REQUIRED_COEXISTENCE_SCENARIOS_ORDERED) or receipts is None:
+        return False
+    names = [item.get("name") if isinstance(item, dict) else None for item in scenarios]
+    if tuple(names) != REQUIRED_COEXISTENCE_SCENARIOS_ORDERED or len(set(names)) != len(REQUIRED_COEXISTENCE_SCENARIOS_ORDERED):
+        return False
+    referenced: set[str] = set()
+    for item in scenarios:
+        if (
+            not isinstance(item, dict)
+            or item.get("status") != "live_passed"
+            or not isinstance(item.get("observation"), dict)
+        ):
+            return False
+        observation = item["observation"]
+        references = observation.get("receipt_refs")
+        if (
+            observation.get("source") != "browser_current_run"
+            or observation.get("observed") is not True
+            or observation.get("current_run") is not True
+            or observation.get("browser_observed") is not True
+            or observation.get("operator_acknowledged") is True
+            or not isinstance(references, list)
+            or not references
+            or any(not isinstance(reference, str) or not reference or reference not in receipts for reference in references)
+            or len(references) != len(set(references))
+            or referenced.intersection(references)
+        ):
+            return False
+        referenced.update(references)
+    return True
+
+
 def validate_coexistence_gate(checker: Checker) -> str:
     status = validate_directory_gate(checker, "p0-coexistence", gate="coexistence", description="coexistence")
     if status == "missing":
@@ -630,46 +733,59 @@ def validate_coexistence_gate(checker: Checker) -> str:
         spaces = data.get("spaces", nested(data, "scenario", "spaces"))
         agents = data.get("agents", nested(data, "scenario", "agents"))
         safety = data.get("safety")
-        safety_zero = isinstance(safety, dict) and all(
-            safety.get(key) == 0
-            for key in (
-                "user_tab_closes",
-                "focus_theft",
-                "cross_space_mutations",
-                "stale_agent_mutations",
-            )
+        safety_zero = (
+            isinstance(safety, dict)
+            and safety.get("measurement_status") == "measured_live"
+            and safety.get("current_run") is True
+            and all(type(safety.get(key)) is int and safety[key] == 0 for key in COEXISTENCE_SAFETY_COUNTERS)
         )
-        scenarios = data.get("scenarios")
-        scenario_names = (
-            {item.get("name") for item in scenarios if isinstance(item, dict)}
-            if isinstance(scenarios, list)
-            else set()
+        enrollment = data.get("enrollment")
+        live_enrollment = live.get("enrollment") if isinstance(live, dict) else None
+        execution = data.get("execution_policy")
+        browser = live.get("browser") if isinstance(live, dict) else None
+        nested_enrollment_ok = not isinstance(live, dict) or "enrollment" not in live or _current_enrollment(live_enrollment)
+        nested_browser_ok = not isinstance(live, dict) or "browser" not in live or _browser_policy_is_current(browser)
+        execution_ok = (
+            isinstance(execution, dict)
+            and execution.get("attached") is True
+            and execution.get("current_run") is True
+            and execution.get("browser_launch") is False
+            and execution.get("browser_download") is False
+            and execution.get("cdp_url_used") is False
         )
-        scenarios_ok = (
-            isinstance(scenarios, list)
-            and scenario_names == REQUIRED_COEXISTENCE_SCENARIOS
-            and all(item.get("status") == "live_passed" for item in scenarios if isinstance(item, dict))
-        )
-        enrollment = live.get("enrollment") if isinstance(live, dict) else None
-        enrollment_ok = isinstance(enrollment, dict) and all(
-            isinstance(enrollment.get(component), dict)
-            and enrollment[component].get("enrolled") is True
-            for component in ("profile", "host", "extension")
-        )
+
         live_ok = (
             isinstance(live, dict)
             and live.get("requested") is True
             and live.get("required") is True
-            and live.get("status") in LIVE_SUCCESS_STATUSES
+            and live.get("executed") is True
+            and live.get("current_run") is True
+            and live.get("status") == "live_passed"
             and live.get("evidence_status") == "live_passed"
+            and live.get("provenance") == "existing_chrome_current_run"
+            and live.get("descriptor_policy") == "descriptors_not_accepted_as_live_evidence"
+            and live.get("operator_claims_used") is False
+            and live.get("host_probe_used") is False
+            and live.get("browser_observed") is True
             and live.get("profile_scope") == "existing_user_profile"
         )
+        receipts = _current_browser_receipts(live.get("receipts") if isinstance(live, dict) else None)
         if (
-            data.get("status") in LIVE_SUCCESS_STATUSES
+            data.get("phase") == 0
+            and data.get("current_run") is True
+            and data.get("release_eligible") is True
+            and _valid_timestamp(data.get("timestamp"))
+            and isinstance(data.get("provenance"), dict)
+            and data["provenance"].get("timestamp") == data.get("timestamp")
+            and data.get("evidence_mode") == "live"
+            and data.get("status") == "live_passed"
             and str(data.get("mode", "")).lower() in {"headed", "existing-chrome", "existing_chrome"}
             and live_ok
-            and enrollment_ok
-            and scenarios_ok
+            and _current_enrollment(enrollment)
+            and nested_enrollment_ok
+            and _scenario_receipts_are_current(data.get("scenarios"), receipts)
+            and execution_ok
+            and nested_browser_ok
             and isinstance(spaces, int)
             and spaces >= 2
             and isinstance(agents, int)
@@ -706,7 +822,9 @@ def validate_installation_gate(checker: Checker) -> str:
         platform_name = platform_data.get("name") if isinstance(platform_data, dict) else None
         registration_scope = registration.get("scope") if isinstance(registration, dict) else None
         if (
-            data.get("status") == "drill_passed"
+            data.get("evidence_mode") == "live"
+            and data.get("release_eligible") is True
+            and data.get("status") == "drill_passed"
             and isinstance(installation, dict)
             and installation.get("status") == "installed"
             and isinstance(rollback, dict)
@@ -1114,6 +1232,8 @@ def performance_report_passed(
     if str(data.get("mode", "")).lower() not in PERFORMANCE_LIVE_MODES:
         return False
     if data.get("status") not in LIVE_SUCCESS_STATUSES or data.get("kind") != "direct-benchmark-baseline":
+        return False
+    if data.get("evidence_mode") != "live" or data.get("release_eligible") is not True:
         return False
     if data.get("smoke") is not False:
         return False
