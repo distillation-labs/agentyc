@@ -466,8 +466,8 @@ test("pre-dispatch capability failures stay capability errors", async () => {
 
 test("side-panel destructive actions require expiring single-use intent tickets", async () => {
   const chrome = new FakeChrome();
-  const { worker } = await boot(chrome);
-  const denied = worker.handleSidePanelRequest({
+  const { worker, port } = await boot(chrome);
+  const denied = await worker.handleSidePanelRequest({
     action: "stop",
     params: { space_id: "space_panel" },
   });
@@ -482,13 +482,34 @@ test("side-panel destructive actions require expiring single-use intent tickets"
     expires_at: Date.now() + 10_000,
     browser_session_epoch: worker.metadata.browserSessionEpoch,
   };
-  const accepted = worker.handleSidePanelRequest({
+  let responseSequence = 2;
+  const originalSendRequest = worker.native.sendRequest.bind(worker.native);
+  worker.native.sendRequest = (request) => {
+    const envelope = originalSendRequest(request);
+    queueMicrotask(() =>
+      port.receive(
+        hostEnvelope(
+          port,
+          {
+            kind: "response",
+            request_id: request.requestId,
+            action_id: request.actionId,
+            ok: true,
+            result: {},
+          },
+          responseSequence++,
+        ),
+      ),
+    );
+    return envelope;
+  };
+  const accepted = await worker.handleSidePanelRequest({
     action: "stop",
     params: { space_id: "space_panel" },
     intent_ticket: ticket,
   });
   assert.equal(accepted.ok, true);
-  const replay = worker.handleSidePanelRequest({
+  const replay = await worker.handleSidePanelRequest({
     action: "stop",
     params: { space_id: "space_panel" },
     intent_ticket: ticket,
