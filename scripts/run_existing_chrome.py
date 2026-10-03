@@ -291,9 +291,10 @@ def _descriptor_contains_forbidden_key(value: Any) -> bool:
                 return True
     elif isinstance(value, list):
         return any(_descriptor_contains_forbidden_key(item) for item in value)
-    elif isinstance(value, str):
-        if _NETWORK.search(value) or _ABSOLUTE_PATH.search(value) or _BROWSER_ID.fullmatch(value):
-            return True
+    elif isinstance(value, str) and (
+        _NETWORK.search(value) or _ABSOLUTE_PATH.search(value) or _BROWSER_ID.fullmatch(value)
+    ):
+        return True
     return False
 
 
@@ -305,6 +306,8 @@ def _descriptor_errors(descriptor: dict[str, Any]) -> list[str]:
         errors.append("descriptor kind must be existing-chrome-enrollment")
     if descriptor.get("mode") not in {"existing-chrome", "existing_chrome"}:
         errors.append("descriptor mode must be existing-chrome")
+    if descriptor.get("profile_scope") != "existing_user_profile":
+        errors.append("descriptor profile_scope must be existing_user_profile")
     if _descriptor_contains_forbidden_key(descriptor):
         errors.append("descriptor must not contain raw IDs, paths, or debugger endpoints")
 
@@ -320,6 +323,20 @@ def _descriptor_errors(descriptor: dict[str, Any]) -> list[str]:
             component = enrollment.get(name)
             if not isinstance(component, dict) or component.get("enrolled") is not True or component.get("status") not in accepted_statuses:
                 errors.append(f"enrollment.{name} must be explicitly enrolled")
+        profile = enrollment.get("profile")
+        if isinstance(profile, dict) and profile.get("binding_verified") is not True:
+            errors.append("enrollment.profile.binding_verified must be true")
+        host = enrollment.get("host")
+        if isinstance(host, dict) and host.get("origin_match_verified") is not True:
+            errors.append("enrollment.host.origin_match_verified must be true")
+        extension = enrollment.get("extension")
+        if isinstance(extension, dict):
+            if extension.get("identity_verified") is not True:
+                errors.append("enrollment.extension.identity_verified must be true")
+            if extension.get("host_origin_matches") is not True:
+                errors.append("enrollment.extension.host_origin_matches must be true")
+            if extension.get("distribution") not in {"stable_unpacked", "web_store", "managed"}:
+                errors.append("enrollment.extension.distribution is unsupported")
 
     browser = descriptor.get("browser")
     if not isinstance(browser, dict) or browser.get("status") not in {"already-running", "already_running"}:
@@ -383,6 +400,7 @@ def load_enrolled_descriptor(path_value: str | None) -> dict[str, Any] | None:
                 "download": False,
                 "cdp_url_used": False,
             },
+            "profile_scope": "existing_user_profile",
             "safety": {
                 "user_tab_preserved": safety["user_tab_preserved"],
                 "focus_theft": safety["focus_theft"],
@@ -455,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
                 "evidence_status": harness.get("evidence_status"),
                 "enrollment": harness.get("enrollment"),
                 "browser": harness.get("browser"),
+                "profile_scope": harness.get("profile_scope"),
                 "safety": harness.get("safety"),
                 "scenarios": harness.get("scenarios", []),
                 "release_gates": harness.get("release_gates"),
