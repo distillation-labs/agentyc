@@ -5,12 +5,24 @@
 //! launches Chrome, discovers a debugger endpoint, or treats a client-supplied
 //! profile value as authentication.
 
-use std::{env, path::PathBuf, process::ExitCode};
-
-use agentyc_core::PrincipalId;
-use agentyc_host::{
-    Broker, LocalHostServer, NativeMessagingBridge, NativeMessagingConfig, configured_socket_path,
+use std::{
+    env,
+    path::PathBuf,
+    process::ExitCode,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use agentyc_core::{CoreError, ErrorCode, LeaseEpoch, PrincipalId, SpaceId, Timestamp};
+use agentyc_host::native_messaging::NativeRequest;
+use agentyc_host::{
+    AuthorityTicket, Broker, LocalHostServer, NativeMessagingBridge, NativeMessagingConfig,
+    configured_socket_path,
+};
+use serde_json::{Map, Value, json};
+
+const DEFAULT_SIDE_PANEL_TTL: u64 = 60_000;
+const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 fn main() -> ExitCode {
     match run() {
@@ -58,10 +70,201 @@ fn run() -> Result<(), String> {
     // they never open a second ledger or broker.
     let local_server = LocalHostServer::start(broker.clone(), configured_socket_path(&state_dir))
         .map_err(|error| error.to_string())?;
-    let _ = bridge.wait_closed();
+    supervise_native_requests(&broker, connection.authority(), &bridge)?;
     local_server.stop();
     let _ = broker.disconnect(connection.authority());
     Ok(())
+}
+
+fn supervise_native_requests(
+    broker: &Broker,
+    authority: &AuthorityTicket,
+    bridge: &NativeMessagingBridge,
+) -> Result<(), String> {
+    loop {
+        for request in bridge.drain_requests() {
+            if bridge.is_closed() {
+                return Ok(());
+            }
+            let result = dispatch_native_request(broker, authority, &request);
+            if let Err(error) = bridge.respond(&request, result) {
+                if bridge.is_closed() {
+                    return Ok(());
+                }
+                return Err(error.to_string());
+            }
+        }
+        if bridge.is_closed() {
+            return Ok(());
+        }
+        thread::sleep(SUPERVISOR_POLL_INTERVAL);
+    }
+}
+
+fn dispatch_native_request(
+    broker: &Broker,
+    authority: &AuthorityTicket,
+    request: &NativeRequest,
+) -> Result<Value, CoreError> {
+    let params = request.params.as_object().ok_or_else(|| {
+        CoreError::invalid_argument("Native Messaging request params must be an object")
+    })?;
+    match request.method.as_str() {
+        "space.create" => {
+            ensure_allowed_params(params, &["label"])?;
+            let label = required_string_param(params, "label")?;
+            let space = broker
+                .create_space(authority, label.to_owned())
+                .map_err(|error| error.as_core_error())?;
+            Ok(json!({
+                "space": &space,
+                "space_id": &space.space_id,
+                "lifecycle": &space.lifecycle,
+            }))
+        }
+        "space.takeover" => {
+            ensure_allowed_params(params, &["space_id", "now", "ttl"])?;
+            let space_id = parse_space_param(params)?;
+            let now = timestamp_param(params)?;
+            let ttl = optional_u64_param(params, "ttl")?.unwrap_or(DEFAULT_SIDE_PANEL_TTL);
+            let takeover = broker
+                .takeover(&space_id, authority, now, ttl)
+                .map_err(|error| error.as_core_error())?;
+            Ok(json!({
+                "space_id": &takeover.space_id,
+                "lease_epoch": &takeover.lease_epoch,
+                "fence_acknowledged": takeover.fence_acknowledged,
+                "lifecycle": &takeover.lifecycle,
+            }))
+        }
+        "space.return" | "space.return_control" => {
+            ensure_allowed_params(params, &["space_id", "lease_epoch", "now"])?;
+            let space_id = parse_space_param(params)?;
+            let lease_epoch = lease_epoch_param(broker, authority, &space_id, params)?;
+            let now = timestamp_param(params)?;
+            let returned = broker
+                .return_control(&space_id, authority, lease_epoch, now)
+                .map_err(|error| error.as_core_error())?;
+            let control_ticket = json!({
+                "space_id": returned.control_ticket.space_id(),
+                "broker_epoch": returned.control_ticket.broker_epoch(),
+                "fence_epoch": returned.control_ticket.fence_epoch(),
+                "token": returned.control_ticket.token().to_string(),
+            });
+            Ok(json!({
+                "space_id": &returned.space_id,
+                "released_epoch": &returned.released_epoch,
+                "fence_epoch": &returned.fence_epoch,
+                "lifecycle": &returned.lifecycle,
+                "control_ticket": control_ticket,
+            }))
+        }
+        "space.finish" => {
+            ensure_allowed_params(params, &["space_id", "lease_epoch", "now"])?;
+            let space_id = parse_space_param(params)?;
+            let lease_epoch = lease_epoch_param(broker, authority, &space_id, params)?;
+            let now = timestamp_param(params)?;
+            let space = broker
+                .finish_space(&space_id, authority, lease_epoch, now)
+                .map_err(|error| error.as_core_error())?;
+            Ok(json!({
+                "space": &space,
+                "space_id": &space.space_id,
+                "lifecycle": &space.lifecycle,
+            }))
+        }
+        "space.release" => {
+            ensure_allowed_params(params, &["space_id", "lease_epoch", "now"])?;
+            let space_id = parse_space_param(params)?;
+            let lease_epoch = lease_epoch_param(broker, authority, &space_id, params)?;
+            let now = timestamp_param(params)?;
+            let space = broker
+                .release_space(&space_id, authority, lease_epoch, now)
+                .map_err(|error| error.as_core_error())?;
+            Ok(json!({
+                "space": &space,
+                "space_id": &space.space_id,
+                "lifecycle": &space.lifecycle,
+            }))
+        }
+        _ => Err(CoreError::new(
+            ErrorCode::InvalidArgument,
+            "Native Messaging method is not allowlisted",
+        )),
+    }
+}
+
+fn ensure_allowed_params(params: &Map<String, Value>, allowed: &[&str]) -> Result<(), CoreError> {
+    if let Some(name) = params.keys().find(|name| !allowed.contains(&name.as_str())) {
+        return Err(CoreError::invalid_argument(format!(
+            "Native Messaging parameter is not allowlisted: {name}"
+        )));
+    }
+    Ok(())
+}
+
+fn required_string_param<'a>(
+    params: &'a Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, CoreError> {
+    params
+        .get(name)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CoreError::invalid_argument(format!("{name} is missing or invalid")))
+}
+
+fn optional_u64_param(params: &Map<String, Value>, name: &str) -> Result<Option<u64>, CoreError> {
+    params
+        .get(name)
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| CoreError::invalid_argument(format!("{name} is invalid")))
+        })
+        .transpose()
+}
+
+fn parse_space_param(params: &Map<String, Value>) -> Result<SpaceId, CoreError> {
+    let value = required_string_param(params, "space_id")?;
+    value
+        .parse::<SpaceId>()
+        .map_err(|error| CoreError::invalid_argument(format!("invalid space_id: {error}")))
+}
+
+fn timestamp_param(params: &Map<String, Value>) -> Result<Timestamp, CoreError> {
+    Ok(Timestamp::new(
+        optional_u64_param(params, "now")?.unwrap_or_else(current_millis),
+    ))
+}
+
+fn lease_epoch_param(
+    broker: &Broker,
+    authority: &AuthorityTicket,
+    space_id: &SpaceId,
+    params: &Map<String, Value>,
+) -> Result<LeaseEpoch, CoreError> {
+    if let Some(epoch) = optional_u64_param(params, "lease_epoch")? {
+        if epoch == 0 {
+            return Err(CoreError::invalid_argument("lease_epoch must be positive"));
+        }
+        return Ok(LeaseEpoch::new(epoch));
+    }
+    let space = broker
+        .describe_space(authority, space_id)
+        .map_err(|error| error.as_core_error())?;
+    space
+        .lease
+        .map(|lease| lease.lease_epoch)
+        .ok_or_else(|| CoreError::invalid_argument("lease_epoch is required for this transition"))
+}
+
+fn current_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(u128::from(u64::MAX)) as u64
+        })
 }
 
 fn parse_native_messaging_arguments(arguments: &[String]) -> Result<String, String> {
@@ -99,7 +302,30 @@ fn state_directory() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_native_messaging_arguments;
+    use super::*;
+    use agentyc_host::{FakeBridge, NativeHello};
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    fn test_broker() -> (tempfile::TempDir, Broker, AuthorityTicket) {
+        let directory = tempdir().expect("temporary ledger");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let native_hello = NativeHello {
+            protocol: agentyc_core::PROTOCOL_VERSION,
+            nonce: "nonce_native_test".to_owned(),
+            sequence: 1,
+            worker_instance_epoch: 1,
+            browser_session_epoch: 1,
+            profile_instance_id: "profile_native_test".to_owned(),
+            extension_version: "0.1.0".to_owned(),
+            capabilities: vec!["logical_tabs".to_owned()],
+        };
+        let hello = native_hello
+            .to_core_hello(PrincipalId::from_suffix("extension").expect("principal"))
+            .expect("core hello");
+        let connection = broker.hello(&hello).expect("connection");
+        (directory, broker, connection.authority().clone())
+    }
 
     #[test]
     fn accepts_chrome_origin_and_windows_parent_window_argument() {
@@ -120,5 +346,58 @@ mod tests {
             "--unexpected".to_owned(),
         ];
         assert!(parse_native_messaging_arguments(&arguments).is_err());
+    }
+
+    #[test]
+    fn side_panel_create_uses_the_authenticated_broker_authority() {
+        let (_directory, broker, authority) = test_broker();
+        let request = NativeRequest {
+            request_id: "req_side_panel_create".to_owned(),
+            action_id: Some("action_side_panel_create".to_owned()),
+            method: "space.create".to_owned(),
+            params: json!({"label": "panel"}),
+        };
+
+        let result = dispatch_native_request(&broker, &authority, &request).expect("create");
+        assert_eq!(result["space_id"], json!("space_space-1"));
+        assert_eq!(
+            broker.list_spaces(&authority).expect("spaces").len(),
+            1,
+            "the request must mutate the same broker authority"
+        );
+    }
+
+    #[test]
+    fn side_panel_dispatch_rejects_unknown_methods_and_malformed_scopes() {
+        let (_directory, broker, authority) = test_broker();
+        let unknown = NativeRequest {
+            request_id: "req_side_panel_unknown".to_owned(),
+            action_id: None,
+            method: "space.takeover_with_control_ticket".to_owned(),
+            params: json!({}),
+        };
+        let unknown_error = dispatch_native_request(&broker, &authority, &unknown)
+            .expect_err("control-ticket takeover must not be exposed");
+        assert_eq!(unknown_error.code, ErrorCode::InvalidArgument);
+
+        let malformed_scope = NativeRequest {
+            request_id: "req_side_panel_scope".to_owned(),
+            action_id: None,
+            method: "space.takeover".to_owned(),
+            params: json!({"space_id": "tab_7", "ttl": 60_000}),
+        };
+        let scope_error = dispatch_native_request(&broker, &authority, &malformed_scope)
+            .expect_err("raw browser scope must be rejected");
+        assert_eq!(scope_error.code, ErrorCode::InvalidArgument);
+
+        let extra_raw_id = NativeRequest {
+            request_id: "req_side_panel_raw".to_owned(),
+            action_id: None,
+            method: "space.release".to_owned(),
+            params: json!({"space_id": "space_panel", "tab_id": 7}),
+        };
+        let raw_id_error = dispatch_native_request(&broker, &authority, &extra_raw_id)
+            .expect_err("raw browser parameter must be rejected");
+        assert_eq!(raw_id_error.code, ErrorCode::InvalidArgument);
     }
 }
