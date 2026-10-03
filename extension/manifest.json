@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Host-authorized logical task spaces for an existing Chrome profile.",
   "minimum_chrome_version": "125",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0yfOY5sYBzBsK2hIKwzo9XRJz6mEPZJmI+roVSIBrVVtaxnPDEzEWmLNy3HK0gYu9HIv+r0baZCt/pEenH4i/49KCPlAdXhjkv6fP3Hd5QAVrJxbTzJMQTjk8Yk6v0TBEcsH4FRAGv4GEMdx+qJUW277H16VKqpGbGUHsKZzwJEPTdC6/RwWFS3tRZ6pu+ShkUByEvB5+LApXPGj+YEN9ErOaFT8+SedzPHT+2pMWc/IsVeq3/Jdrr1vN/YJ9AnzT/udfK/toMBFn4fbJ9zmkImflQzajly3hlS4ybdUSXJJLhUzIsKfxGuAe8pa7KCiyPdP/W361Q6uPaWofGI15wIDAQAB",
   "permissions": [
     "debugger",
     "nativeMessaging",
