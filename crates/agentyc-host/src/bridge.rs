@@ -14,9 +14,31 @@ use agentyc_core::{
     ActionReceipt, ActionRequest, BrokerEpoch, Capability, CoreError, ErrorCode, LeaseEpoch,
     PageId, SnapshotEnvelope, SpaceId, UnknownReason,
 };
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::snapshots::empty_snapshot;
+
+/// A bounded, logical observation returned by a browser bridge.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ObservationSnapshot {
+    /// Logical page records, including active unmanaged user tabs.
+    pub pages: Vec<Value>,
+    /// Logical visual-group hints scoped by logical space.
+    pub groups: Vec<Value>,
+}
+
+/// Safe extension identity and epoch metadata reported by a browser bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeStatus {
+    /// Logical profile binding selected by the extension.
+    pub profile_instance_id: Option<String>,
+    /// Installed extension version.
+    pub extension_version: Option<String>,
+    /// MV3 service-worker instance epoch.
+    pub worker_instance_epoch: Option<u64>,
+    /// Browser/profile session epoch.
+    pub browser_session_epoch: Option<u64>,
+}
 
 /// Result of crossing the bridge's side-effect boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,11 +92,13 @@ pub struct ExtensionEpochs {
 }
 
 const MAX_OBSERVATION_RECORDS: usize = 256;
+const MAX_OBSERVATION_GROUPS: usize = 64;
 const MAX_OBSERVATION_RECORD_BYTES: usize = 64 * 1024;
 const MAX_OBSERVATION_BYTES: usize = 512 * 1024;
 const MAX_OBSERVATION_ID_BYTES: usize = 128;
 const MAX_OBSERVATION_HINT_BYTES: usize = 128;
 const MAX_OBSERVATION_TEXT_BYTES: usize = 4 * 1024;
+const MAX_OBSERVATION_GROUP_MEMBER_COUNT: u64 = 4_096;
 
 const OBSERVATION_FIELDS: &[&str] = &[
     "page_id",
@@ -96,6 +120,19 @@ const OBSERVATION_FIELDS: &[&str] = &[
     "active",
     "window_hint",
     "tab_hint",
+];
+
+const OBSERVATION_GROUP_FIELDS: &[&str] = &[
+    "space_id",
+    "hint",
+    "group_hint",
+    "title",
+    "color",
+    "status",
+    "collapsed",
+    "present",
+    "drift",
+    "member_count",
 ];
 
 /// Sanitize bounded extension observations into logical page records.
@@ -129,24 +166,15 @@ pub(crate) fn sanitize_observation_records(records: &[Value]) -> Result<Vec<Valu
             sanitized.insert((*field).to_owned(), value);
         }
 
-        let space_id = sanitized
-            .get("space_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                CoreError::new(ErrorCode::InvalidJson, "observation space_id is missing")
-            })?;
-        let page_id = sanitized
-            .get("page_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                CoreError::new(ErrorCode::InvalidJson, "observation page_id is missing")
-            })?;
-        let _: SpaceId = space_id.parse().map_err(|_| {
-            CoreError::new(ErrorCode::InvalidJson, "observation space_id is invalid")
-        })?;
-        let _: PageId = page_id.parse().map_err(|_| {
-            CoreError::new(ErrorCode::InvalidJson, "observation page_id is invalid")
-        })?;
+        let unmanaged = sanitized.get("ownership").and_then(Value::as_str) == Some("unmanaged");
+        if unmanaged {
+            // User-tab URLs and titles are not needed for coexistence safety and
+            // must not cross the host boundary into agent-visible inventory.
+            sanitized.remove("url");
+            sanitized.remove("title");
+        }
+        validate_observation_logical_id(&sanitized, "space_id", unmanaged)?;
+        validate_observation_logical_id(&sanitized, "page_id", unmanaged)?;
 
         let value = Value::Object(sanitized);
         let bytes = serde_json::to_vec(&value).map_err(|_| {
@@ -180,13 +208,169 @@ pub(crate) fn sanitize_observation_records(records: &[Value]) -> Result<Vec<Valu
     Ok(sanitized_records)
 }
 
-fn sanitize_observation_field(field: &str, value: &Value) -> Result<Value, CoreError> {
+/// Sanitize both page records and visual group hints under one observation bound.
+pub(crate) fn sanitize_observation_snapshot(
+    snapshot: ObservationSnapshot,
+) -> Result<ObservationSnapshot, CoreError> {
+    let pages = sanitize_observation_records(&snapshot.pages)?;
+    let groups = sanitize_observation_groups(&snapshot.groups)?;
+    let encoded =
+        serde_json::to_vec(&json!({"pages": &pages, "groups": &groups})).map_err(|_| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation snapshot could not be encoded",
+            )
+        })?;
+    if encoded.len() > MAX_OBSERVATION_BYTES {
+        return Err(CoreError::new(
+            ErrorCode::MessageTooLarge,
+            "observation snapshot exceeds the host bound",
+        ));
+    }
+    Ok(ObservationSnapshot { pages, groups })
+}
+
+fn sanitize_observation_groups(groups: &[Value]) -> Result<Vec<Value>, CoreError> {
+    if groups.len() > MAX_OBSERVATION_GROUPS {
+        return Err(CoreError::new(
+            ErrorCode::MessageTooLarge,
+            "observation group count exceeds the host bound",
+        ));
+    }
+
+    let mut sanitized_groups = Vec::with_capacity(groups.len());
+    let mut total_bytes = 2_usize;
+    for group in groups {
+        let object = group.as_object().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation group is not a JSON object",
+            )
+        })?;
+        let mut sanitized = Map::new();
+        for field in OBSERVATION_GROUP_FIELDS {
+            let Some(value) = object.get(*field) else {
+                continue;
+            };
+            let value = sanitize_observation_group_field(field, value)?;
+            sanitized.insert((*field).to_owned(), value);
+        }
+        validate_observation_logical_id(&sanitized, "space_id", false)?;
+
+        let value = Value::Object(sanitized);
+        let bytes = serde_json::to_vec(&value).map_err(|_| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation group could not be encoded",
+            )
+        })?;
+        if bytes.len() > MAX_OBSERVATION_RECORD_BYTES {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "observation group exceeds the host bound",
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(bytes.len().saturating_add(1))
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::MessageTooLarge,
+                    "observation group size exceeds the host bound",
+                )
+            })?;
+        if total_bytes > MAX_OBSERVATION_BYTES {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "observation group size exceeds the host bound",
+            ));
+        }
+        sanitized_groups.push(value);
+    }
+    Ok(sanitized_groups)
+}
+
+fn validate_observation_logical_id(
+    record: &Map<String, Value>,
+    field: &str,
+    unmanaged: bool,
+) -> Result<(), CoreError> {
+    match record.get(field) {
+        Some(Value::String(value)) => {
+            let valid = if field == "space_id" {
+                value.parse::<SpaceId>().is_ok()
+            } else {
+                value.parse::<PageId>().is_ok()
+            };
+            if valid {
+                Ok(())
+            } else {
+                Err(CoreError::new(
+                    ErrorCode::InvalidJson,
+                    format!("observation {field} is invalid"),
+                ))
+            }
+        }
+        Some(Value::Null) | None if unmanaged => Ok(()),
+        Some(Value::Null) | None => Err(CoreError::new(
+            ErrorCode::InvalidJson,
+            format!("observation {field} is missing"),
+        )),
+        Some(_) => Err(CoreError::new(
+            ErrorCode::InvalidJson,
+            format!("observation {field} is invalid"),
+        )),
+    }
+}
+
+fn sanitize_observation_group_field(field: &str, value: &Value) -> Result<Value, CoreError> {
     match field {
-        "page_id" | "space_id" => bounded_observation_string(
+        "space_id" => bounded_observation_string(
             value,
             MAX_OBSERVATION_ID_BYTES,
-            "observation logical identifier is invalid",
+            "observation group space_id is invalid",
         ),
+        "hint" | "group_hint" | "title" | "color" | "status" => {
+            if value.is_null() {
+                return Ok(Value::Null);
+            }
+            bounded_observation_string(
+                value,
+                MAX_OBSERVATION_HINT_BYTES,
+                "observation group hint is invalid",
+            )
+        }
+        "collapsed" | "present" | "drift" => value.as_bool().map(Value::from).ok_or_else(|| {
+            CoreError::new(ErrorCode::InvalidJson, "observation group flag is invalid")
+        }),
+        "member_count" => value
+            .as_u64()
+            .filter(|count| *count <= MAX_OBSERVATION_GROUP_MEMBER_COUNT)
+            .map(Value::from)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::InvalidJson,
+                    "observation group member count is invalid",
+                )
+            }),
+        _ => Err(CoreError::new(
+            ErrorCode::InvalidJson,
+            "unknown observation group field",
+        )),
+    }
+}
+
+fn sanitize_observation_field(field: &str, value: &Value) -> Result<Value, CoreError> {
+    match field {
+        "page_id" | "space_id" => {
+            if value.is_null() {
+                return Ok(Value::Null);
+            }
+            bounded_observation_string(
+                value,
+                MAX_OBSERVATION_ID_BYTES,
+                "observation logical identifier is invalid",
+            )
+        }
         "ownership" | "lifecycle" | "binding_state" => bounded_observation_string(
             value,
             MAX_OBSERVATION_HINT_BYTES,
@@ -280,6 +464,16 @@ pub trait Bridge: Send + Sync {
         None
     }
 
+    /// Return safe extension identity and epoch metadata for host status.
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        self.extension_epochs().map(|epochs| BridgeStatus {
+            profile_instance_id: None,
+            extension_version: None,
+            worker_instance_epoch: Some(epochs.worker_instance_epoch),
+            browser_session_epoch: Some(epochs.browser_session_epoch),
+        })
+    }
+
     /// Dispatch one already-admitted logical action.
     fn dispatch(
         &self,
@@ -289,12 +483,12 @@ pub trait Bridge: Send + Sync {
     /// Reconcile an unknown receipt with a read-only proof operation.
     fn reconcile(&self, receipt: &ActionReceipt) -> Result<BridgeReconcileResult, CoreError>;
 
-    /// Observe bounded logical page records from the browser bridge.
+    /// Observe a bounded logical browser inventory.
     ///
     /// Bridges without a live browser inventory inherit an empty observation;
     /// callers still apply the host-side logical-record bounds and scope.
-    fn observe(&self) -> Result<Vec<Value>, CoreError> {
-        Ok(Vec::new())
+    fn observe(&self) -> Result<ObservationSnapshot, CoreError> {
+        Ok(ObservationSnapshot::default())
     }
 
     /// Read a logical snapshot for a page under the requesting lease epoch.
@@ -420,7 +614,8 @@ impl Bridge for NullBridge {
 #[derive(Debug)]
 struct FakeState {
     capabilities: Vec<Capability>,
-    observations: Vec<Value>,
+    observation: ObservationSnapshot,
+    bridge_status: Option<BridgeStatus>,
     snapshots: BTreeMap<SpaceId, BTreeMap<PageId, SnapshotEnvelope>>,
     dispatch_results: VecDeque<BridgeDispatchResult>,
     reconcile_results: VecDeque<BridgeReconcileResult>,
@@ -458,7 +653,8 @@ impl FakeBridge {
                     Capability::Evaluate,
                     Capability::Reconcile,
                 ],
-                observations: Vec::new(),
+                observation: ObservationSnapshot::default(),
+                bridge_status: None,
                 snapshots: BTreeMap::new(),
                 dispatch_results: VecDeque::new(),
                 reconcile_results: VecDeque::new(),
@@ -510,8 +706,23 @@ impl FakeBridge {
 
     /// Seed bounded bridge observations for protocol tests.
     pub fn set_observation(&self, observations: Vec<Value>) {
+        self.set_observation_snapshot(ObservationSnapshot {
+            pages: observations,
+            groups: Vec::new(),
+        });
+    }
+
+    /// Seed pages and visual group hints for protocol tests.
+    pub fn set_observation_snapshot(&self, observation: ObservationSnapshot) {
         if let Ok(mut state) = self.state.lock() {
-            state.observations = observations;
+            state.observation = observation;
+        }
+    }
+
+    /// Set safe extension metadata exposed by host status in protocol tests.
+    pub fn set_bridge_status(&self, bridge_status: BridgeStatus) {
+        if let Ok(mut state) = self.state.lock() {
+            state.bridge_status = Some(bridge_status);
         }
     }
 
@@ -575,6 +786,13 @@ impl Bridge for FakeBridge {
             .unwrap_or_default()
     }
 
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.bridge_status.clone())
+    }
+
     fn dispatch(
         &self,
         _request: &ActionRequest<BTreeMap<String, String>>,
@@ -606,10 +824,10 @@ impl Bridge for FakeBridge {
             .unwrap_or(BridgeReconcileResult::Succeeded))
     }
 
-    fn observe(&self) -> Result<Vec<Value>, CoreError> {
+    fn observe(&self) -> Result<ObservationSnapshot, CoreError> {
         self.state
             .lock()
-            .map(|state| state.observations.clone())
+            .map(|state| state.observation.clone())
             .map_err(|_| {
                 CoreError::new(
                     ErrorCode::ExtensionNotConnected,
@@ -708,6 +926,49 @@ mod tests {
         assert!(record.get("tab_id").is_none());
         assert!(record.get("path").is_none());
         assert!(record.get("nested").is_none());
+    }
+
+    #[test]
+    fn observation_sanitizer_allows_only_active_unmanaged_records_to_be_scoped_later() {
+        let snapshot = sanitize_observation_snapshot(ObservationSnapshot {
+            pages: vec![
+                serde_json::json!({
+                    "ownership": "unmanaged",
+                    "lifecycle": "unmanaged",
+                    "binding_state": "unbound",
+                    "active": true,
+                    "page_id": null,
+                    "space_id": null,
+                    "tab_hint": "user_hint",
+                    "url": "https://private.example",
+                    "title": "Private tab",
+                }),
+                serde_json::json!({
+                    "ownership": "unmanaged",
+                    "lifecycle": "unmanaged",
+                    "binding_state": "unbound",
+                    "active": true,
+                    "tab_hint": "user_missing_ids",
+                }),
+            ],
+            groups: vec![serde_json::json!({
+                "space_id": "space_one",
+                "hint": "group_hint",
+                "present": true,
+                "drift": false,
+                "member_count": 1,
+                "group_id": 42,
+                "path": "/private/profile",
+            })],
+        })
+        .expect("sanitized snapshot");
+        assert_eq!(snapshot.pages.len(), 2);
+        assert!(snapshot.pages[0]["page_id"].is_null());
+        assert!(snapshot.pages[0].get("url").is_none());
+        assert!(snapshot.pages[0].get("title").is_none());
+        assert!(snapshot.pages[1].get("page_id").is_none());
+        assert!(snapshot.groups[0].get("group_id").is_none());
+        assert!(snapshot.groups[0].get("path").is_none());
     }
 
     #[test]
