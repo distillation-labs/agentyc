@@ -50,7 +50,7 @@ The maximum local control payload is **1 MiB (1,048,576 bytes)**. The receiver v
 
 ### Native Messaging bridge
 
-Chrome's Native Messaging transport remains a separate length-prefixed UTF-8 JSON stream. Chrome's platform limits are treated as hard ceilings: host-to-extension messages are at most **1 MiB**, and extension-to-host messages are at most **64 MiB**. The product control envelope is capped at 1 MiB in both directions; a larger extension-to-host allowance is not permission to send an unbounded command.
+Chrome's Native Messaging transport remains a separate **four-byte little-endian/native-order length-prefixed UTF-8 JSON stream**. It is not the local protocol's big-endian codec. Chrome's platform limits are treated as hard ceilings: host-to-extension messages are at most **1 MiB**, and extension-to-host messages are at most **64 MiB**. The product control envelope is capped at 1 MiB in both directions; a larger extension-to-host allowance is not permission to send an unbounded command.
 
 Large screenshots, PDFs, traces, HTML, and other artifacts use an opaque artifact handle plus bounded chunks:
 
