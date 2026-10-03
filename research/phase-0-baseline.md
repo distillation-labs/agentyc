@@ -147,24 +147,45 @@ All archived outputs are under `artifacts/p0-current/`. Paths, host name, endpoi
 
 ## 7. Current addendum — implementation and live-gate status
 
-**Captured:** 2026-10-02 current checkout after implementation slices and safety audits.
+**Captured:** 2026-10-03 UTC in the current worktree after the Phase 0 live-lane updates. This section supersedes the historical capture above for the current worktree; the evidence artifacts carry their own run nonces and provenance.
 
-The following deterministic implementation surfaces now exist and pass their focused checks:
+The following deterministic implementation surfaces exist and pass focused checks:
 
 - `crates/agentyc-core`: transport-neutral logical IDs, lifecycle/error/protocol/snapshot/action/event contracts and negative fixtures.
 - `crates/agentyc-host`: locked atomic ledger, leases/fencing, action journal, reconciliation, event resume, snapshot cache, refs, waits, actionability, and context budget seams.
+- `crates/agentyc-browser/src/profile.rs` and `crates/agentyc-mcp/src/state.rs`: existing profile/session and legacy state surfaces audited for the baseline.
 - `extension/`: production MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests.
 - Direct CLI/SDK, rollout evidence tooling, and the host-backed MCP compatibility adapter.
 
-The live isolated probe was rerun with the installed branded Chrome `154.0.8037.93`. Its command-line lane launched only a disposable profile and recorded the exact refusal `--load-extension is not allowed in Google Chrome, ignoring.`. `/json/list` exposed one service-worker-shaped built-in Google Network Speech target; exact manifest/name/version/runtime identity checks rejected it. The probe removed its disposable profile and reported `disposable_cleanup_passed: true`. It did not weaken identity checks, attach to an existing endpoint, mutate user tabs, or claim Native Messaging evidence.
+Current validation evidence:
 
-A separate disposable-profile run used Chrome's supported `chrome://extensions` Load unpacked flow through the browser UI. That run loaded the pinned probe extension and passed extension identity, fixture identity, one debugger command, debugger event, tab-group create/cleanup, screenshot, and debugger cleanup. It is recorded as a bounded partial artifact in `artifacts/p0-extension/ui-install-partial.json`; Native Messaging was intentionally not registered in the user profile, so this artifact is not a live-pass marker. The probe now has an explicit operator-assisted lane for this documented flow: it launches no `--load-extension` flag, does not call `chrome.developerPrivate`, does not inspect the internal extensions-page DOM, waits for the exact pinned worker rather than a same-shaped built-in worker, binds the staged directory with a run nonce/tree hash, and collects permission evidence only after the worker is loaded. A negative live run verified the lane waits through the built-in Google Network Speech worker, reports `load_extension_flag_used: false`, and cleans the disposable profile. The positive lane was not rerun in this checkout because it requires a human to complete the Chrome UI, install the exact Native Messaging host registration, and answer the post-load permission/policy prompt.
+- `cargo build -p agentyc --locked`: passed.
+- `cargo metadata --no-deps --format-version 1 --locked`: passed.
+- `cargo test -p agentyc-tests --test mcp_protocol --locked -- --test-threads=1 --nocapture`: 6 passed.
+- `cargo test -p agentyc-tests --test benchmark --locked -- --test-threads=1 --nocapture`: 1 passed; current MCP overhead baseline is recorded in `artifacts/p0-current/`.
+- `cargo test --workspace --locked`: passed; required host/core contract suites passed and only the pre-declared 2,379 real-world tests were ignored.
+- `node --test extension/tests/*.test.mjs`: 26 passed.
+- `python3 -m unittest discover -s tests/harness -p 'test_*.py'`: 58 passed.
+- `python3 scripts/check_exec_plan.py docs/exec-plans/active/agentyc-browser-task-spaces`: passed.
+- `python3 scripts/check_test_manifest.py tests/test-manifest.yaml`: passed.
+
+Live and protocol evidence:
+
+- `artifacts/p0-extension/report.json` is a live P0-T2 pass on Chrome 154. It used browser-target CDP `Extensions.loadUnpacked`, verified exact extension identity and inventory, exercised debugger command/event, created and cleaned a tab group, completed Chrome-mediated Native Messaging, uninstalled the extension, verified absence, and cleaned the disposable profile.
+- `artifacts/p0-native-protocol/host-fault-suite.json` is a direct host-smoke pass with the real host fault suite. Its negative framing/origin/replay/version/limit cases remain explicitly host-only evidence; they are not relabeled as Chrome-mediated evidence. P0-T2 supplies the separate Chrome-mediated Native Messaging proof.
+- `artifacts/p0-capabilities.json` is the complete 76-operation offline capability catalog. Each operation now carries explicit permission/domain/Chrome-version/error metadata fields with `not-observed` status; it is not a live operation matrix.
+- `artifacts/p0-performance/` is a live managed-disposable Chrome baseline with 64 cells and 64,000 valid samples, including resource, context/token, reconnect, and human-tab responsiveness measurements. It is not existing-user-Chrome coexistence evidence.
+- `artifacts/p0-installation/lifecycle-record.json` plus the drill report are live macOS disposable-profile lifecycle evidence; the drill checker accepts install, update, uninstall, downgrade, rollback, and rollback-safety fields.
+- `artifacts/p0-coexistence/report.json` records the honest failed-closed state: no independently enrolled existing-Chrome host/extension harness was supplied, so no scenario is marked passed.
+- `research/phase-0-path-inventory.md` records existing versus planned Phase 0 surfaces.
+- The required test manifest now runs the host fault suite and writes `artifacts/p0-native-protocol/host-fault-suite.json`.
 
 Current Phase 0 status remains **blocked/active** for these evidence gates:
 
-- Chrome-mediated Native Messaging and the complete installation/permission flow;
-- two-space enrolled existing-Chrome coexistence and user-tab safety;
-- real installation/update/uninstall/downgrade/rollback;
-- live performance/resource/token/context measurements.
+- independently enrolled existing-Chrome two-space coexistence, user-tab/focus safety, and live takeover/restart fencing;
+- live Chrome capability observations across the requested version/platform/policy matrix;
+- production Native Messaging bridge evidence; the current host still exposes only `NullBridge`/`FakeBridge`;
 
-Offline, partial headed, and deterministic tests are not substitutes for those gates. The next live action is to supply an already-installed supported unbranded/Chromium test binary or an operator-captured enrolled existing-Chrome harness; no browser download is implied by this record.
+The macOS disposable-profile installation/lifecycle gate and managed live performance/resource/token/context gate pass. Managed disposable evidence does not close the existing-user-profile coexistence gate.
+
+Offline, partial headed, and deterministic tests are not substitutes for those gates. No browser download, arbitrary existing debug-endpoint attachment, or user-profile mutation is implied by this baseline.
