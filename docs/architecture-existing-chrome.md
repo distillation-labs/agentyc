@@ -103,17 +103,21 @@ The four runtime epochs are distinct:
 
 The default product mode is `extension_existing_chrome`. It provides logical space/page ownership in the user's profile, not storage isolation.
 
-| Data or behavior                                                | Guarantee                                                                                                |
-| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| cookies, local/session storage, history, bookmarks, permissions | shared according to Chrome and the origin/profile; never a space secret boundary                         |
-| installed extensions and enterprise policy                      | shared inputs; capability denial is reported, not bypassed                                               |
-| downloads and filesystem                                        | explicit capability, path policy, and user intent required                                               |
-| pre-existing/user tabs                                          | unmanaged by default; no auto-adoption or global close                                                   |
-| agent-created pages                                             | claimed by a space after host commit and extension confirmation                                          |
-| Chrome tab groups                                               | visual mapping only; may be absent, renamed, regrouped, or changed by the user                           |
-| incognito                                                       | not enrolled by default; return a typed unsupported/binding error rather than silently sharing authority |
+| Data or behavior                                                | Guarantee                                                                                                      |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| cookies, local/session storage, history, bookmarks, permissions | shared according to Chrome and the origin/profile; never a space secret boundary                               |
+| installed extensions and enterprise policy                      | shared inputs; capability denial is reported, not bypassed                                                     |
+| downloads and filesystem                                        | explicit capability, path policy, and user intent required                                                     |
+| pre-existing/user tabs                                          | unmanaged by default; no auto-adoption or global close                                                         |
+| agent-created pages                                             | claimed by a space after host commit and extension confirmation                                                |
+| Chrome tab groups                                               | visual mapping only; scoped to one Chrome window and may be absent, renamed, regrouped, or changed by the user |
+| incognito                                                       | not enrolled by default; return a typed unsupported/binding error rather than silently sharing authority       |
 
 The extension, host, and client MUST disclose shared profile state before a space is created. A future isolated-profile mode is a separate product decision and is not implied by this architecture.
+
+Chrome tab groups cannot span windows. The adapter therefore treats one group per space as a best-effort presentation within a single window; moving a page or group across windows, regrouping, renaming, collapsing, or deleting it creates visual drift only and never changes logical ownership. A space with pages in multiple windows may have no single visual group.
+
+The pinned manifest key identifies the trusted unpacked-development build only. Ordinary macOS users require a Chrome Web Store-signed extension; self-hosted distribution on macOS is an enterprise-managed path. A stable unpacked ID is not production distribution evidence.
 
 ## 5. Lifecycle state machines
 
