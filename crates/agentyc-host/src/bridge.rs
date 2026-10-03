@@ -14,6 +14,7 @@ use agentyc_core::{
     ActionReceipt, ActionRequest, BrokerEpoch, Capability, CoreError, ErrorCode, LeaseEpoch,
     PageId, SnapshotEnvelope, SpaceId, UnknownReason,
 };
+use serde_json::Value;
 
 use crate::snapshots::empty_snapshot;
 
@@ -93,6 +94,36 @@ pub trait Bridge: Send + Sync {
         page_id: &PageId,
         lease_epoch: LeaseEpoch,
     ) -> Result<(), CoreError>;
+
+    /// Create one inactive, host-authorized logical page in the browser.
+    fn create_page(
+        &self,
+        _space_id: &SpaceId,
+        _page_id: &PageId,
+        _lease_epoch: LeaseEpoch,
+        _url: Option<&str>,
+        _title: Option<&str>,
+        _ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        Err(CoreError::new(
+            ErrorCode::CapabilityUnavailable,
+            "bridge does not support managed page creation",
+        ))
+    }
+
+    /// Present one managed page in its space's visual tab group.
+    fn present_group(
+        &self,
+        _space_id: &SpaceId,
+        _page_id: &PageId,
+        _lease_epoch: LeaseEpoch,
+        _title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        Err(CoreError::new(
+            ErrorCode::CapabilityUnavailable,
+            "bridge does not support visual group presentation",
+        ))
+    }
 }
 
 /// Bridge placeholder used until a real extension transport is installed.
