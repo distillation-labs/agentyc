@@ -819,6 +819,16 @@ export class TabsRegistry {
     return record;
   }
 
+  /** Restores a persisted barrier floor without emitting events or changing bindings. */
+  restoreFence(spaceId, fenceEpoch) {
+    assertLogicalScope({ spaceId });
+    if (!Number.isSafeInteger(fenceEpoch) || fenceEpoch < 1) return;
+    this.fenceEpochs.set(
+      spaceId,
+      Math.max(this.fenceEpochs.get(spaceId) ?? 0, fenceEpoch),
+    );
+  }
+
   beginFence(spaceId, fenceEpoch) {
     assertLogicalScope({ spaceId });
     if (!Number.isSafeInteger(fenceEpoch) || fenceEpoch < 1) {
