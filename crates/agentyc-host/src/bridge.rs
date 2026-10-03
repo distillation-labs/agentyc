@@ -14,7 +14,7 @@ use agentyc_core::{
     ActionReceipt, ActionRequest, BrokerEpoch, Capability, CoreError, ErrorCode, LeaseEpoch,
     PageId, SnapshotEnvelope, SpaceId, UnknownReason,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::snapshots::empty_snapshot;
 
@@ -60,10 +60,225 @@ pub struct FenceResult {
     pub acknowledged: bool,
 }
 
+/// Epochs observed at an extension transport boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExtensionEpochs {
+    /// MV3 service-worker instance epoch.
+    pub worker_instance_epoch: u64,
+    /// Browser/profile session epoch.
+    pub browser_session_epoch: u64,
+}
+
+const MAX_OBSERVATION_RECORDS: usize = 256;
+const MAX_OBSERVATION_RECORD_BYTES: usize = 64 * 1024;
+const MAX_OBSERVATION_BYTES: usize = 512 * 1024;
+const MAX_OBSERVATION_ID_BYTES: usize = 128;
+const MAX_OBSERVATION_HINT_BYTES: usize = 128;
+const MAX_OBSERVATION_TEXT_BYTES: usize = 4 * 1024;
+
+const OBSERVATION_FIELDS: &[&str] = &[
+    "page_id",
+    "space_id",
+    "ownership",
+    "lifecycle",
+    "binding_state",
+    "generation",
+    "target_generation",
+    "navigation_generation",
+    "document_generation",
+    "lease_epoch",
+    "browser_session_epoch",
+    "url",
+    "title",
+    "incognito",
+    "discarded",
+    "frozen",
+    "active",
+    "window_hint",
+    "tab_hint",
+];
+
+/// Sanitize bounded extension observations into logical page records.
+///
+/// Unknown fields are deliberately discarded instead of forwarded. This keeps
+/// browser handles, filesystem paths, and future extension-only fields outside
+/// the host protocol even when a bridge implementation returns them.
+pub(crate) fn sanitize_observation_records(records: &[Value]) -> Result<Vec<Value>, CoreError> {
+    if records.len() > MAX_OBSERVATION_RECORDS {
+        return Err(CoreError::new(
+            ErrorCode::MessageTooLarge,
+            "observation record count exceeds the host bound",
+        ));
+    }
+
+    let mut sanitized_records = Vec::with_capacity(records.len());
+    let mut total_bytes = 2_usize;
+    for record in records {
+        let object = record.as_object().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation record is not a JSON object",
+            )
+        })?;
+        let mut sanitized = Map::new();
+        for field in OBSERVATION_FIELDS {
+            let Some(value) = object.get(*field) else {
+                continue;
+            };
+            let value = sanitize_observation_field(field, value)?;
+            sanitized.insert((*field).to_owned(), value);
+        }
+
+        let space_id = sanitized
+            .get("space_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CoreError::new(ErrorCode::InvalidJson, "observation space_id is missing")
+            })?;
+        let page_id = sanitized
+            .get("page_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CoreError::new(ErrorCode::InvalidJson, "observation page_id is missing")
+            })?;
+        let _: SpaceId = space_id.parse().map_err(|_| {
+            CoreError::new(ErrorCode::InvalidJson, "observation space_id is invalid")
+        })?;
+        let _: PageId = page_id.parse().map_err(|_| {
+            CoreError::new(ErrorCode::InvalidJson, "observation page_id is invalid")
+        })?;
+
+        let value = Value::Object(sanitized);
+        let bytes = serde_json::to_vec(&value).map_err(|_| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation record could not be encoded",
+            )
+        })?;
+        if bytes.len() > MAX_OBSERVATION_RECORD_BYTES {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "observation record exceeds the host bound",
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(bytes.len().saturating_add(1))
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::MessageTooLarge,
+                    "observation size exceeds the host bound",
+                )
+            })?;
+        if total_bytes > MAX_OBSERVATION_BYTES {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "observation size exceeds the host bound",
+            ));
+        }
+        sanitized_records.push(value);
+    }
+    Ok(sanitized_records)
+}
+
+fn sanitize_observation_field(field: &str, value: &Value) -> Result<Value, CoreError> {
+    match field {
+        "page_id" | "space_id" => bounded_observation_string(
+            value,
+            MAX_OBSERVATION_ID_BYTES,
+            "observation logical identifier is invalid",
+        ),
+        "ownership" | "lifecycle" | "binding_state" => bounded_observation_string(
+            value,
+            MAX_OBSERVATION_HINT_BYTES,
+            "observation state is invalid",
+        ),
+        "url" | "title" => {
+            if value.is_null() {
+                return Ok(Value::Null);
+            }
+            let text = bounded_observation_text(
+                value,
+                MAX_OBSERVATION_TEXT_BYTES,
+                "observation text is invalid",
+            )?;
+            if field == "url"
+                && text
+                    .as_str()
+                    .is_some_and(|url| url.to_ascii_lowercase().starts_with("file:"))
+            {
+                return Err(CoreError::new(
+                    ErrorCode::InvalidJson,
+                    "filesystem URLs are not logical observations",
+                ));
+            }
+            Ok(text)
+        }
+        "window_hint" | "tab_hint" => {
+            if value.is_null() {
+                return Ok(Value::Null);
+            }
+            bounded_observation_string(
+                value,
+                MAX_OBSERVATION_HINT_BYTES,
+                "observation browser hint is invalid",
+            )
+        }
+        "generation"
+        | "target_generation"
+        | "navigation_generation"
+        | "document_generation"
+        | "lease_epoch"
+        | "browser_session_epoch" => value.as_u64().map(Value::from).ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation generation or epoch is invalid",
+            )
+        }),
+        "incognito" | "discarded" | "frozen" | "active" => value
+            .as_bool()
+            .map(Value::from)
+            .ok_or_else(|| CoreError::new(ErrorCode::InvalidJson, "observation flag is invalid")),
+        _ => Err(CoreError::new(
+            ErrorCode::InvalidJson,
+            "unknown observation field",
+        )),
+    }
+}
+
+fn bounded_observation_string(
+    value: &Value,
+    max_bytes: usize,
+    message: &'static str,
+) -> Result<Value, CoreError> {
+    let text = value
+        .as_str()
+        .filter(|text| !text.is_empty() && text.len() <= max_bytes)
+        .ok_or_else(|| CoreError::new(ErrorCode::InvalidJson, message))?;
+    Ok(Value::String(text.to_owned()))
+}
+
+fn bounded_observation_text(
+    value: &Value,
+    max_bytes: usize,
+    message: &'static str,
+) -> Result<Value, CoreError> {
+    let text = value
+        .as_str()
+        .filter(|text| text.len() <= max_bytes)
+        .ok_or_else(|| CoreError::new(ErrorCode::InvalidJson, message))?;
+    Ok(Value::String(text.to_owned()))
+}
+
 /// Transport-neutral bridge owned by the host broker.
 pub trait Bridge: Send + Sync {
     /// Capabilities currently available through this bridge.
     fn capabilities(&self) -> Vec<Capability>;
+
+    /// Return extension transport epochs when this bridge is Native Messaging.
+    /// Other bridge implementations do not have an extension epoch authority.
+    fn extension_epochs(&self) -> Option<ExtensionEpochs> {
+        None
+    }
 
     /// Dispatch one already-admitted logical action.
     fn dispatch(
@@ -74,9 +289,21 @@ pub trait Bridge: Send + Sync {
     /// Reconcile an unknown receipt with a read-only proof operation.
     fn reconcile(&self, receipt: &ActionReceipt) -> Result<BridgeReconcileResult, CoreError>;
 
-    /// Read a logical snapshot for a page.
-    fn snapshot(&self, space_id: &SpaceId, page_id: &PageId)
-    -> Result<SnapshotEnvelope, CoreError>;
+    /// Observe bounded logical page records from the browser bridge.
+    ///
+    /// Bridges without a live browser inventory inherit an empty observation;
+    /// callers still apply the host-side logical-record bounds and scope.
+    fn observe(&self) -> Result<Vec<Value>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Read a logical snapshot for a page under the requesting lease epoch.
+    fn snapshot(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+    ) -> Result<SnapshotEnvelope, CoreError>;
 
     /// Fence all work at or below `new_epoch` for one logical space.
     fn fence(
@@ -156,6 +383,7 @@ impl Bridge for NullBridge {
         &self,
         _space_id: &SpaceId,
         _page_id: &PageId,
+        _lease_epoch: LeaseEpoch,
     ) -> Result<SnapshotEnvelope, CoreError> {
         Err(CoreError::new(
             ErrorCode::ExtensionNotConnected,
@@ -192,6 +420,7 @@ impl Bridge for NullBridge {
 #[derive(Debug)]
 struct FakeState {
     capabilities: Vec<Capability>,
+    observations: Vec<Value>,
     snapshots: BTreeMap<SpaceId, BTreeMap<PageId, SnapshotEnvelope>>,
     dispatch_results: VecDeque<BridgeDispatchResult>,
     reconcile_results: VecDeque<BridgeReconcileResult>,
@@ -229,6 +458,7 @@ impl FakeBridge {
                     Capability::Evaluate,
                     Capability::Reconcile,
                 ],
+                observations: Vec::new(),
                 snapshots: BTreeMap::new(),
                 dispatch_results: VecDeque::new(),
                 reconcile_results: VecDeque::new(),
@@ -275,6 +505,13 @@ impl FakeBridge {
     pub fn set_fence_acknowledged(&self, acknowledged: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.fence_acknowledged = acknowledged;
+        }
+    }
+
+    /// Seed bounded bridge observations for protocol tests.
+    pub fn set_observation(&self, observations: Vec<Value>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.observations = observations;
         }
     }
 
@@ -369,10 +606,23 @@ impl Bridge for FakeBridge {
             .unwrap_or(BridgeReconcileResult::Succeeded))
     }
 
+    fn observe(&self) -> Result<Vec<Value>, CoreError> {
+        self.state
+            .lock()
+            .map(|state| state.observations.clone())
+            .map_err(|_| {
+                CoreError::new(
+                    ErrorCode::ExtensionNotConnected,
+                    "fake bridge state poisoned",
+                )
+            })
+    }
+
     fn snapshot(
         &self,
         space_id: &SpaceId,
         page_id: &PageId,
+        _lease_epoch: LeaseEpoch,
     ) -> Result<SnapshotEnvelope, CoreError> {
         let mut state = self.state.lock().map_err(|_| {
             CoreError::new(
@@ -432,6 +682,33 @@ impl Bridge for FakeBridge {
 mod tests {
     use super::*;
     use agentyc_core::{ActionId, ActionOperation, ContentHash, IdempotencyKey, RequestId};
+
+    #[test]
+    fn observation_sanitizer_keeps_only_bounded_logical_fields() {
+        let records = vec![serde_json::json!({
+            "space_id": "space_one",
+            "page_id": "page_one",
+            "ownership": "agent",
+            "lifecycle": "managed",
+            "binding_state": "bound",
+            "target_generation": 2,
+            "url": "https://example.test/private",
+            "tab_hint": "hint_test",
+            "tab_id": 42,
+            "path": "/private/browser-profile",
+            "nested": {"target_id": "raw"},
+        })];
+        let sanitized = sanitize_observation_records(&records).expect("sanitized records");
+        assert_eq!(sanitized.len(), 1);
+        let record = sanitized[0].as_object().expect("record object");
+        assert_eq!(
+            record.get("space_id"),
+            Some(&serde_json::json!("space_one"))
+        );
+        assert!(record.get("tab_id").is_none());
+        assert!(record.get("path").is_none());
+        assert!(record.get("nested").is_none());
+    }
 
     #[test]
     fn fake_bridge_is_deterministic_and_logical_only() {
