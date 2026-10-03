@@ -15,14 +15,14 @@ agent client -- local OS IPC --> host broker -- Native Messaging --> extension
                                       +-- ledger, leases, policy       +-- existing Chrome
 ```
 
-| Boundary              | Trusted input                                            | Untrusted input                                                                    | Required admission                                                                                              |
-| --------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| local client to host  | OS peer identity and a live host lock                    | all bytes, claimed principal, labels, profile selectors, methods, and params       | OS credentials/ACL, bounded framing, protocol/version/schema/nonce/sequence checks, host-assigned principal     |
-| Chrome to native host | caller origin supplied by Chrome transport metadata      | JSON fields that claim an origin, extension identity, profile, lease, or authority | exact registered origin, exact extension identity, binding state, handshake, nonce/sequence, epochs, capability |
-| extension to Chrome   | validated host command and current extension lease fence | page content, page messages, URLs, titles, tab groups, browser IDs                 | extension-side schema, nonce, generation, capability, and lease checks at execution                             |
-| host to ledger        | host-owned state and atomic writer                       | symlink/path replacement, partial or incompatible records                          | restrictive directory, exclusive lock, checksum/schema validation, atomic replacement                           |
+| Boundary              | Trusted input                                            | Untrusted input                                                                    | Required admission                                                                                                                                   |
+| --------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| local client to host  | owner-only state directory/socket and a live host lock   | all bytes, claimed principal, labels, profile selectors, methods, and params       | private path permissions, bounded framing, protocol/version/schema/nonce/sequence checks; principal is a same-user logical label, not authentication |
+| Chrome to native host | caller origin supplied by Chrome transport metadata      | JSON fields that claim an origin, extension identity, profile, lease, or authority | exact registered origin, exact extension identity, binding state, handshake, nonce/sequence, epochs, capability                                      |
+| extension to Chrome   | validated host command and current extension lease fence | page content, page messages, URLs, titles, tab groups, browser IDs                 | extension-side schema, nonce, generation, capability, and lease checks at execution                                                                  |
+| host to ledger        | host-owned state and atomic writer                       | symlink/path replacement, partial or incompatible records                          | restrictive directory, exclusive lock, checksum/schema validation, atomic replacement                                                                |
 
-The product trusts the installed extension and host processes running as the same OS user for the local boundary. It does **not** claim protection from malware or a hostile process running as that same OS user. A direct execution of the native host binary cannot be cryptographically distinguished from a Chrome-launched native host under that threat model; it still cannot bypass local OS admission, exact protocol checks, leases, epochs, or policy.
+The product treats OS peer identity as the owner-only path/ACL boundary and trusts installed extension and host processes running as the same OS user for the local boundary. It does **not** claim protection from malware or a hostile process running as that same OS user. A direct execution of the native host binary cannot be cryptographically distinguished from a Chrome-launched native host under that threat model; it still cannot bypass local OS admission, exact protocol checks, leases, epochs, or policy.
 
 Remote TCP is disabled by default and is not a fallback when local IPC or Native Messaging is unavailable. Enabling remote access requires a new reviewed authentication and multi-tenant security decision; a session identifier, loopback assumption, or wildcard CORS is not authentication.
 
@@ -31,7 +31,7 @@ Remote TCP is disabled by default and is not a fallback when local IPC or Native
 - macOS/Linux use a Unix-domain socket below a host-owned state directory with restrictive directory and socket permissions. Windows uses a named pipe with an ACL restricted to the enrolled user/service identity.
 - The state directory, socket, lock, temporary ledger, and replacement path are checked for symlinks and path replacement. A symlink component, unexpected owner, permissive mode, or replacement race fails closed.
 - One broker owns one enrolled profile binding and one local endpoint. The lock is acquired before serving and held for the broker lifetime. A second process exits with a typed `host_already_running` result; it never steals a lock based only on a stale PID or timestamp.
-- The broker allocates `principal_id`, `broker_epoch`, and connection identity. Client-provided principal names and profile selectors are metadata or lookup requests, not authentication.
+- The broker allocates `broker_epoch` and connection identity. A client-provided principal is not authentication: the `principal_id` is a bounded same-user logical label used for space visibility. Profile selectors are binding metadata and require the separate enrollment/rebind gate before production mutation authority.
 - A host restart creates a new `broker_epoch`. In-flight post-dispatch actions become `unknown` until reconciliation; raw commands are not replayed.
 - The host has no authority to launch/download Chrome or switch profiles; there is no automatic browser launch. Extension connection failure returns a typed unavailable result and leaves pages retained.
 
@@ -80,9 +80,9 @@ A client cannot send a browser target/session/tab identifier as a public routing
 
 ### Local client handshake
 
-1. The host accepts the transport only after OS peer credentials/ACL and endpoint checks pass.
+1. The host accepts the transport only after owner-only endpoint/path checks pass; same-user process impersonation remains inside the documented threat boundary.
 2. The client sends a bounded `hello` with protocol version, client kind/version, requested profile binding selector, and a fresh connection nonce.
-3. The host negotiates an explicitly supported version, allocates a principal and `connection_epoch`, and returns `hello_ok` with the broker epoch, limits, capabilities, and resume requirements.
+3. The host negotiates an explicitly supported version, allocates a `connection_epoch`, and returns `hello_ok` with the broker epoch, limits, capabilities, and resume requirements. The principal label remains inside the same-OS-user trust boundary.
 4. The host validates every request schema, scope, deadline, capability, lease epoch, and generation. A claimed principal or profile selector never overrides the OS admission result.
 5. Version, schema, nonce, sequence, profile-binding, or compatibility failure happens before mutation authority and returns `protocol_mismatch`, `profile_not_found`, `permission_denied`, or a more specific typed error.
 
