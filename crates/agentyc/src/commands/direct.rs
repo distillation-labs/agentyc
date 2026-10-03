@@ -6,6 +6,7 @@
 //! copied browser debugging endpoint.
 
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
@@ -15,7 +16,9 @@ use agentyc_core::{
     ActionId, BrokerEpoch, ClientId, ConnectionNonce, CoreError, ErrorCode, EventSequence,
     HelloEnvelope, PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId, SpaceId, Timestamp,
 };
-use agentyc_host::{Broker, FakeBridge, HostError, NullBridge};
+use agentyc_host::{
+    AuthorityTicket, Broker, FakeBridge, HostError, LocalSocketClient, configured_socket_path,
+};
 use anyhow::{Result, anyhow};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -262,72 +265,119 @@ const DEFAULT_EVENT_LIMIT: usize = 256;
 
 /// The host-backed direct client used by command modules.
 pub(crate) struct DirectContext {
-    pub(crate) broker: Broker,
-    pub(crate) authority: agentyc_host::AuthorityTicket,
+    transport: DirectTransport,
     pub(crate) state_dir: PathBuf,
     pub(crate) offline: bool,
 }
 
 pub(crate) type DirectResult<T> = std::result::Result<T, CoreError>;
 
+enum DirectTransport {
+    Offline {
+        broker: Broker,
+        authority: AuthorityTicket,
+    },
+    Remote {
+        client: LocalSocketClient,
+    },
+    /// Keep command execution structured when the host is not running. This
+    /// preserves the CLI's one-JSON-record error contract without creating a
+    /// second broker in the CLI process.
+    RemoteUnavailable(CoreError),
+}
+
 impl DirectContext {
     fn open(options: &DirectOptions) -> DirectResult<Self> {
         let state_dir = resolve_state_dir(options.state_dir.as_deref())?;
         let offline = options.offline || explicit_fake_host_env();
-        let bridge = if offline {
-            BridgeKind::Fake(Box::new(FakeBridge::new()))
-        } else {
-            BridgeKind::Null(NullBridge)
-        };
-        let broker = match bridge {
-            BridgeKind::Fake(fake) => Broker::open(&state_dir, *fake),
-            BridgeKind::Null(null) => Broker::open(&state_dir, null),
-        }
-        .map_err(host_error)?;
         let principal = principal_id(options.principal.as_deref())?;
-        let nonce = ConnectionNonce::from_suffix(format!("cli-{}", Uuid::new_v4().simple()))
-            .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
-        let profile_binding_id = if offline {
-            Some(
-                ProfileBindingId::from_suffix("cli-offline")
-                    .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
-            )
-        } else {
-            None
+        let hello = direct_hello(principal, offline)?;
+
+        if offline {
+            let broker = Broker::open(&state_dir, FakeBridge::new()).map_err(host_error)?;
+            let authority = broker
+                .hello(&hello)
+                .map_err(host_error)?
+                .authority()
+                .clone();
+            return Ok(Self {
+                transport: DirectTransport::Offline { broker, authority },
+                state_dir,
+                offline: true,
+            });
+        }
+
+        let socket_path = configured_socket_path(&state_dir);
+        let transport = match LocalSocketClient::connect(socket_path, hello) {
+            Ok(client) => DirectTransport::Remote { client },
+            Err(error) => {
+                let error = host_error(error);
+                let error = if error.code == ErrorCode::NativeHostUnavailable {
+                    CoreError::new(ErrorCode::ExtensionNotConnected, error.message)
+                } else {
+                    error
+                };
+                DirectTransport::RemoteUnavailable(error)
+            }
         };
-        let hello = HelloEnvelope {
-            protocol: PROTOCOL_VERSION,
-            supported_protocols: vec![PROTOCOL_VERSION],
-            principal_id: principal,
-            resume_from: None,
-            client_metadata: Some(agentyc_core::ClientMetadata {
-                client_id: Some(
-                    ClientId::from_suffix("cli")
-                        .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
-                ),
-                client_name: Some("agentyc-cli".to_owned()),
-                client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                connection_nonce: Some(nonce),
-                profile_binding_id,
-            }),
-        };
-        let authority = broker
-            .hello(&hello)
-            .map_err(host_error)?
-            .authority()
-            .clone();
         Ok(Self {
-            broker,
-            authority,
+            transport,
             state_dir,
-            offline,
+            offline: false,
         })
+    }
+
+    pub(crate) fn local(&self) -> Option<(&Broker, &AuthorityTicket)> {
+        match &self.transport {
+            DirectTransport::Offline { broker, authority } => Some((broker, authority)),
+            DirectTransport::Remote { .. } | DirectTransport::RemoteUnavailable(_) => None,
+        }
+    }
+
+    pub(crate) fn request(
+        &self,
+        method: impl Into<String>,
+        params: BTreeMap<String, String>,
+    ) -> DirectResult<BTreeMap<String, String>> {
+        match &self.transport {
+            DirectTransport::Remote { client } => {
+                client.request(method, params).map_err(host_error)
+            }
+            DirectTransport::RemoteUnavailable(error) => Err(error.clone()),
+            DirectTransport::Offline { .. } => Err(CoreError::invalid_argument(
+                "remote request is unavailable in offline mode",
+            )),
+        }
     }
 }
 
-enum BridgeKind {
-    Fake(Box<FakeBridge>),
-    Null(NullBridge),
+fn direct_hello(principal: PrincipalId, offline: bool) -> DirectResult<HelloEnvelope> {
+    let nonce = ConnectionNonce::from_suffix(format!("cli-{}", Uuid::new_v4().simple()))
+        .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
+    let profile_binding_id = if offline {
+        Some(
+            ProfileBindingId::from_suffix("cli-offline")
+                .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    Ok(HelloEnvelope {
+        protocol: PROTOCOL_VERSION,
+        supported_protocols: vec![PROTOCOL_VERSION],
+        principal_id: principal,
+        resume_from: None,
+        client_metadata: Some(agentyc_core::ClientMetadata {
+            client_id: Some(
+                ClientId::from_suffix("cli")
+                    .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
+            ),
+            client_name: Some("agentyc-cli".to_owned()),
+            client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            connection_nonce: Some(nonce),
+            profile_binding_id,
+        }),
+    })
 }
 
 /// A direct command failure with a stable process exit code.
@@ -485,6 +535,37 @@ pub(crate) fn timestamp(value: Option<u64>) -> Timestamp {
     Timestamp::new(value.unwrap_or_else(now_millis))
 }
 
+pub(crate) fn remote_field(
+    response: &BTreeMap<String, String>,
+    field: &str,
+) -> DirectResult<Value> {
+    let encoded = response.get(field).ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::InvalidJson,
+            format!("remote response is missing result field {field}"),
+        )
+    })?;
+    serde_json::from_str(encoded).map_err(|error| {
+        CoreError::new(
+            ErrorCode::InvalidJson,
+            format!("remote result field {field} is not valid JSON: {error}"),
+        )
+    })
+}
+
+pub(crate) fn remote_string(
+    response: &BTreeMap<String, String>,
+    field: &str,
+) -> DirectResult<String> {
+    match remote_field(response, field)? {
+        Value::String(value) => Ok(value),
+        value => Err(CoreError::new(
+            ErrorCode::InvalidJson,
+            format!("remote result field {field} is not a JSON string: {value}"),
+        )),
+    }
+}
+
 pub(crate) fn success(result: Value) -> Value {
     json!({"ok": true, "result": result})
 }
@@ -587,6 +668,120 @@ mod tests {
         let reopened = DirectContext::open(&options(directory.path())).expect("reopen");
         let spaces = execute(&reopened, DirectCommand::Space(SpaceCommand::List)).expect("list");
         assert_eq!(spaces["spaces"].as_array().expect("spaces").len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_direct_path_uses_the_owner_socket_and_preserves_shapes() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let server =
+            agentyc_host::LocalHostServer::start(broker, directory.path().join("host.sock"))
+                .expect("local host server");
+        let options = DirectOptions {
+            state_dir: Some(directory.path().display().to_string()),
+            principal: Some("principal_remote_test".to_owned()),
+            offline: false,
+            json: true,
+        };
+        let context = DirectContext::open(&options).expect("remote context");
+
+        let created = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
+                label: "remote space".to_owned(),
+            })),
+        )
+        .expect("remote create");
+        let space_id = created["space_id"].as_str().expect("space id").to_owned();
+        assert!(created["space"].is_object());
+
+        let claimed = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Claim(LeaseArgs {
+                space_id: space_id.clone(),
+                ttl: DEFAULT_TTL,
+                now: Some(1),
+            })),
+        )
+        .expect("remote claim");
+        let lease_epoch = claimed["lease"]["lease_epoch"]
+            .as_u64()
+            .expect("lease epoch");
+
+        let renewed = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Renew(LeaseRenewArgs {
+                space_id: space_id.clone(),
+                lease_epoch,
+                ttl: DEFAULT_TTL,
+                now: Some(2),
+            })),
+        )
+        .expect("remote renew");
+        assert_eq!(renewed["space_id"], space_id);
+
+        let page = execute(
+            &context,
+            DirectCommand::Page(PageCommand::Create(PageCreateArgs {
+                space_id: space_id.clone(),
+                lease_epoch,
+                label: "main".to_owned(),
+                now: Some(3),
+            })),
+        )
+        .expect("remote page create");
+        assert!(page["page"].is_object());
+        let pages = execute(
+            &context,
+            DirectCommand::Page(PageCommand::List(PageListArgs {
+                space_id: space_id.clone(),
+            })),
+        )
+        .expect("remote page list");
+        assert_eq!(pages["pages"].as_array().expect("pages").len(), 1);
+
+        let events = execute(
+            &context,
+            DirectCommand::Events(EventsArgs {
+                after_epoch: None,
+                after_sequence: 0,
+                space_id: Some(space_id.clone()),
+                page_id: None,
+                limit: DEFAULT_EVENT_LIMIT,
+            }),
+        )
+        .expect("remote events");
+        assert!(!events["events"].as_array().expect("events").is_empty());
+
+        let status = execute(&context, DirectCommand::Host(HostCommand::Status))
+            .expect("remote host status");
+        assert_eq!(status["bridge"]["test_seam"], false);
+        assert_eq!(status["bridge"]["connected"], true);
+
+        let finished = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Finish(SpaceTransitionArgs {
+                space_id: space_id.clone(),
+                lease_epoch,
+                now: Some(4),
+            })),
+        )
+        .expect("remote finish");
+        assert_eq!(finished["lifecycle"], "finished");
+        let released = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Release(SpaceTransitionArgs {
+                space_id,
+                lease_epoch,
+                now: Some(5),
+            })),
+        )
+        .expect("remote release");
+        assert_eq!(released["lifecycle"], "released");
+
+        drop(context);
+        server.stop();
     }
 
     #[test]
