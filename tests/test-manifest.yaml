@@ -98,6 +98,33 @@ commands:
       failure_is_error: true
       stdout: "console"
       stderr: "console"
+  - id: "rollout-contract-tests"
+    status: "required"
+    layer: "unit"
+    environment: ["local"]
+    fixture: "phase-0-gate-contracts"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests/rollout",
+        "-p",
+        "test_*.py",
+      ]
+    cwd: "."
+    timeout_seconds: 60
+    prerequisites: []
+    artifacts: []
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
   - id: "exec-plan-check"
     status: "required"
     layer: "tooling"
@@ -645,6 +672,9 @@ test_targets:
   - id: "p0-t0-harness"
     status: "required"
     command_id: "harness-tests"
+  - id: "p0-t0-rollout-contracts"
+    status: "required"
+    command_id: "rollout-contract-tests"
   - id: "p0-t0-exec-plan"
     status: "required"
     command_id: "exec-plan-check"
