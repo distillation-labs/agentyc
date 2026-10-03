@@ -1054,6 +1054,15 @@ export class TabsRegistry {
     return this.byPage.get(pageId);
   }
 
+  findByHint(tabHint) {
+    if (typeof tabHint !== "string" || tabHint.length < 2) return undefined;
+    for (const record of this.byRawTab.values()) {
+      if (browserHint(record.rawTabId, this.hintSalt) === tabHint)
+        return record;
+    }
+    return undefined;
+  }
+
   getInternalByTab(tabId) {
     return this.byRawTab.get(tabId);
   }
