@@ -116,6 +116,62 @@ test("two logical spaces map conservatively and preserve the user tab", async ()
   worker.stop();
 });
 
+test("all managed pages in one space share one visual group", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://user.test/" }],
+  });
+  const { worker, port, hello } = await boot(chrome);
+  const first = await sendRequest(port, hello, 2, {
+    kind: "request",
+    request_id: "req_group_one",
+    action_id: "action_group_one",
+    method: "page.create",
+    space_id: "space_grouped",
+    page_id: "page_group_one",
+    lease_epoch: 1,
+    params: {
+      url: "https://agent-one.test/",
+      ownership_proof: proof(
+        "claim",
+        "space_grouped",
+        "page_group_one",
+        1,
+        "one",
+      ),
+    },
+  });
+  const second = await sendRequest(port, hello, 3, {
+    kind: "request",
+    request_id: "req_group_two",
+    action_id: "action_group_two",
+    method: "page.create",
+    space_id: "space_grouped",
+    page_id: "page_group_two",
+    lease_epoch: 1,
+    params: {
+      url: "https://agent-two.test/",
+      ownership_proof: proof(
+        "claim",
+        "space_grouped",
+        "page_group_two",
+        1,
+        "two",
+      ),
+    },
+  });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  const firstTab = worker.tabs.getInternalByPage("page_group_one").rawTabId;
+  const secondTab = worker.tabs.getInternalByPage("page_group_two").rawTabId;
+  assert.equal(
+    chrome.tabsData.get(firstTab).groupId,
+    chrome.tabsData.get(secondTab).groupId,
+  );
+  assert.equal(chrome.tabGroupsData.size, 1);
+  assert.equal(chrome.tabsData.get(1).groupId, -1);
+  worker.stop();
+});
+
 test("cleanup requires host proof and group drift never destroys a logical page", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://user.test/" }],
