@@ -22,6 +22,7 @@ fn probe_succeeds_against_running_local_host_socket() {
 
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json report");
     assert_eq!(report["success"], serde_json::Value::Bool(true));
+    assert!(report.get("socket_path").is_none());
     assert_eq!(
         report["checkpoints"][0]["status"],
         serde_json::Value::String("passed".to_owned())
