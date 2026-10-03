@@ -53,6 +53,7 @@ export class FakeChrome {
     this.runtimeMessages = [];
     this.removedTabIds = [];
     this.groupUpdates = [];
+    this.sidePanelBehaviorCalls = [];
     this.debuggerCommands = [];
     this.debuggerFailures = new Map();
     this.storageData = {};
@@ -231,7 +232,9 @@ export class FakeChrome {
       },
     };
     this.sidePanel = {
-      setPanelBehavior: async () => {},
+      setPanelBehavior: async (behavior) => {
+        this.sidePanelBehaviorCalls.push({ ...behavior });
+      },
       open: async () => {
         throw new Error("side panel open must be user gated");
       },
