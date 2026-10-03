@@ -51,10 +51,16 @@ class ExistingChromeDescriptorTests(unittest.TestCase):
         }
 
     def test_descriptor_requires_all_enrolled_components(self) -> None:
-        descriptor = self.descriptor()
-        self.assertEqual(_chrome._descriptor_errors(descriptor), [])
-        del descriptor["enrollment"]["host"]
-        self.assertTrue(_chrome._descriptor_errors(descriptor))
+        self.assertEqual(_chrome._descriptor_errors(self.descriptor()), [])
+        for component in ("profile", "host", "extension"):
+            with self.subTest(component=component):
+                descriptor = self.descriptor()
+                del descriptor["enrollment"][component]
+                self.assertTrue(_chrome._descriptor_errors(descriptor))
+
+                descriptor = self.descriptor()
+                descriptor["enrollment"][component]["enrolled"] = False
+                self.assertTrue(_chrome._descriptor_errors(descriptor))
 
     def test_descriptor_rejects_ids_paths_and_debugger_endpoints(self) -> None:
         for field, value in (
@@ -68,18 +74,31 @@ class ExistingChromeDescriptorTests(unittest.TestCase):
                 self.assertTrue(_chrome._descriptor_errors(descriptor))
 
     def test_live_evidence_requires_exact_non_skipped_scenario_set(self) -> None:
-        descriptor = self.descriptor()
-        descriptor["evidence"] = {
-            "executed": True,
-            "status": "live_passed",
-            "scenarios": [
-                {"name": name, "status": "live_passed"}
-                for name in _chrome.REQUIRED_LIVE_SCENARIOS
-            ],
+        exact = [
+            {"name": name, "status": "live_passed"}
+            for name in _chrome.REQUIRED_LIVE_SCENARIOS
+        ]
+        cases = {
+            "exact": exact,
+            "duplicate": exact + [exact[0]],
+            "missing": exact[:-1],
+            "extra": exact + [{"name": "unapproved-scenario", "status": "live_passed"}],
+            "skipped": [{**item} for item in exact],
         }
-        self.assertEqual(_chrome._descriptor_errors(descriptor), [])
-        descriptor["evidence"]["scenarios"][0]["status"] = "skipped"
-        self.assertTrue(_chrome._descriptor_errors(descriptor))
+        cases["skipped"][0]["status"] = "skipped"
+        for name, scenarios in cases.items():
+            with self.subTest(case=name):
+                descriptor = self.descriptor()
+                descriptor["evidence"] = {
+                    "executed": True,
+                    "status": "live_passed",
+                    "scenarios": scenarios,
+                }
+                errors = _chrome._descriptor_errors(descriptor)
+                if name == "exact":
+                    self.assertEqual(errors, [])
+                else:
+                    self.assertTrue(errors)
 
     def test_descriptor_only_is_not_executed_evidence(self) -> None:
         descriptor = self.descriptor()
