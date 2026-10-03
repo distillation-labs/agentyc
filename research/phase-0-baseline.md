@@ -152,7 +152,7 @@ All archived outputs are under `artifacts/p0-current/`. Paths, host name, endpoi
 The following deterministic implementation surfaces exist and pass focused checks:
 
 - `crates/agentyc-core`: transport-neutral logical IDs, lifecycle/error/protocol/snapshot/action/event contracts and negative fixtures.
-- `crates/agentyc-host`: locked atomic ledger, leases/fencing, action journal, reconciliation, event resume, snapshot cache, refs, waits, actionability, and context budget seams.
+- `crates/agentyc-host`: locked atomic ledger, leases/fencing, action journal, reconciliation, event resume, snapshot cache, refs, waits, actionability, context budget seams, multi-client connection authorities, and the owner-only local IPC server.
 - `crates/agentyc-browser/src/profile.rs` and `crates/agentyc-mcp/src/state.rs`: existing profile/session and legacy state surfaces audited for the baseline.
 - `extension/`: production MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests.
 - Direct CLI/SDK, rollout evidence tooling, and the host-backed MCP compatibility adapter.
@@ -184,7 +184,7 @@ Current Phase 0 status remains **blocked/active** for these evidence gates:
 
 - independently enrolled existing-Chrome two-space coexistence, user-tab/focus safety, and live takeover/restart fencing;
 - live Chrome capability observations across the requested version/platform/policy matrix;
-- production Native Messaging bridge evidence; the current host still exposes only `NullBridge`/`FakeBridge`;
+- independently observed production Native Messaging bridge/coexistence evidence; the host now owns one broker-backed local Unix socket and keeps Native Messaging framing separate, but the enrolled existing-profile lane has not run;
 
 The macOS disposable-profile installation/lifecycle gate and managed live performance/resource/token/context gate pass. Managed disposable evidence does not close the existing-user-profile coexistence gate.
 
