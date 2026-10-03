@@ -17,6 +17,7 @@ pub mod events;
 pub mod host;
 pub mod leases;
 pub mod ledger;
+pub mod local_ipc;
 pub mod native_messaging;
 pub mod protocol;
 pub mod refs;
@@ -48,6 +49,9 @@ pub use leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, Take
 pub use ledger::{
     FencePurpose, LEDGER_SCHEMA_VERSION, Ledger, LedgerLimits, LedgerState, PendingFenceRecord,
     TakeoverProofRecord,
+};
+pub use local_ipc::{
+    DEFAULT_LOCAL_SOCKET_FILENAME, LocalHostServer, LocalSocketClient, configured_socket_path,
 };
 pub use native_messaging::{
     DEFAULT_NATIVE_HANDSHAKE_TIMEOUT, DEFAULT_NATIVE_REQUEST_TIMEOUT, MAX_NATIVE_CONTROL_BYTES,
