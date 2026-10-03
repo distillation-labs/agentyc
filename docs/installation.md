@@ -191,6 +191,32 @@ python3 scripts/run_install_drill.py --drill \
 Linux and Windows runs report `unsupported_platform`; a required run exits
 nonzero. They must not be treated as successful installation evidence.
 
+## Production Native Messaging registration
+
+The production MV3 extension uses `com.agentyc.host` and the executable
+`target/{debug,release}/agentyc-native-host`. Build the host, then install or
+check the exact user-level registration without opening Chrome:
+
+```bash
+cargo build -p agentyc-host --bin agentyc-native-host --locked
+python3 scripts/register_native_host.py \
+  --install \
+  --extension-id <32-character-stable-extension-id>
+
+python3 scripts/register_native_host.py \
+  --check \
+  --extension-id <32-character-stable-extension-id>
+```
+
+The installer writes only the exact macOS Native Messaging manifest, uses an
+atomic replacement, refuses a different existing manifest unless `--replace` is
+explicit, and never launches Chrome or automates a file picker. The manifest's
+`allowed_origins` is exact; wildcards are rejected. The host accepts Chrome's
+transport origin from `argv[1]`, normalizing only its required trailing slash.
+Direct same-user execution is not cryptographically distinguishable from a
+Chrome-launched process; the OS-user threat boundary remains documented in
+[`security/host-protocol.md`](security/host-protocol.md).
+
 ## Extension and rollback limits
 
 The checked extension is the unpacked Phase 0 probe. Its unpacked ID is not
