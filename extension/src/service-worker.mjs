@@ -187,7 +187,7 @@ export class ServiceWorkerController {
     this.installRuntimeListener();
     this.startPromise = (async () => {
       await this.loadMetadata();
-      await this.loadFences();
+      this.loadFences();
       this.tabs.setIdentity(this.metadata);
       this.debugger.setIdentity(this.metadata);
       this.started = true;
@@ -223,8 +223,12 @@ export class ServiceWorkerController {
   }
 
   async loadMetadata() {
-    const stored =
-      (await storageGet(this.storage, METADATA_KEY))[METADATA_KEY] ?? {};
+    const storedValues = await storageGet(this.storage, [
+      METADATA_KEY,
+      FENCE_KEY,
+    ]);
+    this.storedFences = storedValues[FENCE_KEY];
+    const stored = storedValues[METADATA_KEY] ?? {};
     const profileInstanceId =
       this.metadata.profileInstanceId ??
       (typeof stored.profile_instance_id === "string"
@@ -270,13 +274,9 @@ export class ServiceWorkerController {
    * stale lease cannot bind or dispatch after Chrome terminates the worker.
    * Floors only ever restrict; they never grant ownership or leases.
    */
-  async loadFences() {
-    let stored;
-    try {
-      stored = (await storageGet(this.storage, FENCE_KEY))[FENCE_KEY];
-    } catch {
-      return;
-    }
+  loadFences() {
+    const stored = this.storedFences;
+    this.storedFences = undefined;
     if (
       !stored ||
       stored.profile_instance_id !== this.metadata.profileInstanceId ||
