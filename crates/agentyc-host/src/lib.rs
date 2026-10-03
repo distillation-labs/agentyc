@@ -17,6 +17,7 @@ pub mod events;
 pub mod host;
 pub mod leases;
 pub mod ledger;
+pub mod native_messaging;
 pub mod protocol;
 pub mod refs;
 pub mod snapshots;
@@ -47,6 +48,11 @@ pub use leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, Take
 pub use ledger::{
     FencePurpose, LEDGER_SCHEMA_VERSION, Ledger, LedgerLimits, LedgerState, PendingFenceRecord,
     TakeoverProofRecord,
+};
+pub use native_messaging::{
+    DEFAULT_NATIVE_HANDSHAKE_TIMEOUT, DEFAULT_NATIVE_REQUEST_TIMEOUT, MAX_NATIVE_CONTROL_BYTES,
+    MAX_NATIVE_EVENT_QUEUE, MAX_NATIVE_PENDING_REQUESTS, MAX_NATIVE_READ_CHUNK_BYTES, NativeHello,
+    NativeHostError, NativeMessagingBridge, NativeMessagingConfig, normalize_extension_origin,
 };
 pub use protocol::{LocalProtocolClient, LocalProtocolServer, ProtocolClient, ProtocolServer};
 pub use refs::{RefInvalidationReason, RefRecord, RefRegistry, RefRegistryLimits, RefTombstone};
