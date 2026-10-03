@@ -24,6 +24,10 @@ export class FramesRegistry {
     this.contexts = new Map();
   }
 
+  setHintSalt(hintSalt) {
+    if (typeof hintSalt === "string") this.hintSalt = hintSalt;
+  }
+
   bindTab({
     tabId,
     spaceId,
