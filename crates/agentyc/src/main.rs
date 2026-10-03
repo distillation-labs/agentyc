@@ -8,7 +8,7 @@ use agentyc_core::{
     ClientId, ClientMetadata, ConnectionNonce, HelloEnvelope, PROTOCOL_VERSION, PrincipalId,
     ProfileBindingId,
 };
-use agentyc_host::{Broker, FakeBridge, NullBridge};
+use agentyc_host::{Broker, FakeBridge, LocalSocketClient, configured_socket_path};
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -225,11 +225,6 @@ fn run_direct(command: DirectCommand, options: DirectOptions) -> Result<()> {
 
 async fn run_host_mcp(options: &DirectOptions) -> Result<()> {
     let state_dir = host_state_dir(options.state_dir.as_deref())?;
-    let broker = if options.offline {
-        Broker::open(&state_dir, FakeBridge::new())?
-    } else {
-        Broker::open(&state_dir, NullBridge)?
-    };
     let principal = host_principal(options.principal.as_deref())?;
     let connection_nonce = ConnectionNonce::from_suffix(format!("mcp-{}", Uuid::new_v4().simple()))
         .map_err(|error| anyhow!(error.to_string()))?;
@@ -255,7 +250,15 @@ async fn run_host_mcp(options: &DirectOptions) -> Result<()> {
             },
         }),
     };
-    agentyc_mcp::run_host_stdio(broker, hello).await
+
+    if options.offline {
+        let broker = Broker::open(&state_dir, FakeBridge::new())?;
+        agentyc_mcp::run_host_stdio(broker, hello).await
+    } else {
+        let socket_path = configured_socket_path(&state_dir);
+        let client = LocalSocketClient::connect(socket_path, hello)?;
+        agentyc_mcp::run_remote_host_stdio(client).await
+    }
 }
 
 fn host_state_dir(explicit: Option<&str>) -> Result<std::path::PathBuf> {
