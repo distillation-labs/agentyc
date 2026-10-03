@@ -53,9 +53,27 @@ SAFETY_COUNTERS = (
 
 def _enrollment() -> dict[str, dict[str, Any]]:
     return {
-        "profile": {"enrolled": True, "status": "bound"},
-        "host": {"enrolled": True, "status": "connected"},
-        "extension": {"enrolled": True, "status": "installed"},
+        "profile": {
+            "enrolled": True,
+            "observed": True,
+            "current_run": True,
+            "source": "existing_chrome_current_run",
+            "status": "bound",
+        },
+        "host": {
+            "enrolled": True,
+            "observed": True,
+            "current_run": True,
+            "source": "existing_chrome_current_run",
+            "status": "connected",
+        },
+        "extension": {
+            "enrolled": True,
+            "observed": True,
+            "current_run": True,
+            "source": "existing_chrome_current_run",
+            "status": "installed",
+        },
     }
 
 
@@ -66,28 +84,88 @@ def _coexistence_report(
     enrollment: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     names = scenario_names if scenario_names is not None else list(REQUIRED_SCENARIOS)
-    return {
+    enrollment_evidence = copy.deepcopy(enrollment or _enrollment())
+    receipts = [
+        {
+            "operation": f"browser.scenario.{index}",
+            "source": "browser",
+            "current_run": True,
+            "observed": True,
+            "browser_observed": True,
+        }
+        for index, _name in enumerate(names)
+    ]
+    report = {
+        "phase": 0,
+        "kind": "existing-chrome-coexistence",
+        "evidence_mode": "live",
         "status": "live_passed",
+        "current_run": True,
+        "release_eligible": True,
         "mode": "headed",
         "spaces": 2,
         "agents": 2,
+        "enrollment": enrollment_evidence,
+        "execution_policy": {
+            "attached": True,
+            "current_run": True,
+            "browser_launch": False,
+            "browser_download": False,
+            "cdp_url_used": False,
+        },
         "live": {
             "requested": True,
             "required": True,
+            "executed": True,
+            "current_run": True,
             "status": "live_passed",
             "evidence_status": "live_passed",
+            "provenance": "existing_chrome_current_run",
+            "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
+            "operator_claims_used": False,
+            "host_probe_used": False,
+            "browser_observed": True,
             "profile_scope": "existing_user_profile",
-            "enrollment": copy.deepcopy(enrollment or _enrollment()),
+            "browser": {
+                "observed": True,
+                "current_run": True,
+                "attached": True,
+                "launch": False,
+                "download": False,
+                "cdp_url_used": False,
+            },
+            "enrollment": copy.deepcopy(enrollment_evidence),
+            "receipts": receipts,
         },
-        "scenarios": [{"name": name, "status": "live_passed"} for name in names],
+        "scenarios": [
+            {
+                "name": name,
+                "status": "live_passed",
+                "observation": {
+                    "source": "browser_current_run",
+                    "observed": True,
+                    "current_run": True,
+                    "browser_observed": True,
+                    "receipt_refs": [f"browser.scenario.{index}"],
+                },
+            }
+            for index, name in enumerate(names)
+        ],
         "safety": safety
         or {
             "user_tab_closes": 0,
             "focus_theft": 0,
             "cross_space_mutations": 0,
             "stale_agent_mutations": 0,
+            "measurement_status": "measured_live",
+            "current_run": True,
         },
     }
+    return _envelope.envelope(
+        report,
+        kind="existing-chrome-coexistence",
+        command=["tests/rollout/test_phase0_gate_contracts.py"],
+    )
 
 
 def _validate_coexistence(report: dict[str, Any]) -> tuple[str, set[str]]:
@@ -187,22 +265,79 @@ def _write_extension_report(root: Path, report: dict[str, Any]) -> None:
 
 
 def _release_existing_chrome_report() -> dict[str, Any]:
+    receipts = [
+        {
+            "operation": f"browser.scenario.{index}",
+            "source": "browser",
+            "current_run": True,
+            "observed": True,
+            "browser_observed": True,
+        }
+        for index, _name in enumerate(REQUIRED_SCENARIOS)
+    ]
+    enrollment = _enrollment()
     report: dict[str, Any] = {
         "schema_version": 1,
         "phase": 0,
         "kind": "existing-chrome-coexistence",
         "evidence_mode": "live",
         "status": "live_passed",
-        "live": {"executed": True, "status": "live_passed"},
-        "enrollment": _enrollment(),
+        "current_run": True,
+        "release_eligible": True,
+        "mode": "headed",
+        "spaces": 2,
+        "agents": 2,
+        "live": {
+            "requested": True,
+            "required": True,
+            "executed": True,
+            "current_run": True,
+            "status": "live_passed",
+            "evidence_status": "live_passed",
+            "provenance": "existing_chrome_current_run",
+            "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
+            "operator_claims_used": False,
+            "host_probe_used": False,
+            "browser_observed": True,
+            "profile_scope": "existing_user_profile",
+            "browser": {
+                "observed": True,
+                "current_run": True,
+                "attached": True,
+                "launch": False,
+                "download": False,
+                "cdp_url_used": False,
+            },
+            "enrollment": copy.deepcopy(enrollment),
+            "receipts": receipts,
+        },
+        "enrollment": enrollment,
         "execution_policy": {
             "attached": True,
+            "current_run": True,
             "browser_launch": False,
             "browser_download": False,
             "cdp_url_used": False,
         },
-        "scenarios": [{"name": name, "status": "live_passed"} for name in REQUIRED_SCENARIOS],
-        "safety": {counter: 0 for counter in SAFETY_COUNTERS},
+        "scenarios": [
+            {
+                "name": name,
+                "status": "live_passed",
+                "observation": {
+                    "source": "browser_current_run",
+                    "observed": True,
+                    "current_run": True,
+                    "browser_observed": True,
+                    "receipt_refs": [f"browser.scenario.{index}"],
+                },
+            }
+            for index, name in enumerate(REQUIRED_SCENARIOS)
+        ],
+        "safety": {
+            **{counter: 0 for counter in SAFETY_COUNTERS},
+            "measurement_status": "measured_live",
+            "current_run": True,
+        },
     }
     return _envelope.envelope(
         report,
@@ -220,6 +355,7 @@ class Phase0GateContractTests(unittest.TestCase):
             "duplicate": list(REQUIRED_SCENARIOS) + [REQUIRED_SCENARIOS[0]],
             "missing": list(REQUIRED_SCENARIOS[:-1]),
             "extra": list(REQUIRED_SCENARIOS) + ["unapproved-scenario"],
+            "reordered": [REQUIRED_SCENARIOS[1], REQUIRED_SCENARIOS[0], *REQUIRED_SCENARIOS[2:]],
             "skipped": list(REQUIRED_SCENARIOS),
         }
         for name, scenario_names in cases.items():
@@ -232,6 +368,80 @@ class Phase0GateContractTests(unittest.TestCase):
                     self.assertEqual(status, "passed")
                 else:
                     self.assertNotEqual(status, "passed")
+
+    def test_coexistence_receipts_are_unique_current_browser_observations(self) -> None:
+        cases = {
+            "missing_refs": lambda report: report["scenarios"][0]["observation"].pop("receipt_refs"),
+            "unknown_ref": lambda report: report["scenarios"][0]["observation"].update({"receipt_refs": ["browser.missing"]}),
+            "duplicate_ref": lambda report: report["scenarios"][1]["observation"].update(
+                {"receipt_refs": report["scenarios"][0]["observation"]["receipt_refs"]}
+            ),
+            "duplicate_receipt": lambda report: report["live"]["receipts"].append(
+                copy.deepcopy(report["live"]["receipts"][0])
+            ),
+            "direct_cli": lambda report: report["live"]["receipts"][0].update({"source": "direct_cli"}),
+            "host_probe": lambda report: report["live"]["receipts"][0].update({"source": "host_probe"}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                report = _coexistence_report()
+                mutate(report)
+                status, _ = _validate_coexistence(report)
+                self.assertNotEqual(status, "passed")
+
+    def test_coexistence_rejects_stale_non_current_or_ineligible_reports(self) -> None:
+        cases = {
+            "stale": lambda report: report.update({"timestamp": "2020-01-01T00:00:00Z"}),
+            "stale_provenance": lambda report: report["provenance"].update({"timestamp": "2020-01-01T00:00:00Z"}),
+            "not_current": lambda report: report.update({"current_run": False}),
+            "not_release_eligible": lambda report: report.update({"release_eligible": False}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                report = _coexistence_report()
+                mutate(report)
+                status, _ = _validate_coexistence(report)
+                self.assertNotEqual(status, "passed")
+
+    def test_coexistence_rejects_attached_cdp_policy_contradictions(self) -> None:
+        cases = {
+            "execution_not_attached": lambda report: report["execution_policy"].update({"attached": False}),
+            "execution_cdp_url": lambda report: report["execution_policy"].update({"cdp_url_used": True}),
+            "browser_not_attached": lambda report: report["live"]["browser"].update({"attached": False}),
+            "browser_cdp_url": lambda report: report["live"]["browser"].update({"cdp_url_used": True}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                report = _coexistence_report()
+                mutate(report)
+                status, _ = _validate_coexistence(report)
+                self.assertNotEqual(status, "passed")
+
+    def test_coexistence_rejects_offline_descriptor_and_operator_claims(self) -> None:
+        cases = {
+            "offline": {"evidence_mode": "offline", "status": "offline_passed"},
+            "descriptor": {
+                "evidence_mode": "live",
+                "live": {
+                    "executed": False,
+                    "provenance": "descriptor",
+                    "operator_claims_used": False,
+                    "host_probe_used": False,
+                    "browser_observed": False,
+                },
+            },
+            "operator": {"live": {"operator_claims_used": True}},
+        }
+        for name, updates in cases.items():
+            with self.subTest(case=name):
+                report = _coexistence_report()
+                for key, value in updates.items():
+                    if key == "live":
+                        report["live"].update(value)
+                    else:
+                        report[key] = value
+                status, _ = _validate_coexistence(report)
+                self.assertNotEqual(status, "passed")
 
     def test_coexistence_requires_zero_safety_counters(self) -> None:
         for counter in SAFETY_COUNTERS:
@@ -254,11 +464,72 @@ class Phase0GateContractTests(unittest.TestCase):
                 status, _ = _validate_coexistence(_coexistence_report(enrollment=enrollment))
                 self.assertNotEqual(status, "passed")
 
-    def test_release_gate_requires_profile_enrollment(self) -> None:
+    def test_release_gate_requires_profile_host_and_extension_enrollment(self) -> None:
         report = _release_existing_chrome_report()
         self.assertEqual(_release.validate_existing_chrome(report, require_live=True), [])
-        del report["enrollment"]["profile"]
-        self.assertTrue(_release.validate_existing_chrome(report, require_live=True))
+        for component in ("profile", "host", "extension"):
+            with self.subTest(component=component):
+                candidate = copy.deepcopy(report)
+                del candidate["enrollment"][component]
+                self.assertTrue(_release.validate_existing_chrome(candidate, require_live=True))
+
+    def test_release_gate_requires_exact_current_scenarios_and_receipts(self) -> None:
+        scenarios = copy.deepcopy(_release_existing_chrome_report()["scenarios"])
+        cases = {
+            "duplicate": scenarios + [copy.deepcopy(scenarios[0])],
+            "missing": scenarios[:-1],
+            "extra": scenarios + [{"name": "unapproved-scenario", "status": "live_passed"}],
+            "reordered": [scenarios[1], scenarios[0], *scenarios[2:]],
+        }
+        for name, candidate_scenarios in cases.items():
+            with self.subTest(case=name):
+                report = _release_existing_chrome_report()
+                report["scenarios"] = candidate_scenarios
+                self.assertTrue(_release.validate_existing_chrome(report, require_live=True))
+
+        for name, mutate in {
+            "unknown_ref": lambda report: report["scenarios"][0]["observation"].update({"receipt_refs": ["browser.missing"]}),
+            "duplicate_ref": lambda report: report["scenarios"][1]["observation"].update(
+                {"receipt_refs": report["scenarios"][0]["observation"]["receipt_refs"]}
+            ),
+            "duplicate_receipt": lambda report: report["live"]["receipts"].append(
+                copy.deepcopy(report["live"]["receipts"][0])
+            ),
+            "direct_cli": lambda report: report["live"]["receipts"][0].update({"source": "direct_cli"}),
+            "host_probe": lambda report: report["live"]["receipts"][0].update({"source": "host_probe"}),
+        }.items():
+            with self.subTest(case=name):
+                report = _release_existing_chrome_report()
+                mutate(report)
+                self.assertTrue(_release.validate_existing_chrome(report, require_live=True))
+
+    def test_release_gate_rejects_stale_non_current_ineligible_and_missing_live_evidence(self) -> None:
+        cases = {
+            "stale": lambda report: report.update({"timestamp": "2020-01-01T00:00:00Z"}),
+            "stale_provenance": lambda report: report["provenance"].update({"timestamp": "2020-01-01T00:00:00Z"}),
+            "not_current": lambda report: report.update({"current_run": False}),
+            "not_release_eligible": lambda report: report.update({"release_eligible": False}),
+            "offline": lambda report: report.update({"evidence_mode": "offline", "status": "offline_passed"}),
+            "missing_live_evidence": lambda report: report["live"].update({"browser_observed": False}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                report = _release_existing_chrome_report()
+                mutate(report)
+                self.assertTrue(_release.validate_existing_chrome(report, require_live=True))
+
+    def test_release_gate_rejects_attached_cdp_policy_contradictions(self) -> None:
+        cases = {
+            "execution_not_attached": lambda report: report["execution_policy"].update({"attached": False}),
+            "execution_cdp_url": lambda report: report["execution_policy"].update({"cdp_url_used": True}),
+            "browser_not_attached": lambda report: report["live"]["browser"].update({"attached": False}),
+            "browser_cdp_url": lambda report: report["live"]["browser"].update({"cdp_url_used": True}),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(case=name):
+                report = _release_existing_chrome_report()
+                mutate(report)
+                self.assertTrue(_release.validate_existing_chrome(report, require_live=True))
 
     def test_release_gate_requires_zero_safety_counters(self) -> None:
         for counter in SAFETY_COUNTERS:
