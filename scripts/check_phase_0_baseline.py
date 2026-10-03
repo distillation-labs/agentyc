@@ -426,6 +426,7 @@ def validate_extension_gate(checker: Checker) -> str:
         "debugger_cleanup_passed",
         "cleanup_passed",
         "screenshot_captured",
+        "extension_unload_passed",
     )
     if not isinstance(live, dict) or any(live.get(field) is not True for field in required_fields):
         checker.add("live-chrome-evidence-incomplete", "extension report lacks exact identity, debugger, event, tab-group, Chrome-mediated Native Messaging, or cleanup evidence", path, gate="live_chrome")
@@ -435,19 +436,64 @@ def validate_extension_gate(checker: Checker) -> str:
     if not isinstance(screenshots, list) or not any(isinstance(item, dict) and item.get("captured") is True for item in screenshots):
         checker.add("live-chrome-screenshot-missing", "live extension evidence has no bounded screenshot capture", path, gate="live_chrome")
     permission_prompts = live.get("permission_prompts") if isinstance(live, dict) else None
-    if not isinstance(permission_prompts, dict) or permission_prompts.get("status") not in {"recorded", "none_observed"}:
-        checker.add("live-chrome-permission-evidence-missing", "Chrome permission prompt outcome was not manually recorded", path, gate="live_chrome")
-    operator_provenance = {
-        "operator_assisted": True,
-        "load_method": "chrome_extensions_load_unpacked",
+    if (
+        not isinstance(permission_prompts, dict)
+        or permission_prompts.get("status") != "not_requested"
+        or permission_prompts.get("required_manual_review") is not False
+    ):
+        checker.add(
+            "live-chrome-permission-evidence-missing",
+            "automated CDP extension loading must not require a manual permission acknowledgement",
+            path,
+            gate="live_chrome",
+        )
+    automated_provenance = {
+        "operator_assisted": False,
+        "load_method": "cdp_extensions_load_unpacked",
         "load_extension_flag_used": False,
+        "browser_target_cdp": True,
         "developer_private_used": False,
         "extensions_ui_dom_access": False,
     }
-    if not isinstance(live, dict) or any(live.get(key) != expected for key, expected in operator_provenance.items()):
+    if not isinstance(live, dict) or any(live.get(key) != expected for key, expected in automated_provenance.items()):
         checker.add(
             "live-chrome-install-provenance-missing",
-            "live extension evidence must use the documented operator-assisted Load unpacked flow",
+            "live extension evidence must use the public browser-target CDP Extensions.loadUnpacked flow",
+            path,
+            gate="live_chrome",
+        )
+    load_evidence = live.get("extension_load_evidence") if isinstance(live, dict) else None
+    required_load_evidence = {
+        "status": "passed",
+        "method": "cdp_extensions_load_unpacked",
+        "browser_target_cdp": True,
+        "load_command_passed": True,
+        "returned_id_matches_expected": True,
+        "inventory_checked": True,
+        "inventory_identity_passed": True,
+        "inventory_path_matches": True,
+        "inventory_enabled": True,
+    }
+    if not isinstance(load_evidence, dict) or any(
+        load_evidence.get(key) != expected for key, expected in required_load_evidence.items()
+    ):
+        checker.add(
+            "live-chrome-extension-load-evidence-missing",
+            "live extension evidence lacks exact public CDP load and inventory verification",
+            path,
+            gate="live_chrome",
+        )
+    unload_evidence = live.get("extension_unload_evidence") if isinstance(live, dict) else None
+    if (
+        not isinstance(unload_evidence, dict)
+        or unload_evidence.get("status") != "passed"
+        or unload_evidence.get("uninstall_command_passed") is not True
+        or unload_evidence.get("inventory_checked") is not True
+        or unload_evidence.get("absent_after_uninstall") is not True
+    ):
+        checker.add(
+            "live-chrome-extension-unload-evidence-missing",
+            "live extension evidence does not prove CDP uninstall and post-uninstall absence",
             path,
             gate="live_chrome",
         )
@@ -528,7 +574,7 @@ def validate_native_protocol_gate(checker: Checker, *, extension_gate_passed: bo
         and extension_live.get("native_messaging_passed") is True
         and extension_live.get("extension_build_binding_passed") is True
         and isinstance(extension_live.get("permission_prompts"), dict)
-        and extension_live["permission_prompts"].get("status") in {"recorded", "none_observed"}
+        and extension_live["permission_prompts"].get("status") == "not_requested"
     ):
         live_required = True
 
