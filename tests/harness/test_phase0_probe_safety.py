@@ -359,13 +359,15 @@ class ChromeProbeSafetyTests(unittest.TestCase):
         stdin.isatty.return_value = False
         tty = mock.Mock()
         tty.readline.return_value = "none_observed\n"
+        tty_context = mock.MagicMock()
+        tty_context.__enter__.return_value = tty
         with (
             mock.patch.object(_chrome.sys, "stdin", stdin),
-            mock.patch.object(_chrome, "open", return_value=tty, create=True) as open_tty,
+            mock.patch.object(_chrome, "open", return_value=tty_context, create=True) as open_tty,
         ):
             self.assertEqual(_chrome.collect_operator_permission_status(), "none_observed")
         open_tty.assert_called_once_with("/dev/tty", "r", encoding="utf-8")
-        tty.close.assert_called_once_with()
+        tty_context.__exit__.assert_called_once()
 
     def test_pinned_manifest_id_and_identity_diagnostics_reject_same_shaped_worker(self) -> None:
         manifest = _chrome.load_manifest()
@@ -581,6 +583,113 @@ class ChromeProbeSafetyTests(unittest.TestCase):
                 fixture_url=None,
                 operator_assisted=False,
             )
+
+    def test_automated_command_uses_fixture_url_without_load_extension_flag(self) -> None:
+        fixture_url = Path("/tmp/agentyc-p0-profile/fixture.html").as_uri()
+        command = _chrome.build_chrome_command(
+            "chrome",
+            Path("/tmp/agentyc-p0-profile"),
+            9333,
+            extension_dir=None,
+            fixture_url=fixture_url,
+            operator_assisted=False,
+        )
+        self.assertIn(fixture_url, command)
+        self.assertFalse(any(argument.startswith("--load-extension=") for argument in command))
+
+    def test_browser_target_websocket_requires_exact_local_browser_endpoint(self) -> None:
+        version = {"webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/browser-token"}
+        self.assertEqual(_chrome._browser_websocket_url(version, 9333), version["webSocketDebuggerUrl"])
+        for url in (
+            "ws://127.0.0.1:9333/devtools/page/page-token",
+            "ws://127.0.0.1:9334/devtools/browser/browser-token",
+            "ws://127.0.0.1:9333/devtools/browser/browser-token?secret=1",
+        ):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                _chrome._browser_websocket_url({"webSocketDebuggerUrl": url}, 9333)
+
+    def test_extension_inventory_requires_exact_identity_path_and_enabled_state(self) -> None:
+        manifest = _chrome.load_manifest()
+        extension_id = _chrome._manifest_extension_id(manifest)
+        self.assertIsNotNone(extension_id)
+        with tempfile.TemporaryDirectory() as temporary:
+            staged = Path(temporary) / "probes"
+            staged.mkdir()
+            inventory = [{
+                "id": extension_id,
+                "name": manifest["name"],
+                "version": manifest["version"],
+                "path": str(staged.resolve()),
+                "enabled": True,
+            }]
+            evidence = _chrome._extension_inventory_evidence(inventory, extension_id, manifest, staged)
+            self.assertTrue(evidence["inventory_identity_passed"])
+            self.assertTrue(evidence["inventory_path_matches"])
+            self.assertTrue(evidence["inventory_enabled"])
+            self.assertNotIn(extension_id, json.dumps(evidence))
+            wrong = copy.deepcopy(inventory)
+            wrong[0]["enabled"] = False
+            self.assertFalse(
+                _chrome._extension_inventory_evidence(wrong, extension_id, manifest, staged)[
+                    "inventory_identity_passed"
+                ]
+            )
+
+    def test_browser_cdp_load_routes_through_attached_browser_session(self) -> None:
+        manifest = _chrome.load_manifest()
+        extension_id = _chrome._manifest_extension_id(manifest)
+        self.assertIsNotNone(extension_id)
+        process = mock.Mock()
+        client = mock.Mock()
+        client.command.side_effect = [
+            {"sessionId": "session-token"},
+            {"id": extension_id},
+            {
+                "extensions": [{
+                    "id": extension_id,
+                    "name": manifest["name"],
+                    "version": manifest["version"],
+                    "path": "/tmp/staged-probes",
+                    "enabled": True,
+                }]
+            },
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            staged = Path(temporary) / "probes"
+            staged.mkdir()
+            with (
+                mock.patch.object(_chrome, "_endpoint_belongs_to_process", return_value=True),
+                mock.patch.object(_chrome, "chrome_endpoint", return_value={
+                    "webSocketDebuggerUrl": "ws://127.0.0.1:9333/devtools/browser/browser-token"
+                }),
+                mock.patch.object(_chrome, "DevToolsSocket", return_value=client),
+                mock.patch.object(_chrome.Path, "resolve", return_value=staged),
+            ):
+                loaded_client, session_id, loaded_id, evidence = _chrome.load_extension_via_browser_cdp(
+                    9333, process, staged, manifest, extension_id
+                )
+        self.assertIs(loaded_client, client)
+        self.assertEqual(session_id, "session-token")
+        self.assertEqual(loaded_id, extension_id)
+        self.assertEqual(evidence["status"], "passed")
+        self.assertTrue(evidence["browser_target_cdp"])
+        self.assertEqual(client.command.call_args_list[1].kwargs["session_id"], "session-token")
+        self.assertEqual(client.command.call_args_list[2].kwargs["session_id"], "session-token")
+        self.assertNotIn(extension_id, json.dumps(evidence))
+
+    def test_browser_cdp_unload_requires_command_and_absence(self) -> None:
+        client = mock.Mock()
+        client.command.side_effect = [{}, {"extensions": []}]
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = _chrome.unload_extension_via_browser_cdp(
+                client,
+                "session-token",
+                "a" * 32,
+                Path(temporary) / "probes",
+            )
+        self.assertEqual(evidence["status"], "passed")
+        self.assertTrue(evidence["uninstall_command_passed"])
+        self.assertTrue(evidence["absent_after_uninstall"])
 
     def test_extension_tree_hash_rejects_symlinks_and_is_stable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -876,9 +985,27 @@ class BaselineCheckerSafetyTests(unittest.TestCase):
             "debugger_cleanup_passed": True,
             "cleanup_passed": True,
             "screenshot_captured": True,
+            "extension_unload_passed": True,
             "screenshots": [{"captured": True}],
             "handshake_transcript": ["hello_accepted", "probe_accepted"],
-            "permission_prompts": {"status": "none_observed"},
+            "permission_prompts": {"status": "not_requested", "required_manual_review": False},
+            "extension_load_evidence": {
+                "status": "passed",
+                "method": "cdp_extensions_load_unpacked",
+                "browser_target_cdp": True,
+                "load_command_passed": True,
+                "returned_id_matches_expected": True,
+                "inventory_checked": True,
+                "inventory_identity_passed": True,
+                "inventory_path_matches": True,
+                "inventory_enabled": True,
+            },
+            "extension_unload_evidence": {
+                "status": "passed",
+                "uninstall_command_passed": True,
+                "inventory_checked": True,
+                "absent_after_uninstall": True,
+            },
         }
         report = {
             "probe": "P0-T2",
@@ -911,9 +1038,10 @@ class BaselineCheckerSafetyTests(unittest.TestCase):
 
             live.update(
                 {
-                    "operator_assisted": True,
-                    "load_method": "chrome_extensions_load_unpacked",
+                    "operator_assisted": False,
+                    "load_method": "cdp_extensions_load_unpacked",
                     "load_extension_flag_used": False,
+                    "browser_target_cdp": True,
                     "developer_private_used": False,
                     "extensions_ui_dom_access": False,
                     "runner_sha256": hashlib.sha256(CHROME_SCRIPT.read_bytes()).hexdigest(),
