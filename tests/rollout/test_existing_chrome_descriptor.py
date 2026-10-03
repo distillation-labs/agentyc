@@ -29,10 +29,17 @@ class ExistingChromeDescriptorTests(unittest.TestCase):
             "schema_version": 2,
             "kind": "existing-chrome-enrollment",
             "mode": "existing-chrome",
+            "profile_scope": "existing_user_profile",
             "enrollment": {
-                "profile": {"enrolled": True, "status": "bound"},
-                "host": {"enrolled": True, "status": "connected"},
-                "extension": {"enrolled": True, "status": "installed"},
+                "profile": {"enrolled": True, "status": "bound", "binding_verified": True},
+                "host": {"enrolled": True, "status": "connected", "origin_match_verified": True},
+                "extension": {
+                    "enrolled": True,
+                    "status": "installed",
+                    "identity_verified": True,
+                    "host_origin_matches": True,
+                    "distribution": "stable_unpacked",
+                },
             },
             "browser": {
                 "status": "already-running",
