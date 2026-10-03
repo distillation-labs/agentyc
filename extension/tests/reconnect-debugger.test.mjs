@@ -57,6 +57,38 @@ test("Native Messaging reconnect starts a fresh nonce/sequence and never replays
   client.stop();
 });
 
+test("Native Messaging disconnect requests an immediate reconnect before backoff", async () => {
+  const chrome = new FakeChrome();
+  const timers = [];
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: true,
+    setTimeoutFn: (callback, delay) => {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutFn: (timer) => {
+      const index = timers.indexOf(timer);
+      if (index >= 0) timers.splice(index, 1);
+    },
+  });
+  await client.connect();
+  const firstPort = chrome.lastPort;
+  firstPort.receive(makeHostHelloOk(firstPort.sent[0]));
+  await wait();
+
+  firstPort.disconnect();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 0);
+  timers.shift().callback();
+  await wait();
+  assert.notEqual(chrome.lastPort, firstPort);
+  client.stop();
+});
+
 test("debugger bridge routes only attributed events and returns unknown for lost mutation dispatch", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://agent.test/" }],
