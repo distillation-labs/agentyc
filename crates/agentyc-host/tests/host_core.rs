@@ -191,8 +191,9 @@ impl Bridge for ReentrantBridge {
         &self,
         space_id: &SpaceId,
         page_id: &PageId,
+        lease_epoch: LeaseEpoch,
     ) -> Result<SnapshotEnvelope, CoreError> {
-        self.delegate.snapshot(space_id, page_id)
+        self.delegate.snapshot(space_id, page_id, lease_epoch)
     }
 
     fn fence(
@@ -873,6 +874,43 @@ fn multiple_connection_authorities_coexist_and_echo_their_nonces() {
     broker
         .list_spaces(second.authority())
         .expect("second authority remains active");
+}
+
+#[test]
+fn extension_reconnect_revokes_the_previous_extension_authority() {
+    let directory = tempdir().expect("tempdir");
+    let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+    let extension_hello = |suffix: &str| HelloEnvelope {
+        protocol: PROTOCOL_VERSION,
+        supported_protocols: vec![PROTOCOL_VERSION],
+        principal_id: principal("extension"),
+        resume_from: None,
+        client_metadata: Some(ClientMetadata {
+            client_id: Some(ClientId::from_suffix("extension").expect("client")),
+            client_name: Some("agentyc-extension".to_owned()),
+            client_version: Some("2".to_owned()),
+            connection_nonce: Some(
+                ConnectionNonce::from_suffix(format!("extension-{suffix}")).expect("nonce"),
+            ),
+            profile_binding_id: Some(ProfileBindingId::from_suffix("profile").expect("profile")),
+        }),
+    };
+    let first_hello = extension_hello("one");
+    let first = broker.hello(&first_hello).expect("first extension hello");
+    let second = broker
+        .hello(&extension_hello("two"))
+        .expect("reconnect hello");
+
+    assert!(matches!(
+        broker.list_spaces(first.authority()),
+        Err(HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::PermissionDenied,
+            ..
+        }))
+    ));
+    broker
+        .list_spaces(second.authority())
+        .expect("new extension authority remains active");
 }
 
 #[test]
