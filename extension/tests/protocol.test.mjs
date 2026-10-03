@@ -118,6 +118,28 @@ test("sequence validation rejects gaps and replay", () => {
   );
 });
 
+test("logical request correlation fields are allowed on Native Messaging envelopes", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const port = chrome.lastPort;
+  const hello = port.sent[0];
+  port.receive(makeHostHelloOk(hello));
+  const request = client.sendRequest({
+    method: "tab.inventory",
+    requestId: "req_logical_1",
+    actionId: "action_logical_1",
+  });
+  assert.equal(request.request_id, "req_logical_1");
+  assert.equal(request.action_id, "action_logical_1");
+  assert.equal(port.sent.at(-1).kind, "request");
+});
+
 test("Native Messaging handshake validates nonce and sequence independently", async () => {
   const chrome = new FakeChrome();
   const client = new NativeMessagingClient({
