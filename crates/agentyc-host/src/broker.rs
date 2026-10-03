@@ -17,6 +17,7 @@ use agentyc_core::{
 
 use agentyc_core::protocol::ResumeWatermark;
 use agentyc_core::states::{DirtyReason, LeaseState};
+use serde_json::{Value, json};
 
 use crate::{
     actions::ActionResult,
@@ -25,8 +26,8 @@ use crate::{
     events::{EventBatch, EventQuery},
     leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult},
     ledger::{
-        ControlTicketRecord, FencePurpose, Ledger, LedgerLimits, LedgerState, PendingFenceRecord,
-        TakeoverProofRecord, canonical_action_hash as ledger_action_hash,
+        ActiveConnection, ControlTicketRecord, FencePurpose, Ledger, LedgerLimits, LedgerState,
+        PendingFenceRecord, TakeoverProofRecord, canonical_action_hash as ledger_action_hash,
         validate_action_payload_contract, validate_public_payload_shape,
     },
     snapshots::{PageGeneration, SnapshotCacheRecord, SnapshotMetadataRead, SnapshotRead},
@@ -210,6 +211,13 @@ impl Broker {
                 .ok_or_else(|| CoreError::invalid_argument("handshake nonce is missing"))?;
             let profile_binding_id = metadata.profile_binding_id.clone();
             let (connection_epoch, principal_id, resume) = inner.ledger.update(|state| {
+                if state.used_connection_nonces.contains(&connection_nonce) {
+                    return Err(CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "connection nonce was already used in this broker epoch",
+                    )
+                    .into());
+                }
                 let connection_epoch = state
                     .connection_epoch
                     .checked_next()
@@ -224,6 +232,17 @@ impl Broker {
                     .map_or(ResumeResult::Accepted, |watermark| {
                         resume_status(state, watermark)
                     });
+                state
+                    .used_connection_nonces
+                    .insert(connection_nonce.clone());
+                state.active_connections.insert(
+                    connection_epoch,
+                    ActiveConnection {
+                        principal_id: principal_id.clone(),
+                        connection_nonce: connection_nonce.clone(),
+                        profile_binding_id: profile_binding_id.clone(),
+                    },
+                );
                 Ok((connection_epoch, principal_id, resume))
             })?;
             let authority = AuthorityTicket::host_issued(
@@ -248,6 +267,25 @@ impl Broker {
     /// Alias for [`Broker::hello`] used by local protocol adapters.
     pub fn admit(&self, hello: &HelloEnvelope) -> Result<Connection, HostError> {
         self.hello(hello)
+    }
+
+    /// Remove one disconnected local connection without affecting other clients.
+    pub fn disconnect(&self, authority: &AuthorityTicket) -> Result<(), HostError> {
+        self.with_inner(|inner| {
+            inner.ledger.update(|state| {
+                let epoch = authority.connection_epoch();
+                let matches = authority.broker_epoch() == state.broker_epoch
+                    && state.active_connections.get(&epoch).is_some_and(|current| {
+                        current.principal_id == *authority.principal_id()
+                            && current.connection_nonce == *authority.connection_nonce()
+                            && current.profile_binding_id == authority.profile_binding_id().cloned()
+                    });
+                if matches {
+                    state.active_connections.remove(&epoch);
+                }
+                Ok(())
+            })
+        })
     }
 
     /// Create a new logical space with a host-assigned identity.
@@ -1352,6 +1390,71 @@ impl Broker {
                 create_page_in_state(state, space_id, page_id, label.clone())
             })
         })
+    }
+
+    /// Create, claim, and visually present one inactive managed page.
+    ///
+    /// The browser bridge receives only a host-issued logical proof. The
+    /// returned browser inventory is validated before the durable page is
+    /// marked managed, and group presentation remains best effort because a
+    /// Chrome tab group is visual state rather than authority.
+    pub fn create_managed_page(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        label: impl Into<String>,
+        now: Timestamp,
+        url: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<PageDescriptor, HostError> {
+        let planned = self.create_page_at(space_id, authority, lease_epoch, label, now)?;
+        let proof = json!({
+            "issued_by_host": true,
+            "proof_id": format!("proof-create-{}-{}", planned.page_id, lease_epoch.get()),
+            "kind": "creation",
+            "space_id": space_id.to_string(),
+            "page_id": planned.page_id.to_string(),
+            "lease_epoch": lease_epoch.get(),
+        });
+        let bridge = self.bridge()?;
+        let record = bridge
+            .create_page(space_id, &planned.page_id, lease_epoch, url, title, proof)
+            .map_err(HostError::Bridge)?;
+        let object = record.as_object().ok_or_else(|| {
+            HostError::Core(CoreError::new(
+                ErrorCode::InvalidJson,
+                "managed page bridge result is not an object",
+            ))
+        })?;
+        if object.get("space_id").and_then(Value::as_str) != Some(space_id.as_str())
+            || object.get("page_id").and_then(Value::as_str) != Some(planned.page_id.as_str())
+        {
+            return Err(HostError::Core(CoreError::new(
+                ErrorCode::TargetReplaced,
+                "managed page bridge result has the wrong logical scope",
+            )));
+        }
+        let frame_count = object
+            .get("frame_count")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0);
+        let bound = self.bind_page(
+            space_id,
+            &planned.page_id,
+            authority,
+            lease_epoch,
+            now,
+            object.get("url").and_then(Value::as_str).map(str::to_owned),
+            object
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            frame_count,
+        )?;
+        let _ = bridge.present_group(space_id, &planned.page_id, lease_epoch, title);
+        Ok(bound)
     }
 
     /// Mark a planned page as logically managed; no raw bridge handle is stored.
@@ -2828,12 +2931,17 @@ fn create_page_in_state(
 }
 
 fn authority_is_current(state: &LedgerState, authority: &AuthorityTicket) -> bool {
-    authority.broker_epoch() == state.broker_epoch
-        && authority.connection_epoch().get() != 0
-        && authority.connection_epoch() == state.connection_epoch
-        && state.connection_principal_id.as_ref() == Some(authority.principal_id())
-        && state.connection_nonce.as_ref() == Some(authority.connection_nonce())
-        && state.connection_profile_binding_id == authority.profile_binding_id().cloned()
+    if authority.broker_epoch() != state.broker_epoch || authority.connection_epoch().get() == 0 {
+        return false;
+    }
+    state
+        .active_connections
+        .get(&authority.connection_epoch())
+        .is_some_and(|current| {
+            current.principal_id == *authority.principal_id()
+                && current.connection_nonce == *authority.connection_nonce()
+                && current.profile_binding_id == authority.profile_binding_id().cloned()
+        })
 }
 
 fn authorize_ticket(state: &LedgerState, authority: &AuthorityTicket) -> Result<(), HostError> {
@@ -2847,7 +2955,7 @@ fn authorize_ticket(state: &LedgerState, authority: &AuthorityTicket) -> Result<
     if !authority_is_current(state, authority) {
         return Err(CoreError::new(
             ErrorCode::PermissionDenied,
-            "authority ticket is not the current connection authority",
+            "authority ticket is not an active connection authority",
         )
         .into());
     }
@@ -3581,17 +3689,27 @@ mod tests {
     }
 
     fn admit_authority(broker: &Broker, suffix: &str) -> AuthorityTicket {
+        admit_authority_with_nonce(broker, suffix, suffix)
+    }
+
+    fn admit_authority_with_nonce(
+        broker: &Broker,
+        principal_suffix: &str,
+        nonce_suffix: &str,
+    ) -> AuthorityTicket {
         let hello = HelloEnvelope {
             protocol: PROTOCOL_VERSION,
             supported_protocols: vec![PROTOCOL_VERSION],
-            principal_id: principal(suffix),
+            principal_id: principal(principal_suffix),
             resume_from: None,
             client_metadata: Some(ClientMetadata {
-                client_id: Some(ClientId::from_suffix(format!("client-{suffix}")).expect("client")),
+                client_id: Some(
+                    ClientId::from_suffix(format!("client-{nonce_suffix}")).expect("client"),
+                ),
                 client_name: Some("host-unit-test".to_owned()),
                 client_version: Some("2".to_owned()),
                 connection_nonce: Some(
-                    ConnectionNonce::from_suffix(format!("nonce-{suffix}")).expect("nonce"),
+                    ConnectionNonce::from_suffix(format!("nonce-{nonce_suffix}")).expect("nonce"),
                 ),
                 profile_binding_id: Some(
                     ProfileBindingId::from_suffix("host-test").expect("profile"),
@@ -3629,7 +3747,7 @@ mod tests {
                 )
                 .is_err()
         );
-        let one_authority = admit_authority(&broker, "one");
+        let one_authority = admit_authority_with_nonce(&broker, "one", "one-reconnect");
         assert!(matches!(
             broker.renew_lease(
                 &one.space_id,
@@ -3729,6 +3847,11 @@ mod tests {
         ));
 
         let newer = admit_authority(&broker, "newer");
+        assert!(broker.ledger_json(&authority).is_ok());
+        assert!(broker.ledger_json(&newer).is_ok());
+        broker
+            .disconnect(&authority)
+            .expect("disconnect first session");
         assert!(broker.ledger_json(&authority).is_err());
         assert!(broker.ledger_json(&newer).is_ok());
     }
