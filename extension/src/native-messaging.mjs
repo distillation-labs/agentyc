@@ -67,6 +67,7 @@ export class NativeMessagingClient {
     this.stopped = false;
     this.disconnecting = false;
     this.removePortListeners = [];
+    this.connectionGeneration = 0;
     this.connectPromise = null;
   }
 
@@ -103,13 +104,16 @@ export class NativeMessagingClient {
     this.connectPromise = Promise.resolve()
       .then(() => {
         this.cleanupPortListeners();
+        this.notifyUnknownMutations(
+          new Error("Native Messaging connection was replaced"),
+        );
         this.state = "handshaking";
         this.nonce = createNonce();
         this.brokerEpoch = undefined;
         this.connectionEpoch = undefined;
         this.outboundSequence = 1;
         this.inboundSequence.reset(1);
-        this.pendingMutations.clear();
+        const connectionGeneration = ++this.connectionGeneration;
 
         let port;
         try {
@@ -128,13 +132,17 @@ export class NativeMessagingClient {
         this.port = port;
         this.removePortListeners = [
           addListener(port?.onMessage, (message) =>
-            this.handleIncoming(message),
+            this.handleIncoming(message, connectionGeneration, port),
           ),
           addListener(port?.onDisconnect, () => {
             const runtimeError = this.chrome?.runtime?.lastError;
             this.handleDisconnect(
               runtimeError ?? new Error("Native Messaging port disconnected"),
-              { immediateReconnect: true },
+              {
+                immediateReconnect: true,
+                connectionGeneration,
+                port,
+              },
             );
           }),
         ];
@@ -163,13 +171,24 @@ export class NativeMessagingClient {
           "logical_tabs",
           "visual_groups",
           "frame_events",
+          "snapshot",
+          "reconcile",
           "side_panel",
         ],
       }),
     );
   }
 
-  handleIncoming(message) {
+  handleIncoming(
+    message,
+    connectionGeneration = this.connectionGeneration,
+    port = this.port,
+  ) {
+    if (
+      connectionGeneration !== this.connectionGeneration ||
+      port !== this.port
+    )
+      return;
     try {
       assertBoundedEnvelope(message, { maxBytes: MAX_CONTROL_BYTES });
       if (Object.prototype.hasOwnProperty.call(message, "origin")) {
@@ -200,7 +219,7 @@ export class NativeMessagingClient {
       }
       this.onMessage(message);
     } catch (error) {
-      this.failProtocol(error);
+      this.failProtocol(error, { connectionGeneration, port });
     }
   }
 
@@ -262,20 +281,39 @@ export class NativeMessagingClient {
       );
     }
     if (mutation && actionId) this.pendingMutations.add(actionId);
-    const envelope = makeEnvelope(kind, {
-      ...fields,
-      nonce: this.nonce,
-      sequence: this.outboundSequence++,
-      broker_epoch: this.brokerEpoch,
-      connection_epoch: this.connectionEpoch,
-      worker_instance_epoch: this.workerInstanceEpoch,
-      browser_session_epoch: this.browserSessionEpoch,
-    });
+    let envelope;
+    const sequence = this.outboundSequence;
+    try {
+      if (
+        !Number.isSafeInteger(sequence) ||
+        sequence < 1 ||
+        sequence === Number.MAX_SAFE_INTEGER
+      )
+        throw new ProtocolError(
+          "sequence_invalid",
+          "Native Messaging outbound sequence is exhausted",
+        );
+      envelope = makeEnvelope(kind, {
+        ...fields,
+        nonce: this.nonce,
+        sequence,
+        broker_epoch: this.brokerEpoch,
+        connection_epoch: this.connectionEpoch,
+        worker_instance_epoch: this.workerInstanceEpoch,
+        browser_session_epoch: this.browserSessionEpoch,
+      });
+      this.outboundSequence = sequence + 1;
+    } catch (error) {
+      if (mutation && actionId) this.pendingMutations.delete(actionId);
+      throw error;
+    }
     try {
       this.postEnvelope(envelope);
     } catch (error) {
-      if (mutation && actionId) this.pendingMutations.delete(actionId);
-      this.handleDisconnect(error);
+      this.handleDisconnect(error, {
+        connectionGeneration: this.connectionGeneration,
+        port: this.port,
+      });
       throw error;
     }
     return envelope;
@@ -310,8 +348,7 @@ export class NativeMessagingClient {
     error,
     mutation = false,
   } = {}) {
-    if (actionId) this.pendingMutations.delete(actionId);
-    return this.send(
+    const envelope = this.send(
       "response",
       {
         request_id: requestId,
@@ -323,8 +360,10 @@ export class NativeMessagingClient {
               error: error ?? errorResult("extension_error", "request failed"),
             }),
       },
-      { mutation },
+      { mutation, actionId },
     );
+    if (actionId) this.pendingMutations.delete(actionId);
+    return envelope;
   }
 
   sendEvent(event, payload = {}, scope = {}) {
@@ -350,7 +389,12 @@ export class NativeMessagingClient {
     this.port.postMessage(envelope);
   }
 
-  failProtocol(error) {
+  failProtocol(error, { connectionGeneration, port } = {}) {
+    if (
+      connectionGeneration !== undefined &&
+      (connectionGeneration !== this.connectionGeneration || port !== this.port)
+    )
+      return;
     const protocolError =
       error instanceof ProtocolError
         ? error
@@ -359,38 +403,52 @@ export class NativeMessagingClient {
             error instanceof Error ? error.message : String(error),
           );
     this.transition("rejected", protocolError);
-    const unknownActions = [...this.pendingMutations];
-    this.pendingMutations.clear();
-    if (unknownActions.length > 0)
-      this.onUnknownActions(unknownActions, protocolError);
-    this.disconnectPort();
+    this.notifyUnknownMutations(protocolError);
+    this.disconnectPort(port);
     this.scheduleReconnect();
   }
 
   handleDisconnect(
     reason,
-    { scheduleReconnect = true, immediateReconnect = false } = {},
+    {
+      scheduleReconnect = true,
+      immediateReconnect = false,
+      connectionGeneration,
+      port,
+    } = {},
   ) {
+    if (
+      (connectionGeneration !== undefined &&
+        connectionGeneration !== this.connectionGeneration) ||
+      (port !== undefined && port !== this.port)
+    )
+      return;
     if (this.disconnecting) return;
     const wasLive = this.state === "connected" || this.state === "handshaking";
-    const unknownActions = [...this.pendingMutations];
-    this.pendingMutations.clear();
+    this.notifyUnknownMutations(reason);
     this.cleanupPortListeners();
     this.port = null;
     this.brokerEpoch = undefined;
     this.connectionEpoch = undefined;
     this.state = "disconnected";
-    if (wasLive || unknownActions.length > 0) {
-      this.onUnknownActions(unknownActions, reason);
-    }
+    if (wasLive) this.onUnknownActions([], reason);
     this.onStateChange(this.state, reason);
     if (scheduleReconnect) this.scheduleReconnect(immediateReconnect);
   }
 
-  disconnectPort() {
+  notifyUnknownMutations(reason) {
+    const unknownActions = [...this.pendingMutations];
+    this.pendingMutations.clear();
+    if (unknownActions.length > 0)
+      this.onUnknownActions(unknownActions, reason);
+    return unknownActions;
+  }
+
+  disconnectPort(expectedPort = this.port) {
     const port = this.port;
-    if (!port) return;
+    if (!port || (expectedPort !== undefined && port !== expectedPort)) return;
     this.disconnecting = true;
+    this.port = null;
     try {
       port.disconnect?.();
     } catch {
@@ -398,7 +456,6 @@ export class NativeMessagingClient {
     } finally {
       this.disconnecting = false;
       this.cleanupPortListeners();
-      this.port = null;
     }
   }
 
@@ -411,13 +468,11 @@ export class NativeMessagingClient {
   stop({ reconnect = false } = {}) {
     this.stopped = !reconnect;
     this.clearReconnectTimer();
-    this.pendingMutations.clear();
+    const reason = new Error("Native Messaging client stopped");
+    this.notifyUnknownMutations(reason);
     this.disconnectPort();
     this.state = "disconnected";
-    this.onStateChange(
-      this.state,
-      new Error("Native Messaging client stopped"),
-    );
+    this.onStateChange(this.state, reason);
   }
 
   transition(state, detail = undefined) {
