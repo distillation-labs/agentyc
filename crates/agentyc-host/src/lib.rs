@@ -32,7 +32,8 @@ pub use actionability::{
 pub use actions::{ActionLookup, ActionResult};
 pub use agentyc_core;
 pub use bridge::{
-    Bridge, BridgeDispatchResult, BridgeReconcileResult, FakeBridge, FenceResult, NullBridge,
+    Bridge, BridgeDispatchResult, BridgeReconcileResult, ExtensionEpochs, FakeBridge, FenceResult,
+    NullBridge,
 };
 pub use broker::{Broker, Connection, HostLifecycle, canonical_action_hash};
 pub use context::{
