@@ -958,12 +958,21 @@ def _managed_inventory_observation(
     groups = _visual_group_observation(result, {expected_space})
     if groups is None:
         return None
+    safety = result.get("safety")
+    safety_measured = (
+        isinstance(safety, dict)
+        and safety.get("measurement_status") == "measured_live"
+        and safety.get("current_run") is True
+        and all(type(safety.get(key)) is int for key in ("user_tab_closes", "focus_theft"))
+    )
     return {
         "managed_count": len(records),
         "extension_backed": True,
         "visual_groups": groups,
         "user_focus": focus,
         "epochs": _inventory_epochs(result, records),
+        "safety_measured": safety_measured,
+        "recovery_observed": result.get("recovery_observed") is True,
     }
 
 
@@ -1221,6 +1230,14 @@ def _poll_managed_inventory(
                 "receipt_refs": tuple(receipt_refs),
                 "user_focus": focus,
                 "epochs": epochs,
+                "safety_measured": bool(observations) and all(
+                    observation.get("safety_measured") is True
+                    for observation in observations.values()
+                ),
+                "recovery_observed": bool(observations) and all(
+                    observation.get("recovery_observed") is True
+                    for observation in observations.values()
+                ),
                 "reason_code": "managed_inventory_observed",
             }
         if attempt < MAX_INVENTORY_POLL_ATTEMPTS:
@@ -2356,13 +2373,15 @@ def orchestrate_live(
                     )
                     if after_inventory.get("observed"):
                         focus_checks.append(_focus_is_unchanged(baseline_focus, after_inventory.get("user_focus")))
+                    recovery_observed = after_inventory.get("recovery_observed") is True
                     checkpoint_record["post_observation"] = {
                         "host": True,
                         "inventory": after_inventory.get("observed") is True,
                         "epoch": epoch_changed,
                         "profile_binding": binding_current,
+                        "recovery": recovery_observed,
                     }
-                    if not after_inventory.get("observed") or not epoch_changed or not binding_current:
+                    if not after_inventory.get("observed") or not epoch_changed or not binding_current or not recovery_observed:
                         _set_scenario(scenarios, name, "operator_checkpoint_required", "post_checkpoint_observation_incomplete")
                         failures.append(f"{name}_post_observation_invalid")
                     else:
@@ -2475,7 +2494,16 @@ def orchestrate_live(
         "focus_unchanged": all_focus_stable,
         "current_run": True,
     }
-    safety_measured = browser_observed and baseline_focus is not None and bool(focus_checks) and all_focus_stable
+    latest_safety_measured = bool(
+        isinstance(latest_inventory, dict) and latest_inventory.get("safety_measured") is True
+    )
+    safety_measured = (
+        browser_observed
+        and baseline_focus is not None
+        and bool(focus_checks)
+        and all_focus_stable
+        and latest_safety_measured
+    )
     live["safety"] = {
         "measurement_status": "measured_live" if safety_measured and cross_space_rejected and stale_rejected else "not_measured_live_incomplete",
         "current_run": True,
