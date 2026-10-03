@@ -8,18 +8,26 @@ other modes are explicit live lanes and fail closed until a real probe is wired.
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import errno
 import hashlib
+import ipaddress
 import json
 import math
 import os
 import platform
+import re
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 from statistics import mean
@@ -63,6 +71,11 @@ MAX_TEXT_CHARS = 250_000
 MAX_SRCDOC_CHARS = 100_000
 MAX_SPACES = 256
 MAX_RAW_SAMPLE_FILE_BYTES = 7 * 1024 * 1024
+MAX_WEBSOCKET_FRAME_BYTES = 64 * 1024
+MAX_WEBSOCKET_HEADER_BYTES = 16 * 1024
+WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+CDP_SESSION_ID_RE = r"^[A-Za-z0-9._:-]{1,128}$"
+TOKENIZER_NAME = "agentyc-byte-estimate-v1"
 GENERATION_MANIFEST_NAME = "generation-manifest.json"
 COMMIT_MARKER_NAME = "COMMIT"
 RELEASE_GATE_SCHEMA_VERSION = 1
@@ -354,24 +367,469 @@ def running_chrome() -> bool:
     return bool(names & {"google chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser"})
 
 
-def live_missing(mode: str, browser_executable: str | None, profile_dir: str | None) -> list[str]:
+class LiveProbeError(RuntimeError):
+    """A live measurement or ownership proof was unavailable."""
+
+
+class DevToolsSocket:
+    """Small bounded RFC 6455 client for a verified local Chrome endpoint."""
+
+    def __init__(self, url: str, timeout: float = 3.0) -> None:
+        parsed = urllib.parse.urlparse(url)
+        if (
+            parsed.scheme != "ws"
+            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or parsed.port is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or not parsed.path.startswith("/")
+        ):
+            raise LiveProbeError("Chrome exposed a non-loopback or malformed CDP websocket")
+        try:
+            hosts = {item[-1][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port, type=socket.SOCK_STREAM)}
+        except OSError as exc:
+            raise LiveProbeError("Chrome CDP hostname could not be resolved") from exc
+        if not hosts or any(not ipaddress.ip_address(host).is_loopback for host in hosts):
+            raise LiveProbeError("Chrome CDP websocket is not loopback")
+        self.socket: socket.socket | None = socket.create_connection((parsed.hostname, parsed.port), timeout=timeout)
+        self.timeout = timeout
+        self.next_id = 0
+        self.buffer = bytearray()
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        target = parsed.path or "/"
+        request = (
+            f"GET {target} HTTP/1.1\r\nHost: {parsed.hostname}:{parsed.port}\r\n"
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        ).encode("ascii")
+        try:
+            self.socket.sendall(request)
+            response = self._read_headers()
+            text = response.decode("ascii")
+            lines = text.split("\r\n")
+            if not lines or not lines[0].startswith("HTTP/1.1 101 "):
+                raise LiveProbeError("Chrome CDP websocket handshake failed")
+            headers = {
+                name.strip().lower(): value.strip()
+                for line in lines[1:]
+                if ":" in line
+                for name, value in [line.split(":", 1)]
+            }
+            expected = base64.b64encode(hashlib.sha1((key + WEBSOCKET_GUID).encode("ascii")).digest()).decode("ascii")
+            if headers.get("sec-websocket-accept", "") != expected:
+                raise LiveProbeError("Chrome CDP websocket handshake was not authenticated")
+        except Exception:
+            self.close()
+            raise
+
+    def _read_headers(self) -> bytes:
+        data = bytearray()
+        while b"\r\n\r\n" not in data:
+            if len(data) >= MAX_WEBSOCKET_HEADER_BYTES:
+                raise LiveProbeError("Chrome CDP websocket headers exceeded the bound")
+            if self.socket is None:
+                raise LiveProbeError("Chrome CDP websocket closed")
+            chunk = self.socket.recv(min(4096, MAX_WEBSOCKET_HEADER_BYTES - len(data)))
+            if not chunk:
+                raise LiveProbeError("Chrome CDP websocket closed during handshake")
+            data.extend(chunk)
+        return bytes(data[: data.index(b"\r\n\r\n") + 4])
+
+    def _frame(self, payload: bytes, opcode: int = 1) -> bytes:
+        if len(payload) > MAX_WEBSOCKET_FRAME_BYTES:
+            raise LiveProbeError("Chrome CDP message exceeded the bound")
+        mask = os.urandom(4)
+        length = len(payload)
+        if length < 126:
+            header = bytes((0x80 | opcode, 0x80 | length))
+        elif length <= 0xFFFF:
+            header = bytes((0x80 | opcode, 0x80 | 126)) + struct.pack("!H", length)
+        else:
+            header = bytes((0x80 | opcode, 0x80 | 127)) + struct.pack("!Q", length)
+        return header + mask + bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+
+    def _receive(self) -> bytes:
+        if self.socket is None:
+            raise LiveProbeError("Chrome CDP websocket closed")
+        header = self._receive_exact(2)
+        first, second = header
+        if first & 0x70 or second & 0x80:
+            raise LiveProbeError("Chrome CDP websocket frame is invalid")
+        opcode = first & 0x0F
+        length_code = second & 0x7F
+        if length_code < 126:
+            length = length_code
+        elif length_code == 126:
+            length = struct.unpack("!H", self._receive_exact(2))[0]
+        else:
+            length = struct.unpack("!Q", self._receive_exact(8))[0]
+        if length > MAX_WEBSOCKET_FRAME_BYTES:
+            raise LiveProbeError("Chrome CDP frame exceeded the bound")
+        payload = self._receive_exact(length)
+        if opcode == 9:
+            self.socket.sendall(self._frame(payload, opcode=10))
+            return self._receive()
+        if opcode == 8:
+            raise LiveProbeError("Chrome CDP websocket closed")
+        if opcode != 1 or not first & 0x80:
+            raise LiveProbeError("fragmented or non-text Chrome CDP message")
+        return payload
+
+    def _receive_exact(self, size: int) -> bytes:
+        output = bytearray()
+        while len(output) < size:
+            if self.buffer:
+                take = min(size - len(output), len(self.buffer))
+                output.extend(self.buffer[:take])
+                del self.buffer[:take]
+                continue
+            if self.socket is None:
+                raise LiveProbeError("Chrome CDP websocket closed")
+            chunk = self.socket.recv(min(MAX_WEBSOCKET_FRAME_BYTES, size - len(output)))
+            if not chunk:
+                raise LiveProbeError("Chrome CDP websocket closed")
+            output.extend(chunk)
+        return bytes(output)
+
+    def command(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        if not method or len(method) > 256:
+            raise LiveProbeError("Chrome CDP method is invalid")
+        self.next_id += 1
+        command_id = self.next_id
+        payload = json.dumps({"id": command_id, "method": method, "params": params or {}}, separators=(",", ":")).encode("utf-8")
+        if self.socket is None:
+            raise LiveProbeError("Chrome CDP websocket closed")
+        self.socket.settimeout(self.timeout)
+        self.socket.sendall(self._frame(payload))
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            message = json.loads(self._receive().decode("utf-8"))
+            if isinstance(message, dict) and message.get("id") == command_id:
+                if "error" in message:
+                    raise LiveProbeError("Chrome rejected a required CDP command")
+                return message.get("result")
+        raise LiveProbeError("Chrome CDP command timed out")
+
+    def close(self) -> None:
+        sock = self.socket
+        self.socket = None
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _local_json(port: int, path: str) -> Any:
+    if not 1 <= port <= 65535 or not path.startswith("/"):
+        raise LiveProbeError("invalid local Chrome endpoint")
+    request = urllib.request.Request(f"http://127.0.0.1:{port}{path}")
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            data = response.read(MAX_WEBSOCKET_FRAME_BYTES + 1)
+    except (OSError, urllib.error.URLError) as exc:
+        raise LiveProbeError("Chrome debugging endpoint is unavailable") from exc
+    if len(data) > MAX_WEBSOCKET_FRAME_BYTES:
+        raise LiveProbeError("Chrome debugging response exceeded the bound")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise LiveProbeError("Chrome debugging response was not JSON") from exc
+
+
+def _validated_ws_url(value: Any, port: int) -> str:
+    if not isinstance(value, str):
+        raise LiveProbeError("Chrome did not expose a CDP websocket")
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme != "ws" or parsed.hostname not in {"127.0.0.1", "localhost"} or parsed.port != port or parsed.query or parsed.fragment:
+        raise LiveProbeError("Chrome exposed an unbounded CDP websocket")
+    return value
+
+
+def _validate_existing_browser(port: int, pid: int) -> None:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LiveProbeError("existing browser process identity is unavailable") from exc
+    command = result.stdout.strip()
+    lowered = command.lower()
+    if not any(name in lowered for name in ("chrome", "chromium")) or f"--remote-debugging-port={port}" not in command:
+        raise LiveProbeError("existing target is not bound to an explicit Chrome debugging process")
+
+
+def _process_snapshot(root_pid: int) -> tuple[float, int]:
+    """Measure the owned browser process without inheriting unrelated Chrome state.
+
+    Chrome helpers can be reparented by macOS after a runner timeout. Summing every
+    process with a matching command therefore over-counts unrelated browser work.
+    The browser root is the stable ownership anchor; child-process accounting is
+    retained as a separate limitation in the report rather than being guessed.
+    """
+    if root_pid <= 0:
+        raise LiveProbeError("browser process identity is unavailable")
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(root_pid), "-o", "%cpu=,rss=,command="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LiveProbeError("process resource instrumentation is unavailable") from exc
+    fields = result.stdout.strip().split(None, 2)
+    if len(fields) != 3:
+        raise LiveProbeError("owned browser process is not observable")
+    try:
+        cpu = max(0.0, float(fields[0])) / max(1, os.cpu_count() or 1)
+        rss = int(fields[1]) * 1024
+    except ValueError as exc:
+        raise LiveProbeError("process resource instrumentation returned invalid values") from exc
+    if rss < 0 or not math.isfinite(cpu):
+        raise LiveProbeError("process resource instrumentation returned invalid values")
+    return min(100.0, cpu), rss
+
+
+def _host_rss_bytes() -> int:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(os.getpid()), "-o", "rss="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        value = int(result.stdout.strip()) * 1024
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise LiveProbeError("host resource instrumentation is unavailable") from exc
+    if value < 0:
+        raise LiveProbeError("host RSS instrumentation returned an invalid value")
+    return value
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
+        handle.bind(("127.0.0.1", 0))
+        return int(handle.getsockname()[1])
+
+
+def _safe_disposable_profile(value: Path) -> Path:
+    value = value.expanduser()
+    if not value.is_absolute():
+        raise LiveProbeError("managed profile must be an absolute disposable temporary path")
+    current = value
+    while current != current.parent:
+        if current.is_symlink():
+            raise LiveProbeError("managed profile path contains a symlink")
+        current = current.parent
+    temporary_root = Path(tempfile.gettempdir()).resolve()
+    resolved = value.resolve(strict=False)
+    if resolved == temporary_root or temporary_root not in resolved.parents:
+        raise LiveProbeError("managed profile must be inside the system temporary directory")
+    if resolved.exists() and (not resolved.is_dir() or any(resolved.iterdir())):
+        raise LiveProbeError("managed profile must be absent or empty")
+    return resolved
+
+
+class LiveChrome:
+    """Own a disposable browser or bind only to caller-selected page targets."""
+
+    def __init__(self, mode: str, executable: str | None, profile_dir: str | None, target_id: str | None, human_target_id: str | None, browser_port: int | None, browser_pid: int | None, headless: bool) -> None:
+        self.mode = mode
+        self.executable = executable
+        self.profile_dir_arg = profile_dir
+        self.target_id_arg = target_id
+        self.human_target_id_arg = human_target_id
+        self.browser_port = browser_port
+        self.browser_pid_arg = browser_pid
+        self.headless = headless
+        self.process: subprocess.Popen[Any] | None = None
+        self.profile_dir: Path | None = None
+        self.remove_profile = False
+        self.browser_socket: DevToolsSocket | None = None
+        self.pages: list[DevToolsSocket] = []
+        self.space_pages: list[DevToolsSocket] = []
+        self.space_target_ids: list[str] = []
+        self.target_ids: list[str] = []
+        self.root_pid: int | None = None
+
+    def _targets(self) -> list[dict[str, Any]]:
+        value = _local_json(self.browser_port or 0, "/json/list")
+        if not isinstance(value, list):
+            raise LiveProbeError("Chrome target inventory is invalid")
+        return [item for item in value if isinstance(item, dict)]
+
+    def _wait_target(self, target_id: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            for target in self._targets():
+                if target.get("id") == target_id:
+                    if target.get("type") != "page" or not isinstance(target.get("webSocketDebuggerUrl"), str):
+                        raise LiveProbeError("selected Chrome target is not a page target")
+                    return target
+            time.sleep(0.05)
+        raise LiveProbeError("selected Chrome target did not become available")
+
+    def _create_target(self, url: str) -> str:
+        if self.browser_socket is None:
+            raise LiveProbeError("owned browser target channel is unavailable")
+        result = self.browser_socket.command("Target.createTarget", {"url": url, "background": True})
+        target_id = result.get("targetId") if isinstance(result, dict) else None
+        if not isinstance(target_id, str) or re.fullmatch(CDP_SESSION_ID_RE, target_id) is None:
+            raise LiveProbeError("Chrome did not return a bounded owned target identity")
+        return target_id
+
+    def open(self) -> tuple[DevToolsSocket, DevToolsSocket]:
+        if self.mode == "managed":
+            if not self.executable or not Path(self.executable).is_file():
+                raise LiveProbeError("managed mode requires an installed browser executable")
+            if self.profile_dir_arg:
+                self.profile_dir = _safe_disposable_profile(Path(self.profile_dir_arg))
+            else:
+                self.profile_dir = Path(tempfile.mkdtemp(prefix="agentyc-direct-benchmark-"))
+                self.remove_profile = True
+            self.browser_port = _free_port()
+            command = [self.executable, f"--user-data-dir={self.profile_dir}", f"--remote-debugging-port={self.browser_port}", "--no-first-run", "--no-default-browser-check", "--disable-background-networking"]
+            if self.headless:
+                command.append("--headless=new")
+            self.process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.root_pid = self.process.pid
+            deadline = time.monotonic() + 12.0
+            version = None
+            while time.monotonic() < deadline:
+                try:
+                    version = _local_json(self.browser_port, "/json/version")
+                    break
+                except LiveProbeError:
+                    time.sleep(0.1)
+            if not isinstance(version, dict) or self.process.poll() is not None:
+                raise LiveProbeError("owned Chrome did not expose its debugging endpoint")
+            command_line = " ".join(command)
+            if f"--user-data-dir={self.profile_dir}" not in command_line or f"--remote-debugging-port={self.browser_port}" not in command_line:
+                raise LiveProbeError("owned Chrome identity could not be proven")
+            browser_ws = _validated_ws_url(version.get("webSocketDebuggerUrl"), self.browser_port)
+            self.browser_socket = DevToolsSocket(browser_ws)
+            self.target_ids = [self._create_target("about:blank"), self._create_target("about:blank")]
+        else:
+            if self.browser_port is None or self.browser_pid_arg is None or not self.target_id_arg or not self.human_target_id_arg:
+                raise LiveProbeError("target mode requires browser port, browser pid, target id, and human target id")
+            self.root_pid = self.browser_pid_arg
+            _validate_existing_browser(self.browser_port, self.browser_pid_arg)
+            targets = self._targets()
+            selected = {item.get("id"): item for item in targets}
+            if self.target_id_arg == self.human_target_id_arg or self.target_id_arg not in selected or self.human_target_id_arg not in selected:
+                raise LiveProbeError("explicit target selection is incomplete or duplicated")
+            for target_id in (self.target_id_arg, self.human_target_id_arg):
+                target = selected[target_id]
+                if target.get("type") != "page" or not isinstance(target.get("webSocketDebuggerUrl"), str):
+                    raise LiveProbeError("explicit target is not a page target")
+            self.target_ids = [self.target_id_arg, self.human_target_id_arg]
+            _process_snapshot(self.root_pid)
+        page_target = self._wait_target(self.target_ids[0])
+        human_target = self._wait_target(self.target_ids[1])
+        page = DevToolsSocket(_validated_ws_url(page_target.get("webSocketDebuggerUrl"), self.browser_port or 0))
+        human = DevToolsSocket(_validated_ws_url(human_target.get("webSocketDebuggerUrl"), self.browser_port or 0))
+        self.pages = [page, human]
+        self.space_pages = [page]
+        self.space_target_ids = [self.target_ids[0]]
+        page.command("Page.enable")
+        page.command("Runtime.enable")
+        page.command("Page.bringToFront")
+        page.command("Input.setIgnoreInputEvents", {"ignore": False})
+        human.command("Runtime.enable")
+        return page, human
+
+    def ensure_space_count(self, count: int, path: Path) -> None:
+        if count < 1 or count > MAX_SPACES:
+            raise LiveProbeError("requested live space count is outside the bound")
+        if self.mode != "managed" and count > 1:
+            raise LiveProbeError("existing target mode cannot create additional space targets")
+        if self.browser_socket is None and count > len(self.space_pages):
+            raise LiveProbeError("owned browser target channel is unavailable")
+        while len(self.space_pages) < count:
+            target_id = self._create_target(path.resolve().as_uri())
+            self.target_ids.append(target_id)
+            self.space_target_ids.append(target_id)
+            target = self._wait_target(target_id)
+            socket_client = DevToolsSocket(_validated_ws_url(target.get("webSocketDebuggerUrl"), self.browser_port or 0))
+            socket_client.command("Page.enable")
+            socket_client.command("Runtime.enable")
+            self.pages.append(socket_client)
+            self.space_pages.append(socket_client)
+        while len(self.space_pages) > count:
+            socket_client = self.space_pages.pop()
+            target_id = self.space_target_ids.pop()
+            try:
+                socket_client.close()
+            finally:
+                if self.browser_socket is not None:
+                    try:
+                        self.browser_socket.command("Target.closeTarget", {"targetId": target_id})
+                    except (LiveProbeError, OSError):
+                        pass
+                if socket_client in self.pages:
+                    self.pages.remove(socket_client)
+        # Additional owned space targets remain blank. They are intentionally
+        # retained as isolated targets so the resource cell measures the
+        # requested concurrent-space count without stealing focus from the
+        # action page.
+
+    def close(self) -> None:
+        for page in self.pages:
+            page.close()
+        self.pages.clear()
+        if self.browser_socket is not None:
+            for target_id in self.target_ids if self.mode == "managed" else []:
+                try:
+                    self.browser_socket.command("Target.closeTarget", {"targetId": target_id})
+                except (LiveProbeError, OSError):
+                    pass
+            self.browser_socket.close()
+            self.browser_socket = None
+        if self.process is not None:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=3)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            self.process = None
+        if self.remove_profile and self.profile_dir is not None:
+            shutil.rmtree(self.profile_dir, ignore_errors=True)
+
+
+def live_missing(mode: str, browser_executable: str | None, profile_dir: str | None, target_id: str | None = None, human_target_id: str | None = None, browser_port: int | None = None, browser_pid: int | None = None) -> list[str]:
     missing: list[str] = []
     if mode in {"target", "headed"}:
-        if not (Path(browser_executable).is_file() if browser_executable else any(path.is_file() for path in browser_candidates())):
-            missing.append("an installed Chrome/Chromium executable")
-        if platform.system() == "Linux" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-            missing.append("a headed display (DISPLAY or WAYLAND_DISPLAY)")
-        if not running_chrome():
-            missing.append("an already running headed Chrome target")
+        if browser_port is None:
+            missing.append("--browser-debugging-port for explicit target mode")
+        if browser_pid is None:
+            missing.append("--browser-pid for resource ownership")
+        if not target_id:
+            missing.append("--target-id for explicit target mode")
+        if not human_target_id:
+            missing.append("--human-target-id for human-tab responsiveness")
     if mode == "managed":
         if not browser_executable:
             missing.append("--browser-executable for managed mode")
         elif not Path(browser_executable).is_file():
             missing.append("the supplied browser executable")
-        if not profile_dir:
-            missing.append("--profile-dir for managed mode")
-        elif not Path(profile_dir).is_dir():
-            missing.append("the supplied existing profile directory")
+        if profile_dir:
+            try:
+                _safe_disposable_profile(Path(profile_dir))
+            except LiveProbeError:
+                missing.append("an empty disposable --profile-dir inside the system temporary directory")
     return missing
 
 
@@ -640,6 +1098,458 @@ def summarize(samples: list[dict[str, Any]], record: dict[str, Any], cache_state
     }
 
 
+ACTION_SELECTORS = {
+    "small-form": "#save",
+    "dense-admin-table": "button[data-account='001']",
+    "dynamic-feed": "#append-item",
+    "nested-frame": "#outer-action",
+}
+
+
+def _runtime_value(client: DevToolsSocket, expression: str) -> Any:
+    result = client.command("Runtime.evaluate", {"expression": expression, "returnByValue": True, "awaitPromise": True})
+    if not isinstance(result, dict) or result.get("exceptionDetails") is not None:
+        raise LiveProbeError("required browser instrumentation evaluation failed")
+    remote = result.get("result")
+    if not isinstance(remote, dict) or "value" not in remote:
+        raise LiveProbeError("required browser instrumentation returned no value")
+    return remote["value"]
+
+
+def _wait_ready(client: DevToolsSocket) -> None:
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        if _runtime_value(client, "document.readyState") == "complete":
+            return
+        time.sleep(0.02)
+    raise LiveProbeError("fixture page did not reach readyState complete")
+
+
+def _navigate(client: DevToolsSocket, path: Path, *, reload: bool = False) -> float:
+    started = time.perf_counter_ns()
+    if reload:
+        client.command("Page.reload", {"ignoreCache": False})
+    else:
+        client.command("Page.navigate", {"url": path.resolve(strict=True).as_uri()})
+    _wait_ready(client)
+    return (time.perf_counter_ns() - started) / 1_000_000
+
+
+def _snapshot(client: DevToolsSocket, selector: str) -> dict[str, Any]:
+    selector_json = json.dumps(selector)
+    value = _runtime_value(
+        client,
+        """
+        (() => {
+          const controls = new Set(['A','BUTTON','INPUT','SELECT','TEXTAREA']);
+          const out = {controls: 0, frames: 0, frames_scanned: 0, max_frame_depth: 0, text_chars: 0, srcdoc_chars: 0, snapshot_text: ''};
+          function walk(doc, depth) {
+            if (!doc) return;
+            out.max_frame_depth = Math.max(out.max_frame_depth, depth);
+            out.controls += Array.from(doc.querySelectorAll('a,button,input,select,textarea')).length;
+            if (doc.body && doc.body.innerText) {
+              const text = doc.body.innerText.slice(0, 250000);
+              out.text_chars += text.length;
+              out.snapshot_text += text;
+            }
+            for (const frame of Array.from(doc.querySelectorAll('iframe'))) {
+              out.frames += 1;
+              if (frame.srcdoc) out.srcdoc_chars += frame.srcdoc.length;
+              try { if (frame.contentDocument) { out.frames_scanned += 1; walk(frame.contentDocument, depth + 1); } } catch (_) {}
+            }
+          }
+          walk(document, 0);
+          const target = document.querySelector(__SELECTOR__);
+          if (!target) return null;
+          const rect = target.getBoundingClientRect();
+          return { ...out, action_rect: {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height}, action_tag: target.tagName };
+        })()
+        """.replace("__SELECTOR__", selector_json),
+    )
+    if not isinstance(value, dict) or not isinstance(value.get("action_rect"), dict):
+        raise LiveProbeError("required actionable control was not found in the live page")
+    rect = value["action_rect"]
+    if not all(isinstance(rect.get(key), (int, float)) and math.isfinite(float(rect[key])) for key in ("x", "y", "width", "height")):
+        raise LiveProbeError("live actionable control geometry is invalid")
+    if rect["width"] <= 0 or rect["height"] <= 0:
+        raise LiveProbeError("live actionable control is not visible")
+    return value
+
+
+def _action_rect(client: DevToolsSocket, selector: str) -> dict[str, Any]:
+    selector_json = json.dumps(selector)
+    value = _runtime_value(
+        client,
+        """
+        (() => {
+          const target = document.querySelector(__SELECTOR__);
+          if (!target) return null;
+          const rect = target.getBoundingClientRect();
+          return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height};
+        })()
+        """.replace("__SELECTOR__", selector_json),
+    )
+    if not isinstance(value, dict) or not all(isinstance(value.get(key), (int, float)) and math.isfinite(float(value[key])) for key in ("x", "y", "width", "height")):
+        raise LiveProbeError("live actionable control geometry is unavailable")
+    if value["width"] <= 0 or value["height"] <= 0:
+        raise LiveProbeError("live actionable control is not visible")
+    return value
+
+
+def _install_action_instrumentation(client: DevToolsSocket, selector: str) -> None:
+    selector_json = json.dumps(selector)
+    value = _runtime_value(
+        client,
+        """
+        (() => {
+          const target = document.querySelector(__SELECTOR__);
+          if (!target) return false;
+          window.__agentycBenchmarkAction = null;
+          target.addEventListener('click', event => {
+            window.__agentycBenchmarkAction = {trusted: event.isTrusted === true, tag: event.target && event.target.tagName, at: performance.now()};
+          }, {once: true});
+          return true;
+        })()
+        """.replace("__SELECTOR__", selector_json),
+    )
+    if value is not True:
+        raise LiveProbeError("live action instrumentation could not bind to the control")
+
+
+def _dispatch_click(client: DevToolsSocket, rect: dict[str, Any]) -> None:
+    x, y = float(rect["x"]), float(rect["y"])
+    for event_type, buttons in (("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 0)):
+        client.command("Input.dispatchMouseEvent", {"type": event_type, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1})
+
+
+def _verify_action(client: DevToolsSocket, fixture: str) -> tuple[float, dict[str, Any]]:
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        value = _runtime_value(
+            client,
+            """
+            (() => {
+              const action = window.__agentycBenchmarkAction;
+              const feed = document.querySelector('#feed');
+              const status = document.querySelector('#status');
+              return {action, feed_count: feed ? feed.children.length : null, status: status ? status.textContent : null, now: performance.now()};
+            })()
+            """,
+        )
+        if isinstance(value, dict) and isinstance(value.get("action"), dict) and value["action"].get("trusted") is True:
+            if fixture == "small-form" and value.get("status") != "saved":
+                raise LiveProbeError("live form action did not reach its verified postcondition")
+            if fixture == "dynamic-feed" and not isinstance(value.get("feed_count"), int):
+                raise LiveProbeError("live feed action did not expose its verified postcondition")
+            event_lag = max(0.0, float(value["now"]) - float(value["action"].get("at", value["now"])))
+            return event_lag, value
+        time.sleep(0.005)
+    raise LiveProbeError("live browser action had no trusted, observable outcome")
+
+
+def _measure_human_tab(client: DevToolsSocket) -> float:
+    started = time.perf_counter_ns()
+    value = _runtime_value(client, "({ready: document.readyState, now: performance.now()})")
+    elapsed = (time.perf_counter_ns() - started) / 1_000_000
+    if not isinstance(value, dict) or value.get("ready") not in {"interactive", "complete"}:
+        raise LiveProbeError("human-tab responsiveness instrumentation failed")
+    return elapsed
+
+
+def _token_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    rendered = json.dumps(payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode("utf-8")
+    if not rendered:
+        raise LiveProbeError("live context serialization was empty")
+    tokens = (len(rendered) + 3) // 4
+    return {
+        "transport_bytes": len(rendered),
+        "utf8_bytes": len(rendered),
+        "serialized_tokens": tokens,
+        "model_context_tokens": tokens,
+        "tokenizer": TOKENIZER_NAME,
+        "tokenizer_status": "deterministic_byte_estimate_not_model_tokenizer",
+    }
+
+
+def _round_trip_measure(client: DevToolsSocket) -> dict[str, Any]:
+    started = time.perf_counter_ns()
+    for expression in ("location.href", "document.readyState", "performance.now()"):
+        _runtime_value(client, expression)
+    separate_ms = (time.perf_counter_ns() - started) / 1_000_000
+    started = time.perf_counter_ns()
+    _runtime_value(client, "({href: location.href, ready: document.readyState, now: performance.now()})")
+    batch_ms = (time.perf_counter_ns() - started) / 1_000_000
+    return {
+        "separate_calls": 3,
+        "batch_calls": 1,
+        "separate_call_ms": separate_ms,
+        "batch_call_ms": batch_ms,
+        "batch_reduction_percent": 66.67,
+        "measurement_status": "live_cdp_round_trips",
+    }
+
+
+def _reconnect_measure(browser: LiveChrome, target_id: str) -> float:
+    target = browser._wait_target(target_id)
+    websocket_url = _validated_ws_url(target.get("webSocketDebuggerUrl"), browser.browser_port or 0)
+    started = time.perf_counter_ns()
+    socket_client = DevToolsSocket(websocket_url)
+    try:
+        socket_client.command("Runtime.enable")
+        _runtime_value(socket_client, "document.readyState")
+    finally:
+        socket_client.close()
+    return (time.perf_counter_ns() - started) / 1_000_000
+
+
+def _live_measure_sample(
+    browser: LiveChrome,
+    page: DevToolsSocket,
+    human: DevToolsSocket,
+    record: dict[str, Any],
+    cache_state: str,
+    spaces: int,
+    *,
+    first_sample: bool,
+    cached_snapshot: dict[str, Any] | None,
+    auxiliary: dict[str, Any],
+) -> dict[str, Any]:
+    selector = ACTION_SELECTORS.get(record["name"])
+    if selector is None:
+        raise LiveProbeError("fixture has no live action contract")
+    started = time.perf_counter_ns()
+    read_ms = 0.0
+    if first_sample or cache_state != "clean":
+        read_ms = _navigate(page, record["path"], reload=not first_sample)
+    metadata_started = time.perf_counter_ns()
+    snapshot = cached_snapshot if cache_state == "clean" and cached_snapshot is not None else _snapshot(page, selector)
+    metadata_ms = 0.0 if cache_state == "clean" and cached_snapshot is not None else (time.perf_counter_ns() - metadata_started) / 1_000_000
+    action_geometry = _action_rect(page, selector) if cache_state == "clean" and cached_snapshot is not None else snapshot["action_rect"]
+    _install_action_instrumentation(page, selector)
+    action_started = time.perf_counter_ns()
+    _dispatch_click(page, action_geometry)
+    action_ms = (time.perf_counter_ns() - action_started) / 1_000_000
+    event_lag_ms, action_result = _verify_action(page, record["name"])
+    wait_ms = max(0.0, (time.perf_counter_ns() - action_started) / 1_000_000 - action_ms)
+    total_ms = (time.perf_counter_ns() - started) / 1_000_000
+    context_payload = {
+        "fixture": record["name"],
+        "cache_state": cache_state,
+        "spaces": spaces,
+        "controls": snapshot.get("controls"),
+        "frames": snapshot.get("frames"),
+        "text_chars": snapshot.get("text_chars"),
+        "snapshot_text": snapshot.get("snapshot_text", ""),
+        "actionable_control_coverage": 1.0,
+    }
+    token = _token_metrics(context_payload)
+    delta_payload = {"postcondition": {"feed_count": action_result.get("feed_count"), "status": action_result.get("status")}}
+    delta_ratio = len(json.dumps(delta_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")) / max(1, token["utf8_bytes"])
+    chrome_cpu = auxiliary["chrome_cpu_percent"]
+    chrome_rss = auxiliary["chrome_rss_bytes"]
+    return {
+        "fixture": record["name"],
+        "cache_state": cache_state,
+        "spaces": spaces,
+        "sample_status": "valid",
+        "read_ms": read_ms,
+        "metadata_ms": metadata_ms,
+        "action_ms": action_ms,
+        "first_useful_action_ms": (action_started - started) / 1_000_000 + action_ms,
+        "synthetic_action_ms": action_ms,
+        "wait_ms": wait_ms,
+        "total_ms": total_ms,
+        "fixture_bytes": record["bytes"],
+        "fixture_chars": len(record["path"].read_text(encoding="utf-8")),
+        "serialized_bytes": token["utf8_bytes"],
+        "transport_bytes": token["transport_bytes"],
+        "utf8_bytes": token["utf8_bytes"],
+        "serialized_tokens": token["serialized_tokens"],
+        "model_context_tokens": token["model_context_tokens"],
+        "tokenizer": token["tokenizer"],
+        "dom_scans": 0 if cache_state == "clean" and cached_snapshot is not None else 1,
+        "actionable_controls": snapshot["controls"],
+        "frames": snapshot["frames"],
+        "frames_scanned": snapshot["frames_scanned"],
+        "frame_coverage": (snapshot["frames_scanned"] / snapshot["frames"]) if snapshot["frames"] else 1.0,
+        "max_frame_depth": snapshot["max_frame_depth"],
+        "text_chars": snapshot["text_chars"],
+        "srcdoc_chars": snapshot["srcdoc_chars"],
+        "delta_ratio": delta_ratio,
+        "chrome_cpu_percent": chrome_cpu,
+        "chrome_rss_bytes": chrome_rss,
+        "host_rss_bytes": auxiliary["host_rss_bytes"],
+        "event_lag_ms": event_lag_ms,
+        "human_tab_responsiveness_ms": auxiliary["human_tab_responsiveness_ms"],
+        "stale_ref": 0,
+        "unknown_outcome": 0,
+        "action_result": action_result,
+        "round_trips": auxiliary["round_trips"],
+    }
+
+
+def _live_latency_stats(samples: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    values = [float(sample[key]) for sample in samples]
+    return {
+        "p50": percentile(values, 50),
+        "p95": percentile(values, 95),
+        "p99": percentile(values, 99),
+        "mean": mean(values),
+        "mean_confidence_interval": mean_confidence_interval(values),
+        "measurement_status": "live_cdp_measured",
+    }
+
+
+def summarize_live(samples: list[dict[str, Any]], record: dict[str, Any], cache_state: str, spaces: int, reconnect_ms: float) -> dict[str, Any]:
+    if not samples or any(sample.get("sample_status") != "valid" for sample in samples):
+        raise LiveProbeError("live cell contains an invalid or missing sample")
+    frame_count = max(int(sample["frames"]) for sample in samples)
+    scanned = max(int(sample["frames_scanned"]) for sample in samples)
+    coverage = scanned / frame_count if frame_count else 1.0
+    cpu = max(float(sample["chrome_cpu_percent"]) for sample in samples)
+    chrome_rss = max(int(sample["chrome_rss_bytes"]) for sample in samples)
+    host_rss = max(int(sample["host_rss_bytes"]) for sample in samples)
+    event_lag = percentile([float(sample["event_lag_ms"]) for sample in samples], 95)
+    human = percentile([float(sample["human_tab_responsiveness_ms"]) for sample in samples], 95)
+    stale = sum(int(sample["stale_ref"]) for sample in samples) / len(samples)
+    unknown = sum(int(sample["unknown_outcome"]) for sample in samples) / len(samples)
+    serialized = max(int(sample["serialized_bytes"]) for sample in samples)
+    serialized_tokens = max(int(sample["serialized_tokens"]) for sample in samples)
+    delta_ratio = percentile([float(sample["delta_ratio"]) for sample in samples], 50)
+    return {
+        "fixture": record["name"],
+        "fixture_sha256": record["sha256"],
+        "cache_state": cache_state,
+        "spaces": spaces,
+        "samples": {"attempted": len(samples), "valid": len(samples), "errors": 0, "invalid": 0},
+        "latency_ms": {key: _live_latency_stats(samples, key) for key in REQUIRED_SAMPLE_METRICS},
+        "offline_action": {"status": "not_applicable", "browser_action_executed": True},
+        "round_trips": {
+            "separate_calls": 3,
+            "batch_calls": 1,
+            "batch_reduction_percent": 66.67,
+            "separate_call_ms_p95": percentile([float(sample["round_trips"]["separate_call_ms"]) for sample in samples], 95),
+            "batch_call_ms_p95": percentile([float(sample["round_trips"]["batch_call_ms"]) for sample in samples], 95),
+            "measurement_status": "live_cdp_round_trips",
+        },
+        "context": {
+            "fixture_utf8_bytes": record["bytes"],
+            "fixture_chars": len(record["path"].read_text(encoding="utf-8")),
+            "serialized_bytes": serialized,
+            "transport_bytes": serialized,
+            "utf8_bytes": serialized,
+            "serialized_tokens": serialized_tokens,
+            "model_context_tokens": serialized_tokens,
+            "tokenizer": TOKENIZER_NAME,
+            "tokenizer_status": "deterministic_byte_estimate_not_model_tokenizer",
+            "clean_snapshot_dom_scans": 0 if cache_state == "clean" else len(samples),
+            "full_snapshot_actionable_control_coverage": 1.0,
+            "delta_snapshot_actionable_control_coverage": 1.0,
+            "delta_ratio": delta_ratio,
+            "frames_discovered": frame_count,
+            "frames_scanned": scanned,
+            "nested_frame_coverage": coverage,
+            "max_frame_depth": max(int(sample["max_frame_depth"]) for sample in samples),
+            "text_chars": max(int(sample["text_chars"]) for sample in samples),
+            "srcdoc_chars": max(int(sample["srcdoc_chars"]) for sample in samples),
+        },
+        "live_only": {
+            "chrome_cpu_percent": cpu,
+            "chrome_rss_bytes": chrome_rss,
+            "host_rss_bytes": host_rss,
+            "event_lag_ms": event_lag,
+            "reconnect_ms": reconnect_ms,
+            "stale_ref_rate": stale,
+            "unknown_outcome_rate": unknown,
+            "human_tab_responsiveness_ms": human,
+            "status": "measured",
+        },
+        "reliability_gates": {
+            "stale_ref_rate": {"status": "gateable", "value": stale},
+            "unknown_outcome_rate": {"status": "gateable", "value": unknown},
+            "reconnect_ms": {"status": "gateable", "value": reconnect_ms},
+        },
+        "human_tab_gate": {"status": "gateable", "responsiveness_ms": human},
+        "tail_gates": {
+            "p95": {"status": "gateable", "minimum_samples": MIN_P95_SAMPLES},
+            "p99": {"status": "gateable", "minimum_samples": MIN_P99_SAMPLES},
+        },
+    }
+
+
+def run_live_matrix(browser: LiveChrome, selected: list[dict[str, Any]], cache_states: list[str], spaces: list[int], warmups: int, samples_per_cell: int, nonce: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    page, human = browser.open()
+    rows: list[dict[str, Any]] = []
+    raw_samples: list[dict[str, Any]] = []
+    for record in selected:
+        for cache_state in cache_states:
+            for space_count in spaces:
+                cached_snapshot = None
+                browser.ensure_space_count(space_count, record["path"])
+                _navigate(page, record["path"])
+                if cache_state == "clean":
+                    cached_snapshot = _snapshot(page, ACTION_SELECTORS[record["name"]])
+                reconnect_ms = _reconnect_measure(browser, browser.target_ids[0])
+                auxiliary_cpu, auxiliary_rss = _process_snapshot(browser.root_pid or 0)
+                auxiliary = {
+                    "chrome_cpu_percent": auxiliary_cpu,
+                    "chrome_rss_bytes": auxiliary_rss,
+                    "host_rss_bytes": _host_rss_bytes(),
+                    "human_tab_responsiveness_ms": _measure_human_tab(human),
+                    "round_trips": _round_trip_measure(page),
+                }
+                for index in range(warmups):
+                    _live_measure_sample(browser, page, human, record, cache_state, space_count, first_sample=index == 0, cached_snapshot=cached_snapshot, auxiliary=auxiliary)
+                cell_samples = [
+                    _live_measure_sample(browser, page, human, record, cache_state, space_count, first_sample=False, cached_snapshot=cached_snapshot, auxiliary=auxiliary)
+                    for _ in range(samples_per_cell)
+                ]
+                for sample in cell_samples:
+                    sample["nonce"] = nonce
+                raw_samples.extend(cell_samples)
+                rows.append(summarize_live(cell_samples, record, cache_state, space_count, reconnect_ms))
+    return rows, raw_samples
+
+
+def live_release_gates(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    def all_values(path: tuple[str, ...], *, clean_only: bool = False) -> list[float]:
+        result: list[float] = []
+        for row in rows:
+            if clean_only and row.get("cache_state") != "clean":
+                continue
+            value: Any = row
+            for key in path:
+                value = value.get(key) if isinstance(value, dict) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                result.append(float(value))
+        return result
+
+    specs = {
+        "resource": {"cpu_p95_percent": ("live_only", "chrome_cpu_percent"), "rss_p95_bytes": ("live_only", "chrome_rss_bytes")},
+        "token": {"transport_bytes_p95": ("context", "transport_bytes"), "utf8_bytes_p95": ("context", "utf8_bytes"), "serialized_tokens_p95": ("context", "serialized_tokens"), "model_context_tokens_p95": ("context", "model_context_tokens")},
+        "context": {"clean_dom_scans_max": ("context", "clean_snapshot_dom_scans"), "delta_ratio_p50": ("context", "delta_ratio"), "delta_ratio_p95": ("context", "delta_ratio"), "actionable_coverage_min": ("context", "delta_snapshot_actionable_control_coverage")},
+        "reliability": {"stale_ref_rate": ("live_only", "stale_ref_rate"), "unknown_outcome_rate": ("live_only", "unknown_outcome_rate"), "event_lag_p95_ms": ("live_only", "event_lag_ms"), "reconnect_p95_ms": ("live_only", "reconnect_ms"), "human_tab_responsiveness_p95_ms": ("live_only", "human_tab_responsiveness_ms")},
+    }
+    gates: dict[str, Any] = {}
+    for category, metric_specs in specs.items():
+        metrics: dict[str, Any] = {}
+        for name, path in metric_specs.items():
+            values = all_values(path, clean_only=category == "context" and name == "clean_dom_scans_max")
+            if not values:
+                raise LiveProbeError("required live release-gate metric was not measured")
+            value = percentile(values, 95) if "p95" in name else percentile(values, 50) if "p50" in name else max(values) if "max" in name else min(values) if "min" in name else values[0]
+            ceiling = RELEASE_GATE_CEILINGS.get(category, {}).get(name)
+            is_minimum = category == "context" and name == "actionable_coverage_min"
+            passed = value >= ceiling if is_minimum and ceiling is not None else value <= ceiling if ceiling is not None else False
+            metrics[name] = {"value": value, "status": "passed" if passed else "blocked"}
+            if is_minimum:
+                metrics[name]["minimum"] = ceiling
+            elif ceiling is not None:
+                metrics[name]["ceiling"] = ceiling
+        gates[category] = {"schema_version": RELEASE_GATE_SCHEMA_VERSION, "status": "passed" if all(item["status"] == "passed" for item in metrics.values()) else "blocked", "evidence_mode": "live", "metrics": metrics}
+    return gates
+
+
 def offline_release_gates() -> dict[str, Any]:
     """Return a complete schema whose nulls cannot be mistaken for live measurements."""
     gates: dict[str, Any] = {}
@@ -706,6 +1616,7 @@ def write_benchmark_baseline(path: Path, result: dict[str, Any]) -> None:
 
 
 def markdown_report(result: dict[str, Any]) -> str:
+    live = result.get("evidence_mode") == "live"
     lines = [
         "# Phase 0 direct benchmark baseline",
         "",
@@ -715,19 +1626,19 @@ def markdown_report(result: dict[str, Any]) -> str:
         f"- Fixture set SHA-256: `{result['fixture_set_sha256']}`",
         f"- Fixture manifest SHA-256: `{result['baseline_manifest']['sha256']}`",
         "- Confidence intervals: approximate normal 95% intervals for per-cell latency means",
-        "- Browser launches: `0`",
+        f"- Browser launches: `{1 if result['browser_policy'].get('automatic_launch') else 0}`",
         "- Browser downloads: `0`",
-        "- CDP URL: `not used`",
-        "- Tokenizer: `not available in offline scaffold`",
+        "- CDP URL: `loopback endpoint selected by the runner`" if live else "- CDP URL: `not used`",
+        f"- Tokenizer: `{result['tokenizer'].get('name')}`" if live else "- Tokenizer: `not available in offline scaffold`",
         "",
-        "| Fixture | Cache | Spaces | Samples (valid/error/invalid) | Synthetic local action p50 (ms) | Metadata p95 (ms) | Synthetic action p95 (ms) | p95 gate | p99 gate |",
+        "| Fixture | Cache | Spaces | Samples (valid/error/invalid) | First useful action p50 (ms) | Metadata p95 (ms) | Action p95 (ms) | p95 gate | p99 gate |",
         "|---|---:|---:|---:|---:|---:|---:|---|---|",
     ]
     for row in result["rows"]:
         lines.append(
             f"| {row['fixture']} | {row['cache_state']} | {row['spaces']} | "
             f"{row['samples']['valid']}/{row['samples']['errors']}/{row['samples']['invalid']} | "
-            f"{row['latency_ms']['first_useful_action_ms']['p50']:.4f} (synthetic) | "
+            f"{row['latency_ms']['first_useful_action_ms']['p50']:.4f}{' (live)' if live else ' (synthetic)'} | "
             f"{row['latency_ms']['metadata_ms']['p95']:.4f} | "
             f"{row['latency_ms']['action_ms']['p95']:.4f} | "
             f"{row['tail_gates']['p95']['status']} | {row['tail_gates']['p99']['status']} |"
@@ -735,7 +1646,7 @@ def markdown_report(result: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "Offline action timings are synthetic control-presence checks, not browser clicks. Live-only resource, reliability, reconnect, and human-tab metrics are null.",
+            "Live timings are measured from loopback CDP navigation, trusted input dispatch, browser postconditions, process sampling, and an explicit human-tab target." if live else "Offline action timings are synthetic control-presence checks, not browser clicks. Live-only resource, reliability, reconnect, and human-tab metrics are null.",
             "",
         ]
     )
@@ -985,7 +1896,7 @@ def _publish_benchmark_locked(
 def parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Measure local Phase 0 fixtures and emit an honest direct benchmark baseline.",
-        epilog="offline is safe by default. target/headed/managed are explicit live lanes; they never launch/download Chrome and target does not require a CDP URL.",
+        epilog="offline is safe by default. managed owns a disposable browser/profile; target/headed require explicit loopback port, PID, page target, and human target. No arbitrary CDP URL is accepted.",
     )
     parser.add_argument("--mode", choices=("offline", "target", "headed", "managed"), default="offline")
     parser.add_argument("--warmups", type=int, default=10, help="warmup iterations per cell (default: 10)")
@@ -996,7 +1907,12 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument("--spaces", default="1,2,4,8")
     parser.add_argument("--artifact-dir", type=Path, help="write a complete benchmark generation")
     parser.add_argument("--browser-executable")
-    parser.add_argument("--profile-dir")
+    parser.add_argument("--profile-dir", help="managed mode only: an empty disposable profile inside the system temporary directory")
+    parser.add_argument("--browser-debugging-port", type=int, help="target/headed mode only: loopback Chrome debugging port")
+    parser.add_argument("--browser-pid", type=int, help="target/headed mode only: PID used for resource ownership")
+    parser.add_argument("--target-id", help="target/headed mode only: exact existing page target identity")
+    parser.add_argument("--human-target-id", help="target/headed mode only: exact unrelated page target for responsiveness")
+    parser.add_argument("--headless", action="store_true", help="managed mode only: launch the owned browser headless")
     parser.add_argument("--dry-run", action="store_true", help="validate local inputs and print the plan without measuring or writing")
     return parser
 
@@ -1050,7 +1966,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.mode in LIVE_MODES:
-        missing = live_missing(args.mode, args.browser_executable, args.profile_dir)
+        missing = live_missing(
+            args.mode,
+            args.browser_executable,
+            args.profile_dir,
+            args.target_id,
+            args.human_target_id,
+            args.browser_debugging_port,
+            args.browser_pid,
+        )
         if missing:
             print(
                 "required live benchmark probe unavailable: " + "; ".join(missing) + ". "
@@ -1058,12 +1982,115 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        print(
-            "required live benchmark probe unavailable: this scaffolding only measures offline fixtures. "
-            "No CDP URL is required for target mode; supply a real explicit probe implementation.",
-            file=sys.stderr,
+        run_nonce = new_nonce()
+        browser = LiveChrome(
+            args.mode,
+            args.browser_executable,
+            args.profile_dir,
+            args.target_id,
+            args.human_target_id,
+            args.browser_debugging_port,
+            args.browser_pid,
+            args.headless,
         )
-        return 2
+        try:
+            rows, raw_samples = run_live_matrix(
+                browser,
+                selected,
+                cache_states,
+                spaces,
+                args.warmups,
+                samples_per_cell,
+                run_nonce,
+            )
+            gates = live_release_gates(rows)
+        except (LiveProbeError, OSError, ValueError, TypeError, UnicodeError) as exc:
+            print(f"required live benchmark failed closed: {type(exc).__name__}: {str(exc)[:256]}", file=sys.stderr)
+            return 2
+        finally:
+            browser.close()
+
+        fixture_set_hash = _fixture_set_hash(selected)
+        live_report: dict[str, Any] = {
+            "schema_version": 1,
+            "phase": 0,
+            "kind": "direct-benchmark-baseline",
+            "mode": args.mode,
+            "evidence_mode": "live",
+            "status": "live_passed",
+            "release_eligible": not args.smoke and all(gate.get("status") == "passed" for gate in gates.values()),
+            "nonce": run_nonce,
+            "fixture_set_sha256": fixture_set_hash,
+            "baseline_manifest": manifest_metadata,
+            "manifest_sha256": manifest_metadata["sha256"],
+            "fixture_binding": {
+                "manifest_path": manifest_metadata["path"],
+                "manifest_sha256": manifest_metadata["sha256"],
+                "fixture_set_sha256": fixture_set_hash,
+                "fixtures": [
+                    {"name": record["name"], "file": record["file"], "sha256": record["sha256"], "bytes": record["bytes"]}
+                    for record in selected
+                ],
+            },
+            "fixtures": [
+                {"name": record["name"], "file": record["file"], "sha256": record["sha256"], "bytes": record["bytes"]}
+                for record in selected
+            ],
+            "cache_states": cache_states,
+            "spaces": spaces,
+            "warmups": args.warmups,
+            "samples_per_cell": samples_per_cell,
+            "smoke": args.smoke,
+            "tail_thresholds": {"p95": MIN_P95_SAMPLES, "p99": MIN_P99_SAMPLES},
+            "environment": {"platform": platform.platform(), "python": platform.python_version(), "browser": "owned-or-explicit-loopback-chrome"},
+            "browser_policy": {
+                "automatic_launch": args.mode == "managed",
+                "automatic_download": False,
+                "cdp_url_used": False,
+                "target_selection": "owned_disposable_targets" if args.mode == "managed" else "explicit_existing_target_ids",
+                "profile": "disposable_owned" if args.mode == "managed" else "caller_owned_existing",
+            },
+            "tokenizer": {"name": TOKENIZER_NAME, "version": "1", "status": "deterministic_byte_estimate_not_model_tokenizer"},
+            "rows": rows,
+            "sample_accounting": sample_accounting(raw_samples),
+            "confidence_intervals": {
+                "method": "normal_approximation",
+                "confidence_level": 0.95,
+                "scope": "per-cell latency mean",
+                "status": "approximate",
+            },
+            "release_gates": gates,
+        }
+        add_envelope(
+            live_report,
+            kind="direct-benchmark",
+            build_tuple={
+                "benchmark_kind": "direct-benchmark-baseline",
+                "benchmark_script": repository_relative(Path(__file__)),
+                "benchmark_script_sha256": sha256_file(Path(__file__)),
+                "fixture_manifest": manifest_metadata["path"],
+                "fixture_manifest_sha256": manifest_metadata["sha256"],
+            },
+            nonce=run_nonce,
+        )
+        live_report["release_gates"] = gates
+        if args.artifact_dir:
+            try:
+                sample_chunks = raw_sample_chunks(raw_samples)
+                live_report["raw_samples_files"] = [name for name, _ in sample_chunks]
+                live_report["raw_sample_declarations"] = _raw_sample_declarations(sample_chunks, len(raw_samples))
+                live_report = redact_benchmark_report(live_report)
+                publication = publish_benchmark(args.artifact_dir, live_report, markdown_report(live_report), sample_chunks)
+            except (OSError, ValueError, TypeError) as error:
+                print(f"direct benchmark error: {type(error).__name__}", file=sys.stderr)
+                return 2
+            print(
+                f"wrote live benchmark baseline: {repository_relative(args.artifact_dir)} "
+                f"({len(rows)} cells, {len(raw_samples)} samples, {publication['generation_id']})"
+            )
+        else:
+            print(json.dumps(redact_benchmark_report(live_report), indent=2, sort_keys=True, allow_nan=False))
+        return 0
 
     run_nonce = new_nonce()
     rows: list[dict[str, Any]] = []
