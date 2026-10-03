@@ -185,6 +185,7 @@ export class ServiceWorkerController {
       this.groups.start();
       await this.tabs.start();
       this.debugger.start();
+      await this.configureSidePanel();
       try {
         await this.native.connect();
       } catch {
@@ -195,6 +196,21 @@ export class ServiceWorkerController {
       this.startPromise = null;
     });
     return this.startPromise;
+  }
+
+  async configureSidePanel() {
+    const setPanelBehavior = this.chrome?.sidePanel?.setPanelBehavior;
+    if (typeof setPanelBehavior !== "function") return;
+    try {
+      await setPanelBehavior.call(this.chrome.sidePanel, {
+        openPanelOnActionClick: true,
+      });
+    } catch (error) {
+      this.handleExtensionEvent("side_panel.unavailable", {
+        code: "capability_unavailable",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   async loadMetadata() {
@@ -958,13 +974,30 @@ export class ServiceWorkerController {
     const record = this.tabs.getInternalByTab(rawTabId);
     if (!record || record.ownership !== "agent" || !record.pageId)
       return undefined;
-    if (sender?.url && record.url) {
+    const expectedOrigin = (() => {
       try {
-        if (new URL(sender.url).origin !== new URL(record.url).origin)
-          return undefined;
+        return record.url ? new URL(record.url).origin : undefined;
       } catch {
         return undefined;
       }
+    })();
+    const senderOrigin =
+      typeof sender?.origin === "string" ? sender.origin : undefined;
+    const senderUrl = typeof sender?.url === "string" ? sender.url : undefined;
+    if (!expectedOrigin || (!senderOrigin && !senderUrl)) return undefined;
+    try {
+      if (
+        senderOrigin !== undefined &&
+        new URL(senderOrigin).origin !== expectedOrigin
+      )
+        return undefined;
+      if (
+        senderUrl !== undefined &&
+        new URL(senderUrl).origin !== expectedOrigin
+      )
+        return undefined;
+    } catch {
+      return undefined;
     }
     return record;
   }
