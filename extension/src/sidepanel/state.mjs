@@ -27,6 +27,14 @@ export function sanitizeSpace(space = {}) {
       space.intent_ticket && typeof space.intent_ticket === "object"
         ? space.intent_ticket
         : undefined,
+    intent_tickets:
+      space.intent_tickets && typeof space.intent_tickets === "object"
+        ? Object.fromEntries(
+            Object.entries(space.intent_tickets).filter(
+              ([, ticket]) => ticket && typeof ticket === "object",
+            ),
+          )
+        : {},
     pages: Array.isArray(space.pages)
       ? space.pages.slice(0, MAX_PAGES).map(sanitizePage)
       : [],
