@@ -287,6 +287,7 @@ export class TabsRegistry {
       this.handleAttached(tabId, attachInfo);
     const onDetached = (tabId, detachInfo) =>
       this.handleDetached(tabId, detachInfo);
+    const onActivated = (activeInfo) => this.handleActivated(activeInfo);
     for (const [event, listener] of [
       [tabs.onCreated, onCreated],
       [tabs.onUpdated, onUpdated],
@@ -294,6 +295,7 @@ export class TabsRegistry {
       [tabs.onReplaced, onReplaced],
       [tabs.onAttached, onAttached],
       [tabs.onDetached, onDetached],
+      [tabs.onActivated, onActivated],
     ]) {
       event?.addListener?.(listener);
       this.removeListeners.push(() => event?.removeListener?.(listener));
@@ -340,6 +342,7 @@ export class TabsRegistry {
       incognito: Boolean(tab.incognito),
       discarded: Boolean(tab.discarded),
       frozen: Boolean(tab.frozen),
+      active: Boolean(tab.active),
       createdAt: this.now(),
       lastObservedAt: this.now(),
       claimProofId: undefined,
@@ -355,6 +358,7 @@ export class TabsRegistry {
     record.incognito = Boolean(tab.incognito ?? record.incognito);
     record.discarded = Boolean(tab.discarded ?? record.discarded);
     record.frozen = Boolean(tab.frozen ?? record.frozen);
+    record.active = Boolean(tab.active ?? record.active);
     record.lastObservedAt = this.now();
     if (record.incognito && record.ownership === "agent") {
       const priorPageId = record.pageId;
@@ -1019,6 +1023,7 @@ export class TabsRegistry {
       incognito: record.incognito,
       discarded: record.discarded,
       frozen: record.frozen,
+      active: record.active,
       window_hint:
         record.rawWindowId === undefined
           ? undefined
@@ -1111,6 +1116,24 @@ export class TabsRegistry {
       if (record)
         this.emit("tab.observed", record, { reason: "replacement_unmanaged" });
     });
+  }
+
+  handleActivated(activeInfo = {}) {
+    const activeTabId = activeInfo.tabId;
+    const windowId = activeInfo.windowId;
+    for (const record of this.byRawTab.values()) {
+      if (windowId !== undefined && record.rawWindowId !== windowId) continue;
+      const nextActive = record.rawTabId === activeTabId;
+      if (record.active === nextActive) continue;
+      record.active = nextActive;
+      this.emit(
+        record.pageId ? "page.focus_changed" : "tab.focus_changed",
+        record,
+        {
+          reason: "chrome_activation",
+        },
+      );
+    }
   }
 
   handleAttached(tabId, attachInfo = {}) {
