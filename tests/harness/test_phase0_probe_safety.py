@@ -78,6 +78,8 @@ def _strict_performance_report() -> dict[str, Any]:
         "p99": 3.0,
         "mean": 1.5,
         "mean_confidence_interval": {
+            "method": "normal_approximation",
+            "status": "approximate",
             "confidence_level": 0.95,
             "lower": 1.0,
             "upper": 2.0,
@@ -122,6 +124,8 @@ def _strict_performance_report() -> dict[str, Any]:
         "kind": "direct-benchmark-baseline",
         "mode": "headed",
         "status": "live_passed",
+        "evidence_mode": "live",
+        "release_eligible": True,
         "smoke": False,
         "nonce": nonce,
         "timestamp": timestamp,
