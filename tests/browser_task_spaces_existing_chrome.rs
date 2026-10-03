@@ -175,7 +175,7 @@ fn headed_probe_fails_closed_without_existing_chrome_harness() {
         report["live"]["reason"]
             .as_str()
             .unwrap_or_default()
-            .contains("no valid existing-Chrome/extension harness descriptor")
+            .contains("no enrolled existing host/extension connection")
     );
     assert!(
         stderr.is_empty(),
