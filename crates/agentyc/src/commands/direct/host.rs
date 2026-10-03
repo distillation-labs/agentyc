@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use agentyc_host::HostLifecycle;
 use serde_json::{Value, json};
 
-use super::{DirectContext, DirectResult, HostCommand, host_error, remote_field, remote_string};
+use super::{DirectContext, DirectResult, HostCommand, host_error, remote_field};
 
 pub(super) fn run(context: &DirectContext, command: HostCommand) -> DirectResult<Value> {
     match command {
@@ -36,13 +36,26 @@ fn status(context: &DirectContext) -> DirectResult<Value> {
 
     let response = context.request("host.status", BTreeMap::new())?;
     let capabilities = remote_field(&response, "capabilities")?;
+    let optional = |field: &str| -> DirectResult<Value> {
+        response
+            .get(field)
+            .map(|_| remote_field(&response, field))
+            .transpose()
+            .map(|value| value.unwrap_or(Value::Null))
+    };
     let connected = capabilities
         .as_array()
         .is_some_and(|capabilities| !capabilities.is_empty());
     Ok(json!({
         "state_directory": context.state_dir,
         "broker_epoch": remote_field(&response, "broker_epoch")?,
-        "lifecycle": remote_string(&response, "lifecycle")?,
+        "connection_epoch": optional("connection_epoch")?,
+        "worker_instance_epoch": optional("worker_instance_epoch")?,
+        "browser_session_epoch": optional("browser_session_epoch")?,
+        "extension_version": optional("extension_version")?,
+        "profile_instance_id": optional("profile_instance_id")?,
+        "profile_scope": optional("profile_scope")?,
+        "profile_bound": optional("profile_bound")?,
         "bridge": {
             "mode": "extension",
             "connected": connected,
