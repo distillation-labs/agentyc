@@ -1,22 +1,23 @@
-//! Small in-process local protocol dispatcher over the core envelope/frame types.
+//! Bounded local protocol dispatcher over the core envelope/frame types.
 //!
-//! This is deliberately not a socket, Native Messaging, or MCP implementation.
-//! Later adapters can place their transport around the same bounded dispatcher.
+//! The owner-only Unix socket transport uses this dispatcher for agent and MCP
+//! clients. Native Messaging remains a separate little-endian transport.
 
 use std::collections::BTreeMap;
 
 use agentyc_core::{
-    ActionId, ArtifactEnvelope, DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventScope,
-    EventSequence, FrameDecoder, HelloEnvelope, MAX_ARTIFACT_CHUNK_BYTES,
-    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, RequestEnvelope, RequestId, ResponseEnvelope,
-    ResumeEnvelope, SpaceId, Timestamp, decode_frame, decode_utf8, encode_frame,
+    ActionId, ActionOperation, ActionRequest, ArtifactEnvelope, ContentHash,
+    DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventScope, EventSequence,
+    FrameDecoder, HelloEnvelope, IdempotencyKey, MAX_ARTIFACT_CHUNK_BYTES,
+    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition, RequestEnvelope, RequestId,
+    ResponseEnvelope, ResumeEnvelope, SpaceId, Timestamp, decode_frame, decode_utf8, encode_frame,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
 use serde::Serialize;
 
 use crate::{
-    broker::{Broker, Connection},
+    broker::{Broker, Connection, canonical_action_hash},
     error::HostError,
     events::EventQuery,
 };
@@ -292,11 +293,50 @@ impl ProtocolServer {
                 put_json(&mut result, "page_id", &page.page_id)?;
                 put_json(&mut result, "space_id", &page.space_id)?;
             }
+            "page.create_managed" => {
+                let space_id = parse_space(required(&request.params, "space_id")?)?;
+                let lease_epoch =
+                    agentyc_core::LeaseEpoch::new(required_u64(&request.params, "lease_epoch")?);
+                let label = required(&request.params, "label")?;
+                let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
+                let page = self.broker.create_managed_page(
+                    &space_id,
+                    authority,
+                    lease_epoch,
+                    label.to_owned(),
+                    now,
+                    request.params.get("url").map(String::as_str),
+                    request.params.get("title").map(String::as_str),
+                )?;
+                put_json(&mut result, "page", &page)?;
+                put_json(&mut result, "page_id", &page.page_id)?;
+                put_json(&mut result, "space_id", &page.space_id)?;
+            }
+            "page.close" => {
+                let space_id = parse_space(required(&request.params, "space_id")?)?;
+                let page_id = parse_page(required(&request.params, "page_id")?)?;
+                let lease_epoch =
+                    agentyc_core::LeaseEpoch::new(required_u64(&request.params, "lease_epoch")?);
+                let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
+                let page =
+                    self.broker
+                        .close_page(&space_id, &page_id, authority, lease_epoch, now)?;
+                put_json(&mut result, "page", &page)?;
+                put_json(&mut result, "page_id", &page.page_id)?;
+                put_json(&mut result, "space_id", &page.space_id)?;
+            }
             "page.list" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
                 let space = self.broker.describe_space(authority, &space_id)?;
                 put_json(&mut result, "space_id", &space.space_id)?;
                 put_json(&mut result, "pages", &space.pages)?;
+            }
+            "action.execute" => {
+                let action_request = action_request_from_params(&request.params)?;
+                let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
+                let action = self.broker.execute_action(action_request, authority, now)?;
+                put_json(&mut result, "action_id", &action.receipt.action_id)?;
+                put_json(&mut result, "receipt", &action.receipt)?;
             }
             "snapshot.read" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
@@ -637,6 +677,53 @@ fn request_scope(params: &BTreeMap<String, String>) -> Result<Option<EventScope>
         (None, None) => None,
         (None, Some(_)) => unreachable!("page_id without space_id was rejected above"),
     })
+}
+
+fn action_request_from_params(
+    params: &BTreeMap<String, String>,
+) -> Result<ActionRequest<BTreeMap<String, String>>, HostError> {
+    let request_id = required(params, "request_id")?
+        .parse::<RequestId>()
+        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    let action_id = parse_action(required(params, "action_id")?)?;
+    let idempotency_key = required(params, "idempotency_key")?
+        .parse::<IdempotencyKey>()
+        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    let space_id = parse_space(required(params, "space_id")?)?;
+    let page_id = params
+        .get("page_id")
+        .map(|value| parse_page(value))
+        .transpose()?;
+    let lease_epoch = agentyc_core::LeaseEpoch::new(required_u64(params, "lease_epoch")?);
+    let operation = serde_json::from_value::<ActionOperation>(serde_json::Value::String(
+        required(params, "operation")?.to_owned(),
+    ))
+    .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    let payload = params
+        .get("payload")
+        .map(|value| serde_json::from_str::<BTreeMap<String, String>>(value))
+        .transpose()
+        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?
+        .unwrap_or_default();
+    let postcondition = params
+        .get("postcondition")
+        .map(|value| serde_json::from_str::<Postcondition>(value))
+        .transpose()
+        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    let mut request = ActionRequest {
+        request_id,
+        action_id,
+        idempotency_key,
+        request_hash: ContentHash::from_bytes(b"local-protocol-action"),
+        space_id,
+        page_id,
+        lease_epoch,
+        operation,
+        payload,
+        postcondition,
+    };
+    request.request_hash = canonical_action_hash(&request)?;
+    Ok(request)
 }
 
 fn put_json<T: Serialize>(
