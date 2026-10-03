@@ -8,7 +8,9 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
 use agentyc_core::PrincipalId;
-use agentyc_host::{Broker, NativeMessagingBridge, NativeMessagingConfig};
+use agentyc_host::{
+    Broker, LocalHostServer, NativeMessagingBridge, NativeMessagingConfig, configured_socket_path,
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -58,8 +60,13 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     // The reader thread owns Native Messaging input and routes responses/events
-    // to the bridge. The process stays alive for the Chrome port lifetime.
+    // to the bridge. Agent/MCP clients use the separate owner-only local socket;
+    // they never open a second ledger or broker.
+    let local_server = LocalHostServer::start(broker.clone(), configured_socket_path(&state_dir))
+        .map_err(|error| error.to_string())?;
     let _ = bridge.wait_closed();
+    local_server.stop();
+    let _ = broker.disconnect(connection.authority());
     Ok(())
 }
 
