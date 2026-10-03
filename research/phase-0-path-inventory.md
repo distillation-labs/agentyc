@@ -1,0 +1,42 @@
+# Phase 0 path inventory
+
+Captured: 2026-10-03 UTC
+
+This inventory makes planned versus existing Phase 0 surfaces explicit. `existing` means the path is present in this checkout; `planned` means the plan names it but the production implementation or live evidence is intentionally deferred.
+
+| Surface                                                       | Status                  | Evidence / purpose                                                                                    |
+| ------------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| `rust-toolchain.toml`                                         | existing                | Rust floor/pin declaration                                                                            |
+| `.gitignore`                                                  | existing                | Artifact redaction and ignore policy                                                                  |
+| `tests/test-manifest.yaml`                                    | existing                | Bounded command/test registry                                                                         |
+| `tests/harness/`                                              | existing                | Deterministic unit harness and redaction tests                                                        |
+| `tests/replay/`                                               | existing                | Bounded replay/self-test harness                                                                      |
+| `tests/fixtures/browser-task-spaces/`                         | existing                | Local deterministic browser fixtures                                                                  |
+| `tests/fixtures/mcp/`                                         | existing                | MCP capability catalog and fixtures                                                                   |
+| `tests/probes/`                                               | existing                | Native Messaging and protocol probes                                                                  |
+| `extension/probes/`                                           | existing                | Test-only MV3 extension probe                                                                         |
+| `artifacts/.gitkeep`                                          | existing                | Ignored artifact root marker                                                                          |
+| `scripts/check_exec_plan.py`                                  | existing                | Execution-plan validation                                                                             |
+| `scripts/check_test_manifest.py`                              | existing                | Test-manifest validation                                                                              |
+| `scripts/check_phase_0_baseline.py`                           | existing                | Phase 0 evidence gate checker                                                                         |
+| `scripts/run_chrome_probe.py`                                 | existing                | P0-T2 disposable Chrome probe                                                                         |
+| `scripts/run_native_messaging_probe.py`                       | existing                | P0-T3 framing/host probe                                                                              |
+| `scripts/run_capability_matrix.py`                            | existing                | P0-T4 catalog/live matrix runner                                                                      |
+| `scripts/run_existing_chrome.py`                              | existing                | P0-T5 offline contract and enrolled-descriptor validator; no live host/extension driver               |
+| `scripts/run_direct_benchmark.py`                             | existing                | P0-T6 offline benchmark and fail-closed live-lane boundary; no browser/resource/token instrumentation |
+| `scripts/run_install_drill.py`                                | existing                | P0-T7 macOS registration drill/preflight; lifecycle phases require an external live record            |
+| production Native Messaging host transport                    | planned                 | `agentyc-host` exposes only a logical `Bridge` seam; no live extension transport is wired             |
+| headed coexistence executor                                   | planned                 | no executable ten-scenario existing-profile runner or enrollment capture exists                       |
+| lifecycle executor                                            | planned                 | no versioned extension install/update/uninstall/downgrade runner exists                               |
+| `research/phase-0-baseline.md`                                | existing                | P0-T1 baseline and addendum                                                                           |
+| `artifacts/p0-current/`                                       | planned evidence output | Ignored, redacted baseline artifacts generated by P0-T1 commands                                      |
+| `artifacts/p0-extension/`                                     | planned evidence output | Ignored live P0-T2 report                                                                             |
+| `artifacts/p0-native-protocol/`                               | planned evidence output | Ignored P0-T3 reports                                                                                 |
+| `artifacts/p0-capabilities*.json`                             | planned evidence output | Ignored P0-T4 matrices                                                                                |
+| `artifacts/p0-coexistence/`                                   | planned evidence output | Requires independently enrolled headed existing-Chrome harness for live P0-T5                         |
+| `artifacts/p0-performance/`                                   | planned evidence output | Offline baseline exists; live P0-T6 generation remains separately gated                               |
+| `artifacts/p0-installation/`                                  | planned evidence output | Requires explicit lifecycle record for live P0-T7                                                     |
+| `crates/agentyc-tests/Cargo.toml` live existing-Chrome target | planned                 | Must not be marked live without the enrolled headed harness                                           |
+| Chrome 125/Beta/Linux/Windows evidence                        | planned/deferred        | Not available on this macOS host; must remain bounded support records                                 |
+
+The artifact directories are intentionally ignored. Their reports must be generated through the bounded writers and validated by `check_phase_0_baseline.py`; absence or offline status must never be promoted to live evidence.
