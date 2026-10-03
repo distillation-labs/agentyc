@@ -57,6 +57,31 @@ test("Native Messaging reconnect starts a fresh nonce/sequence and never replays
   client.stop();
 });
 
+test("Native Messaging ignores late messages from a previous connection", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const firstPort = chrome.lastPort;
+  const firstHello = firstPort.sent[0];
+  firstPort.receive(makeHostHelloOk(firstHello));
+  firstPort.disconnect();
+  await client.reconnect();
+  const secondPort = chrome.lastPort;
+  const secondHello = secondPort.sent[0];
+  secondPort.receive(makeHostHelloOk(secondHello, { connectionEpoch: 2 }));
+  assert.equal(client.connected, true);
+
+  client.handleIncoming(makeHostHelloOk(firstHello), 1, firstPort);
+  assert.equal(client.connected, true);
+  assert.equal(client.connectionEpoch, 2);
+  client.stop();
+});
+
 test("Native Messaging disconnect requests an immediate reconnect before backoff", async () => {
   const chrome = new FakeChrome();
   const timers = [];
