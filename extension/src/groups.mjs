@@ -90,17 +90,26 @@ export class GroupsRegistry {
 
     hint.memberTabIds.add(internalTabId);
     hint.claimedTabIds.add(internalTabId);
-    if (hint.rawGroupId === undefined && this.chrome?.tabs?.group) {
+    if (this.chrome?.tabs?.group) {
       try {
-        hint.rawGroupId = await callChrome(
-          this.chrome.tabs.group.bind(this.chrome.tabs),
-          {
+        if (hint.rawGroupId === undefined) {
+          hint.rawGroupId = await callChrome(
+            this.chrome.tabs.group.bind(this.chrome.tabs),
+            {
+              tabIds: [internalTabId],
+            },
+          );
+          if (Number.isInteger(hint.rawGroupId) && hint.rawGroupId >= 0) {
+            this.byRawGroup.set(hint.rawGroupId, hint);
+            hint.present = true;
+          }
+        } else {
+          // A space may own multiple managed pages. Add each page to the
+          // existing visual group; never create one group per page.
+          await callChrome(this.chrome.tabs.group.bind(this.chrome.tabs), {
+            groupId: hint.rawGroupId,
             tabIds: [internalTabId],
-          },
-        );
-        if (Number.isInteger(hint.rawGroupId) && hint.rawGroupId >= 0) {
-          this.byRawGroup.set(hint.rawGroupId, hint);
-          hint.present = true;
+          });
         }
       } catch (error) {
         hint.drift = true;
@@ -111,6 +120,11 @@ export class GroupsRegistry {
         });
       }
     }
+    // Chrome may emit the tab update synchronously while grouping. Restore
+    // the intended managed membership after that observation; later movement
+    // by the user is still marked as drift by observeTabMembership.
+    hint.memberTabIds.add(internalTabId);
+    hint.claimedTabIds.add(internalTabId);
     if (hint.rawGroupId !== undefined && this.chrome?.tabGroups?.update) {
       try {
         await callChrome(
@@ -138,9 +152,27 @@ export class GroupsRegistry {
 
   /** Observe a tab's group membership; it cannot establish ownership. */
   observeTabMembership(rawTabId, rawGroupId) {
+    const priorHint = [...this.bySpace.values()].find((hint) =>
+      hint.claimedTabIds.has(rawTabId),
+    );
     for (const hint of this.bySpace.values()) {
       hint.memberTabIds.delete(rawTabId);
       hint.claimedTabIds.delete(rawTabId);
+    }
+    if (
+      priorHint &&
+      (rawGroupId === priorHint.rawGroupId ||
+        (priorHint.rawGroupId === undefined && !priorHint.present))
+    ) {
+      // This is the expected event generated while creating or extending the
+      // space's managed group.
+      priorHint.memberTabIds.add(rawTabId);
+      priorHint.claimedTabIds.add(rawTabId);
+      return;
+    }
+    if (priorHint) {
+      priorHint.drift = true;
+      this.emitChanged(priorHint, "membership_changed");
     }
     if (!Number.isInteger(rawGroupId) || rawGroupId < 0) return;
     const hint = this.byRawGroup.get(rawGroupId);
