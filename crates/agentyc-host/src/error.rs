@@ -23,6 +23,9 @@ pub enum HostError {
     /// JSON encoding or decoding failed at the local protocol boundary.
     #[error("invalid json: {0}")]
     Json(#[from] serde_json::Error),
+    /// The owner-only local protocol socket could not be used.
+    #[error("local host transport error: {0}")]
+    Transport(#[source] io::Error),
     /// Length-delimited framing failed at the local protocol boundary.
     #[error(transparent)]
     Frame(#[from] FrameError),
@@ -42,6 +45,9 @@ impl HostError {
             Self::Action(error) => CoreError::new(ErrorCode::InvalidArgument, error.to_string()),
             Self::Ledger(error) => error.as_core_error(),
             Self::Json(error) => CoreError::new(ErrorCode::InvalidJson, error.to_string()),
+            Self::Transport(error) => {
+                CoreError::new(ErrorCode::NativeHostUnavailable, error.to_string())
+            }
             Self::Frame(error) => CoreError::new(error.code(), error.to_string()),
             Self::StatePoisoned => CoreError::new(
                 ErrorCode::LedgerIncompatible,
