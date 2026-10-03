@@ -1,7 +1,7 @@
 # Phase 0 baseline — P0-T1
 
 **Captured:** 2026-10-02T00:47:49Z UTC baseline start; browser probes completed immediately afterward.
-**Scope:** Historical P0-T1 capture. The addendum in section 7 is the current evidence after the host/core implementation slices were added. Historical statements below remain attributed to the original capture and must not be read as current implementation status.
+**Scope:** Historical P0-T1 capture. The addendum in section 8 is the current evidence after the host/core implementation slices were added. Historical statements below remain attributed to the original capture and must not be read as current implementation status.
 
 ## 1. Build tuple
 
@@ -145,11 +145,11 @@ Evidence: `artifacts/p0-current/test-path-inventory.txt` and the cited source pa
 
 All archived outputs are under `artifacts/p0-current/`. Paths, host name, endpoints, raw browser IDs, process IDs, temporary profile paths, metrics identifiers, cookies, and tokens were redacted or omitted.
 
-## 7. Current addendum — implementation and live-gate status
+## 8. Current addendum — implementation and live-gate status
 
 **Captured:** 2026-10-03 UTC in the current worktree after the Phase 0 live-lane updates. This section supersedes the historical capture above for the current worktree; the evidence artifacts carry their own run nonces and provenance.
 
-The following deterministic implementation surfaces exist and pass focused checks:
+The following implementation surfaces exist. The focused test results below are previously recorded evidence, not tests rerun by this documentation audit:
 
 - `crates/agentyc-core`: transport-neutral logical IDs, lifecycle/error/protocol/snapshot/action/event contracts and negative fixtures.
 - `crates/agentyc-host`: locked atomic ledger, leases/fencing, action journal, reconciliation, event resume, snapshot cache, refs, waits, actionability, context budget seams, multi-client connection authorities, and the owner-only local IPC server.
@@ -157,7 +157,7 @@ The following deterministic implementation surfaces exist and pass focused check
 - `extension/`: MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests; its trusted unpacked-development identity is stable and distinct from `extension/probes/`. It is not yet a Web Store or enterprise-managed production distribution.
 - Direct CLI and host-backed MCP clients use the owner-only local Unix socket in normal mode; offline mode is the only in-process fake-host seam. Rollout evidence tooling remains explicit and fail-closed.
 
-Current validation evidence:
+Previously recorded implementation validation (archived; not rerun in this audit):
 
 - `cargo build -p agentyc --locked`: passed.
 - `cargo metadata --no-deps --format-version 1 --locked`: passed.
@@ -172,10 +172,10 @@ Current validation evidence:
 Live and protocol evidence:
 
 - `artifacts/p0-extension/report.json` is a live P0-T2 pass on Chrome 154. It used browser-target CDP `Extensions.loadUnpacked`, verified exact extension identity and inventory, exercised debugger command/event, created and cleaned a tab group, completed Chrome-mediated Native Messaging, uninstalled the extension, verified absence, and cleaned the disposable profile.
-- `artifacts/p0-native-protocol/host-fault-suite.json` is a direct host-smoke pass with the real host fault suite. Its negative framing/origin/replay/version/limit cases remain explicitly host-only evidence; they are not relabeled as Chrome-mediated evidence. P0-T2 supplies the separate Chrome-mediated Native Messaging proof.
+- `artifacts/p0-native-protocol/host-fault-suite.json` is a direct test-host smoke/fault-suite pass. `run_native_messaging_probe.py` only permits `tests/probes/native_probe`, not the Rust production broker. Framing/origin/replay/version/limit cases are host-only fixture evidence; P0-T2 separately supplies Chrome-mediated test-host Native Messaging proof. Neither proves production existing-profile coexistence.
 - `artifacts/p0-capabilities.json` is the complete 76-operation offline capability catalog. Each operation now carries explicit permission/domain/Chrome-version/error metadata fields with `not-observed` status; it is not a live operation matrix.
-- `artifacts/p0-performance/` is a live managed-disposable Chrome baseline with 64 cells and 64,000 valid samples, including resource, context/token, reconnect, and human-tab responsiveness measurements. It is not existing-user-Chrome coexistence evidence.
-- `artifacts/p0-installation/lifecycle-record.json` plus the drill report are live macOS disposable-profile lifecycle evidence; the drill checker accepts install, update, uninstall, downgrade, rollback, and rollback-safety fields.
+- `artifacts/p0-performance/` contains the 64-cell/64,000-sample live disposable-CDP generation accepted by the current performance checker. `run_direct_benchmark.py` uses byte/4 token estimates (both token fields), three evaluations versus one for batching, CDP websocket reconnect, Python runner RSS under `host_rss_bytes`, and page-evaluation responsiveness. Cache scans/deltas are runner-local. These are not deployed-model tokens, production host/extension/CLI/SDK timings, or headed human-focus/input coexistence. P0-T6's stronger requirements remain open.
+- `artifacts/p0-installation/lifecycle-record.json` plus the drill report are accepted macOS disposable-profile test-extension lifecycle evidence. `run_install_lifecycle.py` defaults to `extension/probes/`, reloads manifest versions, checks one owned fixture page and a runner-local `LifecycleLedger`, and uses process liveness to verify its kill-switch fields. It terminates its owned Chrome during cleanup. This does not prove a production mutation kill switch, durable-ledger rollback, Web Store updates, or user-tab preservation; P0-T7's stronger requirements remain open.
 - `artifacts/p0-coexistence/report.json` records the honest failed-closed state: no independently enrolled existing-Chrome host/extension harness was supplied, so no scenario is marked passed.
 - `research/phase-0-path-inventory.md` records existing versus planned Phase 0 surfaces.
 - The required test manifest now runs the host fault suite and writes `artifacts/p0-native-protocol/host-fault-suite.json`.
@@ -186,8 +186,8 @@ Current Phase 0 status remains **blocked/active** for these evidence gates:
 - live Chrome capability observations across the requested version/platform/policy matrix;
 - independently observed production Native Messaging bridge/coexistence evidence; the host now owns one broker-backed local Unix socket and keeps Native Messaging framing separate, but the enrolled existing-profile lane has not run;
 
-The macOS disposable-profile installation/lifecycle gate and managed live performance/resource/token/context gate pass. Managed disposable evidence does not close the existing-user-profile coexistence gate.
+The current checker reports macOS installation and managed performance sub-gates as passed under its artifact contract. That result does not close P0-T6/P0-T7's stronger done-when requirements or the existing-user-profile coexistence gate. No release threshold was changed by this audit.
 
 Offline, partial headed, and deterministic tests are not substitutes for those gates. No browser download, arbitrary existing debug-endpoint attachment, or user-profile mutation is implied by this baseline.
 
-The official Chrome documentation audit is recorded in `research/phase-0-chrome-docs-audit.md`. It corrected the MV3 package assets, incognito declaration, Native Messaging native-endian framing and Windows argument handling, content-message sender-origin validation, side-panel toolbar behavior, and distribution/tab-group wording. The audit does not change the live-gate result: coexistence remains missing.
+The official Chrome documentation audit is recorded in `research/phase-0-chrome-docs-audit.md`. Its earlier implementation corrections are historical work, not changes made by this documentation audit. The [host-backed probe/checkpoint audit](phase-0-host-backed-probe.md) distinguishes the Rust local-socket probe from the descriptor validator and disposable test-host lane. No live run, registration, browser launch, or user-profile mutation was performed for this audit. Coexistence remains missing.
