@@ -61,7 +61,7 @@ This document is an execution plan and evidence registry. Phase 0 remains active
 **Implemented or evidenced:**
 
 - Host/extension logical task-space contracts, Native Messaging protocol checks, and the live Chrome 154 P0-T2 probe.
-- macOS disposable-profile lifecycle evidence for install/update/uninstall/downgrade/rollback, plus a live 64-cell/64,000-sample managed benchmark.
+- macOS disposable-profile test-extension load/reload/uninstall evidence and a live 64-cell/64,000-sample CDP benchmark accepted by the current checkers. These are not production broker rollback, deployed-tokenizer, CLI/SDK end-to-end, or human-coexistence proof.
 
 **Planned and unproven:**
 
@@ -71,7 +71,9 @@ This document is an execution plan and evidence registry. Phase 0 remains active
 
 Offline source inspection and reference tests do not close live Chrome, installation, production, context, or reliability gates.
 
-**Current Phase 0 blocker:** the previous branded-Chrome file-picker blocker is resolved for P0-T2. The automated lane launches an owned disposable profile without `--load-extension`, attaches only to the owned browser-target CDP websocket, calls public `Extensions.loadUnpacked`, verifies exact load/inventory identity, runs the probe through documented extension APIs, uninstalls the exact extension, and verifies absence. It does not attach directly to a transient MV3 service-worker target, call Chrome private APIs, or use file-picker APIs. The live Chrome 154 P0-T2 lane passed with Native Messaging and tab-group evidence. P0-T6's managed live benchmark and P0-T7's macOS disposable lifecycle evidence now pass. The production Native Messaging bridge, exact-origin host manifest template, explicit registration script, and bridge tests are implemented. P0-T5 remains blocked because `run_existing_chrome.py` still has no independently enrolled existing-user-profile execution and the ten scenarios have not been observed live. Owner: Japneet Kalkat. Release posture: Phase 0 remains active; P0-T2, P0-T3, P0-T6, and P0-T7 sub-gates are closed, but the overall phase gate is not. Next action: capture the independently enrolled existing-Chrome coexistence artifact without weakening the existing-Chrome safety policy.
+**Current Phase 0 blocker:** P0-T2 has recorded Chrome 154 disposable-profile debugger, Native Messaging, and tab-group evidence. Its test-only extension/host is not the production broker path. Extension load/inventory/uninstall uses the owned browser-target CDP session; fixture/control-page instrumentation also uses owned page targets. No transient MV3 worker attachment, private extension API, or file-picker automation is used. The experimental public CDP `Extensions` domain is a version-observed test mechanism, not a normal-profile installation fallback.
+
+The product host/extension/local-socket path exists, but `run_existing_chrome.py` currently only validates fixtures and schema-2 enrollment descriptors containing independently captured evidence. It executes no browser scenarios. All ten existing-user-profile coexistence scenarios remain unobserved. Current benchmark and installation checkers accept the disposable artifacts; the broader P0-T6/P0-T7 done-when requirements remain open because their runners do not measure the production CLI/SDK/tokenizer or broker kill switch/ledger rollback. Owner: Japneet Kalkat. Release posture: Phase 0 stays active, Phases 1–8 stay pending, and the exit gate remains open. Next action: verify approved enrollment, execute the real host-backed scenarios with operator checkpoints, and retain measured evidence; see [the probe and checkpoint audit](../../../../research/phase-0-host-backed-probe.md).
 
 ## Planned capability target — not yet proven
 
