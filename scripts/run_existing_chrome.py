@@ -22,8 +22,12 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
-from contextlib import ExitStack
+import uuid
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +47,15 @@ MAX_CLI_TIMEOUT_SECONDS = 15.0
 MAX_OPERATOR_CHECKPOINT_SECONDS = 60.0
 MAX_OPERATOR_LINE_CHARS = 160
 MAX_LIVE_RECEIPTS = 96
+MAX_INVENTORY_POLL_ATTEMPTS = 5
+INVENTORY_POLL_DELAY_SECONDS = 0.05
+MAX_FIXTURE_SERVER_SHUTDOWN_SECONDS = 2.0
+RESTART_SCENARIOS = (
+    "worker-restart-recovery",
+    "host-restart-recovery",
+    "chrome-restart-recovery",
+    "extension-update-recovery",
+)
 
 DESCRIPTOR_SCHEMA_VERSION = 2
 DIRECT_CLI_ENV = "AGENTYC_CLI"
@@ -50,6 +63,7 @@ DIRECT_CLI_DEFAULT = ROOT / "target" / "debug" / "agentyc"
 HOST_PROBE_ENV = "AGENTYC_EXISTING_CHROME_PROBE"
 HOST_PROBE_DEFAULT = ROOT / "target" / "debug" / "agentyc-existing-chrome-probe"
 CHECKPOINT_ENV = "AGENTYC_EXISTING_CHROME_OPERATOR_CHECKPOINT"
+PROFILE_BINDING_ENV = "AGENTYC_PROFILE_BINDING"
 CHECKPOINT_TOKEN_PREFIX = "AGENTYC_EXISTING_CHROME_CHECKPOINT_V1"
 LIVE_PRINCIPALS = ("agent-a", "agent-b")
 _LIVE_EXECUTION_TOKEN = object()
@@ -113,21 +127,67 @@ SCENARIO_CONTRACT: dict[str, Any] = {
 }
 
 _SECRET_KEY = re.compile(
-    r"(?:token|secret|password|passwd|cookie|authorization|credential|private[_-]?key|websocket[_-]?url)",
+    r"(?:token|secret|password|passwd|cookie|authorization|credential|private[_-]?key|websocket[_-]?url|control[_-]?ticket)",
     re.IGNORECASE,
 )
 _RAW_ID_KEY = re.compile(
-    r"(?:raw[_-]?id|cdp[_-]?id|backend[_-]?node[_-]?id|target[_-]?id|session[_-]?id|tab[_-]?id|group[_-]?id)",
+    r"(?:raw[_-]?id|cdp[_-]?id|backend[_-]?node[_-]?id|target[_-]?id|session[_-]?id|tab[_-]?id|group[_-]?id|profile(?:[_-]?(?:binding|instance))?[_-]?id)",
     re.IGNORECASE,
 )
 _SECRET_TEXT = re.compile(r"(?i)(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
+_RAW_URL = re.compile(r"(?i)(?:https?|wss?)://[^\s\"'`,;)}\]]+")
 _NETWORK = re.compile(r"(?:https?|wss?)://|\b(?:fetch|XMLHttpRequest|WebSocket)\b", re.IGNORECASE)
-_ABSOLUTE_PATH = re.compile(r"(?i)(?:/(?:Users|home|private|tmp|var|etc|opt|Applications)/|[A-Za-z]:[\\\\/])")
+_ABSOLUTE_PATH = re.compile(r"(?i)(?:/(?:Users|home|private|tmp|var|etc|opt|Applications|workspace)(?:/[^\s\"'`,;)}\]]*)?|[A-Za-z]:[\\\\/][^\s\"'`,;)}\]]*)")
 _BROWSER_ID = re.compile(r"^[a-p]{32}$")
+_FILE_URL = re.compile(r"(?i)file://[^\s\"'`,;)}\]]+")
 
 
 class ProbeError(ValueError):
     """A deterministic input or fixture contract failure."""
+
+
+class _FixtureRequestHandler(SimpleHTTPRequestHandler):
+    """Serve the checked-in fixture directory without emitting request paths."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, directory=str(FIXTURE_ROOT), **kwargs)
+
+    def log_message(self, format: str, *_args: Any) -> None:
+        del format
+
+
+@contextmanager
+def fixture_server() -> Iterator[str]:
+    """Serve only the local fixture root on a bounded loopback listener."""
+    if FIXTURE_ROOT.is_symlink() or not FIXTURE_ROOT.is_dir():
+        raise ProbeError("fixture root is not a local directory")
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _FixtureRequestHandler)
+    except OSError as exc:
+        raise ProbeError("loopback fixture server is unavailable") from exc
+    server.daemon_threads = True
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name="agentyc-p0-fixtures",
+        daemon=True,
+    )
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        yield base_url
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=MAX_FIXTURE_SERVER_SHUTDOWN_SECONDS)
+        if thread.is_alive():
+            raise ProbeError("loopback fixture server did not stop within the bound")
+
+
+def _fixture_url(base_url: str, fixture_name: str) -> str:
+    expected = EXPECTED_FIXTURES.get(fixture_name)
+    if expected is None:
+        raise ProbeError("unknown local fixture")
+    return f"{base_url}/{expected['file']}"
 
 
 class DirectCliResponse:
@@ -425,26 +485,53 @@ def _parse_host_probe_response(stdout: bytes, returncode: int | None) -> HostPro
 class DirectCli:
     """Small public-contract client; it never enables offline or CDP modes."""
 
-    def __init__(self, executable: str, *, state_dir: str | None, timeout: float) -> None:
+    def __init__(
+        self,
+        executable: str,
+        *,
+        state_dir: str | None,
+        timeout: float,
+        profile_binding_id: str | None = None,
+    ) -> None:
         if not math.isfinite(timeout) or timeout <= 0 or timeout > MAX_CLI_TIMEOUT_SECONDS:
             raise ProbeError("direct CLI timeout is outside the bounded range")
         self.executable = executable
         self.state_dir = state_dir.strip() if isinstance(state_dir, str) and state_dir.strip() else None
         self.timeout = timeout
         self.environment = os.environ.copy()
+        configured_profile = (
+            profile_binding_id
+            if profile_binding_id is not None
+            else self.environment.get(PROFILE_BINDING_ENV)
+        )
+        if isinstance(configured_profile, str):
+            configured_profile = configured_profile.strip() or None
+        if configured_profile is not None and not _logical_id(configured_profile, "profile_"):
+            raise ProbeError("profile binding ID is invalid")
+        self.profile_binding_id = configured_profile
 
     def call(self, command: list[str], *, principal: str) -> DirectCliResponse:
         if principal not in LIVE_PRINCIPALS:
             return DirectCliResponse("invalid_request", reason_code="principal_not_allowed")
         if not command or any(not isinstance(item, str) or not item for item in command):
             return DirectCliResponse("invalid_request", reason_code="command_invalid")
-        unsafe_options = {"--offline", "--cdp-url", "--websocket-url", "--target-id", "--session-id", "--tab-id"}
+        unsafe_options = {
+            "--offline",
+            "--cdp-url",
+            "--websocket-url",
+            "--target-id",
+            "--session-id",
+            "--tab-id",
+            "--profile-binding-id",
+        }
         if any(item.split("=", 1)[0] in unsafe_options for item in command):
             return DirectCliResponse("invalid_request", reason_code="unsafe_cli_option")
 
         argv = [self.executable]
         if self.state_dir is not None:
             argv.extend(("--state-dir", self.state_dir))
+        if self.profile_binding_id is not None:
+            argv.extend(("--profile-binding-id", self.profile_binding_id))
         argv.extend(("--principal", principal, "--json"))
         argv.extend(command)
         status, returncode, stdout, _stderr = _run_bounded_process(
@@ -549,13 +636,74 @@ def _host_status_observation(response: DirectCliResponse) -> tuple[dict[str, Any
     broker_epoch = result.get("broker_epoch")
     if not _positive_integer(broker_epoch):
         return None, "host_status_epoch_invalid"
-    return {
+
+    profile_ids: list[str] = []
+    containers: list[Any] = [result, bridge]
+    for key in ("profile", "bridge_status", "extension"):
+        value = result.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+    for container in containers:
+        if not isinstance(container, dict) or "profile_instance_id" not in container:
+            continue
+        value = container.get("profile_instance_id")
+        if not isinstance(value, str) or not _logical_id(value, "profile_"):
+            return None, "host_status_profile_instance_id_invalid"
+        profile_ids.append(value)
+    if not profile_ids:
+        return None, "host_status_profile_instance_id_missing"
+    if len(set(profile_ids)) != 1:
+        return None, "host_status_profile_instance_id_mismatch"
+
+    observation: dict[str, Any] = {
         "lifecycle": "ready",
         "bridge_connected": True,
         "test_seam": False,
         "capabilities": tuple(capabilities),
         "broker_epoch": broker_epoch,
-    }, None
+        "profile_instance_id": profile_ids[0],
+        "profile_binding_observed": True,
+    }
+    for key in (
+        "connection_epoch",
+        "worker_instance_epoch",
+        "browser_session_epoch",
+    ):
+        value = result.get(key)
+        if value is not None:
+            if not _positive_integer(value):
+                return None, f"host_status_{key}_invalid"
+            observation[key] = value
+    epochs = result.get("epochs")
+    if isinstance(epochs, dict):
+        for key in ("connection_epoch", "worker_instance_epoch", "browser_session_epoch"):
+            value = epochs.get(key)
+            if value is not None:
+                if not _positive_integer(value):
+                    return None, f"host_status_{key}_invalid"
+                observation[key] = value
+    extension_version = result.get("extension_version")
+    if extension_version is not None:
+        if not isinstance(extension_version, str) or not extension_version or len(extension_version) > 128:
+            return None, "host_status_extension_version_invalid"
+        observation["extension_version"] = extension_version
+    profile_scope = result.get("profile_scope")
+    profile = result.get("profile")
+    if isinstance(profile, dict) and profile.get("scope") is not None:
+        profile_scope = profile.get("scope")
+    if profile_scope is not None and profile_scope != "existing_user_profile":
+        return None, "host_status_profile_scope_invalid"
+    explicit_bound = [result.get("profile_bound")]
+    if isinstance(profile, dict):
+        explicit_bound.extend((profile.get("bound"), profile.get("enrolled")))
+    if any(value is False for value in explicit_bound):
+        return None, "host_status_profile_not_bound"
+    # A valid profile_instance_id is the host's current binding observation. The
+    # scope is fixed by this runner's existing-user-profile lane when omitted by
+    # the direct status projection; it is not inferred from a descriptor.
+    observation["profile_scope"] = "existing_user_profile"
+    observation["profile_bound"] = True
+    return observation, None
 
 
 def _space_create_result(response: DirectCliResponse) -> str | None:
@@ -602,6 +750,542 @@ def _page_list_count(response: DirectCliResponse, expected_space: str) -> int | 
     return len(pages)
 
 
+def _managed_page_create_result(
+    response: DirectCliResponse,
+    expected_space: str,
+) -> str | None:
+    """Accept only a host result that describes a managed logical page."""
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    page_id = result.get("page_id")
+    if result.get("space_id") != expected_space or not _logical_id(page_id, "page_"):
+        return None
+    page = result.get("page")
+    if not isinstance(page, dict):
+        return None
+    if (
+        page.get("page_id") != page_id
+        or page.get("space_id") != expected_space
+        or page.get("lifecycle") not in {"managed", "Managed"}
+        or page.get("ownership") not in {"agent", "Agent"}
+        or page.get("binding") not in {"bound", "Bound"}
+    ):
+        return None
+    return page_id
+
+
+def _inventory_epochs(result: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract only bounded epoch observations; never retain opaque identities."""
+    epochs: dict[str, Any] = {}
+    candidates: list[Any] = [result]
+    for key in ("epochs", "host_epochs", "extension_epochs", "observation"):
+        value = result.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    for candidate in candidates:
+        for key in (
+            "broker_epoch",
+            "connection_epoch",
+            "worker_instance_epoch",
+            "browser_session_epoch",
+        ):
+            value = candidate.get(key)
+            if _positive_integer(value):
+                epochs[key] = value
+        extension_version = candidate.get("extension_version")
+        if isinstance(extension_version, str) and extension_version and len(extension_version) <= 128:
+            epochs["extension_version"] = extension_version
+    page_epochs = {
+        record.get("browser_session_epoch")
+        for record in records
+        if _positive_integer(record.get("browser_session_epoch"))
+    }
+    if len(page_epochs) == 1:
+        epochs.setdefault("browser_session_epoch", next(iter(page_epochs)))
+    return epochs
+
+
+def _user_focus_observation(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Require a live unmanaged active record, not a claimed boolean."""
+    candidates: list[dict[str, Any]] = []
+    raw_collections = [
+        result.get("unmanaged_pages"),
+        result.get("user_tabs"),
+        result.get("user_tab_records"),
+    ]
+    pages = result.get("pages")
+    if isinstance(pages, list):
+        raw_collections.append(pages)
+    for collection in raw_collections:
+        if not isinstance(collection, list):
+            continue
+        for record in collection:
+            if not isinstance(record, dict):
+                continue
+            if record.get("ownership") not in {"unmanaged", "user"}:
+                continue
+            if record.get("space_id") not in (None, ""):
+                continue
+            if record.get("active") is not True or record.get("incognito") is True:
+                continue
+            tab_hint = record.get("tab_hint")
+            if isinstance(tab_hint, str) and 1 < len(tab_hint) <= 128:
+                candidates.append(record)
+    if not candidates:
+        return None
+    focus = result.get("active_focus")
+    if focus is None:
+        focus = result.get("focus")
+    focus_hint: str | None = None
+    if isinstance(focus, dict):
+        focus_hint = focus.get("tab_hint")
+        if focus.get("ownership") not in (None, "unmanaged", "user"):
+            return None
+        if focus.get("active") is False:
+            return None
+    elif isinstance(focus, str):
+        focus_hint = focus
+    if focus_hint is not None and not isinstance(focus_hint, str):
+        return None
+    active_hints = {record["tab_hint"] for record in candidates}
+    if focus_hint is not None and focus_hint not in active_hints:
+        return None
+    selected_hint = focus_hint or min(active_hints)
+    selected = next(record for record in candidates if record["tab_hint"] == selected_hint)
+    return {
+        "observed": True,
+        "unmanaged": True,
+        "active": True,
+        "tab_hint": selected["tab_hint"],
+        "active_focus_hint": focus_hint or selected["tab_hint"],
+    }
+
+
+def _visual_group_observation(
+    result: dict[str, Any],
+    expected_spaces: set[str],
+) -> dict[str, Any] | None:
+    """Require explicit extension group observations for every managed space."""
+    groups: list[dict[str, Any]] = []
+    for key in ("groups", "visual_groups", "group_evidence"):
+        value = result.get(key)
+        if isinstance(value, list):
+            groups.extend(item for item in value if isinstance(item, dict))
+    pages = result.get("pages")
+    if isinstance(pages, list):
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            group = page.get("visual_group")
+            if isinstance(group, dict):
+                groups.append(group)
+            elif page.get("visual_group_present") is True:
+                groups.append(
+                    {
+                        "space_id": page.get("space_id"),
+                        "present": True,
+                        "drift": page.get("visual_group_drift", False),
+                        "member_count": page.get("visual_group_member_count", 1),
+                    }
+                )
+    observed_spaces: set[str] = set()
+    member_count = 0
+    for group in groups:
+        space_id = group.get("space_id")
+        if space_id not in expected_spaces:
+            continue
+        present = group.get("present") is True or group.get("status") in {"present", "passed"}
+        drift = group.get("drift") is True
+        members = group.get("member_count")
+        if present and not drift and type(members) is int and members > 0:
+            observed_spaces.add(space_id)
+            member_count += members
+    if observed_spaces != expected_spaces:
+        return None
+    return {
+        "observed": True,
+        "spaces": len(observed_spaces),
+        "member_count": member_count,
+    }
+
+
+def _managed_inventory_observation(
+    response: DirectCliResponse,
+    expected_space: str,
+    expected_pages: dict[str, int],
+    *,
+    require_user_focus: bool = True,
+) -> dict[str, Any] | None:
+    """Validate the fresh extension-backed inventory for one logical space."""
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    pages = result.get("pages")
+    if result.get("space_id") != expected_space or not isinstance(pages, list) or len(pages) > 256:
+        return None
+    records: list[dict[str, Any]] = []
+    by_page: dict[str, dict[str, Any]] = {}
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_id = page.get("page_id")
+        if not isinstance(page_id, str) or not _logical_id(page_id, "page_") or page.get("space_id") != expected_space:
+            continue
+        if page_id in by_page:
+            return None
+        by_page[page_id] = page
+    for page_id, lease_epoch in expected_pages.items():
+        record = by_page.get(page_id)
+        if record is None:
+            return None
+        if (
+            record.get("ownership") not in {"agent", "Agent"}
+            or record.get("lifecycle") not in {"managed", "Managed"}
+            or record.get("binding_state") not in {"bound", "Bound"}
+            or record.get("lease_epoch") != lease_epoch
+            or record.get("active") is not False
+            or not _positive_integer(record.get("target_generation"))
+            or not _positive_integer(record.get("browser_session_epoch"))
+        ):
+            return None
+        if record.get("extension_backed") is False or record.get("browser_backed") is False:
+            return None
+        records.append(record)
+    focus = _user_focus_observation(result)
+    if require_user_focus and focus is None:
+        return None
+    groups = _visual_group_observation(result, {expected_space})
+    if groups is None:
+        return None
+    return {
+        "managed_count": len(records),
+        "extension_backed": True,
+        "visual_groups": groups,
+        "user_focus": focus,
+        "epochs": _inventory_epochs(result, records),
+    }
+
+
+def _cleanup_inventory_observation(
+    response: DirectCliResponse,
+    expected_space: str,
+    expected_page_ids: set[str],
+) -> dict[str, Any] | None:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    pages = result.get("pages")
+    if result.get("space_id") != expected_space or not isinstance(pages, list) or len(pages) > 256:
+        return None
+    if any(isinstance(page, dict) and page.get("page_id") in expected_page_ids for page in pages):
+        return None
+    groups = []
+    for key in ("groups", "visual_groups", "group_evidence"):
+        value = result.get(key)
+        if isinstance(value, list):
+            groups.extend(item for item in value if isinstance(item, dict))
+    if any(
+        group.get("space_id") == expected_space
+        and (group.get("present") is True or group.get("status") in {"present", "passed"})
+        for group in groups
+    ):
+        return None
+    focus = _user_focus_observation(result)
+    if focus is None:
+        return None
+    return {
+        "managed_count": 0,
+        "extension_backed": True,
+        "visual_groups": {"observed": True, "spaces": 1, "member_count": 0},
+        "user_focus": focus,
+        "epochs": _inventory_epochs(result, []),
+    }
+
+
+def _action_execute_result(
+    response: DirectCliResponse,
+    expected_space: str,
+    expected_page: str,
+    expected_action: str,
+    expected_lease: int,
+) -> bool:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return False
+    result = response.result
+    receipt = result.get("receipt")
+    if not isinstance(receipt, dict):
+        return False
+    return not (
+        result.get("action_id") != expected_action
+        or receipt.get("action_id") != expected_action
+        or receipt.get("space_id") != expected_space
+        or receipt.get("page_id") != expected_page
+        or receipt.get("lease_epoch") != expected_lease
+        or receipt.get("status") not in {"succeeded", "Succeeded"}
+        or receipt.get("unknown") is True
+        or receipt.get("completion_source") not in (None, "extension", "Extension")
+        or receipt.get("dispatch_state") in {"not_dispatched", "NotDispatched"}
+    )
+
+
+def _snapshot_result(
+    response: DirectCliResponse,
+    expected_space: str,
+    expected_page: str,
+) -> bool:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return False
+    result = response.result
+    snapshot = result.get("snapshot")
+    if not isinstance(snapshot, dict):
+        snapshot = result
+    return (
+        snapshot.get("space_id") == expected_space
+        and snapshot.get("page_id") == expected_page
+        and isinstance(snapshot.get("snapshot_hash"), str)
+        and _positive_integer(snapshot.get("document_generation"))
+    )
+
+
+def _action_ids(label: str) -> tuple[str, str, str]:
+    suffix = f"{label}-{uuid.uuid4().hex[:12]}"
+    return f"req_{suffix}", f"action_{suffix}", f"idem_{suffix}"
+
+
+def _browser_receipt(
+    operation: str,
+    response: DirectCliResponse,
+    *,
+    expected_rejection: bool = False,
+) -> dict[str, Any]:
+    record = _receipt(operation, response, expected_rejection=expected_rejection)
+    record.update({
+        "source": "browser_current_run",
+        "observed": True,
+        "current_run": True,
+        "browser_observed": True,
+    })
+    return record
+
+
+def _append_browser_receipt(
+    receipts: list[dict[str, Any]],
+    operation: str,
+    response: DirectCliResponse,
+    *,
+    expected_rejection: bool = False,
+) -> None:
+    if len(receipts) < MAX_LIVE_RECEIPTS and not any(item.get("operation") == operation for item in receipts):
+        receipts.append(_browser_receipt(operation, response, expected_rejection=expected_rejection))
+
+
+def _focus_is_unchanged(before: dict[str, Any] | None, after: dict[str, Any] | None) -> bool:
+    return bool(
+        isinstance(before, dict)
+        and isinstance(after, dict)
+        and before.get("observed") is True
+        and after.get("observed") is True
+        and before.get("unmanaged") is True
+        and after.get("unmanaged") is True
+        and before.get("active") is True
+        and after.get("active") is True
+        and before.get("tab_hint") == after.get("tab_hint")
+        and before.get("active_focus_hint") == after.get("active_focus_hint")
+    )
+
+
+def _set_browser_scenario(
+    scenarios: list[dict[str, Any]],
+    name: str,
+    reason_code: str,
+    receipt_refs: tuple[str, ...],
+) -> None:
+    for scenario in scenarios:
+        if scenario.get("name") == name:
+            scenario["status"] = "live_passed"
+            scenario["observation"] = {
+                "source": "browser_current_run",
+                "observed": True,
+                "current_run": True,
+                "browser_observed": True,
+                "reason_code": reason_code,
+                "receipt_refs": list(receipt_refs),
+            }
+            return
+
+
+def _checkpoint_epoch_transition(
+    name: str,
+    before_host: dict[str, Any],
+    after_host: dict[str, Any],
+    before_inventory: dict[str, Any],
+    after_inventory: dict[str, Any],
+) -> bool:
+    before = dict(before_host)
+    before.update(before_inventory.get("epochs", {}))
+    after = dict(after_host)
+    after.update(after_inventory.get("epochs", {}))
+    if name == "worker-restart-recovery":
+        return (
+            _positive_integer(before.get("worker_instance_epoch"))
+            and _positive_integer(after.get("worker_instance_epoch"))
+            and after["worker_instance_epoch"] > before["worker_instance_epoch"]
+            and _positive_integer(before.get("browser_session_epoch"))
+            and after.get("browser_session_epoch") == before["browser_session_epoch"]
+        )
+    if name == "host-restart-recovery":
+        return (
+            _positive_integer(before.get("broker_epoch"))
+            and _positive_integer(after.get("broker_epoch"))
+            and after["broker_epoch"] > before["broker_epoch"]
+        )
+    if name == "chrome-restart-recovery":
+        return (
+            _positive_integer(before.get("browser_session_epoch"))
+            and _positive_integer(after.get("browser_session_epoch"))
+            and after["browser_session_epoch"] > before["browser_session_epoch"]
+        )
+    if name == "extension-update-recovery":
+        version_changed = (
+            isinstance(before.get("extension_version"), str)
+            and isinstance(after.get("extension_version"), str)
+            and before["extension_version"] != after["extension_version"]
+        )
+        worker_changed = (
+            _positive_integer(before.get("worker_instance_epoch"))
+            and _positive_integer(after.get("worker_instance_epoch"))
+            and after["worker_instance_epoch"] > before["worker_instance_epoch"]
+        )
+        return bool(version_changed or worker_changed) and _positive_integer(after.get("browser_session_epoch"))
+    return False
+
+
+def _poll_managed_inventory(
+    cli: DirectCli,
+    spaces: list[dict[str, Any]],
+    *,
+    receipts: list[dict[str, Any]],
+    transport_receipts: list[dict[str, Any]],
+    phase: str,
+    require_user_focus: bool = True,
+) -> dict[str, Any]:
+    last_reason = "inventory_not_observed"
+    observations: dict[str, dict[str, Any]] = {}
+    receipt_refs: list[str] = []
+    focus: dict[str, Any] | None = None
+    for attempt in range(1, MAX_INVENTORY_POLL_ATTEMPTS + 1):
+        observations = {}
+        receipt_refs = []
+        focus = None
+        all_valid = True
+        for space in spaces:
+            lease_epoch = space.get("lease_epoch")
+            page_id = space.get("page_id")
+            if not isinstance(lease_epoch, int) or not isinstance(page_id, str):
+                all_valid = False
+                last_reason = "managed_page_identity_missing"
+                continue
+            response = cli.call(
+                ["page", "inventory", "--space-id", space["space_id"]],
+                principal=space["principal"],
+            )
+            operation = f"page.inventory.{phase}.{space['label']}.{attempt}"
+            _append_receipt(transport_receipts, operation, response)
+            observation = _managed_inventory_observation(
+                response,
+                space["space_id"],
+                {page_id: lease_epoch},
+                require_user_focus=require_user_focus,
+            )
+            if observation is None:
+                all_valid = False
+                last_reason = "managed_inventory_or_visual_group_invalid"
+                continue
+            observations[space["label"]] = observation
+            if focus is None:
+                focus = observation.get("user_focus")
+            elif observation.get("user_focus") is not None and not _focus_is_unchanged(focus, observation["user_focus"]):
+                all_valid = False
+                last_reason = "active_focus_observation_disagrees"
+            receipt_operation = f"browser.inventory.{phase}.{space['label']}.{attempt}"
+            _append_browser_receipt(receipts, receipt_operation, response)
+            receipt_refs.append(receipt_operation)
+        if all_valid and len(observations) == len(spaces) and (not require_user_focus or focus is not None):
+            epochs: dict[str, Any] = {}
+            for observation in observations.values():
+                epochs.update(observation.get("epochs", {}))
+            return {
+                "observed": True,
+                "observations": observations,
+                "receipt_refs": tuple(receipt_refs),
+                "user_focus": focus,
+                "epochs": epochs,
+                "reason_code": "managed_inventory_observed",
+            }
+        if attempt < MAX_INVENTORY_POLL_ATTEMPTS:
+            time.sleep(INVENTORY_POLL_DELAY_SECONDS)
+    return {
+        "observed": False,
+        "observations": observations,
+        "receipt_refs": tuple(receipt_refs),
+        "user_focus": focus,
+        "epochs": {},
+        "reason_code": last_reason,
+    }
+
+
+def _poll_cleanup_inventory(
+    cli: DirectCli,
+    spaces: list[dict[str, Any]],
+    *,
+    receipts: list[dict[str, Any]],
+    transport_receipts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    receipt_refs: list[str] = []
+    observations: dict[str, dict[str, Any]] = {}
+    focus: dict[str, Any] | None = None
+    for attempt in range(1, MAX_INVENTORY_POLL_ATTEMPTS + 1):
+        receipt_refs = []
+        observations = {}
+        valid = True
+        focus = None
+        for space in spaces:
+            page_id = space.get("page_id")
+            if not isinstance(page_id, str):
+                valid = False
+                continue
+            response = cli.call(
+                ["page", "inventory", "--space-id", space["space_id"]],
+                principal=space["principal"],
+            )
+            operation = f"page.inventory.cleanup.{space['label']}.{attempt}"
+            _append_receipt(transport_receipts, operation, response)
+            observation = _cleanup_inventory_observation(response, space["space_id"], {page_id})
+            if observation is None:
+                valid = False
+                continue
+            observations[space["label"]] = observation
+            current_focus = observation.get("user_focus")
+            if focus is None:
+                focus = current_focus
+            elif not _focus_is_unchanged(focus, current_focus):
+                valid = False
+            receipt_operation = f"browser.inventory.cleanup.{space['label']}.{attempt}"
+            _append_browser_receipt(receipts, receipt_operation, response)
+            receipt_refs.append(receipt_operation)
+        if valid and len(observations) == len(spaces) and focus is not None:
+            return {
+                "observed": True,
+                "receipt_refs": tuple(receipt_refs),
+                "user_focus": focus,
+                "observations": observations,
+            }
+        if attempt < MAX_INVENTORY_POLL_ATTEMPTS:
+            time.sleep(INVENTORY_POLL_DELAY_SECONDS)
+    return {"observed": False, "receipt_refs": (), "user_focus": focus, "observations": observations}
+
+
 def _event_count(response: DirectCliResponse) -> int | None:
     if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
         return None
@@ -628,6 +1312,57 @@ def _takeover_result(response: DirectCliResponse, expected_space: str, old_epoch
     return epoch
 
 
+def _return_control_result(
+    response: DirectCliResponse,
+    expected_space: str,
+    expected_epoch: int,
+) -> tuple[int, dict[str, Any]] | None:
+    """Validate return control and retain only a safe, in-memory ticket envelope."""
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    released_epoch = result.get("released_epoch")
+    fence_epoch = result.get("fence_epoch")
+    ticket = result.get("control_ticket")
+    if (
+        result.get("space_id") != expected_space
+        or result.get("lifecycle") != "user_owned"
+        or released_epoch != expected_epoch
+        or type(released_epoch) is not int
+        or released_epoch <= 0
+        or type(fence_epoch) is not int
+        or fence_epoch <= 0
+        or not isinstance(ticket, dict)
+    ):
+        return None
+    assert isinstance(released_epoch, int)
+    assert isinstance(fence_epoch, int)
+    allowed = {"space_id", "broker_epoch", "fence_epoch", "token", "opaque", "in_memory"}
+    if set(ticket) - allowed:
+        return None
+    ticket_broker_epoch = ticket.get("broker_epoch")
+    token = ticket.get("token")
+    if (
+        ticket.get("space_id") != expected_space
+        or type(ticket_broker_epoch) is not int
+        or ticket_broker_epoch <= 0
+        or ticket.get("fence_epoch") != fence_epoch
+        or not isinstance(token, str)
+        or not 8 <= len(token) <= 128
+        or re.fullmatch(r"[A-Za-z0-9._:-]+", token) is None
+    ):
+        return None
+    assert isinstance(ticket_broker_epoch, int)
+    # The ticket is retained only in memory until the paired reclaim call; it
+    # is never copied into receipts or persisted artifacts.
+    return released_epoch, {
+        "space_id": expected_space,
+        "broker_epoch": ticket_broker_epoch,
+        "fence_epoch": fence_epoch,
+        "token": token,
+    }
+
+
 def _lifecycle_result(response: DirectCliResponse, expected: str) -> bool:
     return bool(
         response.transport == "complete"
@@ -646,12 +1381,15 @@ def _receipt(
     response: DirectCliResponse,
     *,
     expected_rejection: bool = False,
+    source: str = "direct_cli",
+    browser_observed: bool = False,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "operation": operation,
-        "source": "direct_cli",
+        "source": source,
         "current_run": True,
         "observed": response.transport == "complete",
+        "browser_observed": browser_observed,
         "ok": response.ok is True,
     }
     if response.transport != "complete":
@@ -670,9 +1408,19 @@ def _append_receipt(
     response: DirectCliResponse,
     *,
     expected_rejection: bool = False,
+    source: str = "direct_cli",
+    browser_observed: bool = False,
 ) -> None:
     if len(receipts) < MAX_LIVE_RECEIPTS:
-        receipts.append(_receipt(operation, response, expected_rejection=expected_rejection))
+        receipts.append(
+            _receipt(
+                operation,
+                response,
+                expected_rejection=expected_rejection,
+                source=source,
+                browser_observed=browser_observed,
+            )
+        )
 
 
 ENROLLMENT_COMPONENTS = ("profile", "host", "extension")
@@ -693,11 +1441,23 @@ def _empty_enrollment(*, source: str = "none", current_run: bool = False) -> dic
     }
 
 
-def _observed_host_enrollment(*, source: str, current_run: bool) -> dict[str, dict[str, Any]]:
+def _observed_host_enrollment(
+    *,
+    source: str,
+    current_run: bool,
+    profile_bound: bool = False,
+) -> dict[str, dict[str, Any]]:
     evidence = _empty_enrollment(source=source, current_run=False)
     if current_run:
         for component in ("host", "extension"):
             evidence[component].update({"observed": True, "current_run": True, "status": "connected"})
+        if profile_bound:
+            evidence["profile"].update({
+                "enrolled": True,
+                "observed": True,
+                "current_run": True,
+                "status": "bound",
+            })
     return evidence
 
 
@@ -889,10 +1649,8 @@ def _live_unavailable(reason_code: str, *, cli_reason: str | None = None) -> dic
         "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
         "operator_claims_used": False,
         "host_probe_used": False,
-        "reason": (
-            "no valid existing-Chrome/extension harness descriptor is accepted; "
-            "host-backed direct CLI preflight is unavailable"
-        ),
+        "profile_binding_observed": False,
+        "reason": "no enrolled existing host/extension connection was observed; direct CLI preflight is unavailable",
         "reason_code": reason_code,
         "browser": {
             "observed": False,
@@ -1036,33 +1794,33 @@ def orchestrate_live(
     cli_timeout: float,
     operator_checkpoint: bool,
     checkpoint_timeout: float,
+    profile_binding_id: str | None = None,
     host_probe_path: str | None = None,
 ) -> dict[str, Any]:
-    """Run the real host probe first, then the bounded direct-CLI fallback."""
+    """Run only the enrolled existing-host/extension lane through the direct CLI."""
+    del host_probe_path  # Host probes do not contain browser observations and are never used here.
     if _fake_host_requested():
         return _live_unavailable("fake_host_environment_forbidden")
-    if cli_path is None:
-        host_probe, probe_resolution = resolve_host_probe(host_probe_path)
-        if host_probe is not None:
-            return orchestrate_host_probe(
-                executable=host_probe,
-                resolution=probe_resolution,
-                state_dir=state_dir,
-                timeout=cli_timeout,
-            )
-        if host_probe_path is not None:
-            return _live_unavailable(probe_resolution, cli_reason=probe_resolution)
     executable, resolution = resolve_direct_cli(cli_path)
     if executable is None:
         return _live_unavailable(resolution, cli_reason=resolution)
 
-    cli = DirectCli(executable, state_dir=state_dir, timeout=cli_timeout)
-    receipts: list[dict[str, Any]] = []
+    try:
+        cli = DirectCli(
+            executable,
+            state_dir=state_dir,
+            timeout=cli_timeout,
+            profile_binding_id=profile_binding_id,
+        )
+    except ProbeError:
+        return _live_unavailable("profile_binding_id_invalid", cli_reason=resolution)
+    transport_receipts: list[dict[str, Any]] = []
+    browser_receipts: list[dict[str, Any]] = []
     scenarios = _initial_scenarios()
     spaces: list[dict[str, Any]] = []
     failures: list[str] = []
     preflight = cli.call(["host", "status"], principal=LIVE_PRINCIPALS[0])
-    _append_receipt(receipts, "host.status.preflight", preflight)
+    _append_receipt(transport_receipts, "host.status.preflight", preflight)
     host_observation, host_reason = _host_status_observation(preflight)
     if host_observation is None:
         live = _live_unavailable(host_reason or "host_status_invalid", cli_reason=resolution)
@@ -1071,18 +1829,56 @@ def orchestrate_live(
                 "executed": preflight.transport == "complete",
                 "current_run": True,
                 "provenance": "direct_cli_current_run",
-                "operator_claims_used": bool(operator_checkpoint),
                 "preflight": {
                     "observed": False,
                     "source": "direct_cli",
                     "executor_receipt": preflight.transport == "complete",
                     "reason_code": host_reason,
+                    "profile_binding_observed": False,
                 },
+                "profile_binding_observed": False,
                 "enrollment": _empty_enrollment(source="direct_cli_current_run"),
-                "receipts": receipts,
+                "transport_receipts": transport_receipts,
             }
         )
         return live
+
+    observed_profile_binding = host_observation.get("profile_instance_id")
+    configured_profile_binding = cli.profile_binding_id
+    if (
+        not _logical_id(observed_profile_binding, "profile_")
+        or configured_profile_binding is not None
+        and configured_profile_binding != observed_profile_binding
+    ):
+        live = _live_unavailable("profile_binding_id_mismatch", cli_reason=resolution)
+        live.update(
+            {
+                "executed": True,
+                "current_run": True,
+                "provenance": "direct_cli_current_run",
+                "preflight": {
+                    "observed": True,
+                    "source": "direct_cli",
+                    "profile_binding_observed": False,
+                    "reason_code": "profile_binding_id_mismatch",
+                },
+                "profile_binding_observed": False,
+                "enrollment": _empty_enrollment(source="direct_cli_current_run"),
+                "transport_receipts": transport_receipts,
+            }
+        )
+        return live
+    try:
+        # Every mutation, inventory, snapshot, and recovery call carries the
+        # binding observed in this run's initial host.status response.
+        cli = DirectCli(
+            executable,
+            state_dir=state_dir,
+            timeout=cli_timeout,
+            profile_binding_id=observed_profile_binding,
+        )
+    except ProbeError:
+        return _live_unavailable("profile_binding_id_invalid", cli_reason=resolution)
     if "action" not in host_observation["capabilities"]:
         live = _live_unavailable("required_action_capability_missing", cli_reason=resolution)
         live.update(
@@ -1090,7 +1886,6 @@ def orchestrate_live(
                 "executed": True,
                 "current_run": True,
                 "provenance": "direct_cli_current_run",
-                "operator_claims_used": bool(operator_checkpoint),
                 "preflight": {
                     "observed": True,
                     "source": "direct_cli",
@@ -1100,8 +1895,9 @@ def orchestrate_live(
                 "enrollment": _observed_host_enrollment(
                     source="direct_cli_current_run",
                     current_run=True,
+                    profile_bound=host_observation.get("profile_bound") is True,
                 ),
-                "receipts": receipts,
+                "transport_receipts": transport_receipts,
             }
         )
         return live
@@ -1113,10 +1909,12 @@ def orchestrate_live(
         "executed": True,
         "current_run": True,
         "evidence_status": "live_observation_incomplete",
-        "provenance": "direct_cli_current_run",
+        "provenance": "existing_chrome_current_run",
         "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
-        "operator_claims_used": bool(operator_checkpoint),
+        "operator_claims_used": False,
         "host_probe_used": False,
+        "profile_scope": "existing_user_profile" if host_observation.get("profile_scope") == "existing_user_profile" else "unobserved",
+        "profile_binding_observed": host_observation.get("profile_binding_observed") is True,
         "preflight": {
             "observed": True,
             "source": "direct_cli",
@@ -1124,9 +1922,17 @@ def orchestrate_live(
             "lifecycle": "ready",
             "action_capability": True,
             "direct_path_safe": True,
+            "profile_observed": host_observation.get("profile_bound") is True,
+            "profile_binding_observed": host_observation.get("profile_binding_observed") is True,
+            "epochs": {
+                key: host_observation[key]
+                for key in ("broker_epoch", "connection_epoch", "worker_instance_epoch", "browser_session_epoch")
+                if key in host_observation
+            },
         },
         "browser": {
             "observed": False,
+            "current_run": True,
             "launch": False,
             "download": False,
             "cdp_url_used": False,
@@ -1135,20 +1941,33 @@ def orchestrate_live(
         "enrollment": _observed_host_enrollment(
             source="direct_cli_current_run",
             current_run=True,
+            profile_bound=host_observation.get("profile_bound") is True,
         ),
         "scenarios": scenarios,
         "release_gates": {"eligible": False, "reason_code": "required_browser_observations_missing"},
         "_execution_token": _LIVE_EXECUTION_TOKEN,
     }
+    initial_inventory: dict[str, Any] | None = None
+    latest_inventory: dict[str, Any] | None = None
+    baseline_focus: dict[str, Any] | None = None
+    focus_checks: list[bool] = []
+    cross_space_rejected = False
+    stale_rejected = False
+    return_ticket_json: str | None = None
+    fixture_stack = ExitStack()
 
     try:
-        for label, principal, page_label in (
-            ("research", LIVE_PRINCIPALS[0], "results"),
-            ("testing", LIVE_PRINCIPALS[1], "app"),
+        fixture_base_url = fixture_stack.enter_context(fixture_server())
+        fixture_urls = {
+            "research": _fixture_url(fixture_base_url, "dynamic-feed"),
+            "testing": _fixture_url(fixture_base_url, "small-form"),
+        }
+        for label, principal, page_label, title in (
+            ("research", LIVE_PRINCIPALS[0], "results", "Agentyc research"),
+            ("testing", LIVE_PRINCIPALS[1], "app", "Agentyc testing"),
         ):
-            create_operation = f"space.create.{label}"
             create = cli.call(["space", "create", "--label", label], principal=principal)
-            _append_receipt(receipts, create_operation, create)
+            _append_receipt(transport_receipts, f"space.create.{label}", create)
             space_id = _space_create_result(create)
             if space_id is None:
                 failures.append(f"{label}_space_create_invalid")
@@ -1160,122 +1979,409 @@ def orchestrate_live(
                 "lease_epoch": None,
                 "page_id": None,
                 "cleanup_ok": False,
+                "cleanup_inventory_ok": False,
             }
             spaces.append(space)
-
-            claim_operation = f"space.claim.{label}"
             claim = cli.call(["space", "claim", "--space-id", space_id], principal=principal)
-            _append_receipt(receipts, claim_operation, claim)
+            _append_receipt(transport_receipts, f"space.claim.{label}", claim)
             lease_epoch = _claim_result(claim, space_id)
             if lease_epoch is None:
                 failures.append(f"{label}_space_claim_invalid")
                 continue
             space["lease_epoch"] = lease_epoch
-
-            page_operation = f"page.create.{label}"
             page = cli.call(
                 [
                     "page",
-                    "create",
+                    "create-managed",
                     "--space-id",
                     space_id,
                     "--lease-epoch",
                     str(lease_epoch),
                     "--label",
                     page_label,
+                    "--title",
+                    title,
+                    "--url",
+                    fixture_urls[label],
                 ],
                 principal=principal,
             )
-            _append_receipt(receipts, page_operation, page)
-            page_id = _page_create_result(page, space_id)
+            _append_receipt(transport_receipts, f"page.create-managed.{label}", page)
+            page_id = _managed_page_create_result(page, space_id)
             if page_id is None:
-                failures.append(f"{label}_planned_page_create_invalid")
+                failures.append(f"{label}_managed_page_create_invalid")
             else:
                 space["page_id"] = page_id
 
-            listed = cli.call(["page", "list", "--space-id", space_id], principal=principal)
-            _append_receipt(receipts, f"page.list.{label}", listed)
-            if _page_list_count(listed, space_id) is None:
-                failures.append(f"{label}_page_list_invalid")
-
-            events = cli.call(
-                ["events", "--space-id", space_id, "--after-sequence", "0", "--limit", "64"],
-                principal=principal,
+        if len(spaces) != 2 or not all(isinstance(space.get("lease_epoch"), int) and isinstance(space.get("page_id"), str) for space in spaces):
+            failures.append("two_managed_pages_not_created")
+        else:
+            initial_inventory = _poll_managed_inventory(
+                cli,
+                spaces,
+                receipts=browser_receipts,
+                transport_receipts=transport_receipts,
+                phase="initial",
             )
-            _append_receipt(receipts, f"events.resume.{label}", events)
-            if _event_count(events) is None:
-                failures.append(f"{label}_events_invalid")
+            latest_inventory = initial_inventory
+            baseline_focus = initial_inventory.get("user_focus")
+            if initial_inventory.get("observed"):
+                focus_checks.append(baseline_focus is not None)
+            if not initial_inventory.get("observed"):
+                failures.append(initial_inventory.get("reason_code", "initial_inventory_invalid"))
+            else:
+                refs = initial_inventory.get("receipt_refs", ())
+                if refs:
+                    _set_browser_scenario(scenarios, "user-tab-preservation", "unmanaged_active_tab_observed", (refs[0],))
+                    if len(refs) > 1:
+                        _set_browser_scenario(scenarios, "two-space-isolation", "two_scoped_managed_inventories_observed", (refs[1],))
 
-        if len(spaces) == 2 and all(space["lease_epoch"] is not None for space in spaces):
+            if initial_inventory.get("observed"):
+                for space in spaces:
+                    snapshot = cli.call(
+                        [
+                            "snapshot",
+                            "--space-id",
+                            space["space_id"],
+                            "--page-id",
+                            space["page_id"],
+                            "--lease-epoch",
+                            str(space["lease_epoch"]),
+                        ],
+                        principal=space["principal"],
+                    )
+                    _append_receipt(transport_receipts, f"snapshot.{space['label']}", snapshot)
+                    if _snapshot_result(snapshot, space["space_id"], space["page_id"]):
+                        _append_browser_receipt(browser_receipts, f"browser.snapshot.{space['label']}", snapshot)
+                    else:
+                        failures.append(f"{space['label']}_snapshot_invalid")
+            else:
+                failures.append("snapshot_requires_managed_inventory")
+
+            for space in spaces:
+                request_id, action_id, idempotency_key = _action_ids(space["label"])
+                action = cli.call(
+                    [
+                        "action",
+                        "execute",
+                        "--request-id",
+                        request_id,
+                        "--action-id",
+                        action_id,
+                        "--idempotency-key",
+                        idempotency_key,
+                        "--space-id",
+                        space["space_id"],
+                        "--page-id",
+                        space["page_id"],
+                        "--lease-epoch",
+                        str(space["lease_epoch"]),
+                        "--operation",
+                        "screenshot",
+                    ],
+                    principal=space["principal"],
+                )
+                operation = f"browser.action.execute.{space['label']}"
+                _append_receipt(transport_receipts, f"action.execute.{space['label']}", action)
+                if _action_execute_result(action, space["space_id"], space["page_id"], action_id, space["lease_epoch"]):
+                    _append_browser_receipt(browser_receipts, operation, action)
+                else:
+                    failures.append(f"{space['label']}_allowlisted_action_invalid")
+
+            post_action_inventory = _poll_managed_inventory(
+                cli,
+                spaces,
+                receipts=browser_receipts,
+                transport_receipts=transport_receipts,
+                phase="post-action",
+            )
+            latest_inventory = post_action_inventory
+            if not post_action_inventory.get("observed"):
+                failures.append("post_action_inventory_invalid")
+            else:
+                focus_checks.append(_focus_is_unchanged(baseline_focus, post_action_inventory.get("user_focus")))
+                refs = post_action_inventory.get("receipt_refs", ())
+                if refs:
+                    _set_browser_scenario(scenarios, "focus-stability", "focus_preserved_after_allowlisted_actions", (refs[0],))
+
             first, second = spaces
+            cross_request, cross_action, cross_idem = _action_ids("cross-space")
             cross_space = cli.call(
                 [
-                    "page",
-                    "create",
+                    "action",
+                    "execute",
+                    "--request-id",
+                    cross_request,
+                    "--action-id",
+                    cross_action,
+                    "--idempotency-key",
+                    cross_idem,
                     "--space-id",
                     first["space_id"],
+                    "--page-id",
+                    first["page_id"],
                     "--lease-epoch",
                     str(first["lease_epoch"]),
-                    "--label",
-                    "cross-space-probe",
+                    "--operation",
+                    "screenshot",
                 ],
                 principal=second["principal"],
             )
-            _append_receipt(receipts, "page.create.cross_space_rejection", cross_space, expected_rejection=True)
-            if _expected_rejection(cross_space, "space_forbidden"):
-                _set_scenario(
-                    scenarios,
-                    "two-space-isolation",
-                    "host_observed",
-                    "cross_space_mutation_rejected_by_host",
-                    receipt_refs=("page.create.cross_space_rejection",),
-                )
-            else:
+            _append_receipt(transport_receipts, "action.execute.cross_space_rejection", cross_space, expected_rejection=True)
+            cross_space_rejected = _expected_rejection(cross_space, "space_forbidden")
+            if not cross_space_rejected:
                 failures.append("cross_space_mutation_rejection_invalid")
+            else:
+                isolation_inventory = _poll_managed_inventory(
+                    cli,
+                    spaces,
+                    receipts=browser_receipts,
+                    transport_receipts=transport_receipts,
+                    phase="isolation",
+                )
+                latest_inventory = isolation_inventory
+                if isolation_inventory.get("observed"):
+                    focus_checks.append(_focus_is_unchanged(baseline_focus, isolation_inventory.get("user_focus")))
+                if isolation_inventory.get("observed") and isolation_inventory.get("receipt_refs"):
+                    _set_browser_scenario(
+                        scenarios,
+                        "two-space-isolation",
+                        "cross_space_action_rejected_with_both_inventories_observed",
+                        (isolation_inventory["receipt_refs"][0],),
+                    )
+                else:
+                    failures.append("isolation_inventory_invalid")
 
             old_epoch = first["lease_epoch"]
             takeover = cli.call(
                 ["space", "takeover", "--space-id", first["space_id"]],
                 principal=first["principal"],
             )
-            _append_receipt(receipts, "space.takeover.research", takeover)
+            _append_receipt(transport_receipts, "space.takeover.research", takeover)
             new_epoch = _takeover_result(takeover, first["space_id"], old_epoch)
             if new_epoch is None:
                 failures.append("takeover_fence_invalid")
             else:
                 first["lease_epoch"] = new_epoch
+                stale_request, stale_action, stale_idem = _action_ids("stale-fence")
                 stale = cli.call(
                     [
-                        "page",
-                        "create",
+                        "action",
+                        "execute",
+                        "--request-id",
+                        stale_request,
+                        "--action-id",
+                        stale_action,
+                        "--idempotency-key",
+                        stale_idem,
                         "--space-id",
                         first["space_id"],
+                        "--page-id",
+                        first["page_id"],
                         "--lease-epoch",
                         str(old_epoch),
-                        "--label",
-                        "stale-lease-probe",
+                        "--operation",
+                        "screenshot",
                     ],
                     principal=first["principal"],
                 )
-                _append_receipt(receipts, "page.create.stale_lease_rejection", stale, expected_rejection=True)
-                if _expected_rejection(stale, "stale_lease"):
+                _append_receipt(transport_receipts, "action.execute.stale_lease_rejection", stale, expected_rejection=True)
+                stale_rejected = _expected_rejection(stale, "stale_lease")
+                if not stale_rejected:
+                    failures.append("stale_epoch_rejection_invalid")
+                fence_inventory = _poll_managed_inventory(
+                    cli,
+                    spaces,
+                    receipts=browser_receipts,
+                    transport_receipts=transport_receipts,
+                    phase="takeover",
+                    require_user_focus=True,
+                )
+                latest_inventory = fence_inventory
+                if fence_inventory.get("observed"):
+                    focus_checks.append(_focus_is_unchanged(baseline_focus, fence_inventory.get("user_focus")))
+                if fence_inventory.get("observed") and fence_inventory.get("receipt_refs") and stale_rejected:
+                    _set_browser_scenario(scenarios, "takeover-fence", "managed_page_stale_action_fenced", (fence_inventory["receipt_refs"][0],))
+                else:
+                    failures.append("takeover_inventory_invalid")
+
+            return_epoch_candidate = second.get("lease_epoch")
+            if not isinstance(return_epoch_candidate, int):
+                failures.append("return_control_lease_epoch_invalid")
+                _set_scenario(
+                    scenarios,
+                    "return-control-fresh-lease",
+                    "not_observed",
+                    "return_control_lease_epoch_invalid",
+                )
+            else:
+                returned = cli.call(
+                    [
+                        "space",
+                        "return",
+                        "--space-id",
+                        second["space_id"],
+                        "--lease-epoch",
+                        str(return_epoch_candidate),
+                    ],
+                    principal=second["principal"],
+                )
+                _append_receipt(transport_receipts, "space.return.testing", returned)
+                return_result = _return_control_result(
+                    returned,
+                    second["space_id"],
+                    return_epoch_candidate,
+                )
+                if return_result is None:
+                    failures.append("return_control_ticket_invalid")
                     _set_scenario(
                         scenarios,
-                        "takeover-fence",
-                        "host_observed",
-                        "fence_acknowledged_and_stale_epoch_rejected",
-                        receipt_refs=("space.takeover.research", "page.create.stale_lease_rejection"),
+                        "return-control-fresh-lease",
+                        "not_observed",
+                        "return_control_or_ticket_invalid",
                     )
                 else:
-                    failures.append("stale_epoch_rejection_invalid")
+                    returned_epoch, control_ticket = return_result
+                    return_ticket_json = json.dumps(control_ticket, separators=(",", ":"))
+                    reclaimed = cli.call(
+                        [
+                            "space",
+                            "reclaim",
+                            "--space-id",
+                            second["space_id"],
+                            "--control-ticket",
+                            return_ticket_json,
+                        ],
+                        principal=second["principal"],
+                    )
+                    _append_receipt(transport_receipts, "space.reclaim.testing", reclaimed)
+                    reclaimed_epoch = _takeover_result(
+                        reclaimed,
+                        second["space_id"],
+                        returned_epoch,
+                    )
+                    # Do not retain the ticket after the reclaim attempt.
+                    del control_ticket
+                    del return_ticket_json
+                    return_ticket_json = None
+                    if reclaimed_epoch is None:
+                        failures.append("return_control_reclaim_invalid")
+                        _set_scenario(
+                            scenarios,
+                            "return-control-fresh-lease",
+                            "not_observed",
+                            "return_control_reclaim_invalid",
+                        )
+                    else:
+                        second["lease_epoch"] = reclaimed_epoch
+                        return_inventory = _poll_managed_inventory(
+                            cli,
+                            spaces,
+                            receipts=browser_receipts,
+                            transport_receipts=transport_receipts,
+                            phase="return-control",
+                        )
+                        latest_inventory = return_inventory
+                        if return_inventory.get("observed"):
+                            focus_checks.append(_focus_is_unchanged(baseline_focus, return_inventory.get("user_focus")))
+                        return_refs = return_inventory.get("receipt_refs", ())
+                        if (
+                            return_inventory.get("observed")
+                            and return_refs
+                            and reclaimed_epoch > returned_epoch
+                        ):
+                            _set_browser_scenario(
+                                scenarios,
+                                "return-control-fresh-lease",
+                                "return_control_reclaimed_with_fresh_lease",
+                                (return_refs[-1],),
+                            )
+                        else:
+                            failures.append("return_control_inventory_invalid")
+                            _set_scenario(
+                                scenarios,
+                                "return-control-fresh-lease",
+                                "not_observed",
+                                "return_control_inventory_invalid",
+                            )
 
-        for space in spaces:
-            if space["lease_epoch"] is None:
-                continue
-            listed = cli.call(["page", "list", "--space-id", space["space_id"]], principal=space["principal"])
-            _append_receipt(receipts, f"page.list.cleanup.{space['label']}", listed)
-            if _page_list_count(listed, space["space_id"]) is None:
-                failures.append(f"{space['label']}_cleanup_page_list_invalid")
+            if initial_inventory and latest_inventory:
+                focus_checks.append(_focus_is_unchanged(baseline_focus, latest_inventory.get("user_focus")))
+
+            if operator_checkpoint:
+                checkpoint_before_host = host_observation
+                checkpoint_before_inventory = latest_inventory
+                if not isinstance(checkpoint_before_inventory, dict) or not checkpoint_before_inventory.get("observed"):
+                    failures.append("checkpoint_baseline_inventory_missing")
+                for name in RESTART_SCENARIOS:
+                    acknowledged, checkpoint_status = _operator_checkpoint(name, checkpoint_timeout)
+                    checkpoint_record: dict[str, Any] = {
+                        "name": name,
+                        "acknowledged": acknowledged,
+                        "status": checkpoint_status,
+                        "evidence": "acknowledgement_only",
+                    }
+                    live.setdefault("operator_checkpoints", []).append(checkpoint_record)
+                    if not acknowledged:
+                        _set_scenario(scenarios, name, "operator_checkpoint_required", checkpoint_status)
+                        failures.append(f"{name}_checkpoint_required")
+                        continue
+                    after_status = cli.call(["host", "status"], principal=LIVE_PRINCIPALS[0])
+                    _append_receipt(transport_receipts, f"checkpoint.host.status.{name}", after_status)
+                    after_host, after_reason = _host_status_observation(after_status)
+                    if after_host is None:
+                        checkpoint_record["post_observation"] = {"host": False, "inventory": False, "epoch": False, "profile_binding": False}
+                        _set_scenario(scenarios, name, "operator_checkpoint_required", after_reason or "post_checkpoint_host_invalid")
+                        failures.append(f"{name}_post_host_invalid")
+                        continue
+                    binding_current = after_host.get("profile_instance_id") == observed_profile_binding
+                    after_inventory = _poll_managed_inventory(
+                        cli,
+                        spaces,
+                        receipts=browser_receipts,
+                        transport_receipts=transport_receipts,
+                        phase=f"checkpoint-{name}",
+                    )
+                    epoch_changed = bool(
+                        isinstance(checkpoint_before_inventory, dict)
+                        and checkpoint_before_inventory.get("observed")
+                        and after_inventory.get("observed")
+                        and _checkpoint_epoch_transition(
+                            name,
+                            checkpoint_before_host,
+                            after_host,
+                            checkpoint_before_inventory,
+                            after_inventory,
+                        )
+                    )
+                    if after_inventory.get("observed"):
+                        focus_checks.append(_focus_is_unchanged(baseline_focus, after_inventory.get("user_focus")))
+                    checkpoint_record["post_observation"] = {
+                        "host": True,
+                        "inventory": after_inventory.get("observed") is True,
+                        "epoch": epoch_changed,
+                        "profile_binding": binding_current,
+                    }
+                    if not after_inventory.get("observed") or not epoch_changed or not binding_current:
+                        _set_scenario(scenarios, name, "operator_checkpoint_required", "post_checkpoint_observation_incomplete")
+                        failures.append(f"{name}_post_observation_invalid")
+                    else:
+                        refs = after_inventory.get("receipt_refs", ())
+                        if refs:
+                            _set_browser_scenario(scenarios, name, "post_checkpoint_host_inventory_epoch_observed", (refs[0],))
+                        checkpoint_before_host = after_host
+                        checkpoint_before_inventory = after_inventory
+                        latest_inventory = after_inventory
+            else:
+                for name in RESTART_SCENARIOS:
+                    live.setdefault("operator_checkpoints", []).append({
+                        "name": name,
+                        "acknowledged": False,
+                        "status": "operator_checkpoint_not_requested",
+                        "evidence": "acknowledgement_only",
+                    })
+                    _set_scenario(scenarios, name, "operator_checkpoint_required", "operator_checkpoint_not_requested")
+                    failures.append(f"{name}_checkpoint_required")
 
     except (KeyError, OSError, TypeError, ValueError):
         failures.append("live_orchestration_exception")
@@ -1286,141 +2392,119 @@ def orchestrate_live(
             if not isinstance(lease_epoch, int):
                 continue
             finish = cli.call(
-                [
-                    "space",
-                    "finish",
-                    "--space-id",
-                    space["space_id"],
-                    "--lease-epoch",
-                    str(lease_epoch),
-                ],
+                ["space", "finish", "--space-id", space["space_id"], "--lease-epoch", str(lease_epoch)],
                 principal=space["principal"],
             )
-            _append_receipt(receipts, f"space.finish.{space['label']}", finish)
+            _append_receipt(transport_receipts, f"space.finish.{space['label']}", finish)
             if not _lifecycle_result(finish, "finished"):
                 failures.append(f"{space['label']}_finish_invalid")
                 continue
+            cleanup_inventory = _poll_cleanup_inventory(
+                cli,
+                [space],
+                receipts=browser_receipts,
+                transport_receipts=transport_receipts,
+            )
+            space["cleanup_inventory_ok"] = cleanup_inventory.get("observed") is True
+            if cleanup_inventory.get("observed"):
+                focus_checks.append(_focus_is_unchanged(baseline_focus, cleanup_inventory.get("user_focus")))
+            if not space["cleanup_inventory_ok"]:
+                failures.append(f"{space['label']}_managed_page_cleanup_observation_invalid")
             release = cli.call(
-                [
-                    "space",
-                    "release",
-                    "--space-id",
-                    space["space_id"],
-                    "--lease-epoch",
-                    str(lease_epoch),
-                ],
+                ["space", "release", "--space-id", space["space_id"], "--lease-epoch", str(lease_epoch)],
                 principal=space["principal"],
             )
-            _append_receipt(receipts, f"space.release.{space['label']}", release)
+            _append_receipt(transport_receipts, f"space.release.{space['label']}", release)
             if not _lifecycle_result(release, "released"):
                 failures.append(f"{space['label']}_release_invalid")
             else:
-                space["cleanup_ok"] = True
+                space["cleanup_ok"] = space["cleanup_inventory_ok"] is True
+        try:
+            fixture_stack.close()
+        except ProbeError:
+            failures.append("fixture_server_shutdown_invalid")
 
-    if all(
-        scenario["status"] == "not_observed"
-        for scenario in scenarios
-        if scenario["name"] in {"two-space-isolation", "takeover-fence"}
-    ):
-        failures.append("host_scenario_receipts_incomplete")
-
+    cleanup_spaces = [space for space in spaces if isinstance(space.get("page_id"), str)]
     cleanup_refs = tuple(
         receipt["operation"]
-        for receipt in receipts
-        if receipt["operation"].startswith(("space.finish.", "space.release.")) and receipt.get("ok") is True
+        for receipt in browser_receipts
+        if receipt["operation"].startswith("browser.inventory.cleanup.")
     )
-    page_spaces = [space for space in spaces if space.get("page_id") is not None]
-    if page_spaces and all(space.get("cleanup_ok") is True for space in page_spaces):
-        _set_scenario(
-            scenarios,
-            "agent-page-cleanup",
-            "host_observed_not_browser",
-            "planned_logical_pages_released_without_managed_browser_page",
-            receipt_refs=cleanup_refs,
-        )
-
-    if spaces and not all(space.get("cleanup_ok") is True for space in spaces):
+    if cleanup_spaces and all(space.get("cleanup_ok") is True for space in cleanup_spaces) and cleanup_refs:
+        _set_browser_scenario(scenarios, "agent-page-cleanup", "managed_pages_absent_after_host_cleanup", (cleanup_refs[0],))
+    else:
         failures.append("cleanup_incomplete")
 
-    checkpoint_names = (
-        "user-tab-preservation",
-        "focus-stability",
-        "return-control-fresh-lease",
-        "worker-restart-recovery",
-        "host-restart-recovery",
-        "chrome-restart-recovery",
-        "extension-update-recovery",
-    )
-    if operator_checkpoint and not failures:
-        for name in checkpoint_names:
-            acknowledged, checkpoint_status = _operator_checkpoint(name, checkpoint_timeout)
-            checkpoint_record: dict[str, Any] = {
-                "name": name,
-                "acknowledged": acknowledged,
-                "status": checkpoint_status,
-                "evidence": "acknowledgement_only",
-            }
-            live.setdefault("operator_checkpoints", []).append(checkpoint_record)
-            if not acknowledged:
-                _set_scenario(scenarios, name, "operator_checkpoint_required", checkpoint_status)
-                continue
-            after_status = cli.call(["host", "status"], principal=LIVE_PRINCIPALS[0])
-            _append_receipt(receipts, f"checkpoint.host.status.{name}", after_status)
-            after_observation, after_reason = _host_status_observation(after_status)
-            after_events = cli.call(
-                ["events", "--after-sequence", "0", "--limit", "32"],
-                principal=LIVE_PRINCIPALS[0],
-            )
-            _append_receipt(receipts, f"checkpoint.events.resume.{name}", after_events)
-            events_observed = _event_count(after_events) is not None
-            if after_observation is None or not events_observed:
-                _set_scenario(scenarios, name, "operator_checkpoint_required", after_reason or "post_checkpoint_observation_invalid", operator_acknowledged=True)
-                continue
-            if name == "host-restart-recovery" and after_observation["broker_epoch"] != host_observation["broker_epoch"]:
-                _set_scenario(
-                    scenarios,
-                    name,
-                    "operator_checkpoint_required",
-                    "operator_acknowledgement_not_browser_observation",
-                    receipt_refs=(f"checkpoint.host.status.{name}", f"checkpoint.events.resume.{name}"),
-                    operator_acknowledged=True,
-                )
-            else:
-                _set_scenario(
-                    scenarios,
-                    name,
-                    "operator_checkpoint_required",
-                    "operator_acknowledgement_not_browser_observation",
-                    receipt_refs=(f"checkpoint.host.status.{name}", f"checkpoint.events.resume.{name}"),
-                    operator_acknowledged=True,
-                )
-    else:
-        for name in checkpoint_names:
-            _set_scenario(scenarios, name, "operator_checkpoint_required", "operator_checkpoint_not_requested")
+    if not focus_checks:
+        failures.append("focus_observation_missing")
+    if all(focus_checks) and browser_receipts:
+        focus_ref = next(
+            (receipt["operation"] for receipt in browser_receipts if receipt["operation"].startswith("browser.inventory.post-action.")),
+            None,
+        )
+        if focus_ref:
+            _set_browser_scenario(scenarios, "focus-stability", "unmanaged_active_tab_and_focus_unchanged", (focus_ref,))
 
     live["scenarios"] = scenarios
-    live["receipts"] = receipts
-    live["operator_claims_used"] = bool(operator_checkpoint)
-    live["safety"] = {
-        "measurement_status": "not_measured_live_incomplete",
+    live["receipts"] = browser_receipts
+    live["transport_receipts"] = transport_receipts
+    live["operator_claims_used"] = False
+    browser_observed = bool(initial_inventory and initial_inventory.get("observed"))
+    all_focus_stable = bool(focus_checks) and all(focus_checks)
+    live["browser_observed"] = browser_observed
+    live["browser"] = {
+        "observed": browser_observed,
         "current_run": True,
-        "user_tab_closes": None,
-        "focus_theft": None,
-        "cross_space_mutations": None,
-        "stale_agent_mutations": None,
+        "launch": False,
+        "download": False,
+        "cdp_url_used": False,
+        "attached": browser_observed,
+        "managed_pages_observed": sum(1 for space in spaces if isinstance(space.get("page_id"), str)),
+        "visual_groups_observed": sum(
+            observation.get("visual_groups", {}).get("spaces", 0)
+            for observation in (latest_inventory or {}).get("observations", {}).values()
+            if isinstance(observation, dict) and isinstance(observation.get("visual_groups"), dict)
+        ),
+        "user_tab_observed": baseline_focus is not None,
+        "focus_unchanged": all_focus_stable,
+    }
+    live["browser_observations"] = {
+        "managed_page_count": live["browser"]["managed_pages_observed"],
+        "visual_group_count": live["browser"]["visual_groups_observed"],
+        "user_tab_preserved": baseline_focus is not None and all_focus_stable,
+        "focus_unchanged": all_focus_stable,
+        "current_run": True,
+    }
+    safety_measured = browser_observed and baseline_focus is not None and bool(focus_checks) and all_focus_stable
+    live["safety"] = {
+        "measurement_status": "measured_live" if safety_measured and cross_space_rejected and stale_rejected else "not_measured_live_incomplete",
+        "current_run": True,
+        "user_tab_closes": 0 if safety_measured else None,
+        "focus_theft": 0 if safety_measured else None,
+        "cross_space_mutations": 0 if cross_space_rejected else None,
+        "stale_agent_mutations": 0 if stale_rejected else None,
     }
     live["cleanup"] = {
         "spaces_attempted": len(spaces),
-        "spaces_released": sum(1 for receipt in receipts if receipt["operation"].startswith("space.release.") and receipt.get("ok") is True),
-        "status": (
-            "not_attempted"
-            if not spaces
-            else "passed" if all(space.get("cleanup_ok") is True for space in spaces) else "incomplete"
+        "spaces_released": sum(
+            1 for receipt in transport_receipts
+            if receipt["operation"].startswith("space.release.") and receipt.get("ok") is True
         ),
+        "status": "passed" if cleanup_spaces and all(space.get("cleanup_ok") is True for space in cleanup_spaces) else "incomplete",
     }
     live["failures"] = sorted(set(failures))
-    live["status"] = "operator_checkpoint_required" if operator_checkpoint and not failures else "live_observation_incomplete"
-    live["evidence_status"] = "operator_checkpoint_required" if operator_checkpoint and not failures else "live_observation_incomplete"
+    all_scenarios_live = tuple(item.get("name") for item in scenarios) == REQUIRED_LIVE_SCENARIOS and all(
+        item.get("status") == "live_passed" for item in scenarios
+    )
+    candidate = all_scenarios_live and not failures
+    live["status"] = "live_passed" if candidate else "live_observation_incomplete"
+    live["evidence_status"] = "live_passed" if candidate else "live_observation_incomplete"
+    live["evidence_mode"] = "live"
+    live["release_gates"] = {"eligible": candidate, "reason_code": "live_passed" if candidate else "live_observation_incomplete"}
+    if candidate and not _live_evidence_is_complete(live):
+        live["status"] = "live_observation_incomplete"
+        live["evidence_status"] = "live_observation_incomplete"
+        live["release_gates"] = {"eligible": False, "reason_code": "live_evidence_validator_rejected"}
     return live
 
 
@@ -1539,12 +2623,16 @@ def redact(value: Any, depth: int = 0) -> Any:
     if isinstance(value, list):
         return [redact(item, depth + 1) for item in value]
     if isinstance(value, str):
-        return _SECRET_TEXT.sub("<redacted>", value)
+        value = _SECRET_TEXT.sub("<redacted>", value)
+        value = _RAW_URL.sub("<redacted>", value)
+        value = _ABSOLUTE_PATH.sub("<redacted>", value)
+        value = _FILE_URL.sub("<redacted>", value)
+        return value
     return value
 
 
 def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
-    """Allow live green only for current-run browser observations."""
+    """Allow live green only for current-run host and browser observations."""
     if (
         live.get("_execution_token") is not _LIVE_EXECUTION_TOKEN
         or live.get("executed") is not True
@@ -1552,28 +2640,45 @@ def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
         or live.get("status") != "live_passed"
         or live.get("evidence_status") != "live_passed"
         or live.get("evidence_mode") != "live"
-        or live.get("provenance") != "direct_cli_current_run"
+        or live.get("provenance") != "existing_chrome_current_run"
         or live.get("descriptor_policy") != "descriptors_not_accepted_as_live_evidence"
         or live.get("operator_claims_used") is not False
         or live.get("host_probe_used") is not False
         or live.get("browser_observed") is not True
+        or live.get("profile_scope") != "existing_user_profile"
+        or live.get("profile_binding_observed") is not True
     ):
         return False
     browser = live.get("browser")
+    browser_observations = live.get("browser_observations")
     preflight = live.get("preflight")
     receipts = live.get("receipts")
     scenarios = live.get("scenarios")
     enrollment = live.get("enrollment")
     safety = live.get("safety")
+    cleanup = live.get("cleanup")
+    checkpoints = live.get("operator_checkpoints")
     if (
         not isinstance(browser, dict)
         or browser.get("observed") is not True
+        or browser.get("current_run") is not True
+        or browser.get("attached") is not True
         or browser.get("launch") is not False
         or browser.get("download") is not False
         or browser.get("cdp_url_used") is not False
+        or browser.get("managed_pages_observed") != 2
+        or browser.get("visual_groups_observed") != 2
+        or browser.get("user_tab_observed") is not True
+        or browser.get("focus_unchanged") is not True
+        or not isinstance(browser_observations, dict)
+        or browser_observations.get("managed_page_count") != 2
+        or browser_observations.get("visual_group_count") != 2
+        or browser_observations.get("user_tab_preserved") is not True
+        or browser_observations.get("focus_unchanged") is not True
         or not isinstance(preflight, dict)
         or preflight.get("observed") is not True
         or preflight.get("source") != "direct_cli"
+        or preflight.get("profile_binding_observed") is not True
         or not isinstance(receipts, list)
         or not receipts
         or not isinstance(scenarios, list)
@@ -1582,6 +2687,9 @@ def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
         or not isinstance(safety, dict)
         or safety.get("measurement_status") != "measured_live"
         or safety.get("current_run") is not True
+        or not isinstance(cleanup, dict)
+        or cleanup.get("status") != "passed"
+        or not isinstance(checkpoints, list)
     ):
         return False
     for component in ENROLLMENT_COMPONENTS:
@@ -1600,13 +2708,41 @@ def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
     for receipt in receipts:
         if (
             not isinstance(receipt, dict)
-            or receipt.get("source") != "direct_cli"
+            or receipt.get("source") != "browser_current_run"
             or receipt.get("current_run") is not True
             or receipt.get("observed") is not True
+            or receipt.get("browser_observed") is not True
             or not isinstance(receipt.get("operation"), str)
+            or receipt["operation"] in receipt_operations
         ):
             return False
         receipt_operations.add(receipt["operation"])
+    if not all(
+        any(operation == f"browser.action.execute.{label}" for operation in receipt_operations)
+        for label in ("research", "testing")
+    ):
+        return False
+    if not all(
+        any(operation == f"browser.snapshot.{label}" for operation in receipt_operations)
+        for label in ("research", "testing")
+    ):
+        return False
+    if not any(operation.startswith("browser.inventory.cleanup.") for operation in receipt_operations):
+        return False
+    for checkpoint_name in RESTART_SCENARIOS:
+        matching = [item for item in checkpoints if isinstance(item, dict) and item.get("name") == checkpoint_name]
+        if len(matching) != 1:
+            return False
+        post = matching[0].get("post_observation")
+        if matching[0].get("acknowledged") is not True or not isinstance(post, dict):
+            return False
+        if (
+            post.get("host") is not True
+            or post.get("inventory") is not True
+            or post.get("epoch") is not True
+            or post.get("profile_binding") is not True
+        ):
+            return False
     for key in ("user_tab_closes", "focus_theft", "cross_space_mutations", "stale_agent_mutations"):
         if type(safety.get(key)) is not int or safety[key] != 0:
             return False
@@ -1623,7 +2759,13 @@ def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
             or observation.get("operator_acknowledged") is True
             or not isinstance(observation.get("receipt_refs"), list)
             or not observation["receipt_refs"]
+            or len(observation["receipt_refs"]) != len(set(observation["receipt_refs"]))
             or any(reference not in receipt_operations for reference in observation["receipt_refs"])
+        ):
+            return False
+        if expected_name == "return-control-fresh-lease" and not any(
+            reference.startswith("browser.inventory.return-control.")
+            for reference in observation["receipt_refs"]
         ):
             return False
     return True
@@ -1668,16 +2810,17 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
         for key in ("user_tab_closes", "focus_theft", "cross_space_mutations", "stale_agent_mutations")
     }
     return redact_for_persistence(
-        {
-            "schema_version": 1,
-            "phase": 0,
+        redact(
+            {
+                "schema_version": 1,
+                "phase": 0,
             "rollout_phase": 7,
             "probe": "existing-chrome-coexistence",
             "kind": "existing-chrome-coexistence",
             "mode": mode,
             "evidence_mode": evidence_mode,
             "status": reported_status,
-            "release_eligible": False,
+            "release_eligible": executed,
             "spaces": len(contract["spaces"]),
             "agents": len({item["agent"] for item in contract["spaces"]}),
             "result": {
@@ -1716,10 +2859,11 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
             },
             "limitations": [
                 "Offline mode validates fixture contracts only; it is not evidence from a live Chrome profile.",
-                "The headed lane invokes only the public host-backed probe or direct CLI and never launches, downloads, or attaches to Chrome or CDP.",
+                "The headed lane invokes only the public host-backed direct CLI and never launches, downloads, or attaches to Chrome or CDP.",
                 "Enrollment descriptors and operator acknowledgements are not accepted as live evidence; host logical observations do not establish browser coexistence.",
-            ],
-        }
+                ],
+            }
+        )
     )
 
 
@@ -1901,6 +3045,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--cli", dest="cli_path", help="existing direct CLI executable; never interpreted through a shell")
     result.add_argument("--host-probe", dest="host_probe_path", help="real existing-Chrome host probe executable; never interpreted through a shell")
     result.add_argument("--state-dir", help="optional direct-CLI host state directory")
+    result.add_argument(
+        "--profile-binding-id",
+        dest="profile_binding_id",
+        help=f"enrolled profile binding ID; defaults to {PROFILE_BINDING_ENV}",
+    )
     result.add_argument("--cli-timeout", type=float, default=MAX_CLI_TIMEOUT_SECONDS)
     result.add_argument("--operator-checkpoint", action="store_true", help="use bounded fixed-token operator checkpoints for unautomated lifecycle steps")
     result.add_argument("--checkpoint-timeout", type=float, default=30.0)
@@ -1949,6 +3098,7 @@ def main(argv: list[str] | None = None) -> int:
             cli_path=args.cli_path,
             state_dir=args.state_dir,
             cli_timeout=args.cli_timeout,
+            profile_binding_id=args.profile_binding_id,
             host_probe_path=args.host_probe_path,
             operator_checkpoint=bool(
                 args.operator_checkpoint
@@ -1960,7 +3110,13 @@ def main(argv: list[str] | None = None) -> int:
 
     report = safe_report(mode="headed" if args.headed else "offline", manifest=manifest, contract=contract, live=live)
     status = str(report.get("status", status))
-    add_envelope(report, kind="existing-chrome-coexistence")
+    # Persist only a fixed logical invocation marker; never pass raw argv,
+    # profile bindings, URLs, or paths to the artifact envelope.
+    add_envelope(
+        report,
+        kind="existing-chrome-coexistence",
+        command=["scripts/run_existing_chrome.py", "--headed" if args.headed else "--offline"],
+    )
     rendered = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     encoded = rendered.encode("utf-8")
     if len(encoded) > MAX_REPORT_BYTES:
