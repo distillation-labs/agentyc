@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -111,6 +113,28 @@ class ExistingChromeDescriptorTests(unittest.TestCase):
         )
         self.assertFalse(loaded["executed"])
         self.assertEqual(loaded["evidence_status"], "descriptor_only")
+
+    def test_descriptor_loader_discards_embedded_live_claims(self) -> None:
+        descriptor = self.descriptor()
+        descriptor["evidence"] = {
+            "executed": True,
+            "status": "live_passed",
+            "scenarios": [
+                {"name": name, "status": "live_passed"}
+                for name in _chrome.REQUIRED_LIVE_SCENARIOS
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "enrollment.json"
+            path.write_text(json.dumps(descriptor), encoding="utf-8")
+            loaded = _chrome.load_enrolled_descriptor(str(path))
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertFalse(loaded["executed"])
+        self.assertFalse(loaded["live_passed"])
+        self.assertEqual(loaded["evidence_status"], "descriptor_only")
+        self.assertEqual(len(loaded["scenarios"]), 10)
+        self.assertTrue(all(not item["enrolled"] for item in loaded["enrollment"].values()))
 
 
 if __name__ == "__main__":
