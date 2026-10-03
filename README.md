@@ -79,7 +79,7 @@ Point your agent at that file. It explains the read→ref→act→verify loop, t
 
 ## Existing-Chrome task spaces
 
-The host/core contracts, production MV3 extension package, direct CLI/SDK, context/reliability modules, rollout gates, and host-backed MCP adapter now exist behind explicit opt-in paths. Phase 0 remains active because branded Chrome 154 refused the isolated unpacked-extension probe and no live enrolled existing-Chrome, installation, or performance evidence is claimed. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md) and [release gate](docs/release-gate.md).
+The host/core contracts, production MV3 extension package, production Native Messaging host, direct CLI/SDK, context/reliability modules, rollout gates, and host-backed MCP adapter exist behind explicit opt-in paths. Each logical space owns its managed pages and one visual Chrome tab group; leases and epochs, not group membership, authorize mutations. Phase 0 remains active only because independently enrolled existing-Chrome coexistence evidence is still missing; the live extension, Native Messaging fault suite, performance, and macOS lifecycle gates pass. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md) and [release gate](docs/release-gate.md).
 
 ---
 
@@ -261,7 +261,7 @@ These defaults apply only to the current legacy managed-browser compatibility pa
 
 ## Legacy MCP Performance Measurements
 
-These are legacy MCP/process measurements, not live existing-Chrome task-space, context-token, coexistence, or SOTA release evidence. Phase 0 remains blocked until the required live lanes pass.
+These are legacy MCP/process measurements, not live existing-Chrome task-space, context-token, coexistence, or SOTA release evidence. Phase 0 remains blocked only by the independently enrolled existing-Chrome coexistence/Native Messaging host lane; the managed live performance and macOS disposable lifecycle lanes are captured separately under `artifacts/p0-performance/` and `artifacts/p0-installation/`.
 
 | Metric                              | Value             |
 | ----------------------------------- | ----------------- |
