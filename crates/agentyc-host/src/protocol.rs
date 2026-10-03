@@ -331,6 +331,12 @@ impl ProtocolServer {
                 put_json(&mut result, "space_id", &space.space_id)?;
                 put_json(&mut result, "pages", &space.pages)?;
             }
+            "page.inventory" => {
+                let space_id = parse_space(required(&request.params, "space_id")?)?;
+                let pages = self.broker.page_inventory(authority, &space_id)?;
+                put_json(&mut result, "space_id", &space_id)?;
+                put_json(&mut result, "pages", &pages)?;
+            }
             "action.execute" => {
                 let action_request = action_request_from_params(&request.params)?;
                 let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
@@ -755,8 +761,10 @@ fn _keep_protocol_types_visible(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::FakeBridge;
+    use crate::{bridge::FakeBridge, ledger::Ledger};
     use agentyc_core::{ClientMetadata, ConnectionNonce, PROTOCOL_VERSION, PrincipalId};
+    use serde_json::json;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     #[test]
@@ -808,6 +816,128 @@ mod tests {
         assert_eq!(
             response.error.as_ref().expect("error").code,
             agentyc_core::ErrorCode::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn page_inventory_is_live_space_scoped_and_page_list_stays_ledger_backed() {
+        let directory = tempdir().expect("tempdir");
+        let bridge = Arc::new(FakeBridge::new());
+        let broker = Broker::with_shared_bridge(
+            Ledger::open(directory.path()).expect("ledger"),
+            bridge.clone(),
+        );
+        let mut server = ProtocolServer::new(broker);
+        let hello = Envelope::Hello(HelloEnvelope {
+            protocol: PROTOCOL_VERSION,
+            supported_protocols: vec![PROTOCOL_VERSION],
+            principal_id: PrincipalId::from_suffix("inventory-test").expect("principal"),
+            resume_from: None,
+            client_metadata: Some(ClientMetadata {
+                client_id: None,
+                client_name: Some("protocol-test".to_owned()),
+                client_version: Some("1".to_owned()),
+                connection_nonce: Some(
+                    ConnectionNonce::from_suffix("inventory-test").expect("nonce"),
+                ),
+                profile_binding_id: None,
+            }),
+        });
+        server.dispatch(hello).expect("hello");
+
+        let mut request_number = 0_u64;
+        let mut request = |method: &str, params: BTreeMap<String, String>| {
+            request_number += 1;
+            let request = Envelope::Request(RequestEnvelope {
+                protocol: PROTOCOL_VERSION,
+                request_id: RequestId::from_suffix(format!("inventory-{request_number}"))
+                    .expect("request"),
+                method: method.to_owned(),
+                params,
+                deadline_ms: None,
+                idempotency_key: None,
+            });
+            let Envelope::Response(response) =
+                server.dispatch(request).expect("dispatch")[0].clone()
+            else {
+                panic!("expected response");
+            };
+            assert!(
+                response.ok,
+                "{}",
+                response
+                    .error
+                    .map_or_else(String::new, |error| error.message)
+            );
+            response.result.expect("result")
+        };
+        let json_field = |result: &BTreeMap<String, String>, key: &str| {
+            serde_json::from_str::<serde_json::Value>(result.get(key).expect("field"))
+                .expect("json result field")
+        };
+
+        let first_space = request(
+            "space.create",
+            BTreeMap::from([("label".to_owned(), "first".to_owned())]),
+        );
+        let first_space_id = json_field(&first_space, "space_id")
+            .as_str()
+            .expect("first space id")
+            .to_owned();
+        let second_space = request(
+            "space.create",
+            BTreeMap::from([("label".to_owned(), "second".to_owned())]),
+        );
+        let second_space_id = json_field(&second_space, "space_id")
+            .as_str()
+            .expect("second space id")
+            .to_owned();
+
+        bridge.set_observation(vec![
+            json!({
+                "space_id": first_space_id,
+                "page_id": "page_live",
+                "ownership": "agent",
+                "lifecycle": "managed",
+                "binding_state": "bound",
+                "target_generation": 2,
+                "url": "https://example.test/one",
+                "tab_hint": "hint_one",
+                "tab_id": 7,
+                "path": "/private/profile",
+                "unknown": "discarded"
+            }),
+            json!({
+                "space_id": second_space_id,
+                "page_id": "page_foreign",
+                "ownership": "agent",
+                "lifecycle": "managed",
+                "binding_state": "bound",
+                "target_generation": 3
+            }),
+        ]);
+
+        let live = request(
+            "page.inventory",
+            BTreeMap::from([("space_id".to_owned(), first_space_id.clone())]),
+        );
+        let live_pages_value = json_field(&live, "pages");
+        let live_pages = live_pages_value.as_array().expect("live pages");
+        assert_eq!(live_pages.len(), 1);
+        assert_eq!(live_pages[0]["space_id"], json!(first_space_id));
+        assert!(live_pages[0].get("tab_id").is_none());
+        assert!(live_pages[0].get("path").is_none());
+        assert!(live_pages[0].get("unknown").is_none());
+
+        let listed = request(
+            "page.list",
+            BTreeMap::from([("space_id".to_owned(), first_space_id)]),
+        );
+        assert!(
+            json_field(&listed, "pages")
+                .as_array()
+                .expect("ledger pages")
+                .is_empty()
         );
     }
 
