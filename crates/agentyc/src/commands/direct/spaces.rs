@@ -1,13 +1,24 @@
 use std::collections::BTreeMap;
 
-use agentyc_core::SpaceLifecycle;
+use agentyc_core::{BrokerEpoch, LeaseEpoch, ReconcileToken, SpaceId, SpaceLifecycle};
 use serde_json::{Value, json};
 
 use super::{
     DirectContext, DirectResult, LeaseArgs, LeaseRenewArgs, LeaseReturnArgs, SpaceCommand,
-    SpaceCreateArgs, SpaceTransitionArgs, host_error, lease_epoch, parse_space, remote_field,
-    remote_string, timestamp,
+    SpaceCreateArgs, SpaceReclaimArgs, SpaceTransitionArgs, host_error, lease_epoch, parse_space,
+    parse_value, remote_field, remote_string, timestamp,
 };
+
+const MAX_CONTROL_TICKET_JSON_BYTES: usize = 8 * 1024;
+
+struct ControlTicketEnvelope {
+    space_id: SpaceId,
+    broker_epoch: BrokerEpoch,
+    fence_epoch: LeaseEpoch,
+    token: Option<ReconcileToken>,
+    opaque: Option<bool>,
+    in_memory: Option<bool>,
+}
 
 pub(super) fn run(context: &DirectContext, command: SpaceCommand) -> DirectResult<Value> {
     match command {
@@ -16,6 +27,7 @@ pub(super) fn run(context: &DirectContext, command: SpaceCommand) -> DirectResul
         SpaceCommand::Claim(args) => claim(context, args),
         SpaceCommand::Renew(args) => renew(context, args),
         SpaceCommand::Takeover(args) => takeover(context, args),
+        SpaceCommand::Reclaim(args) => reclaim(context, args),
         SpaceCommand::Return(args) => return_control(context, args),
         SpaceCommand::Finish(args) => finish(context, args),
         SpaceCommand::Release(args) => release(context, args),
@@ -151,6 +163,197 @@ fn takeover(context: &DirectContext, args: LeaseArgs) -> DirectResult<Value> {
     }))
 }
 
+fn reclaim(context: &DirectContext, args: SpaceReclaimArgs) -> DirectResult<Value> {
+    let space_id = parse_space(&args.space_id)?;
+    let control_ticket = args
+        .control_ticket
+        .as_deref()
+        .map(parse_control_ticket)
+        .transpose()?;
+    let now = timestamp(args.now);
+
+    if let Some((broker, authority)) = context.local() {
+        let ticket = match context.control_ticket(&space_id) {
+            Some(ticket) => ticket,
+            None => broker
+                .control_ticket(authority, &space_id)
+                .map_err(host_error)?,
+        };
+        if let Some(control_ticket) = &control_ticket {
+            validate_control_ticket(control_ticket, &ticket)?;
+        }
+        let result = broker
+            .takeover_with_control_ticket(&space_id, authority, &ticket, now, args.ttl)
+            .map_err(host_error)?;
+        context.take_control_ticket(&space_id);
+        return Ok(json!({
+            "space_id": result.space_id,
+            "lease_epoch": result.lease_epoch,
+            "fence_acknowledged": result.fence_acknowledged,
+            "lifecycle": result.lifecycle,
+        }));
+    }
+
+    let control_ticket = control_ticket.ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument("remote space reclaim requires --control-ticket")
+    })?;
+    let response = context.request(
+        "space.takeover_with_control_ticket",
+        BTreeMap::from([
+            ("space_id".to_owned(), space_id.to_string()),
+            (
+                "control_ticket".to_owned(),
+                serialize_control_ticket(&control_ticket)?,
+            ),
+            ("now".to_owned(), now.get().to_string()),
+            ("ttl".to_owned(), args.ttl.to_string()),
+        ]),
+    )?;
+    Ok(json!({
+        "space_id": remote_string(&response, "space_id")?,
+        "lease_epoch": remote_field(&response, "lease_epoch")?,
+        "fence_acknowledged": remote_field(&response, "fence_acknowledged")?,
+        "lifecycle": remote_string(&response, "lifecycle")?,
+    }))
+}
+
+fn parse_control_ticket(value: &str) -> DirectResult<ControlTicketEnvelope> {
+    if value.len() > MAX_CONTROL_TICKET_JSON_BYTES {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "control_ticket exceeds the 8192-byte limit",
+        ));
+    }
+    let object = serde_json::from_str::<Value>(value)
+        .map_err(|error| {
+            agentyc_core::CoreError::invalid_argument(format!("invalid control_ticket: {error}"))
+        })?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| {
+            agentyc_core::CoreError::invalid_argument("control_ticket must be a JSON object")
+        })?;
+    const ALLOWED_FIELDS: [&str; 6] = [
+        "space_id",
+        "broker_epoch",
+        "fence_epoch",
+        "token",
+        "opaque",
+        "in_memory",
+    ];
+    if object
+        .keys()
+        .any(|key| !ALLOWED_FIELDS.contains(&key.as_str()))
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "control_ticket contains an unknown field",
+        ));
+    }
+    let field = |name: &str| {
+        object.get(name).ok_or_else(|| {
+            agentyc_core::CoreError::invalid_argument(format!("control_ticket is missing {name}"))
+        })
+    };
+    let space_id = field("space_id")?
+        .as_str()
+        .ok_or_else(|| {
+            agentyc_core::CoreError::invalid_argument("control_ticket space_id must be a string")
+        })
+        .and_then(parse_space)?;
+    let broker_epoch = BrokerEpoch::new(field("broker_epoch")?.as_u64().ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument(
+            "control_ticket broker_epoch must be an unsigned integer",
+        )
+    })?);
+    let fence_epoch = LeaseEpoch::new(field("fence_epoch")?.as_u64().ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument(
+            "control_ticket fence_epoch must be an unsigned integer",
+        )
+    })?);
+    let token = object
+        .get("token")
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("control_ticket token must be a string")
+            })
+        })
+        .transpose()?
+        .map(|value| parse_value::<ReconcileToken>(value, "control_ticket token"))
+        .transpose()?;
+    let opaque = object
+        .get("opaque")
+        .map(|value| {
+            value.as_bool().ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("control_ticket opaque must be a boolean")
+            })
+        })
+        .transpose()?;
+    let in_memory = object
+        .get("in_memory")
+        .map(|value| {
+            value.as_bool().ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument(
+                    "control_ticket in_memory must be a boolean",
+                )
+            })
+        })
+        .transpose()?;
+    Ok(ControlTicketEnvelope {
+        space_id,
+        broker_epoch,
+        fence_epoch,
+        token,
+        opaque,
+        in_memory,
+    })
+}
+
+fn serialize_control_ticket(ticket: &ControlTicketEnvelope) -> DirectResult<String> {
+    let mut value = json!({
+        "space_id": ticket.space_id,
+        "broker_epoch": ticket.broker_epoch,
+        "fence_epoch": ticket.fence_epoch,
+    });
+    let object = value.as_object_mut().ok_or_else(|| {
+        agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::InvalidJson,
+            "control_ticket could not be represented as JSON",
+        )
+    })?;
+    if let Some(token) = &ticket.token {
+        object.insert("token".to_owned(), Value::String(token.to_string()));
+    }
+    if let Some(opaque) = ticket.opaque {
+        object.insert("opaque".to_owned(), Value::Bool(opaque));
+    }
+    if let Some(in_memory) = ticket.in_memory {
+        object.insert("in_memory".to_owned(), Value::Bool(in_memory));
+    }
+    serde_json::to_string(&value).map_err(|error| {
+        agentyc_core::CoreError::invalid_argument(format!(
+            "control_ticket cannot be serialized: {error}"
+        ))
+    })
+}
+
+fn validate_control_ticket(
+    envelope: &ControlTicketEnvelope,
+    ticket: &agentyc_host::ControlTicket,
+) -> DirectResult<()> {
+    if envelope.space_id.as_str() != ticket.space_id().as_str()
+        || envelope.broker_epoch != ticket.broker_epoch()
+        || envelope.fence_epoch != ticket.fence_epoch()
+        || envelope
+            .token
+            .as_ref()
+            .is_some_and(|token| token != ticket.token())
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "control_ticket does not match the current space handoff",
+        ));
+    }
+    Ok(())
+}
+
 fn return_control(context: &DirectContext, args: LeaseReturnArgs) -> DirectResult<Value> {
     let space_id = parse_space(&args.space_id)?;
     let now = timestamp(args.now);
@@ -158,6 +361,7 @@ fn return_control(context: &DirectContext, args: LeaseReturnArgs) -> DirectResul
         let result = broker
             .return_control(&space_id, authority, lease_epoch(args.lease_epoch), now)
             .map_err(host_error)?;
+        context.remember_control_ticket(result.control_ticket.clone());
         return Ok(json!({
             "space_id": result.space_id,
             "released_epoch": result.released_epoch,
@@ -168,6 +372,7 @@ fn return_control(context: &DirectContext, args: LeaseReturnArgs) -> DirectResul
                 "broker_epoch": result.control_ticket.broker_epoch(),
                 "fence_epoch": result.control_ticket.fence_epoch(),
                 "opaque": true,
+                "in_memory": true,
             },
         }));
     }
