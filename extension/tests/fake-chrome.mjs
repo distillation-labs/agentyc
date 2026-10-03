@@ -109,6 +109,7 @@ export class FakeChrome {
       onReplaced: new FakeEvent(),
       onAttached: new FakeEvent(),
       onDetached: new FakeEvent(),
+      onActivated: new FakeEvent(),
       query: async (queryInfo = {}) => {
         let values = [...this.tabsData.values()];
         if (queryInfo.active !== undefined)
@@ -145,6 +146,8 @@ export class FakeChrome {
         }
         this.tabsData.set(tab.id, tab);
         this.tabs.onCreated.emit(copyTab(tab));
+        if (tab.active)
+          this.tabs.onActivated.emit({ tabId: tab.id, windowId: tab.windowId });
         return copyTab(tab);
       },
       remove: async (tabId) => {
@@ -159,9 +162,11 @@ export class FakeChrome {
           isWindowClosing: false,
         });
       },
-      group: async ({ tabIds }) => {
-        const groupId = this.nextGroupId++;
-        const group = {
+      group: async ({ tabIds, groupId: requestedGroupId }) => {
+        const groupId = Number.isInteger(requestedGroupId)
+          ? requestedGroupId
+          : this.nextGroupId++;
+        const group = this.tabGroupsData.get(groupId) ?? {
           id: groupId,
           title: "",
           color: "grey",
@@ -175,7 +180,8 @@ export class FakeChrome {
             this.tabs.onUpdated.emit(tabId, { groupId }, copyTab(tab));
           }
         }
-        this.tabGroups.onCreated.emit({ ...group });
+        if (!Number.isInteger(requestedGroupId))
+          this.tabGroups.onCreated.emit({ ...group });
         return groupId;
       },
       sendMessage: async (tabId, message) => {
