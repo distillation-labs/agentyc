@@ -260,6 +260,35 @@ test("cleanup proofs require a fresh live identity and reject replay, expiry, an
   );
 });
 
+test("a live managed tab cannot be rebound across logical pages without a lost-binding proof", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, url: "https://agent.test/" }],
+  });
+  const tabs = makeRegistry(chrome);
+  await tabs.start();
+  await managedPage(tabs, "space_one", "page_one", 1);
+
+  assert.throws(
+    () =>
+      tabs.bindManagedTab({
+        tabId: 1,
+        spaceId: "space_two",
+        pageId: "page_two",
+        leaseEpoch: 1,
+        ownershipProof: proof(
+          "claim",
+          "space_two",
+          "page_two",
+          1,
+          "cross-space",
+        ),
+      }),
+    (error) => error.code === "ambiguous_binding",
+  );
+  assert.equal(tabs.getInternalByPage("page_one")?.spaceId, "space_one");
+  assert.equal(tabs.getInternalByPage("page_two"), undefined);
+});
+
 test("ordinary updates preserve lost/user-owned binding state and advance independent generations", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, url: "https://agent.test/", title: "Old" }],
