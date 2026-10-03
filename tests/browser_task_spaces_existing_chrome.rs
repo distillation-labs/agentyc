@@ -74,6 +74,10 @@ fn scenario_contract_names_two_spaces_two_agents_and_preserves_user_tab() {
     assert_eq!(spaces[1]["space"], "testing");
     assert_eq!(spaces[0]["agent"], "agent-a");
     assert_eq!(spaces[1]["agent"], "agent-b");
+    assert_eq!(spaces[0]["page"], "results");
+    assert_eq!(spaces[1]["page"], "app");
+    assert_eq!(spaces[0]["fixture"], "dynamic-feed");
+    assert_eq!(spaces[1]["fixture"], "small-form");
     assert_eq!(
         report["result"]["scenario"]["user_tab"]["agent_may_close"],
         false
@@ -87,8 +91,28 @@ fn scenario_contract_names_two_spaces_two_agents_and_preserves_user_tab() {
         true
     );
     assert_eq!(
+        report["result"]["scenario"]["isolation"]["same_space_mutation"],
+        "allowed"
+    );
+    assert_eq!(
         report["result"]["scenario"]["isolation"]["cross_space_mutation"],
         "rejected"
+    );
+    assert_eq!(
+        report["result"]["scenario"]["isolation"]["user_tab_mutation"],
+        "rejected"
+    );
+    assert_eq!(
+        report["result"]["scenario"]["control"]["takeover_fences_queued_actions"],
+        true
+    );
+    assert_eq!(
+        report["result"]["scenario"]["control"]["return_requires_fresh_lease"],
+        true
+    );
+    assert_eq!(
+        report["result"]["scenario"]["control"]["cleanup_closes_only_agent_pages"],
+        true
     );
     let _ = fs::remove_dir_all(artifact);
 }
@@ -110,6 +134,8 @@ fn offline_probe_passes_without_a_browser_and_writes_bounded_report() {
         report["safety"]["measurement_status"],
         "not_measured_offline"
     );
+    assert_eq!(report["safety"]["raw_browser_ids_logged"], false);
+    assert_eq!(report["safety"]["secrets_logged"], false);
     assert!(report["safety"]["cross_space_mutations"].is_null());
     assert!(report["safety"]["user_tab_close"].is_null());
     for key in [
