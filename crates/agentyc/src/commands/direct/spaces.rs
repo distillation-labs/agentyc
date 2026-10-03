@@ -339,6 +339,11 @@ fn validate_control_ticket(
     envelope: &ControlTicketEnvelope,
     ticket: &agentyc_host::ControlTicket,
 ) -> DirectResult<()> {
+    if envelope.token.is_none() && envelope.in_memory != Some(true) {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "control_ticket token is required outside the in-memory seam",
+        ));
+    }
     if envelope.space_id.as_str() != ticket.space_id().as_str()
         || envelope.broker_epoch != ticket.broker_epoch()
         || envelope.fence_epoch != ticket.fence_epoch()
