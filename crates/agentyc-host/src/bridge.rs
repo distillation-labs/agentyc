@@ -25,6 +25,10 @@ pub struct ObservationSnapshot {
     pub pages: Vec<Value>,
     /// Logical visual-group hints scoped by logical space.
     pub groups: Vec<Value>,
+    /// Bounded measured coexistence counters, when the extension supplied them.
+    pub safety: Option<Value>,
+    /// Whether the extension observed a post-restart recovery proof.
+    pub recovery_observed: bool,
 }
 
 /// Safe extension identity and epoch metadata reported by a browser bridge.
@@ -214,20 +218,80 @@ pub(crate) fn sanitize_observation_snapshot(
 ) -> Result<ObservationSnapshot, CoreError> {
     let pages = sanitize_observation_records(&snapshot.pages)?;
     let groups = sanitize_observation_groups(&snapshot.groups)?;
-    let encoded =
-        serde_json::to_vec(&json!({"pages": &pages, "groups": &groups})).map_err(|_| {
-            CoreError::new(
-                ErrorCode::InvalidJson,
-                "observation snapshot could not be encoded",
-            )
-        })?;
+    let safety = sanitize_observation_safety(snapshot.safety.as_ref())?;
+    let encoded = serde_json::to_vec(&json!({
+        "pages": &pages,
+        "groups": &groups,
+        "safety": &safety,
+        "recovery_observed": snapshot.recovery_observed,
+    }))
+    .map_err(|_| {
+        CoreError::new(
+            ErrorCode::InvalidJson,
+            "observation snapshot could not be encoded",
+        )
+    })?;
     if encoded.len() > MAX_OBSERVATION_BYTES {
         return Err(CoreError::new(
             ErrorCode::MessageTooLarge,
             "observation snapshot exceeds the host bound",
         ));
     }
-    Ok(ObservationSnapshot { pages, groups })
+    Ok(ObservationSnapshot {
+        pages,
+        groups,
+        safety,
+        recovery_observed: snapshot.recovery_observed,
+    })
+}
+
+fn sanitize_observation_safety(value: Option<&Value>) -> Result<Option<Value>, CoreError> {
+    let Some(value) = value else { return Ok(None) };
+    let object = value.as_object().ok_or_else(|| {
+        CoreError::new(
+            ErrorCode::InvalidJson,
+            "observation safety is not an object",
+        )
+    })?;
+    let measurement_status = object
+        .get("measurement_status")
+        .and_then(Value::as_str)
+        .filter(|status| *status == "measured_live")
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation safety status is invalid",
+            )
+        })?;
+    let current_run = object
+        .get("current_run")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::InvalidJson,
+                "observation safety run marker is invalid",
+            )
+        })?;
+    let mut output = Map::new();
+    output.insert(
+        "measurement_status".to_owned(),
+        Value::String(measurement_status.to_owned()),
+    );
+    output.insert("current_run".to_owned(), Value::Bool(current_run));
+    for key in ["user_tab_closes", "focus_theft"] {
+        let count = object
+            .get(key)
+            .and_then(Value::as_u64)
+            .filter(|count| *count <= 1_000_000)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::InvalidJson,
+                    "observation safety counter is invalid",
+                )
+            })?;
+        output.insert(key.to_owned(), Value::from(count));
+    }
+    Ok(Some(Value::Object(output)))
 }
 
 fn sanitize_observation_groups(groups: &[Value]) -> Result<Vec<Value>, CoreError> {
@@ -709,6 +773,7 @@ impl FakeBridge {
         self.set_observation_snapshot(ObservationSnapshot {
             pages: observations,
             groups: Vec::new(),
+            ..ObservationSnapshot::default()
         });
     }
 
@@ -960,6 +1025,7 @@ mod tests {
                 "group_id": 42,
                 "path": "/private/profile",
             })],
+            ..ObservationSnapshot::default()
         })
         .expect("sanitized snapshot");
         assert_eq!(snapshot.pages.len(), 2);
