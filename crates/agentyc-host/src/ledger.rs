@@ -125,6 +125,18 @@ impl Default for LedgerLimits {
     }
 }
 
+/// One live local connection admitted by the current broker process.
+///
+/// This registry is intentionally skipped by serde: connection authority is
+/// process-local and must never survive a broker restart or become durable
+/// ledger state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveConnection {
+    pub(crate) principal_id: PrincipalId,
+    pub(crate) connection_nonce: ConnectionNonce,
+    pub(crate) profile_binding_id: Option<ProfileBindingId>,
+}
+
 /// The complete JSON-compatible logical state owned by one broker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LedgerState {
@@ -134,14 +146,23 @@ pub struct LedgerState {
     pub broker_epoch: BrokerEpoch,
     /// Monotonic local connection epoch counter.
     pub connection_epoch: ConnectionEpoch,
-    /// Principal bound to the current connection epoch.
-    #[serde(default)]
+    /// Live connection authorities for this broker process.
+    ///
+    /// This is an in-memory registry only. The field is skipped during
+    /// serialization so restart clears every prior authority.
+    #[serde(skip)]
+    pub(crate) active_connections: BTreeMap<ConnectionEpoch, ActiveConnection>,
+    /// Nonces already admitted in this broker epoch.
+    #[serde(skip)]
+    pub(crate) used_connection_nonces: BTreeSet<ConnectionNonce>,
+    /// Principal bound to the most recently admitted connection.
+    #[serde(skip)]
     pub(crate) connection_principal_id: Option<PrincipalId>,
-    /// Nonce bound to the current connection epoch.
-    #[serde(default)]
+    /// Nonce bound to the most recently admitted connection.
+    #[serde(skip)]
     pub(crate) connection_nonce: Option<ConnectionNonce>,
-    /// Profile bound to the current connection epoch.
-    #[serde(default)]
+    /// Profile bound to the most recently admitted connection.
+    #[serde(skip)]
     pub(crate) connection_profile_binding_id: Option<ProfileBindingId>,
     /// Host-assigned logical identity counters.
     pub next_space_number: u64,
@@ -186,6 +207,8 @@ impl LedgerState {
             schema_version: LEDGER_SCHEMA_VERSION,
             broker_epoch,
             connection_epoch: ConnectionEpoch::new(0),
+            active_connections: BTreeMap::new(),
+            used_connection_nonces: BTreeSet::new(),
             connection_principal_id: None,
             connection_nonce: None,
             connection_profile_binding_id: None,
@@ -413,20 +436,9 @@ fn validate_state_with_limits(
             LEDGER_SCHEMA_VERSION, state.schema_version
         )));
     }
-    let connection_metadata_present = state.connection_principal_id.is_some()
-        || state.connection_nonce.is_some()
-        || state.connection_profile_binding_id.is_some();
-    if state.connection_epoch.get() == 0 {
-        if connection_metadata_present {
-            return Err(LedgerError::Corrupt(
-                "connection metadata exists without a connection epoch".to_owned(),
-            ));
-        }
-    } else if state.connection_principal_id.is_none() || state.connection_nonce.is_none() {
-        return Err(LedgerError::Corrupt(
-            "current connection metadata is incomplete".to_owned(),
-        ));
-    }
+    // Connection authority is process-local and skipped by serde. The durable
+    // ledger retains only the monotonic epoch counter; all live sessions must
+    // reconnect after restart.
     if state.spaces.len() > limits.max_spaces {
         return Err(LedgerError::BoundExceeded("space count".to_owned()));
     }
