@@ -55,7 +55,7 @@ This document is an execution plan and evidence registry. Phase 0 remains active
 **Proven by repository/source inspection:**
 
 - Current agentyc legacy behavior and its one-shot/active-page constraints are recorded in the Phase 0 plan.
-- The checked-in ego-lite API/schema/source/tests establish reference behavior for task/page handles, output handling, page discovery, and error classification; that reference does not prove agentyc behavior.
+- The checked-in ego-lite API/schema/source/tests establish reference behavior for task/page handles, output handling, page discovery, and error classification; the compatibility mapping and deliberate existing-Chrome differences are recorded in `research/ego-lite-pattern-audit.md`, and that reference does not prove agentyc behavior.
 - The checked-in plan and manifest checker definitions establish required validation structure; they do not prove that the planned targets have run or passed.
 
 **Implemented or evidenced:**
