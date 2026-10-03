@@ -89,13 +89,20 @@ pub enum SpaceCommand {
 pub enum PageCommand {
     /// Create a planned logical page; it does not create a browser target.
     Create(PageCreateArgs),
+    /// Create and bind an inactive managed page through the extension bridge.
+    #[command(name = "create-managed")]
+    CreateManaged(PageCreateManagedArgs),
     /// List logical pages in one space.
     List(PageListArgs),
+    /// Return the bounded logical page inventory for one space.
+    Inventory(PageInventoryArgs),
 }
 
 /// Action operations.
 #[derive(Debug, Clone, Subcommand)]
 pub enum ActionCommand {
+    /// Execute one logical action through the host bridge.
+    Execute(ActionExecuteArgs),
     /// Read one durable action receipt.
     Status(ActionStatusArgs),
     /// Reconcile an action whose outcome is unknown; never re-dispatches it.
@@ -193,10 +200,41 @@ pub struct PageCreateArgs {
     pub now: Option<u64>,
 }
 
+/// Arguments for `page create-managed`.
+#[derive(Debug, Clone, Args)]
+pub struct PageCreateManagedArgs {
+    /// Logical owning space identity.
+    #[arg(long)]
+    pub space_id: String,
+    /// Current space lease epoch.
+    #[arg(long)]
+    pub lease_epoch: u64,
+    /// User-facing logical label.
+    #[arg(long)]
+    pub label: String,
+    /// Optional initial page URL.
+    #[arg(long)]
+    pub url: Option<String>,
+    /// Optional logical page title.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// Explicit host timestamp for deterministic callers.
+    #[arg(long)]
+    pub now: Option<u64>,
+}
+
 /// Arguments for `page list`.
 #[derive(Debug, Clone, Args)]
 pub struct PageListArgs {
     /// Logical owning space identity.
+    #[arg(long)]
+    pub space_id: String,
+}
+
+/// Arguments for `page inventory`.
+#[derive(Debug, Clone, Args)]
+pub struct PageInventoryArgs {
+    /// Logical owning space identity used to scope the inventory.
     #[arg(long)]
     pub space_id: String,
 }
@@ -213,6 +251,41 @@ pub struct SnapshotArgs {
     /// Current space lease epoch.
     #[arg(long)]
     pub lease_epoch: u64,
+    /// Explicit host timestamp for deterministic callers.
+    #[arg(long)]
+    pub now: Option<u64>,
+}
+
+/// Arguments for `action execute`.
+#[derive(Debug, Clone, Args)]
+pub struct ActionExecuteArgs {
+    /// Logical request identity.
+    #[arg(long)]
+    pub request_id: String,
+    /// Durable logical action identity.
+    #[arg(long)]
+    pub action_id: String,
+    /// Caller-supplied logical idempotency identity.
+    #[arg(long)]
+    pub idempotency_key: String,
+    /// Logical owning space identity.
+    #[arg(long)]
+    pub space_id: String,
+    /// Optional logical page target.
+    #[arg(long)]
+    pub page_id: Option<String>,
+    /// Current space lease epoch.
+    #[arg(long)]
+    pub lease_epoch: u64,
+    /// Logical action operation.
+    #[arg(long, value_name = "OPERATION")]
+    pub operation: String,
+    /// Optional bounded JSON object whose values are strings.
+    #[arg(long, value_name = "JSON")]
+    pub payload: Option<String>,
+    /// Optional bounded JSON postcondition object.
+    #[arg(long, value_name = "JSON")]
+    pub postcondition: Option<String>,
     /// Explicit host timestamp for deterministic callers.
     #[arg(long)]
     pub now: Option<u64>,
@@ -670,6 +743,73 @@ mod tests {
         assert_eq!(spaces["spaces"].as_array().expect("spaces").len(), 1);
     }
 
+    #[test]
+    fn offline_inventory_and_action_execute_stay_logical() {
+        let directory = tempdir().expect("tempdir");
+        let context = DirectContext::open(&options(directory.path())).expect("context");
+        let created = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
+                label: "action space".to_owned(),
+            })),
+        )
+        .expect("create space");
+        let space_id = created["space_id"].as_str().expect("space id").to_owned();
+        let claimed = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Claim(LeaseArgs {
+                space_id: space_id.clone(),
+                ttl: DEFAULT_TTL,
+                now: Some(1),
+            })),
+        )
+        .expect("claim space");
+        let lease_epoch = claimed["lease"]["lease_epoch"]
+            .as_u64()
+            .expect("lease epoch");
+        execute(
+            &context,
+            DirectCommand::Page(PageCommand::Create(PageCreateArgs {
+                space_id: space_id.clone(),
+                lease_epoch,
+                label: "logical page".to_owned(),
+                now: Some(2),
+            })),
+        )
+        .expect("create page");
+
+        let inventory = execute(
+            &context,
+            DirectCommand::Page(PageCommand::Inventory(PageInventoryArgs {
+                space_id: space_id.clone(),
+            })),
+        )
+        .expect("inventory");
+        assert_eq!(inventory["space_id"], space_id);
+        assert_eq!(inventory["pages"].as_array().expect("pages").len(), 1);
+
+        let action = execute(
+            &context,
+            DirectCommand::Action(ActionCommand::Execute(ActionExecuteArgs {
+                request_id: "req_direct_wait".to_owned(),
+                action_id: "action_direct_wait".to_owned(),
+                idempotency_key: "idem_direct_wait".to_owned(),
+                space_id,
+                page_id: None,
+                lease_epoch,
+                operation: "wait".to_owned(),
+                payload: Some(r#"{"timeout_ms":"1"}"#.to_owned()),
+                postcondition: Some(
+                    r#"{"kind":"page_generation","document_generation":0}"#.to_owned(),
+                ),
+                now: Some(3),
+            })),
+        )
+        .expect("execute action");
+        assert_eq!(action["action_id"], "action_direct_wait");
+        assert_eq!(action["receipt"]["status"], "succeeded");
+    }
+
     #[cfg(unix)]
     #[test]
     fn remote_direct_path_uses_the_owner_socket_and_preserves_shapes() {
@@ -740,6 +880,25 @@ mod tests {
         )
         .expect("remote page list");
         assert_eq!(pages["pages"].as_array().expect("pages").len(), 1);
+
+        let action = execute(
+            &context,
+            DirectCommand::Action(ActionCommand::Execute(ActionExecuteArgs {
+                request_id: "req_remote_wait".to_owned(),
+                action_id: "action_remote_wait".to_owned(),
+                idempotency_key: "idem_remote_wait".to_owned(),
+                space_id: space_id.clone(),
+                page_id: None,
+                lease_epoch,
+                operation: "wait".to_owned(),
+                payload: None,
+                postcondition: None,
+                now: Some(3),
+            })),
+        )
+        .expect("remote action execute");
+        assert_eq!(action["action_id"], "action_remote_wait");
+        assert_eq!(action["receipt"]["status"], "succeeded");
 
         let events = execute(
             &context,
