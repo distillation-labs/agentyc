@@ -20,6 +20,10 @@ The extension is a browser adapter, not an authority store. Chrome permission gr
 | `storage` | required | persist profile/connection metadata, installation state, and bounded UI preferences | host re-enrollment or read-only UI; authoritative state stays in host |
 | `sidePanel` | required for user-control UI | render pause, takeover, return, finish, retain, release, and confirmation controls | agent remains host-controlled; user operation returns a typed UI-unavailable result |
 
+### Chrome disclosures
+
+Chrome documents user-visible warnings for `debugger` (page debugger access and website data), `nativeMessaging` (communication with cooperating native applications), `tabs` (browsing history), and `tabGroups` (view and manage tab groups). The broad `http://*/*` and `https://*/*` static content-script match patterns can also trigger host-access disclosure. These warnings are expected, disclosed during enrollment, and are not treated as proof of host authorization.
+
 `debugger` MUST be declared in the required permission set. It MUST NOT be placed in an optional permission list, modeled as a live grant that silently widens authority, or bypassed through a copied debugger endpoint.
 
 The product manifest intentionally omits both `host_permissions` and `scripting`: the bridge is a statically declared, isolated-world content script, and the current product does not use programmatic script injection. Its explicit `http://*/*` and `https://*/*` content-script match patterns still cause Chrome's documented host-access warning; that warning is disclosed to the user and is not replaced with a hidden or silent grant. Narrower origin enrollment remains a follow-up capability decision.
@@ -43,26 +47,26 @@ No permission permits automatic browser download, browser launch, profile switch
 
 The bridge sends only the smallest domain/method set required by the capability matrix. The allowlist is versioned and enforced before dispatch:
 
-| Domain          | Phase 1 use                                                                         | Boundary                                                                                   |
-| --------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `Accessibility` | bounded accessibility snapshot data                                                 | read; page data remains untrusted                                                          |
-| `DOM`           | bounded DOM topology and node reads; typed actions use approved input/content paths | generation and lease checks; arbitrary DOM mutation and `DOM.setFileInputFiles` are denied |
-| `DOMSnapshot`   | compact snapshot acquisition                                                        | bounded size and scan budget                                                               |
-| `Input`         | click/type/fill/key/scroll actions                                                  | mutation policy, actionability, and postcondition                                          |
-| `IO`            | bounded artifact/stream reads                                                       | chunk and aggregate limits                                                                 |
-| `Log`           | bounded diagnostic events                                                           | redaction; no secret/page-body persistence                                                 |
-| `Network`       | request/response events and waits                                                   | no unrestricted body persistence; global cache/cookie/blocking mutations are denied        |
-| `Page`          | navigation, lifecycle, dialogs, and page events                                     | lease, deadline, and unknown outcome rules                                                 |
-| `Runtime`       | approved evaluation and bridge calls                                                | evaluate policy below; no unrestricted string execution                                    |
-| `Target`        | related target/frame lifecycle and attach state                                     | extension-internal reconciliation only; no public target control commands                  |
+| Domain          | Phase 1 use                                                                                | Boundary                                                                                               |
+| --------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `Accessibility` | bounded accessibility snapshot data                                                        | read; page data remains untrusted                                                                      |
+| `DOM`           | bounded DOM topology and node reads; typed actions use approved input/content paths        | generation and lease checks; arbitrary DOM mutation and `DOM.setFileInputFiles` are denied             |
+| `DOMSnapshot`   | compact snapshot acquisition                                                               | bounded size and scan budget                                                                           |
+| `Input`         | click/type/fill/key/scroll actions                                                         | mutation policy, actionability, and postcondition                                                      |
+| `IO`            | bounded artifact/stream reads                                                              | chunk and aggregate limits                                                                             |
+| `Log`           | bounded diagnostic events                                                                  | redaction; no secret/page-body persistence                                                             |
+| `Network`       | request/response events and waits                                                          | no unrestricted body persistence; global cache/cookie/blocking mutations are denied                    |
+| `Page`          | navigation, lifecycle, dialogs, and page events                                            | lease, deadline, and unknown outcome rules                                                             |
+| `Runtime`       | approved evaluation and bridge calls                                                       | evaluate policy below; no unrestricted string execution                                                |
+| `Target`        | reserved for a future internal related-target adapter; not exposed in the current baseline | no public target control; related-target execution is unavailable until separately observed and tested |
 
-`Browser`, public `Target` control, unrestricted `Storage`, arbitrary CDP command passthrough, arbitrary runtime script compilation/calls, file-input CDP injection, and unreviewed domains are not in the baseline allowlist. An unsupported domain or method returns `capability_unavailable` with the required Chrome/policy reason. It never falls back to a second browser or direct client-side CDP.
+`Browser`, `Target` control, unrestricted `Storage`, arbitrary CDP command passthrough, arbitrary runtime script compilation/calls, file-input CDP injection, and unreviewed domains are not in the baseline allowlist. An unsupported domain or method returns `capability_unavailable` with the required Chrome/policy reason. It never falls back to a second browser or direct client-side CDP.
 
 ## 3. Content-script and page worlds
 
 - The content script runs in an isolated world by default and carries only a versioned, nonce-bound bridge envelope. The current product executes its four named DOM/ARIA operations directly in that isolated world; it does not relay them through page JavaScript.
 - Page `postMessage` is untrusted. The bridge checks a per-connection channel nonce, schema, origin/frame/document binding, size, and direction before forwarding anything.
-- Content scripts cannot call Native Messaging directly. Only the extension service-worker/approved extension contexts may use the host channel.
+- Content scripts cannot call Native Messaging directly. Only the extension service-worker/approved extension contexts may use the host channel. The service worker validates `sender.id`, `sender.origin`/`sender.url`, managed-tab ownership, and the current document binding before forwarding content data.
 - The `MAIN` world is denied by default. A reviewed capability may use it only with an explicit script hash, origin, frame/document generation, deadline, lease, and user-intent ticket where the operation can mutate or expose sensitive state.
 - Injected code cannot become a principal, renew a lease, approve takeover, release a page, or authorize cleanup.
 - Page text, markup, labels, URLs, network data, cookies, and screenshots are data. Prompt-like content from a page is never policy or an instruction to the host.
