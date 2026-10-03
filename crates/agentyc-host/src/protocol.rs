@@ -360,6 +360,12 @@ impl ProtocolServer {
                 put_json(&mut result, "space_id", &space_id)?;
                 put_json(&mut result, "pages", &inventory.pages)?;
                 put_json(&mut result, "groups", &inventory.groups)?;
+                put_json(&mut result, "safety", &inventory.safety)?;
+                put_json(
+                    &mut result,
+                    "recovery_observed",
+                    &inventory.recovery_observed,
+                )?;
             }
             "action.execute" => {
                 let action_request = action_request_from_params(&request.params)?;
@@ -1094,6 +1100,7 @@ mod tests {
                     "member_count": 1
                 }),
             ],
+            ..ObservationSnapshot::default()
         });
 
         let live = request(
