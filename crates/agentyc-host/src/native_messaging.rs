@@ -211,6 +211,8 @@ struct InventoryState {
     pages: BTreeMap<(String, String), Value>,
     unmanaged_pages: Vec<Value>,
     groups: Vec<Value>,
+    safety: Option<Value>,
+    recovery_observed: bool,
     unknown_action_ids: BTreeSet<String>,
     unknown_actions_overflow: bool,
 }
@@ -311,6 +313,14 @@ impl NativeMessagingBridge {
         config: NativeMessagingConfig,
     ) -> Result<(NativeHello, Self), NativeHostError> {
         Self::accept(io::stdin(), io::stdout(), config)
+    }
+
+    /// Send a bounded unsolicited host event to the extension.
+    pub fn send_event(&self, event: &str, payload: Value) -> Result<(), NativeHostError> {
+        let mut fields = Map::new();
+        fields.insert("event".to_owned(), Value::String(event.to_owned()));
+        fields.insert("payload".to_owned(), payload);
+        self.post("event", fields)
     }
 
     /// Send the host handshake acknowledgement after the broker admits the peer.
@@ -440,6 +450,8 @@ impl NativeMessagingBridge {
                 ObservationSnapshot {
                     pages,
                     groups: inventory.groups.clone(),
+                    safety: inventory.safety.clone(),
+                    recovery_observed: inventory.recovery_observed,
                 }
             })
             .unwrap_or_default()
@@ -466,6 +478,11 @@ impl NativeMessagingBridge {
                     "live extension inventory groups are missing",
                 )
             })?;
+        let safety = result.get("safety").cloned();
+        let recovery_observed = result
+            .get("recovery_observed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let expected_session_epoch = self
             .hello()
             .map_err(|error| error.as_core_error())?
@@ -483,6 +500,8 @@ impl NativeMessagingBridge {
         sanitize_observation_snapshot(ObservationSnapshot {
             pages: pages.to_vec(),
             groups: groups.to_vec(),
+            safety,
+            recovery_observed,
         })
     }
 
@@ -1385,6 +1404,11 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
         .get("groups")
         .and_then(Value::as_array)
         .ok_or_else(|| NativeHostError::Protocol("inventory groups are missing".to_owned()))?;
+    let safety = payload.get("safety").cloned();
+    let recovery_observed = payload
+        .get("recovery_observed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let session = shared
         .session
         .lock()
@@ -1461,6 +1485,8 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
     let valid_snapshot = sanitize_observation_snapshot(ObservationSnapshot {
         pages: pages.to_vec(),
         groups: groups.to_vec(),
+        safety,
+        recovery_observed,
     })
     .map_err(|error| NativeHostError::Protocol(format!("inventory is invalid: {error}")))?;
 
@@ -1471,6 +1497,8 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
     inventory.pages.clear();
     inventory.unmanaged_pages.clear();
     inventory.groups = valid_snapshot.groups;
+    inventory.safety = valid_snapshot.safety;
+    inventory.recovery_observed = valid_snapshot.recovery_observed;
     inventory.unknown_action_ids.clear();
     inventory.unknown_actions_overflow = unknown_actions_overflow;
     for action_id in unknown_action_ids {
