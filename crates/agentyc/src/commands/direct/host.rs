@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use agentyc_host::HostLifecycle;
 use serde_json::{Value, json};
 
-use super::{DirectContext, DirectResult, HostCommand, host_error};
+use super::{DirectContext, DirectResult, HostCommand, host_error, remote_field, remote_string};
 
 pub(super) fn run(context: &DirectContext, command: HostCommand) -> DirectResult<Value> {
     match command {
@@ -10,18 +12,42 @@ pub(super) fn run(context: &DirectContext, command: HostCommand) -> DirectResult
 }
 
 fn status(context: &DirectContext) -> DirectResult<Value> {
-    let lifecycle = context.broker.lifecycle().map_err(host_error)?;
-    let epoch = context.broker.broker_epoch().map_err(host_error)?;
-    let capabilities = context.broker.capabilities().map_err(host_error)?;
+    if let Some((broker, _authority)) = context.local() {
+        let lifecycle = broker.lifecycle().map_err(host_error)?;
+        let epoch = broker.broker_epoch().map_err(host_error)?;
+        let capabilities = broker.capabilities().map_err(host_error)?;
+        return Ok(json!({
+            "state_directory": context.state_dir,
+            "broker_epoch": epoch,
+            "lifecycle": lifecycle_name(lifecycle),
+            "bridge": {
+                "mode": if context.offline { "fake" } else { "extension" },
+                "connected": context.offline && !capabilities.is_empty(),
+                "capabilities": capabilities,
+                "test_seam": context.offline,
+            },
+            "direct_path": {
+                "browser_auto_launch": false,
+                "copied_debug_endpoint": false,
+                "logical_ids_only": true,
+            },
+        }));
+    }
+
+    let response = context.request("host.status", BTreeMap::new())?;
+    let capabilities = remote_field(&response, "capabilities")?;
+    let connected = capabilities
+        .as_array()
+        .is_some_and(|capabilities| !capabilities.is_empty());
     Ok(json!({
         "state_directory": context.state_dir,
-        "broker_epoch": epoch,
-        "lifecycle": lifecycle_name(lifecycle),
+        "broker_epoch": remote_field(&response, "broker_epoch")?,
+        "lifecycle": remote_string(&response, "lifecycle")?,
         "bridge": {
-            "mode": if context.offline { "fake" } else { "extension" },
-            "connected": context.offline && !capabilities.is_empty(),
+            "mode": "extension",
+            "connected": connected,
             "capabilities": capabilities,
-            "test_seam": context.offline,
+            "test_seam": false,
         },
         "direct_path": {
             "browser_auto_launch": false,
