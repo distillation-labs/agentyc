@@ -201,11 +201,11 @@ check the exact user-level registration without opening Chrome:
 cargo build -p agentyc-host --bin agentyc-native-host --locked
 python3 scripts/register_native_host.py \
   --install \
-  --extension-id <32-character-stable-extension-id>
+  --extension-dir extension
 
 python3 scripts/register_native_host.py \
   --check \
-  --extension-id <32-character-stable-extension-id>
+  --extension-dir extension
 ```
 
 The installer writes only the exact macOS Native Messaging manifest, uses an
@@ -219,11 +219,18 @@ Chrome-launched process; the OS-user threat boundary remains documented in
 
 ## Extension and rollback limits
 
-The checked extension is the unpacked Phase 0 probe. Its unpacked ID is not
-invented by the script; the operator must supply the exact ID for an explicit
-drill. A stable production extension ID, signing, distribution, upgrade,
-uninstall, Chrome UI installation, and profile binding are not established by
-this repository yet.
+The checked extension is the unpacked Phase 0 probe under `extension/probes/`.
+It uses the separate Native Messaging host `com.agentyc.p0_probe`; it is not
+the production extension under `extension/` and must not be loaded into the
+user's existing profile for the coexistence gate. The production manifest now
+carries a separate stable public signing key for the explicitly frozen unpacked
+development identity. `register_native_host.py --extension-dir extension`
+derives that ID from the manifest, so the production `com.agentyc.host`
+allowlist cannot accidentally be bound to the probe identity. The private
+signing key is not stored in this repository; Web Store or managed distribution
+requires a separately controlled release key and a new distribution record.
+This does not install the extension or close the existing-profile coexistence
+gate; that still requires the approved user enrollment path.
 
 The rollback proof covers only the test Native Messaging registration written
 by the explicit drill. It does not prove extension uninstall, Chrome profile
