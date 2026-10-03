@@ -71,7 +71,6 @@ const RAW_CDP_IDENTIFIER_REDACTION_KEYS = new Set([
   "objectid",
   "object_id",
   "requestid",
-  "request_id",
   "scriptid",
   "script_id",
 ]);
@@ -615,7 +614,6 @@ export const RAW_BROWSER_IDENTIFIER_KEYS = Object.freeze([
   "objectId",
   "object_id",
   "requestId",
-  "request_id",
   "scriptId",
   "script_id",
   "rawTabId",
