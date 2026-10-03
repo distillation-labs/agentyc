@@ -35,7 +35,7 @@ browser while validating artifacts.
 must not be treated as the direct browser-task completion benchmark. Until
 Phase 7-T10 rewires CI, the existing workflow still executes its legacy
 assertions; this planning document does not claim that the current workflow
-already enforces the new gates. Direct and host-backed MCP benchmarks report transport bytes, UTF-8 bytes, serialized
+already enforces the new gates. The required direct and host-backed MCP benchmarks must report transport bytes, UTF-8 bytes, serialized
 payload tokens, deployed model-context tokens, scan/queue/bridge/browser/
 serialization timings, cache state, actionable-control coverage, stale-ref and
 unknown rates, event lag, CPU/RSS, queue depth, and human-tab responsiveness.
@@ -49,7 +49,7 @@ blocking metric exceeds its signed absolute ceiling or regression budget with a
 non-overlapping confidence interval. Threshold changes require a dated,
 owned decision record.
 
-The performance suite compares legacy MCP one-shot, persistent MCP, the local
+The required production performance suite must compare legacy MCP one-shot, persistent MCP, the local
 protocol, SDK sequential calls, SDK batch calls, full/min/delta snapshots,
 clean/dirty cache, and event-driven waits against polling. Clean snapshots must
 perform zero DOM/AX scans; deltas must preserve equivalent actionable coverage
@@ -76,7 +76,7 @@ python3 scripts/run_direct_benchmark.py \
   --artifact-dir artifacts/release-performance
 ```
 
-This measures a disposable owned browser. The `target` lane is separate and requires explicit loopback port, browser PID, action-target ID, and unrelated human-target ID; it must not be used to claim existing-user-Chrome coexistence.
+This runner measures an owned disposable browser through CDP, not the production host/extension/CLI/SDK path. `serialized_tokens` and `model_context_tokens` are both `ceil(UTF-8 bytes / 4)` with `tokenizer_status: deterministic_byte_estimate_not_model_tokenizer`; they are not deployed-model counts. The batch comparison is three `Runtime.evaluate` requests versus one, reconnect is a CDP websocket reconnect, `host_rss_bytes` is the Python runner's RSS, and human-tab responsiveness is a page evaluation rather than headed human input/focus coexistence. Cache scans and delta payloads are benchmark-local. The 64-cell/64,000-sample generation passes the current artifact checker, not the stronger product requirements above. The `target` lane separately requires explicit loopback port, browser PID, action-target ID, and unrelated human-target ID; it must not be used to claim existing-user-Chrome coexistence.
 
 ## Required production test lanes
 
@@ -153,7 +153,13 @@ and extension; identify an already-running browser; set launch, download, and
 CDP use to false; and prove user-tab and focus safety. Raw IDs, paths, and
 debugger endpoints are rejected. The runner never attaches, launches, downloads,
 or installs anything. Descriptor-only output is non-green. A live result must be
-supplied independently with all ten required scenarios marked `live_passed`.
+supplied independently with all ten required scenarios marked `live_passed`. Descriptor-only status is `live_descriptor_validated_not_executed` with exit 1; a missing/invalid descriptor is `live_required_unavailable`. Even `live_passed` means supplied evidence was validated, not that this runner performed browser actions. It sets safety counters from the accepted claim rather than observing Chrome, so the independent trace and provenance remain necessary.
+
+The actual product route is the enrolled MV3 extension's `connectNative('com.agentyc.host')` -> Chrome-launched Rust host/broker -> owner-only local socket for agent clients -> extension debugger/tabs APIs. The disposable P0-T2 route instead uses `extension/probes/` and `com.agentyc.p0_probe`. The direct host-smoke script also uses the test host, not the production broker. Operator enrollment, permission/policy review, side-panel opening, takeover/return, disruptive restarts, focus/input checks, and final user-tab checks are separate checkpoints; a human acknowledgment or a host metadata smoke cannot substitute for scenario observations. See [Phase 0 probe/checkpoint audit](../research/phase-0-host-backed-probe.md).
+
+Chrome 136+ default-data-directory remote-debugging restrictions do not authorize copying a user profile or enabling a debugger endpoint as a fallback. DevTools/user cancellation and enterprise blocked-host/screenshot/DLP attach denials must be honored. Flat child sessions from Chrome 125 require implemented routing and non-recursive auto-attach handling; current root-target support does not prove OOPIF execution. The product method allowlist currently denies `Target` commands.
+
+The P0-T2 `--operator-assisted` diagnostic lane requires a human to load the exact staged unpacked directory and acknowledge permission/policy observations after load. Its persisted outcomes are only `recorded`, `none_observed`, or `not_recorded`: acceptance, denial, and policy-blocked inputs are collapsed to `recorded`. It cannot close the automated P0-T2 gate, which requires `operator_assisted:false`, permission status `not_requested`, exact CDP load/uninstall identity, and absence verification. Neither lane proves production distribution or absence of Chrome permission warnings.
 
 ### Installation, update, and rollback
 
@@ -166,6 +172,8 @@ refused. `kill_switch.status` must be `armed_and_verified` with `armed: true`
 and `verified: true`. The local installation drill only proves its exact test
 Native Messaging registration unless a separately captured live lifecycle
 record is supplied; it never fabricates the other phases.
+
+Current P0-T7 evidence is narrower than this production contract. `run_install_lifecycle.py` defaults to the staged `extension/probes/` fixture, changes manifest versions, and uses experimental browser-target `Extensions.loadUnpacked`/`getExtensions`/`uninstall` in one owned disposable Chrome. Its `LifecycleLedger` is runner-local. `user_tabs_preserved` checks one owned fixture page; `new_mutations: paused` and `kill_switch` fields do not demonstrate broker mutation rejection (verification uses Chrome process liveness). `chrome_process_terminated:false` describes the pre-cleanup check; cleanup then terminates the owned process and removes the temporary profile. Passing the current drill/baseline checker does not prove production enrollment, Web Store updates, a product kill switch, incompatible durable-ledger refusal, or existing-user-tab preservation. Those P0-T7 requirements remain open; thresholds are unchanged.
 
 ## Soak / Stress Coverage
 
