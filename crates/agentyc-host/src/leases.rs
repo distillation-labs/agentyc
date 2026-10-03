@@ -8,8 +8,9 @@ use agentyc_core::{
 /// A host-issued authority proof bound to the current broker connection.
 ///
 /// Production callers obtain this only from [`crate::Connection`]. The broker
-/// rejects a ticket after a broker restart, after a newer connection is
-/// admitted, or when any connection metadata differs.
+/// The broker rejects a ticket after a broker restart, after that connection
+/// disconnects, or when any connection metadata differs. Multiple live
+/// connections may hold independent tickets in one broker epoch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorityTicket {
     pub(crate) principal_id: agentyc_core::PrincipalId,
