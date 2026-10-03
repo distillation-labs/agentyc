@@ -229,7 +229,7 @@
 - **Source class:** official Chrome API reference
 - **Version/freshness:** page updated 2026-09-11; retrieved 2026-10-01
 - **Evidence locations:** permissions, restricted domains, target/frame semantics, flat sessions from Chrome 125, `onDetach`, `onEvent`, `sendCommand`
-- **Claim:** An MV3 extension with the `debugger` permission can send an allowlisted subset of CDP commands to tabs, receive target-scoped events, and attach related OOPIF sessions with flat sessions from Chrome 125; detachment occurs on tab close or DevTools use.
+- **Claim:** An MV3 extension with the `debugger` permission can send an allowlisted subset of CDP commands to tabs, receive target-scoped events, and can attach related OOPIF sessions with flat sessions from Chrome 125; detachment occurs on tab close or DevTools use. The current agentyc adapter proves only root-target behavior; related-target/OOPIF execution remains an explicit unobserved residual.
 - **Decision impact:** D-09, D-14, D-17; extension bridge, version floor, stale-target handling, and capability matrix.
 - **Limits:** Does not grant all CDP domains; exact supported behavior must be tested on the chosen Chrome floor.
 - **Confidence:** high
@@ -273,7 +273,7 @@
 - **Source class:** official Chrome UX/control API reference
 - **Version/freshness:** pages updated 2026-09-11/2026-09-24; retrieved 2026-10-01
 - **Evidence locations:** tab create/group/remove/events, tab/group ID lifetimes, tab-group API availability, side-panel permissions and user-gesture rules
-- **Claim:** Extensions can create/update/group/remove tabs, observe tab replacement/removal/update events, group tabs through `chrome.tabs.group`, manage tab-group presentation, and host persistent user UI in a side panel. Chrome tab/group IDs are session-scoped implementation values, not durable product identities.
+- **Claim:** Extensions can create/update/group/remove tabs, observe tab replacement/removal/update events, group tabs through `chrome.tabs.group`, manage tab-group presentation, and host persistent user UI in a side panel. A tab group belongs to one window, and Chrome tab/group IDs are session-scoped implementation values, not durable product identities.
 - **Decision impact:** D-10–D-12; map product spaces to visual tab groups, preserve user tabs, and expose pause/takeover/finish UI without raw IDs.
 - **Limits:** Side-panel and tab-group minimum Chrome versions must be checked against the chosen debugger floor and enterprise policy.
 - **Confidence:** high
@@ -284,7 +284,7 @@
 - **Source class:** official Chrome persistence/distribution guidance
 - **Version/freshness:** storage page updated 2026-09-11; distribution page retrieved 2026-10-01
 - **Evidence locations:** storage areas/quotas/access levels; Web Store versus unpacked/self-hosted distribution
-- **Claim:** Extension storage persists independently of page cache but has quotas/access-level choices; ordinary users install signed extensions through the Chrome Web Store, while self-hosting is for managed environments; development can use trusted unpacked extensions.
+- **Claim:** Extension storage persists independently of page cache but has quotas/access levels; ordinary users install extensions signed and hosted by the Chrome Web Store, while self-hosting is for managed environments (including macOS); development can use trusted unpacked extensions only.
 - **Decision impact:** D-13, D-17, D-18; worker metadata strategy, stable extension ID, Native Messaging `allowed_origins`, installer, and rollout.
 - **Limits:** Distribution policy may vary by enterprise management and product cohort.
 - **Confidence:** high
