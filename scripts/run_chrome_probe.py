@@ -7,11 +7,11 @@ script fails closed rather than attaching to an existing debug endpoint.
 `--require-live` makes that isolated live inspection required and fails when
 Chrome is unavailable. `--launch-chrome` is an explicit opt-in; it creates a
 short-lived system-temporary profile unless an explicit disposable temporary
-profile is supplied. Branded Chrome must use `--operator-assisted`: the
-operator performs Chrome's documented Developer mode + Load unpacked flow in
-the disposable window. The runner never calls Chrome's private extension APIs
-or simulates the file picker.
-The script never touches the default Chrome profile.
+profile is supplied. Branded Chrome uses the public browser-target CDP `Extensions.loadUnpacked` command in
+the disposable window. The runner never calls Chrome's private extension APIs or
+simulates the file picker. `--operator-assisted` remains an explicit fallback for
+    diagnosing the documented Extensions UI flow. The script never touches the default
+    Chrome profile.
 """
 
 from __future__ import annotations
@@ -64,6 +64,9 @@ MAX_EXTENSION_FILES = 64
 MAX_EXTENSION_BYTES = 8 * 1024 * 1024
 CHROME_LOG_TAIL_BYTES = 64 * 1024
 MAX_CHROME_LOG_CATEGORIES = 8
+MAX_EXTENSION_INVENTORY = 64
+EXTENSION_UNLOAD_TIMEOUT = 3.0
+EXTENSION_UNLOAD_INTERVAL = 0.1
 WEBSOCKET_HEADER_LIMIT = 16 * 1024
 WEBSOCKET_FRAME_LIMIT = 64 * 1024
 RESULT_HANDOFF_LIMIT = 16 * 1024
@@ -72,6 +75,8 @@ WORKER_DISCOVERY_INTERVAL = 0.1
 CONTROL_PAGE_IDENTITY_TIMEOUT = 5.0
 CONTROL_PAGE_RETRY_INTERVAL = 0.1
 WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+BROWSER_CDP_PATH_PREFIX = "/devtools/browser/"
+CDP_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _LAST_CLEANUP_OK = True
 
 
@@ -209,7 +214,7 @@ def stage_native_host_manifest(profile_dir: Path, extension_id: str) -> Path:
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError("native host manifest template is unreadable") from error
     if not isinstance(template, dict):
-        raise ValueError("native host manifest template is not an object")
+        raise TypeError("native host manifest template is not an object")
     if template.get("name") != NATIVE_HOST_NAME or template.get("type") != "stdio":
         raise ValueError("native host manifest template has the wrong identity")
     template["path"] = str(NATIVE_HOST_PATH.resolve())
@@ -549,17 +554,32 @@ class DevToolsSocket:
             result.extend(chunk)
         return bytes(result)
 
-    def command(self, method: str, params: dict[str, Any] | None = None) -> Any:
+    def command(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> Any:
         if not isinstance(method, str) or not method or len(method) > 256:
             raise ValueError("debugger command method is invalid")
         if params is not None and not isinstance(params, dict):
             raise TypeError("debugger command parameters must be an object")
+        if session_id is not None and (
+            not isinstance(session_id, str)
+            or not CDP_SESSION_ID_PATTERN.fullmatch(session_id)
+        ):
+            raise ValueError("debugger session id is invalid")
         self.next_id += 1
         command_id = self.next_id
-        payload = json.dumps(
-            {"id": command_id, "method": method, "params": params or {}},
-            separators=(",", ":"),
-        ).encode("utf-8")
+        message: dict[str, Any] = {
+            "id": command_id,
+            "method": method,
+            "params": params or {},
+        }
+        if session_id is not None:
+            message["sessionId"] = session_id
+        payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
         if len(payload) > WEBSOCKET_FRAME_LIMIT:
             raise ValueError("debugger command exceeds the probe bound")
         if self.socket is None:
@@ -582,6 +602,11 @@ class DevToolsSocket:
             if "id" in message and not isinstance(message["id"], int):
                 raise ValueError("debugger websocket returned an invalid command id")
             if message.get("id") == command_id:
+                observed_session = message.get("sessionId")
+                if session_id is not None and observed_session != session_id:
+                    raise ValueError("debugger command returned the wrong session")
+                if session_id is None and observed_session is not None:
+                    raise ValueError("debugger command unexpectedly returned a session")
                 if "error" in message:
                     raise OSError("debugger command rejected")
                 return message.get("result")
@@ -1288,6 +1313,218 @@ def wait_for_chrome(port: int, timeout: float = 8.0) -> dict[str, Any] | None:
     return None
 
 
+def _browser_websocket_url(version: Any, expected_port: int) -> str:
+    """Validate the browser-target websocket returned by /json/version."""
+    websocket_url = version.get("webSocketDebuggerUrl") if isinstance(version, dict) else None
+    if not isinstance(websocket_url, str) or _contains_control(websocket_url):
+        raise OSError("Chrome did not expose a browser-target websocket")
+    try:
+        parsed = urllib.parse.urlparse(websocket_url)
+    except ValueError as error:
+        raise ValueError("Chrome browser-target websocket URL is invalid") from error
+    token = parsed.path[len(BROWSER_CDP_PATH_PREFIX) :]
+    if (
+        parsed.scheme != "ws"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.port != expected_port
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or not parsed.path.startswith(BROWSER_CDP_PATH_PREFIX)
+        or not token
+        or "/" in token
+    ):
+        raise ValueError("Chrome browser-target websocket is not a bounded local endpoint")
+    return websocket_url
+
+
+def _same_extension_path(value: Any, expected: Path) -> bool:
+    if not isinstance(value, str) or not value or _contains_control(value):
+        return False
+    try:
+        observed = Path(value)
+        if not observed.is_absolute():
+            return False
+        return observed.resolve(strict=False) == expected.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _extension_inventory_evidence(
+    inventory: Any,
+    expected_extension_id: str,
+    manifest: dict[str, Any],
+    staged_extension: Path,
+) -> dict[str, Any]:
+    """Validate inventory without returning extension IDs or filesystem paths."""
+    evidence: dict[str, Any] = {
+        "inventory_checked": isinstance(inventory, list),
+        "inventory_identity_passed": False,
+        "inventory_path_matches": False,
+        "inventory_enabled": False,
+        "matching_extension_count": 0,
+        "unpacked_extension_count": 0,
+    }
+    if not isinstance(inventory, list) or len(inventory) > MAX_EXTENSION_INVENTORY:
+        evidence["inventory_checked"] = False
+        return evidence
+    if any(not isinstance(item, dict) for item in inventory):
+        evidence["inventory_checked"] = False
+        return evidence
+    evidence["unpacked_extension_count"] = len(inventory)
+    matches = [item for item in inventory if item.get("id") == expected_extension_id]
+    evidence["matching_extension_count"] = len(matches)
+    if len(matches) != 1:
+        return evidence
+    item = matches[0]
+    path_matches = _same_extension_path(item.get("path"), staged_extension)
+    enabled = item.get("enabled") is True
+    identity_matches = (
+        item.get("name") == manifest.get("name")
+        and item.get("version") == manifest.get("version")
+    )
+    evidence["inventory_path_matches"] = path_matches
+    evidence["inventory_enabled"] = enabled
+    evidence["inventory_identity_passed"] = identity_matches and path_matches and enabled
+    return evidence
+
+
+def _empty_extension_inventory_evidence() -> dict[str, Any]:
+    return {
+        "inventory_checked": False,
+        "inventory_identity_passed": False,
+        "inventory_path_matches": False,
+        "inventory_enabled": False,
+        "matching_extension_count": 0,
+        "unpacked_extension_count": 0,
+    }
+
+
+def load_extension_via_browser_cdp(
+    port: int,
+    process: subprocess.Popen[bytes],
+    staged_extension: Path,
+    manifest: dict[str, Any],
+    expected_extension_id: str,
+) -> tuple[DevToolsSocket, str, str | None, dict[str, Any]]:
+    """Load the probe through the public trusted browser-target CDP API."""
+    if not _endpoint_belongs_to_process(port, process):
+        raise OSError("probe-owned browser endpoint was not observed")
+    version = chrome_endpoint(port, "/json/version")
+    websocket_url = _browser_websocket_url(version, port)
+    client = DevToolsSocket(websocket_url)
+    try:
+        attached = client.command("Target.attachToBrowserTarget")
+        session_id = attached.get("sessionId") if isinstance(attached, dict) else None
+        if not isinstance(session_id, str) or not CDP_SESSION_ID_PATTERN.fullmatch(session_id):
+            raise OSError("browser-target CDP session was not established")
+        load_result = client.command(
+            "Extensions.loadUnpacked",
+            {"path": str(staged_extension.resolve(strict=True))},
+            session_id=session_id,
+        )
+        returned_id = load_result.get("id") if isinstance(load_result, dict) else None
+        valid_returned_id = (
+            returned_id if isinstance(returned_id, str) and EXTENSION_ID_PATTERN.fullmatch(returned_id) else None
+        )
+        load_command_passed = valid_returned_id is not None
+        inventory: Any = None
+        inventory_error = False
+        try:
+            inventory_result = client.command(
+                "Extensions.getExtensions",
+                session_id=session_id,
+            )
+            inventory = inventory_result.get("extensions") if isinstance(inventory_result, dict) else None
+        except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+            inventory_error = True
+        inventory_evidence = (
+            _extension_inventory_evidence(
+                inventory,
+                expected_extension_id,
+                manifest,
+                staged_extension,
+            )
+            if not inventory_error
+            else _empty_extension_inventory_evidence()
+        )
+        returned_id_matches_expected = valid_returned_id == expected_extension_id
+        identity_passed = (
+            load_command_passed
+            and returned_id_matches_expected
+            and inventory_evidence["inventory_identity_passed"] is True
+        )
+        evidence = {
+            "status": "passed" if identity_passed else "identity_mismatch",
+            "method": "cdp_extensions_load_unpacked",
+            "browser_target_cdp": True,
+            "load_command_passed": load_command_passed,
+            "returned_id_matches_expected": returned_id_matches_expected,
+            **inventory_evidence,
+        }
+        if inventory_error:
+            evidence["status"] = "inventory_unavailable"
+        return client, session_id, valid_returned_id, evidence
+    except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+        client.close()
+        raise
+
+
+def unload_extension_via_browser_cdp(
+    client: DevToolsSocket,
+    session_id: str,
+    loaded_extension_id: str,
+    staged_extension: Path,
+) -> dict[str, Any]:
+    """Uninstall the exact CDP-loaded extension and verify it is absent."""
+    evidence: dict[str, Any] = {
+        "status": "unavailable",
+        "attempted": True,
+        "uninstall_command_passed": False,
+        "inventory_checked": False,
+        "absent_after_uninstall": False,
+    }
+    try:
+        client.command(
+            "Extensions.uninstall",
+            {"id": loaded_extension_id},
+            session_id=session_id,
+        )
+        evidence["uninstall_command_passed"] = True
+    except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+        return evidence
+
+    deadline = time.monotonic() + EXTENSION_UNLOAD_TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            inventory_result = client.command(
+                "Extensions.getExtensions",
+                session_id=session_id,
+            )
+            inventory = inventory_result.get("extensions") if isinstance(inventory_result, dict) else None
+            if isinstance(inventory, list) and len(inventory) <= MAX_EXTENSION_INVENTORY and all(
+                isinstance(item, dict) for item in inventory
+            ):
+                evidence["inventory_checked"] = True
+                present = any(
+                    item.get("id") == loaded_extension_id
+                    or _same_extension_path(item.get("path"), staged_extension)
+                    for item in inventory
+                )
+                if not present:
+                    evidence["absent_after_uninstall"] = True
+                    evidence["status"] = "passed"
+                    return evidence
+        except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(EXTENSION_UNLOAD_INTERVAL, remaining))
+    return evidence
+
+
 def chrome_binary(value: str | None) -> str | None:
     if value:
         return value
@@ -1334,9 +1571,11 @@ def build_chrome_command(
         if extension_dir is not None or fixture_url is not None:
             raise ValueError("operator-assisted launch must not receive command-line extension loading inputs")
         return command
-    if extension_dir is None or not fixture_url:
-        raise ValueError("automated extension launch requires a staged extension and fixture URL")
-    command.extend([f"--load-extension={extension_dir}", fixture_url])
+    if extension_dir is not None:
+        raise ValueError("automated extension loading must use the browser-target CDP API")
+    if not fixture_url:
+        raise ValueError("automated extension launch requires a fixture URL")
+    command.append(fixture_url)
     return command
 
 
@@ -1555,18 +1794,14 @@ def collect_operator_permission_status() -> str:
         end="",
         flush=True,
     )
-    operator_input = sys.stdin
-    controlling_tty = None
     try:
         if not sys.stdin.isatty():
-            controlling_tty = open("/dev/tty", "r", encoding="utf-8")
-            operator_input = controlling_tty
-        value = operator_input.readline().strip()
+            with open("/dev/tty", "r", encoding="utf-8") as controlling_tty:
+                value = controlling_tty.readline().strip()
+        else:
+            value = sys.stdin.readline().strip()
     except (EOFError, OSError, ValueError):
         return "not_recorded"
-    finally:
-        if controlling_tty is not None:
-            controlling_tty.close()
     if value == "none_observed":
         return value
     if value in {"recorded", "shown_accepted", "shown_denied", "policy_blocked"}:
@@ -1665,15 +1900,19 @@ def inspect_live(
     global _LAST_CLEANUP_OK
     _LAST_CLEANUP_OK = True
     del artifact_dir
-    load_method = "chrome_extensions_load_unpacked" if operator_assisted else "command_line_load_extension"
+    load_method = "chrome_extensions_load_unpacked" if operator_assisted else "cdp_extensions_load_unpacked"
     common_evidence = {
         "operator_assisted": operator_assisted,
         "load_method": load_method,
-        "load_extension_flag_used": not operator_assisted,
+        "load_extension_flag_used": False,
+        "browser_target_cdp": not operator_assisted,
         "developer_private_used": False,
         "extensions_ui_dom_access": False,
+        "extension_load_evidence": None,
+        "extension_unload_evidence": None,
+        "extension_unload_passed": False,
         "permission_prompts": {
-            "status": "not_recorded",
+            "status": "not_recorded" if operator_assisted else "not_requested",
             "required_manual_review": operator_assisted,
             "collection": "post_load_operator_ack" if operator_assisted else "not_requested",
         },
@@ -1722,6 +1961,12 @@ def inspect_live(
         raise OSError("probe manifest does not have a pinned extension identity")
     operator_page_websocket: str | None = None
     control_target_id: str | None = None
+    browser_client: DevToolsSocket | None = None
+    browser_session_id: str | None = None
+    loaded_extension_id: str | None = None
+    load_evidence: dict[str, Any] | None = None
+    extension_unload_evidence: dict[str, Any] | None = None
+    control_page_cleanup_passed = False
     launched = False
 
     def refresh_chrome_diagnostics() -> None:
@@ -1729,6 +1974,34 @@ def inspect_live(
             stderr_log_path,
             stderr_log,
         )
+
+    def unload_loaded_extension() -> dict[str, Any]:
+        nonlocal extension_unload_evidence
+        if extension_unload_evidence is not None:
+            return extension_unload_evidence
+        if (
+            operator_assisted
+            or browser_client is None
+            or browser_session_id is None
+            or loaded_extension_id is None
+        ):
+            extension_unload_evidence = {
+                "status": "not_requested",
+                "attempted": False,
+                "uninstall_command_passed": False,
+                "inventory_checked": False,
+                "absent_after_uninstall": False,
+            }
+        else:
+            extension_unload_evidence = unload_extension_via_browser_cdp(
+                browser_client,
+                browser_session_id,
+                loaded_extension_id,
+                profile_dir / "extension" / "probes" if profile_dir is not None else EXTENSION_DIR,
+            )
+        common_evidence["extension_unload_evidence"] = extension_unload_evidence
+        common_evidence["extension_unload_passed"] = extension_unload_evidence.get("status") == "passed"
+        return extension_unload_evidence
 
     try:
         if launch:
@@ -1753,7 +2026,7 @@ def inspect_live(
                 executable,
                 profile_dir,
                 port,
-                extension_dir=None if operator_assisted else loaded_extension_dir,
+                extension_dir=None,
                 fixture_url=None if operator_assisted else fixture,
                 operator_assisted=operator_assisted,
             )
@@ -1806,6 +2079,41 @@ def inspect_live(
                 "limitation": "the owned fixture tab did not become ready",
             }
 
+        if not operator_assisted:
+            try:
+                (
+                    browser_client,
+                    browser_session_id,
+                    loaded_extension_id,
+                    load_evidence,
+                ) = load_extension_via_browser_cdp(
+                    port,
+                    process,
+                    profile_dir / "extension" / "probes",
+                    manifest or {},
+                    expected_extension_id,
+                )
+                common_evidence["extension_load_evidence"] = load_evidence
+            except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+                refresh_chrome_diagnostics()
+                return {
+                    **common_evidence,
+                    "status": "live_unavailable",
+                    "source_extension_tree_sha256": source_extension_hash,
+                    "staged_extension_tree_sha256": staged_extension_hash,
+                    "limitation": "public browser-target CDP extension loading failed closed",
+                }
+            if load_evidence.get("status") != "passed":
+                unload_loaded_extension()
+                refresh_chrome_diagnostics()
+                return {
+                    **common_evidence,
+                    "status": "live_unavailable",
+                    "source_extension_tree_sha256": source_extension_hash,
+                    "staged_extension_tree_sha256": staged_extension_hash,
+                    "limitation": "the CDP-loaded extension failed exact identity or inventory verification",
+                }
+
         control_page_url = f"chrome-extension://{expected_extension_id}/probe.html"
         control_target_id = create_owned_target(port, process, control_page_url)
         if not wait_for_extension_control_page(
@@ -1814,6 +2122,9 @@ def inspect_live(
             expected_extension_id,
             timeout=operator_timeout if operator_assisted else WORKER_DISCOVERY_TIMEOUT,
         ):
+            if control_target_id:
+                close_owned_target(port, process, control_target_id)
+            unload_loaded_extension()
             refresh_chrome_diagnostics()
             return {
                 **common_evidence,
@@ -1848,6 +2159,9 @@ def inspect_live(
             except (OSError, ValueError):
                 current_staged_hash = None
             if current_staged_hash != staged_extension_hash:
+                if control_target_id:
+                    close_owned_target(port, process, control_target_id)
+                unload_loaded_extension()
                 refresh_chrome_diagnostics()
                 return {
                     **common_evidence,
@@ -1857,7 +2171,10 @@ def inspect_live(
                     "limitation": "staged extension changed after launch; refusing to trust the loaded worker",
                 }
         target_count = len(targets)
-        load_evidence = _chrome_load_extension_evidence(stderr_log_path, stderr_log)
+        if operator_assisted:
+            load_evidence = _chrome_load_extension_evidence(stderr_log_path, stderr_log)
+            if load_evidence is not None:
+                common_evidence["extension_load_evidence"] = load_evidence
         extension = extension_probe_result(
             port,
             targets,
@@ -1872,12 +2189,15 @@ def inspect_live(
         if control_target_id and not control_page_cleanup_passed:
             extension["status"] = "live_unavailable"
             extension["limitation"] = "probe control-page cleanup was not confirmed"
-        if load_evidence is not None:
+        unload_evidence = unload_loaded_extension()
+        if not operator_assisted and unload_evidence.get("status") != "passed":
+            extension["status"] = "live_unavailable"
+            extension["limitation"] = "CDP-loaded extension uninstall or absence verification was not confirmed"
+        if operator_assisted and load_evidence is not None:
             extension["extension_load_evidence"] = load_evidence
             if extension.get("status") != "live_passed":
                 extension["limitation"] = (
-                    "branded Google Chrome refused --load-extension; the isolated probe extension "
-                    "was not loaded; "
+                    "the operator-assisted extension load did not produce complete evidence; "
                     f"{extension.get('limitation', 'no complete extension evidence was observed')}"
                 )
         status = extension.get("status", "live_unavailable")
@@ -1920,13 +2240,19 @@ def inspect_live(
             "screenshots": extension.get("screenshots", []),
             "handshake_transcript": extension.get("handshake_transcript", []),
             "identity_diagnostics": extension.get("identity_diagnostics", []),
-            "extension_load_evidence": extension.get("extension_load_evidence"),
+            "extension_load_evidence": common_evidence.get("extension_load_evidence") or extension.get("extension_load_evidence"),
+            "extension_unload_evidence": common_evidence.get("extension_unload_evidence"),
+            "extension_unload_passed": common_evidence.get("extension_unload_passed") is True,
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "source_extension_tree_sha256": source_extension_hash,
             "staged_extension_tree_sha256": staged_extension_hash,
             "limitation": limitation,
         }
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, TimeoutError, struct.error, subprocess.SubprocessError):
+        try:
+            unload_loaded_extension()
+        except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+            pass
         refresh_chrome_diagnostics()
         return {
             **common_evidence,
@@ -1934,6 +2260,22 @@ def inspect_live(
             "limitation": "live Chrome inspection failed closed",
         }
     finally:
+        if process is not None and control_target_id and not control_page_cleanup_passed:
+            control_page_cleanup_passed = close_owned_target(port, process, control_target_id)
+        try:
+            unload_loaded_extension()
+        except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+            _LAST_CLEANUP_OK = False
+        if browser_client is not None:
+            if browser_session_id is not None:
+                try:
+                    browser_client.command(
+                        "Target.detachFromTarget",
+                        {"sessionId": browser_session_id},
+                    )
+                except (OSError, ValueError, TypeError, TimeoutError, struct.error):
+                    pass
+            browser_client.close()
         if process is not None and not _safe_stop_process(process):
             _LAST_CLEANUP_OK = False
         if stderr_log is not None:
