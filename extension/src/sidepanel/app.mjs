@@ -86,7 +86,7 @@ async function invoke(action, params, space) {
       chromeApi,
       action,
       params,
-      intentTicket: space?.intent_ticket,
+      intentTicket: space?.intent_tickets?.[action] ?? space?.intent_ticket,
     });
     if (response?.error)
       state = reduceState(state, {
