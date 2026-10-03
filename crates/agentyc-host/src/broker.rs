@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 use crate::{
     actions::ActionResult,
     bridge::{
-        Bridge, BridgeDispatchResult, BridgeReconcileResult, ExtensionEpochs, FenceResult,
-        sanitize_observation_records,
+        Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeStatus, ExtensionEpochs,
+        FenceResult, ObservationSnapshot, sanitize_observation_snapshot,
     },
     error::HostError,
     events::{EventBatch, EventQuery},
@@ -169,6 +169,11 @@ impl Broker {
     /// Return bridge capabilities without exposing bridge implementation state.
     pub fn capabilities(&self) -> Result<Vec<Capability>, HostError> {
         self.with_inner(|inner| Ok(inner.bridge.capabilities()))
+    }
+
+    /// Return safe bridge identity and epoch metadata for host status.
+    pub fn bridge_status(&self) -> Result<Option<BridgeStatus>, HostError> {
+        self.with_inner(|inner| Ok(inner.bridge.bridge_status()))
     }
 
     /// Return a principal-filtered JSON representation of the durable state.
@@ -436,19 +441,26 @@ impl Broker {
         &self,
         authority: &AuthorityTicket,
         space_id: &SpaceId,
-    ) -> Result<Vec<Value>, HostError> {
+    ) -> Result<ObservationSnapshot, HostError> {
         self.with_inner(|inner| {
             authorize_visible_space(inner.ledger.state(), authority, space_id)
         })?;
         let bridge = self.bridge()?;
-        let records = bridge.observe().map_err(HostError::Bridge)?;
-        let records = sanitize_observation_records(&records)?;
-        Ok(records
+        let observation = bridge.observe().map_err(HostError::Bridge)?;
+        let observation = sanitize_observation_snapshot(observation)?;
+        let pages = observation
+            .pages
             .into_iter()
-            .filter(|record| {
-                record.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
+            .filter(|record| page_is_visible_in_inventory(record, space_id))
+            .collect();
+        let groups = observation
+            .groups
+            .into_iter()
+            .filter(|group| {
+                group.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
             })
-            .collect())
+            .collect();
+        Ok(ObservationSnapshot { pages, groups })
     }
 
     /// Return the current durable handoff ticket for a visible user-owned space.
@@ -2933,6 +2945,17 @@ impl Broker {
         let mut inner = self.inner.lock().map_err(|_| HostError::StatePoisoned)?;
         operation(&mut inner)
     }
+}
+
+fn page_is_visible_in_inventory(record: &Value, space_id: &SpaceId) -> bool {
+    let record_space = record.get("space_id").and_then(Value::as_str);
+    if record_space.is_some_and(|record_space| record_space != space_id.as_str()) {
+        return false;
+    }
+    if record.get("ownership").and_then(Value::as_str) == Some("unmanaged") {
+        return record.get("active").and_then(Value::as_bool) == Some(true);
+    }
+    record_space == Some(space_id.as_str())
 }
 
 fn create_space_in_state(
