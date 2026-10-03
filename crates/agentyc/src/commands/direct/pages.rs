@@ -117,10 +117,20 @@ fn list(context: &DirectContext, args: PageListArgs) -> DirectResult<Value> {
 fn inventory(context: &DirectContext, args: PageInventoryArgs) -> DirectResult<Value> {
     let space_id = parse_space(&args.space_id)?;
     if let Some((broker, authority)) = context.local() {
-        let space = broker
-            .describe_space(authority, &space_id)
+        if context.offline {
+            let space = broker
+                .describe_space(authority, &space_id)
+                .map_err(host_error)?;
+            return Ok(json!({"space_id": space.space_id, "pages": space.pages, "groups": []}));
+        }
+        let inventory = broker
+            .page_inventory(authority, &space_id)
             .map_err(host_error)?;
-        return Ok(json!({"space_id": space.space_id, "pages": space.pages}));
+        return Ok(json!({
+            "space_id": space_id,
+            "pages": inventory.pages,
+            "groups": inventory.groups,
+        }));
     }
 
     let response = context.request(
@@ -130,5 +140,6 @@ fn inventory(context: &DirectContext, args: PageInventoryArgs) -> DirectResult<V
     Ok(json!({
         "space_id": remote_string(&response, "space_id")?,
         "pages": remote_field(&response, "pages")?,
+        "groups": remote_field(&response, "groups")?,
     }))
 }
