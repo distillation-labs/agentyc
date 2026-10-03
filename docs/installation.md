@@ -61,28 +61,30 @@ The ID is validated but is never written to the report. The drill:
 It never launches Chrome or downloads anything. It does not install the
 extension or claim that the extension UI, Native Messaging handshake, or
 headed coexistence workflow passed. Those require a separately captured,
-user-approved Chrome run. For branded Chrome, the supported unpacked-extension
-validation lane is operator-assisted:
+user-approved Chrome run. For branded Chrome, the default live unpacked-extension
+validation lane uses the public trusted browser-target CDP Extensions domain:
 
 ```bash
 python3 scripts/run_chrome_probe.py \
-  --headed --require-live --launch-chrome --operator-assisted \
+  --headed --require-live --launch-chrome \
   --artifact-dir artifacts/p0-extension
 ```
 
-The runner opens an owned disposable Chrome window, navigates to
-`chrome://extensions`, prints the exact staged directory, and waits for the
-operator to enable Developer mode and click **Load unpacked**. It does not pass
-`--load-extension`, call `chrome.developerPrivate`, inspect the internal
-extensions page DOM, or automate the native file picker. For this disposable
-probe, the runner stages the test Native Messaging manifest inside the owned
-profile; the separate user-level install drill is not a prerequisite. After the
-exact extension worker is observed, the runner asks the operator for a post-load
-permission/policy acknowledgement; it reads the controlling terminal when the
-process stdin is redirected, and missing acknowledgement still cannot pass the
-gate. If a different manifest is already present, the script refuses to replace
-it. Use `--install` or `--rollback`
-separately only for an explicit, operator-controlled action:
+The runner launches an owned disposable Chrome window without
+`--load-extension`, attaches only to that process's browser-target websocket,
+calls `Extensions.loadUnpacked`, verifies `Extensions.getExtensions` identity,
+path, version, and enabled state, runs the probe, calls `Extensions.uninstall`,
+and verifies that the extension is absent before cleanup. It never calls
+`chrome.developerPrivate`, inspects the internal extensions page DOM, or uses
+file-picker APIs. For this disposable probe, the runner stages the test Native
+Messaging manifest inside the owned profile; the separate user-level install
+drill is not a prerequisite. The experimental CDP Extensions API is version-
+gated, so the installed Chrome version is recorded in the artifact.
+
+`--operator-assisted` remains an explicit diagnostic fallback for Chrome's
+Developer mode + **Load unpacked** UI flow; it is not the automated release-gate
+provenance. Use `--install` or `--rollback` separately only for an explicit,
+operator-controlled action:
 
 ```bash
 python3 scripts/run_install_drill.py --install \
