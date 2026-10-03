@@ -98,7 +98,13 @@ export class FakeChrome {
     };
     this.storage = {
       local: {
-        get: async (key) => ({ [key]: this.storageData[key] }),
+        get: async (keys) =>
+          Object.fromEntries(
+            (Array.isArray(keys) ? keys : [keys]).map((key) => [
+              key,
+              this.storageData[key],
+            ]),
+          ),
         set: async (value) =>
           Object.assign(this.storageData, structuredClone(value)),
       },
