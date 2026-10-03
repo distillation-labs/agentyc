@@ -58,15 +58,20 @@ This document is an execution plan and evidence registry. Phase 0 remains active
 - The checked-in ego-lite API/schema/source/tests establish reference behavior for task/page handles, output handling, page discovery, and error classification; that reference does not prove agentyc behavior.
 - The checked-in plan and manifest checker definitions establish required validation structure; they do not prove that the planned targets have run or passed.
 
+**Implemented or evidenced:**
+
+- Host/extension logical task-space contracts, Native Messaging protocol checks, and the live Chrome 154 P0-T2 probe.
+- macOS disposable-profile lifecycle evidence for install/update/uninstall/downgrade/rollback, plus a live 64-cell/64,000-sample managed benchmark.
+
 **Planned and unproven:**
 
-- The agentyc host, extension, Native Messaging product path, persistent direct CLI/SDK, durable task spaces/pages, and live existing-Chrome coexistence.
-- Installation, update, uninstall, downgrade/rollback, user-tab preservation, performance/context budgets, and reliability gates.
+- Independently enrolled existing-Chrome coexistence evidence.
+- User-tab preservation, focus safety, takeover/restart fencing, and live Chrome capability coverage across the residual matrix.
 - Production readiness, rollout, and MCP compatibility through the planned host-backed path.
 
 Offline source inspection and reference tests do not close live Chrome, installation, production, context, or reliability gates.
 
-**Current Phase 0 blocker:** the previous branded-Chrome file-picker blocker is resolved for P0-T2. The automated lane launches an owned disposable profile without `--load-extension`, attaches only to the owned browser-target CDP websocket, calls public `Extensions.loadUnpacked`, verifies exact load/inventory identity, runs the probe through documented extension APIs, uninstalls the exact extension, and verifies absence. It does not attach directly to a transient MV3 service-worker target, call Chrome private APIs, or use file-picker APIs. The live Chrome 154 P0-T2 lane passed with Native Messaging and tab-group evidence; the operator-assisted UI flow remains an explicit diagnostic fallback. The disposable probe stages its test Native Messaging manifest inside its owned profile; the separate user-level installation drill is independent. P0-T5 coexistence, P0-T6 live benchmark/resource/token evidence, and P0-T7 lifecycle evidence remain blocked. Owner: Japneet Kalkat. Release posture: Phase 0 remains active; P0-T2's live sub-gate is closed, but the overall phase gate is not. Next action: capture independently enrolled existing-Chrome, coexistence, lifecycle, and live benchmark artifacts.
+**Current Phase 0 blocker:** the previous branded-Chrome file-picker blocker is resolved for P0-T2. The automated lane launches an owned disposable profile without `--load-extension`, attaches only to the owned browser-target CDP websocket, calls public `Extensions.loadUnpacked`, verifies exact load/inventory identity, runs the probe through documented extension APIs, uninstalls the exact extension, and verifies absence. It does not attach directly to a transient MV3 service-worker target, call Chrome private APIs, or use file-picker APIs. The live Chrome 154 P0-T2 lane passed with Native Messaging and tab-group evidence. P0-T6's managed live benchmark and P0-T7's macOS disposable lifecycle evidence now pass. The production Native Messaging bridge, exact-origin host manifest template, explicit registration script, and bridge tests are implemented. P0-T5 remains blocked because `run_existing_chrome.py` still has no independently enrolled existing-user-profile execution and the ten scenarios have not been observed live. Owner: Japneet Kalkat. Release posture: Phase 0 remains active; P0-T2, P0-T3, P0-T6, and P0-T7 sub-gates are closed, but the overall phase gate is not. Next action: capture the independently enrolled existing-Chrome coexistence artifact without weakening the existing-Chrome safety policy.
 
 ## Planned capability target — not yet proven
 
