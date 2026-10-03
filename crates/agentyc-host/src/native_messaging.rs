@@ -1249,7 +1249,9 @@ fn write_envelope_unlocked(shared: &NativeShared, value: &Value) -> Result<(), N
     }
     let length = u32::try_from(payload.len()).map_err(|_| NativeHostError::MessageTooLarge)?;
     let mut frame = Vec::with_capacity(4 + payload.len());
-    frame.extend_from_slice(&length.to_le_bytes());
+    // Chrome specifies native byte order for this prefix. The supported
+    // Chrome targets use the host's native little-endian representation.
+    frame.extend_from_slice(&length.to_ne_bytes());
     frame.extend_from_slice(&payload);
     let mut writer = shared.writer.lock().map_err(|_| {
         NativeHostError::Unavailable("Native Messaging writer is poisoned".to_owned())
@@ -1280,7 +1282,7 @@ fn read_frame(reader: &mut dyn Read) -> Result<Option<Vec<u8>>, NativeHostError>
             }
         }
     }
-    let length = u32::from_le_bytes(prefix) as usize;
+    let length = u32::from_ne_bytes(prefix) as usize;
     if length > MAX_NATIVE_CONTROL_BYTES {
         return Err(NativeHostError::MessageTooLarge);
     }
@@ -1523,9 +1525,9 @@ mod tests {
     }
 
     #[test]
-    fn native_frame_is_little_endian_and_rejects_truncation() {
+    fn native_frame_uses_native_endian_and_rejects_truncation() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&(3_u32).to_le_bytes());
+        bytes.extend_from_slice(&(3_u32).to_ne_bytes());
         bytes.extend_from_slice(b"abc");
         let mut reader = &bytes[..];
         assert_eq!(
@@ -1628,7 +1630,7 @@ mod tests {
     fn frame_json(value: Value) -> Vec<u8> {
         let payload = serde_json::to_vec(&value).expect("json");
         let mut frame = Vec::with_capacity(payload.len() + 4);
-        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&(payload.len() as u32).to_ne_bytes());
         frame.extend_from_slice(&payload);
         frame
     }
@@ -1639,7 +1641,7 @@ mod tests {
         let mut frames = Vec::new();
         while bytes.len().saturating_sub(offset) >= 4 {
             let length =
-                u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("length prefix"))
+                u32::from_ne_bytes(bytes[offset..offset + 4].try_into().expect("length prefix"))
                     as usize;
             if bytes.len().saturating_sub(offset + 4) < length {
                 break;
