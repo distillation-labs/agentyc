@@ -18,6 +18,7 @@ import { PAGE_OPERATIONS } from "./page-bridge.mjs";
 const METADATA_KEY = "agentyc_extension_metadata";
 const FENCE_KEY = "agentyc_space_fences";
 const ACTION_STATE_KEY = "agentyc_action_state";
+const MANAGED_BINDINGS_KEY = "agentyc_managed_bindings";
 const VERSION = (() => {
   try {
     const version = globalThis.chrome?.runtime?.getManifest?.().version;
@@ -40,6 +41,7 @@ const MAX_INVENTORY_GROUPS = 64;
 const MAX_INVENTORY_BYTES = 512 * 1024;
 const MAX_UNREPORTED_UNKNOWN_ACTIONS = 128;
 const MAX_PERSISTED_INFLIGHT_ACTIONS = 256;
+const MAX_PERSISTED_MANAGED_BINDINGS = 256;
 const MAX_ACTION_RECEIPTS = 256;
 const MAX_SNAPSHOT_ELEMENTS = 256;
 const MAX_SNAPSHOT_BYTES = 256 * 1024;
@@ -357,6 +359,8 @@ export class ServiceWorkerController {
     this.actionReceipts = new Map();
     this.snapshotVersions = new Map();
     this.storedActionState = undefined;
+    this.storedManagedBindings = undefined;
+    this.managedBindingsWrite = Promise.resolve();
     this.actionStateWrite = Promise.resolve();
 
     const hintSalt = `worker:${workerInstanceEpoch ?? 0}`;
@@ -424,6 +428,7 @@ export class ServiceWorkerController {
       this.started = true;
       this.groups.start();
       await this.tabs.start();
+      await this.rehydrateManagedBindings();
       this.debugger.start();
       await this.configureSidePanel();
       try {
@@ -458,9 +463,11 @@ export class ServiceWorkerController {
       METADATA_KEY,
       FENCE_KEY,
       ACTION_STATE_KEY,
+      MANAGED_BINDINGS_KEY,
     ]);
     this.storedFences = storedValues[FENCE_KEY];
     this.storedActionState = storedValues[ACTION_STATE_KEY];
+    this.storedManagedBindings = storedValues[MANAGED_BINDINGS_KEY];
     const stored = storedValues[METADATA_KEY] ?? {};
     const profileInstanceId =
       this.metadata.profileInstanceId ??
@@ -503,14 +510,141 @@ export class ServiceWorkerController {
   }
 
   applyRuntimeIdentity() {
+    // Browser hints must survive MV3 worker replacement within one browser
+    // session so persisted managed bindings can be rehydrated. The worker
+    // epoch remains an authority fence, not part of the browser hint key.
     const hintSalt = [
       this.metadata.profileInstanceId,
-      this.metadata.workerInstanceEpoch,
       this.metadata.browserSessionEpoch,
     ].join(":");
     this.groups.setHintSalt(hintSalt);
     this.tabs.setIdentity({ ...this.metadata, hintSalt });
     this.frames.setHintSalt(hintSalt);
+  }
+
+  async persistManagedBindings() {
+    const bindings = this.tabs
+      .inventory()
+      .filter(
+        (record) =>
+          record?.ownership === "agent" &&
+          record?.lifecycle === "managed" &&
+          record?.binding_state === "bound" &&
+          typeof record.space_id === "string" &&
+          typeof record.page_id === "string" &&
+          typeof record.tab_hint === "string" &&
+          Number.isSafeInteger(record.lease_epoch),
+      )
+      .slice(0, MAX_PERSISTED_MANAGED_BINDINGS)
+      .map((record) => ({
+        space_id: record.space_id,
+        page_id: record.page_id,
+        lease_epoch: record.lease_epoch,
+        tab_hint: record.tab_hint,
+        target_generation: record.target_generation,
+        navigation_generation: record.navigation_generation,
+        document_generation: record.document_generation,
+        browser_session_epoch: record.browser_session_epoch,
+        url: record.url,
+        title: record.title,
+      }));
+    const value = {
+      profile_instance_id: this.metadata.profileInstanceId,
+      browser_session_epoch: this.metadata.browserSessionEpoch,
+      bindings,
+    };
+    const write = this.managedBindingsWrite
+      .catch(() => {})
+      .then(() => storageSet(this.storage, { [MANAGED_BINDINGS_KEY]: value }));
+    this.managedBindingsWrite = write.catch(() => {});
+    return write;
+  }
+
+  queueManagedBindingsPersist() {
+    void this.persistManagedBindings().catch(() => {});
+  }
+
+  async rehydrateManagedBindings() {
+    const stored = this.storedManagedBindings;
+    this.storedManagedBindings = undefined;
+    if (
+      !isPlainObject(stored) ||
+      stored.profile_instance_id !== this.metadata.profileInstanceId ||
+      stored.browser_session_epoch !== this.metadata.browserSessionEpoch ||
+      !Array.isArray(stored.bindings)
+    ) {
+      await this.persistManagedBindings().catch(() => {});
+      return;
+    }
+    for (const binding of stored.bindings.slice(
+      0,
+      MAX_PERSISTED_MANAGED_BINDINGS,
+    )) {
+      if (
+        !isPlainObject(binding) ||
+        typeof binding.space_id !== "string" ||
+        typeof binding.page_id !== "string" ||
+        typeof binding.tab_hint !== "string" ||
+        !Number.isSafeInteger(binding.lease_epoch) ||
+        binding.lease_epoch < 1 ||
+        binding.browser_session_epoch !== this.metadata.browserSessionEpoch
+      )
+        continue;
+      const candidate = this.tabs.findByHint(binding.tab_hint);
+      if (
+        !candidate ||
+        candidate.ownership !== "unmanaged" ||
+        candidate.bindingState !== "unbound" ||
+        candidate.active === true ||
+        candidate.incognito === true ||
+        (typeof binding.url === "string" && candidate.url !== binding.url)
+      ) {
+        this.handleExtensionEvent("page.rebind_required", {
+          space_id: binding.space_id,
+          page_id: binding.page_id,
+          reason: "persisted managed binding has no exact inactive tab match",
+        });
+        continue;
+      }
+      try {
+        this.tabs.bindManagedTab({
+          tabId: candidate.rawTabId,
+          spaceId: binding.space_id,
+          pageId: binding.page_id,
+          leaseEpoch: binding.lease_epoch,
+          targetGeneration: binding.target_generation,
+          navigationGeneration: binding.navigation_generation,
+          documentGeneration: binding.document_generation,
+          ownershipProof: {
+            issued_by_host: true,
+            proof_id: createLogicalId("rehydrate"),
+            kind: "creation",
+            space_id: binding.space_id,
+            page_id: binding.page_id,
+            lease_epoch: binding.lease_epoch,
+            target_generation: binding.target_generation,
+            profile_instance_id: this.metadata.profileInstanceId,
+            browser_session_epoch: this.metadata.browserSessionEpoch,
+            rebind: true,
+            expires_at: this.now() + MAX_SIDE_PANEL_TICKET_LIFETIME_MS,
+          },
+          url: candidate.url,
+          title: candidate.title,
+        });
+        this.handleExtensionEvent("page.rebound", {
+          space_id: binding.space_id,
+          page_id: binding.page_id,
+          reason: "persisted managed binding restored",
+        });
+      } catch {
+        this.handleExtensionEvent("page.rebind_required", {
+          space_id: binding.space_id,
+          page_id: binding.page_id,
+          reason: "persisted managed binding could not be restored",
+        });
+      }
+    }
+    await this.persistManagedBindings().catch(() => {});
   }
 
   async recoverPersistedActionState() {
@@ -1057,6 +1191,8 @@ export class ServiceWorkerController {
         }
       }
     }
+    if (["removed", "session_reset", "replaced"].includes(kind))
+      this.queueManagedBindingsPersist();
   }
 
   async advanceBrowserSession(reason = "extension_lifecycle") {
@@ -1493,8 +1629,8 @@ export class ServiceWorkerController {
       case "tab.inventory":
       case "page.list":
         return this.boundedInventory();
-      case "page.create":
-        return this.tabs.createAgentPage({
+      case "page.create": {
+        const record = await this.tabs.createAgentPage({
           spaceId,
           pageId,
           leaseEpoch,
@@ -1504,8 +1640,11 @@ export class ServiceWorkerController {
           windowHint: params.window_hint,
           onDispatch: () => this.markActionDispatched(actionId),
         });
-      case "page.adopt":
-        return this.tabs.adoptExistingTab({
+        await this.persistManagedBindings().catch(() => {});
+        return record;
+      }
+      case "page.adopt": {
+        const record = this.tabs.adoptExistingTab({
           tabHint: params.tab_hint,
           spaceId,
           pageId,
@@ -1514,8 +1653,11 @@ export class ServiceWorkerController {
           intentTicket: params.intent_ticket,
           onDispatch: () => this.markActionDispatched(actionId),
         });
-      case "page.close":
-        return this.tabs.closeManagedPage({
+        await this.persistManagedBindings().catch(() => {});
+        return record;
+      }
+      case "page.close": {
+        const result = await this.tabs.closeManagedPage({
           spaceId,
           pageId,
           leaseEpoch,
@@ -1525,6 +1667,9 @@ export class ServiceWorkerController {
           cleanupProof: params.cleanup_proof,
           onDispatch: () => this.markActionDispatched(actionId),
         });
+        await this.persistManagedBindings().catch(() => {});
+        return result;
+      }
       case "debugger.attach":
         return this.debugger.attach({
           spaceId,
