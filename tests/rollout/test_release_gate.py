@@ -95,6 +95,26 @@ class ReleaseGateTests(unittest.TestCase):
         short["repetitions"] = 99
         self.assertTrue(_gate.validate_deterministic_hook(short, "replay"))
 
+    def test_live_source_reports_require_release_eligibility(self) -> None:
+        benchmark = {
+            "kind": "direct-benchmark-baseline",
+            "mode": "managed",
+            "evidence_mode": "live",
+            "status": "live_passed",
+            "release_eligible": False,
+        }
+        self.assertIn("benchmark is not release eligible", _gate.validate_benchmark(benchmark, require_live=True))
+
+        installation = {
+            "evidence_mode": "live",
+            "status": "drill_passed",
+            "release_eligible": False,
+        }
+        self.assertIn(
+            "installation record is not release eligible",
+            _gate.validate_installation_record(installation, require_live=True),
+        )
+
     def test_installation_record_requires_live_lifecycle_and_rollback_safety(self) -> None:
         report = {
             "schema_version": 1,
@@ -102,6 +122,8 @@ class ReleaseGateTests(unittest.TestCase):
             "kind": "installation-preflight",
             "evidence_mode": "live",
             "status": "drill_passed",
+            "current_run": True,
+            "release_eligible": True,
             "evidence": {"platform": {"name": "Darwin"}},
             "installation": {"status": "installed"},
             "rollback": {"status": "rolled_back", "user_tabs_or_chrome_changed": False},
