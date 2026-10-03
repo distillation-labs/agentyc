@@ -74,6 +74,18 @@ RAW_ID_RE = re.compile(
 
 SUCCESS_STATUSES = {"passed", "pass", "success", "completed", "live_passed"}
 LIVE_SUCCESS_STATUSES = {"passed", "success", "completed", "live_passed", "live_baseline", "live-baseline"}
+REQUIRED_COEXISTENCE_SCENARIOS = {
+    "user-tab-preservation",
+    "two-space-isolation",
+    "focus-stability",
+    "takeover-fence",
+    "return-control-fresh-lease",
+    "agent-page-cleanup",
+    "worker-restart-recovery",
+    "host-restart-recovery",
+    "chrome-restart-recovery",
+    "extension-update-recovery",
+}
 
 
 class Issue:
@@ -620,13 +632,44 @@ def validate_coexistence_gate(checker: Checker) -> str:
         safety = data.get("safety")
         safety_zero = isinstance(safety, dict) and all(
             safety.get(key) == 0
-            for key in ("user_tab_closes", "focus_theft", "cross_space_mutations")
+            for key in (
+                "user_tab_closes",
+                "focus_theft",
+                "cross_space_mutations",
+                "stale_agent_mutations",
+            )
         )
-        live_ok = isinstance(live, dict) and live.get("requested") is True and live.get("required") is True and live.get("status") in LIVE_SUCCESS_STATUSES
+        scenarios = data.get("scenarios")
+        scenario_names = (
+            {item.get("name") for item in scenarios if isinstance(item, dict)}
+            if isinstance(scenarios, list)
+            else set()
+        )
+        scenarios_ok = (
+            isinstance(scenarios, list)
+            and scenario_names == REQUIRED_COEXISTENCE_SCENARIOS
+            and all(item.get("status") == "live_passed" for item in scenarios if isinstance(item, dict))
+        )
+        enrollment = live.get("enrollment") if isinstance(live, dict) else None
+        enrollment_ok = isinstance(enrollment, dict) and all(
+            isinstance(enrollment.get(component), dict)
+            and enrollment[component].get("enrolled") is True
+            for component in ("profile", "host", "extension")
+        )
+        live_ok = (
+            isinstance(live, dict)
+            and live.get("requested") is True
+            and live.get("required") is True
+            and live.get("status") in LIVE_SUCCESS_STATUSES
+            and live.get("evidence_status") == "live_passed"
+            and live.get("profile_scope") == "existing_user_profile"
+        )
         if (
             data.get("status") in LIVE_SUCCESS_STATUSES
             and str(data.get("mode", "")).lower() in {"headed", "existing-chrome", "existing_chrome"}
             and live_ok
+            and enrollment_ok
+            and scenarios_ok
             and isinstance(spaces, int)
             and spaces >= 2
             and isinstance(agents, int)
