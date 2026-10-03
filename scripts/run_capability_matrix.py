@@ -194,6 +194,23 @@ def load_catalog() -> list[dict[str, str]]:
     return result
 
 
+def observed_metadata(mode: str) -> dict[str, Any]:
+    """Return explicit per-operation metadata without inventing live observations."""
+    if mode == "offline":
+        status = "not-observed"
+        reason = "offline mode does not inspect Chrome permissions, URL domains, version behavior, or error responses"
+    else:
+        status = "not-available"
+        reason = "this lane has no implemented live operation probe"
+    return {
+        "status": status,
+        "permissions": {"status": status, "values": [], "reason": reason},
+        "domains": {"status": status, "values": [], "reason": reason},
+        "chrome_versions": {"status": status, "values": [], "reason": reason},
+        "error_behavior": {"status": status, "values": [], "reason": reason},
+    }
+
+
 def browser_candidates() -> list[Path]:
     candidates = [
         os.environ.get("AGENTYC_CHROME_PATH", ""),
@@ -292,6 +309,7 @@ def build_matrix(
                     "status": "not-observed",
                     "reason": probe_reason,
                 },
+                "operation_metadata": observed_metadata(mode),
             }
         )
     fixture_set_sha256 = _fixture_set_hash(fixtures)
@@ -343,6 +361,17 @@ def build_matrix(
             "cdp_url_required_for_target": False,
             "target_description": "existing user-approved headed Chrome",
             "managed_description": "explicit temporary test lane; not a product fallback",
+        },
+        "metadata_policy": {
+            "required_per_operation": [
+                "permissions",
+                "domains",
+                "chrome_versions",
+                "error_behavior",
+            ],
+            "unknown_is_explicit": True,
+            "live_observation_required_for_claims": True,
+            "source": "scripts/run_capability_matrix.py",
         },
         "probe": {
             "required": mode in LIVE_MODES,
