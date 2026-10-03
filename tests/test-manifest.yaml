@@ -287,7 +287,7 @@ commands:
   - id: "chrome-probe-live-required"
     status: "required"
     layer: "component"
-    environment: ["headed-chrome", "operator-assisted"]
+    environment: ["headed-chrome"]
     fixture: "extension-probe-live"
     owner: "Japneet Kalkat"
     quarantine: false
@@ -298,15 +298,13 @@ commands:
         "--headed",
         "--require-live",
         "--launch-chrome",
-        "--operator-assisted",
       ]
     cwd: "."
     timeout_seconds: 300
     prerequisites:
       [
         "user-approved headed Chrome binary and disposable system-temporary probe profile",
-        "operator completes Chrome Developer mode and Load unpacked for the printed staging directory",
-        "exact user-level Native Messaging registration is installed before the probe",
+        "public browser-target CDP Extensions.loadUnpacked support in the installed Chrome",
       ]
     artifacts: ["artifacts/p0-extension/"]
     result:
