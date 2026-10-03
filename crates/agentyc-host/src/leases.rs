@@ -102,7 +102,8 @@ impl ControlTicket {
         self.fence_epoch
     }
 
-    pub(crate) fn token(&self) -> &ReconcileToken {
+    /// Return the one-time reconciliation token for an authenticated caller.
+    pub fn token(&self) -> &ReconcileToken {
         &self.token
     }
 }
