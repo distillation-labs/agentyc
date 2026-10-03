@@ -9,7 +9,7 @@ import {
   publicError,
 } from "./protocol.mjs";
 import { NativeMessagingClient } from "./native-messaging.mjs";
-import { DebuggerBridge, debuggerOperationError } from "./debugger-bridge.mjs";
+import { DebuggerBridge } from "./debugger-bridge.mjs";
 import { TabsRegistry, unknownDispatch } from "./tabs-registry.mjs";
 import { GroupsRegistry } from "./groups.mjs";
 import { FramesRegistry } from "./frames.mjs";
@@ -17,6 +17,7 @@ import { PAGE_OPERATIONS } from "./page-bridge.mjs";
 
 const METADATA_KEY = "agentyc_extension_metadata";
 const FENCE_KEY = "agentyc_space_fences";
+const ACTION_STATE_KEY = "agentyc_action_state";
 const VERSION = (() => {
   try {
     const version = globalThis.chrome?.runtime?.getManifest?.().version;
@@ -38,6 +39,43 @@ const MAX_INVENTORY_PAGES = 200;
 const MAX_INVENTORY_GROUPS = 64;
 const MAX_INVENTORY_BYTES = 512 * 1024;
 const MAX_UNREPORTED_UNKNOWN_ACTIONS = 128;
+const MAX_PERSISTED_INFLIGHT_ACTIONS = 256;
+const MAX_ACTION_RECEIPTS = 256;
+const MAX_SNAPSHOT_ELEMENTS = 256;
+const MAX_SNAPSHOT_BYTES = 256 * 1024;
+const CONTENT_RESPONSE_TIMEOUT_MS = 10 * 1000;
+const ACTION_CONTROL_KEYS = new Set([
+  "action",
+  "action_id",
+  "approval",
+  "capability",
+  "cleanup_proof",
+  "command_id",
+  "expected_document_generation",
+  "expected_generation",
+  "expected_navigation_generation",
+  "expected_target_generation",
+  "operation",
+  "page_id",
+  "lease_epoch",
+  "method",
+  "ownership_proof",
+  "postcondition",
+  "request_id",
+  "space_id",
+  "user_intent",
+]);
+const ACTION_METHODS = Object.freeze({
+  navigate: "Page.navigate",
+  click: "Input.dispatchMouseEvent",
+  input: "Input.insertText",
+  type: "Input.insertText",
+  fill: "Input.insertText",
+  press: "Input.dispatchKeyEvent",
+  scroll: "Input.dispatchMouseEvent",
+  evaluate: "Runtime.evaluate",
+  screenshot: "Page.captureScreenshot",
+});
 const DESTRUCTIVE_SIDE_PANEL_ACTIONS = new Set([
   "stop",
   "takeover",
@@ -73,6 +111,193 @@ function positiveEpoch(value, field) {
   return value;
 }
 
+function validActionId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9._:-]{8,128}$/.test(value);
+}
+
+function validRequestId(value) {
+  return (
+    typeof value === "string" && /^req_[a-z0-9][a-z0-9_-]{0,127}$/.test(value)
+  );
+}
+
+function isPlainObject(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null)
+  );
+}
+
+function textBytes(value) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function boundedText(value, max) {
+  return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function canonicalJsonString(value) {
+  let output = '"';
+  for (const character of String(value)) {
+    const code = character.codePointAt(0);
+    switch (character) {
+      case '"':
+        output += '\\\"';
+        break;
+      case "\\":
+        output += "\\\\";
+        break;
+      case "\n":
+        output += "\\n";
+        break;
+      case "\r":
+        output += "\\r";
+        break;
+      case "\t":
+        output += "\\t";
+        break;
+      default:
+        if (code < 0x20) output += `\\u${code.toString(16).padStart(4, "0")}`;
+        else output += character;
+    }
+  }
+  return `${output}"`;
+}
+
+function snapshotElementsHash(elements) {
+  const canonical = `[${elements
+    .map((element) => {
+      const attributes = Object.keys(element.attributes ?? {})
+        .sort()
+        .map(
+          (key) =>
+            `${canonicalJsonString(key)}:${canonicalJsonString(
+              element.attributes[key],
+            )}`,
+        )
+        .join(",");
+      return `{${[
+        `"key":${canonicalJsonString(element.key)}`,
+        `"parent":${element.parent === null ? "null" : canonicalJsonString(element.parent)}`,
+        `"kind":${canonicalJsonString(element.kind)}`,
+        `"text":${element.text === null ? "null" : canonicalJsonString(element.text)}`,
+        `"attributes":{${attributes}}`,
+        `"order":${element.order}`,
+      ].join(",")}}`;
+    })
+    .join(",")}]`;
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(canonical)) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `fnv1a64:${hash.toString(16).padStart(16, "0")}`;
+}
+
+function parseJsonObject(value, field) {
+  if (isPlainObject(value)) return value;
+  if (typeof value === "string" && value.length <= 16 * 1024) {
+    try {
+      const parsed = JSON.parse(value);
+      if (isPlainObject(parsed)) return parsed;
+    } catch {
+      // The caller receives a typed schema error below.
+    }
+  }
+  throw new ProtocolError("schema_invalid", `${field} must be an object`);
+}
+
+function normalizePostcondition(value) {
+  if (value === undefined || value === null) return undefined;
+  const condition = parseJsonObject(value, "postcondition");
+  if (condition.kind === "page_generation") {
+    if (
+      !Number.isSafeInteger(condition.document_generation) ||
+      condition.document_generation < 1
+    ) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "page-generation postcondition is invalid",
+      );
+    }
+    return {
+      kind: "page_generation",
+      document_generation: condition.document_generation,
+    };
+  }
+  if (
+    condition.kind === "snapshot_hash" &&
+    typeof condition.snapshot_hash === "string" &&
+    /^fnv1a64:[0-9a-f]{16}$/i.test(condition.snapshot_hash)
+  ) {
+    return {
+      kind: "snapshot_hash",
+      snapshot_hash: condition.snapshot_hash.toLowerCase(),
+    };
+  }
+  throw new ProtocolError(
+    "schema_invalid",
+    "postcondition kind or value is not allowlisted",
+  );
+}
+
+function scalarNumber(value) {
+  if (typeof value === "number")
+    return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string" || value.length === 0 || value.length > 32)
+    return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function stripActionControls(value) {
+  if (!isPlainObject(value)) return {};
+  const output = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (!ACTION_CONTROL_KEYS.has(key)) output[key] = child;
+  }
+  return output;
+}
+
+function commandParams(params) {
+  const payload = isPlainObject(params.payload) ? params.payload : undefined;
+  let source = isPlainObject(params.params)
+    ? params.params
+    : payload && isPlainObject(payload.params)
+      ? payload.params
+      : payload;
+  if (typeof source === "string") source = parseJsonObject(source, "params");
+  return stripActionControls(source ?? {});
+}
+
+function coerceDebuggerParams(method, value) {
+  const output = { ...value };
+  if (method === "Input.dispatchMouseEvent") {
+    for (const key of ["x", "y", "deltaX", "deltaY", "clickCount"]) {
+      if (output[key] !== undefined) {
+        const number = scalarNumber(output[key]);
+        if (number !== undefined) output[key] = number;
+      }
+    }
+  }
+  if (method === "Runtime.evaluate") {
+    for (const key of [
+      "awaitPromise",
+      "returnByValue",
+      "userGesture",
+      "silent",
+      "throwOnSideEffect",
+    ]) {
+      if (output[key] === "true") output[key] = true;
+      if (output[key] === "false") output[key] = false;
+    }
+  }
+  return output;
+}
+
 function normalizedParams(message) {
   const params =
     message.params && typeof message.params === "object" ? message.params : {};
@@ -91,7 +316,8 @@ function valueOf(message, params, snake, camel = undefined) {
 
 /**
  * MV3 service-worker adapter. It owns only live routing and browser handles;
- * no lease, action journal, logical identity, or cleanup decision is persisted.
+ * the host remains authoritative; storage holds only bounded recovery markers
+ * for outcomes that became unknown across worker lifetimes.
  */
 export class ServiceWorkerController {
   constructor({
@@ -128,6 +354,10 @@ export class ServiceWorkerController {
     this.sidePanelListeners = [];
     this.unreportedUnknownActions = new Set();
     this.unknownActionsOverflow = false;
+    this.actionReceipts = new Map();
+    this.snapshotVersions = new Map();
+    this.storedActionState = undefined;
+    this.actionStateWrite = Promise.resolve();
 
     const hintSalt = `worker:${workerInstanceEpoch ?? 0}`;
     this.groups = new GroupsRegistry({
@@ -187,8 +417,9 @@ export class ServiceWorkerController {
     this.installRuntimeListener();
     this.startPromise = (async () => {
       await this.loadMetadata();
+      await this.recoverPersistedActionState();
       this.loadFences();
-      this.tabs.setIdentity(this.metadata);
+      this.applyRuntimeIdentity();
       this.debugger.setIdentity(this.metadata);
       this.started = true;
       this.groups.start();
@@ -226,8 +457,10 @@ export class ServiceWorkerController {
     const storedValues = await storageGet(this.storage, [
       METADATA_KEY,
       FENCE_KEY,
+      ACTION_STATE_KEY,
     ]);
     this.storedFences = storedValues[FENCE_KEY];
+    this.storedActionState = storedValues[ACTION_STATE_KEY];
     const stored = storedValues[METADATA_KEY] ?? {};
     const profileInstanceId =
       this.metadata.profileInstanceId ??
@@ -267,6 +500,428 @@ export class ServiceWorkerController {
         ui_version: VERSION,
       },
     });
+  }
+
+  applyRuntimeIdentity() {
+    const hintSalt = [
+      this.metadata.profileInstanceId,
+      this.metadata.workerInstanceEpoch,
+      this.metadata.browserSessionEpoch,
+    ].join(":");
+    this.groups.setHintSalt(hintSalt);
+    this.tabs.setIdentity({ ...this.metadata, hintSalt });
+    this.frames.setHintSalt(hintSalt);
+  }
+
+  async recoverPersistedActionState() {
+    const stored = this.storedActionState;
+    this.storedActionState = undefined;
+    if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
+      await this.persistActionState().catch(() => {});
+      return;
+    }
+    if (stored.profile_instance_id !== this.metadata.profileInstanceId) {
+      await this.persistActionState().catch(() => {});
+      return;
+    }
+    for (const entry of (Array.isArray(stored.receipts)
+      ? stored.receipts
+      : []
+    ).slice(0, MAX_ACTION_RECEIPTS)) {
+      const receipt = this.restoreActionReceipt(entry);
+      if (receipt) this.actionReceipts.set(receipt.action_id, receipt);
+    }
+    const recovered = [];
+    const candidates = [
+      ...(Array.isArray(stored.inflight) ? stored.inflight : []),
+      ...(Array.isArray(stored.unknown_action_ids)
+        ? stored.unknown_action_ids.map((actionId) => ({ action_id: actionId }))
+        : []),
+    ];
+    for (const entry of candidates.slice(0, MAX_PERSISTED_INFLIGHT_ACTIONS)) {
+      const actionId = typeof entry === "string" ? entry : entry?.action_id;
+      if (!validActionId(actionId)) continue;
+      const prior = this.actionReceipts.get(actionId);
+      if (prior?.outcome === "succeeded" || prior?.outcome === "failed")
+        continue;
+      const recoveredEntry = this.restoreActionReceipt({
+        ...entry,
+        outcome: "unknown",
+        code: "unknown_outcome",
+        reason: "worker restarted before mutation outcome was known",
+      });
+      if (recoveredEntry) this.actionReceipts.set(actionId, recoveredEntry);
+      if (this.unreportedUnknownActions.has(actionId)) continue;
+      if (this.unreportedUnknownActions.size < MAX_UNREPORTED_UNKNOWN_ACTIONS) {
+        this.unreportedUnknownActions.add(actionId);
+        recovered.push(actionId);
+      } else {
+        this.unknownActionsOverflow = true;
+      }
+    }
+    if (stored.unknown_actions_overflow === true)
+      this.unknownActionsOverflow = true;
+    for (const actionId of recovered) {
+      const receipt = this.actionReceiptFor(actionId, {
+        outcome: "unknown",
+        code: "unknown_outcome",
+        reason: "worker restarted before mutation outcome was known",
+      });
+      this.handleExtensionEvent("action.receipt", receipt);
+      this.handleExtensionEvent("action.unknown", receipt);
+    }
+    await this.persistActionState().catch(() => {});
+  }
+
+  persistActionState() {
+    const inflight = [...this.inflight.entries()]
+      .slice(0, MAX_PERSISTED_INFLIGHT_ACTIONS)
+      .map(([actionId, pending]) => ({
+        action_id: actionId,
+        request_id: pending.request_id ?? pending.requestId,
+        space_id: pending.space_id ?? pending.spaceId,
+        ...((pending.page_id ?? pending.pageId) !== undefined
+          ? { page_id: pending.page_id ?? pending.pageId }
+          : {}),
+        method: pending.method,
+        ...((pending.lease_epoch ?? pending.leaseEpoch) !== undefined
+          ? { lease_epoch: pending.lease_epoch ?? pending.leaseEpoch }
+          : {}),
+        ...((pending.target_generation ?? pending.targetGeneration) !==
+        undefined
+          ? {
+              target_generation:
+                pending.target_generation ?? pending.targetGeneration,
+            }
+          : {}),
+        ...((pending.navigation_generation ?? pending.navigationGeneration) !==
+        undefined
+          ? {
+              navigation_generation:
+                pending.navigation_generation ?? pending.navigationGeneration,
+            }
+          : {}),
+        ...((pending.document_generation ?? pending.documentGeneration) !==
+        undefined
+          ? {
+              document_generation:
+                pending.document_generation ?? pending.documentGeneration,
+            }
+          : {}),
+        ...(pending.postcondition
+          ? { postcondition: pending.postcondition }
+          : {}),
+        ...((pending.navigation_url ?? pending.navigationUrl) !== undefined
+          ? { navigation_url: pending.navigation_url ?? pending.navigationUrl }
+          : {}),
+        worker_instance_epoch: this.metadata.workerInstanceEpoch,
+        browser_session_epoch: this.metadata.browserSessionEpoch,
+      }));
+    const receipts = [...this.actionReceipts.values()]
+      .slice(-MAX_ACTION_RECEIPTS)
+      .map((receipt) => ({
+        action_id: receipt.action_id,
+        ...(receipt.request_id ? { request_id: receipt.request_id } : {}),
+        ...(receipt.space_id ? { space_id: receipt.space_id } : {}),
+        ...(receipt.page_id ? { page_id: receipt.page_id } : {}),
+        ...(receipt.method ? { method: receipt.method } : {}),
+        ...(receipt.lease_epoch !== undefined
+          ? { lease_epoch: receipt.lease_epoch }
+          : {}),
+        ...(receipt.target_generation !== undefined
+          ? { target_generation: receipt.target_generation }
+          : {}),
+        ...(receipt.navigation_generation !== undefined
+          ? { navigation_generation: receipt.navigation_generation }
+          : {}),
+        ...(receipt.document_generation !== undefined
+          ? { document_generation: receipt.document_generation }
+          : {}),
+        ...(receipt.postcondition
+          ? { postcondition: receipt.postcondition }
+          : {}),
+        ...(receipt.navigation_url !== undefined
+          ? { navigation_url: receipt.navigation_url }
+          : {}),
+        outcome: receipt.outcome,
+        ...(receipt.code ? { code: receipt.code } : {}),
+        ...(receipt.reason ? { reason: boundedText(receipt.reason, 512) } : {}),
+      }));
+    const value = {
+      profile_instance_id: this.metadata.profileInstanceId,
+      browser_session_epoch: this.metadata.browserSessionEpoch,
+      inflight,
+      receipts,
+      unknown_action_ids: [...this.unreportedUnknownActions].slice(
+        0,
+        MAX_UNREPORTED_UNKNOWN_ACTIONS,
+      ),
+      unknown_actions_overflow: this.unknownActionsOverflow,
+    };
+    const write = this.actionStateWrite
+      .catch(() => {})
+      .then(() => storageSet(this.storage, { [ACTION_STATE_KEY]: value }));
+    this.actionStateWrite = write.catch(() => {});
+    return write;
+  }
+
+  queueActionStatePersist() {
+    void this.persistActionState().catch(() => {});
+  }
+
+  restoreActionReceipt(entry) {
+    if (!isPlainObject(entry) || !validActionId(entry.action_id))
+      return undefined;
+    try {
+      if (entry.space_id !== undefined || entry.page_id !== undefined)
+        assertLogicalScope(
+          { spaceId: entry.space_id, pageId: entry.page_id },
+          { pageRequired: entry.page_id !== undefined },
+        );
+      if (
+        entry.lease_epoch !== undefined &&
+        (!Number.isSafeInteger(entry.lease_epoch) || entry.lease_epoch < 1)
+      )
+        return undefined;
+      for (const field of [
+        "target_generation",
+        "navigation_generation",
+        "document_generation",
+      ]) {
+        if (
+          entry[field] !== undefined &&
+          (!Number.isSafeInteger(entry[field]) || entry[field] < 1)
+        )
+          return undefined;
+      }
+      if (
+        entry.method !== undefined &&
+        (typeof entry.method !== "string" || entry.method.length > 128)
+      )
+        return undefined;
+      const outcome = ["succeeded", "failed", "unknown"].includes(entry.outcome)
+        ? entry.outcome
+        : "unknown";
+      const postcondition = normalizePostcondition(entry.postcondition);
+      const navigationUrl =
+        typeof entry.navigation_url === "string"
+          ? boundedText(entry.navigation_url, 4096)
+          : undefined;
+      return {
+        action_id: entry.action_id,
+        ...(typeof entry.request_id === "string"
+          ? { request_id: entry.request_id }
+          : {}),
+        ...(entry.space_id !== undefined ? { space_id: entry.space_id } : {}),
+        ...(entry.page_id !== undefined ? { page_id: entry.page_id } : {}),
+        ...(entry.method !== undefined ? { method: entry.method } : {}),
+        ...(entry.lease_epoch !== undefined
+          ? { lease_epoch: entry.lease_epoch }
+          : {}),
+        ...(entry.target_generation !== undefined
+          ? { target_generation: entry.target_generation }
+          : {}),
+        ...(entry.navigation_generation !== undefined
+          ? { navigation_generation: entry.navigation_generation }
+          : {}),
+        ...(entry.document_generation !== undefined
+          ? { document_generation: entry.document_generation }
+          : {}),
+        ...(postcondition ? { postcondition } : {}),
+        ...(navigationUrl !== undefined
+          ? { navigation_url: navigationUrl }
+          : {}),
+        outcome,
+        ...(typeof entry.code === "string" ? { code: entry.code } : {}),
+        ...(typeof entry.reason === "string"
+          ? { reason: boundedText(entry.reason, 512) }
+          : {}),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  actionContextFor({
+    actionId,
+    requestId,
+    method,
+    params,
+    spaceId,
+    pageId,
+    leaseEpoch,
+    message,
+  }) {
+    if (!validActionId(actionId)) return undefined;
+    const record = pageId ? this.tabs.getInternalByPage(pageId) : undefined;
+    const postcondition = normalizePostcondition(
+      params.postcondition ??
+        params.payload?.postcondition ??
+        message?.postcondition,
+    );
+    const wireParams =
+      method === "debugger.command"
+        ? commandParams(params)
+        : isPlainObject(params.payload)
+          ? params.payload
+          : params;
+    const navigationUrl =
+      params.method === "Page.navigate" ||
+      (method === "action.execute" &&
+        (params.operation ?? params.action) === "navigate")
+        ? typeof wireParams.url === "string"
+          ? boundedText(wireParams.url, 4096)
+          : undefined
+        : undefined;
+    return {
+      action_id: actionId,
+      request_id: validRequestId(params.request_id)
+        ? params.request_id
+        : requestId,
+      ...(spaceId !== undefined ? { space_id: spaceId } : {}),
+      ...(pageId !== undefined ? { page_id: pageId } : {}),
+      method,
+      ...(Number.isSafeInteger(leaseEpoch) ? { lease_epoch: leaseEpoch } : {}),
+      ...(record
+        ? {
+            target_generation: record.targetGeneration,
+            navigation_generation: record.navigationGeneration,
+            document_generation: record.documentGeneration,
+          }
+        : {}),
+      ...(postcondition ? { postcondition } : {}),
+      ...(navigationUrl !== undefined ? { navigation_url: navigationUrl } : {}),
+      dispatched: false,
+    };
+  }
+
+  rememberActionReceipt(context, outcome, error = undefined) {
+    if (!context?.action_id) return;
+    const receipt = {
+      ...context,
+      outcome,
+      ...(error?.code ? { code: error.code } : {}),
+      ...(error?.message ? { reason: boundedText(error.message, 512) } : {}),
+    };
+    delete receipt.dispatched;
+    if (!this.actionReceipts.has(receipt.action_id)) {
+      if (this.actionReceipts.size >= MAX_ACTION_RECEIPTS) {
+        const oldest = this.actionReceipts.keys().next().value;
+        if (oldest !== undefined) this.actionReceipts.delete(oldest);
+      }
+    }
+    this.actionReceipts.set(receipt.action_id, receipt);
+    this.queueActionStatePersist();
+    return receipt;
+  }
+
+  observedPageGeneration(pageId) {
+    const record = pageId ? this.tabs.getInternalByPage(pageId) : undefined;
+    if (!record) return undefined;
+    return {
+      target_generation: record.targetGeneration,
+      navigation_generation: record.navigationGeneration,
+      document_generation: record.documentGeneration,
+      browser_session_epoch: record.sessionEpoch,
+    };
+  }
+
+  postconditionSatisfied(condition, observed, snapshotHash = undefined) {
+    if (!condition) return undefined;
+    if (condition.kind === "page_generation")
+      return observed?.document_generation === condition.document_generation;
+    if (condition.kind === "snapshot_hash")
+      return snapshotHash === condition.snapshot_hash;
+    return false;
+  }
+
+  actionReceiptFor(actionId, overrides = {}) {
+    const context = {
+      ...(this.actionReceipts.get(actionId) ?? {}),
+      ...(this.inflight.get(actionId) ?? {}),
+      ...overrides,
+    };
+    const observed = this.observedPageGeneration(
+      context.page_id ?? context.pageId,
+    );
+    const output = {
+      ...(context.action_id ? { action_id: context.action_id } : {}),
+      ...((context.request_id ?? context.requestId)
+        ? { request_id: context.request_id ?? context.requestId }
+        : {}),
+      ...((context.space_id ?? context.spaceId)
+        ? { space_id: context.space_id ?? context.spaceId }
+        : {}),
+      ...((context.page_id ?? context.pageId)
+        ? { page_id: context.page_id ?? context.pageId }
+        : {}),
+      ...((context.lease_epoch ?? context.leaseEpoch)
+        ? { lease_epoch: context.lease_epoch ?? context.leaseEpoch }
+        : {}),
+      outcome: context.outcome ?? "unknown",
+      browser_session_epoch: this.metadata.browserSessionEpoch,
+      ...(observed ?? {}),
+      ...(context.code ? { code: context.code } : {}),
+      ...(context.reason ? { reason: boundedText(context.reason, 512) } : {}),
+    };
+    output.postcondition_observed = observed ?? null;
+    if (context.postcondition) {
+      output.postcondition = context.postcondition;
+      output.postcondition_satisfied = this.postconditionSatisfied(
+        context.postcondition,
+        observed,
+      );
+    }
+    return output;
+  }
+
+  emitActionReceipt(actionId, context, outcome, error = undefined) {
+    const stored = this.rememberActionReceipt(context, outcome, error);
+    const receipt = this.actionReceiptFor(actionId, {
+      ...(stored ?? context ?? {}),
+      outcome,
+      ...(error?.code ? { code: error.code } : {}),
+      ...(error?.message ? { reason: boundedText(error.message, 512) } : {}),
+    });
+    this.handleExtensionEvent("action.receipt", receipt);
+    return receipt;
+  }
+
+  withActionReceipt(result, receipt) {
+    if (isPlainObject(result)) return { ...result, receipt };
+    return { value: result, receipt };
+  }
+
+  async registerInflightAction(actionId, pending) {
+    if (!validActionId(actionId)) return;
+    if (this.inflight.has(actionId))
+      throw new ProtocolError(
+        "replay_rejected",
+        "mutation action is already in flight",
+      );
+    if (this.inflight.size >= MAX_PERSISTED_INFLIGHT_ACTIONS)
+      throw new ProtocolError(
+        "resource_exhausted",
+        "in-flight mutation journal is full",
+      );
+    this.inflight.set(actionId, pending);
+    try {
+      await this.persistActionState();
+    } catch (error) {
+      this.inflight.delete(actionId);
+      this.queueActionStatePersist();
+      throw new ProtocolError(
+        "state_unavailable",
+        "mutation outcome journal is unavailable",
+        { cause: error instanceof Error ? error.message : String(error) },
+      );
+    }
+  }
+
+  completeInflightAction(actionId) {
+    if (!actionId) return;
+    this.inflight.delete(actionId);
+    this.queueActionStatePersist();
   }
 
   /**
@@ -351,6 +1006,13 @@ export class ServiceWorkerController {
   }
 
   stop() {
+    for (const actionId of this.inflight.keys())
+      this.reportUnknownAction(
+        actionId,
+        "service worker stopped",
+        this.inflight.get(actionId),
+      );
+    this.queueActionStatePersist();
     for (const remove of this.sidePanelListeners.splice(0)) remove();
     this.runtimeListenersInstalled = false;
     this.startPromise = null;
@@ -359,10 +1021,17 @@ export class ServiceWorkerController {
     this.groups.stop();
     this.native.stop();
     this.pending.clear();
-    this.inflight.clear();
     this.mutationTails.clear();
+    for (const pending of this.contentPending.values())
+      pending.reject?.(
+        new ProtocolError(
+          "native_host_unavailable",
+          "service worker stopped before the content result arrived",
+        ),
+      );
     this.contentPending.clear();
     this.contentDocuments.clear();
+    this.snapshotVersions.clear();
     this.usedSidePanelTickets.clear();
     this.started = false;
   }
@@ -377,7 +1046,15 @@ export class ServiceWorkerController {
     if (Number.isInteger(tabId)) {
       this.contentDocuments.delete(tabId);
       for (const [requestId, pending] of this.contentPending) {
-        if (pending.rawTabId === tabId) this.contentPending.delete(requestId);
+        if (pending.rawTabId === tabId) {
+          this.contentPending.delete(requestId);
+          pending.reject?.(
+            new ProtocolError(
+              "stale_generation",
+              "content document changed before the result arrived",
+            ),
+          );
+        }
       }
     }
   }
@@ -396,13 +1073,22 @@ export class ServiceWorkerController {
       }
       this.fences.clear();
       this.mutationTails.clear();
+      for (const pending of this.contentPending.values())
+        pending.reject?.(
+          new ProtocolError(
+            "stale_epoch",
+            "browser session changed before the content result arrived",
+          ),
+        );
       this.contentPending.clear();
       this.contentDocuments.clear();
+      this.snapshotVersions.clear();
       this.usedSidePanelTickets.clear();
       this.debugger.resetSession(nextEpoch);
       this.tabs.resetSession(nextEpoch);
       this.metadata.browserSessionEpoch = nextEpoch;
       this.native.browserSessionEpoch = nextEpoch;
+      this.applyRuntimeIdentity();
       await storageSet(this.storage, {
         [METADATA_KEY]: {
           profile_instance_id: this.metadata.profileInstanceId,
@@ -469,9 +1155,12 @@ export class ServiceWorkerController {
       this.reportUnknownAction(
         actionId,
         reason instanceof Error ? reason.message : String(reason),
+        pending,
       );
-      if (pending?.requestId) this.pending.delete(pending.requestId);
+      const pendingRequestId = pending?.request_id ?? pending?.requestId;
+      if (pendingRequestId) this.pending.delete(pendingRequestId);
     }
+    if (actionIds.length > 0) this.queueActionStatePersist();
   }
 
   /**
@@ -479,17 +1168,39 @@ export class ServiceWorkerController {
    * (the transport is the thing that was lost), the id is held, bounded, and
    * reported in the next inventory so the host can reconcile it.
    */
-  reportUnknownAction(actionId, reason) {
-    if (!this.native.connected) {
+  reportUnknownAction(actionId, reason, pending = undefined) {
+    if (validActionId(actionId)) {
       if (this.unreportedUnknownActions.size < MAX_UNREPORTED_UNKNOWN_ACTIONS)
         this.unreportedUnknownActions.add(actionId);
       else this.unknownActionsOverflow = true;
+      const context = pending ?? this.actionReceipts.get(actionId);
+      this.rememberActionReceipt(
+        context ?? { action_id: actionId },
+        "unknown",
+        {
+          code: "unknown_outcome",
+          message: reason instanceof Error ? reason.message : String(reason),
+        },
+      );
+      this.queueActionStatePersist();
+      const receipt = this.actionReceiptFor(actionId, {
+        ...(context ?? {}),
+        outcome: "unknown",
+        code: "unknown_outcome",
+        reason: reason instanceof Error ? reason.message : String(reason),
+      });
+      this.handleExtensionEvent("action.receipt", receipt);
+      this.handleExtensionEvent("action.unknown", receipt);
+      return receipt;
     }
     this.handleExtensionEvent("action.unknown", {
       action_id: actionId,
       outcome: "unknown",
       code: "unknown_outcome",
-      reason,
+      reason: boundedText(
+        reason instanceof Error ? reason.message : String(reason),
+        512,
+      ),
     });
   }
 
@@ -543,6 +1254,7 @@ export class ServiceWorkerController {
       for (const actionId of unknownActionIds)
         this.unreportedUnknownActions.delete(actionId);
       if (overflow) this.unknownActionsOverflow = false;
+      this.queueActionStatePersist();
     } catch {
       // A disconnect between state notification and post is handled as a loss.
     }
@@ -609,7 +1321,7 @@ export class ServiceWorkerController {
         "host request method is required",
       );
     const requestId = message.request_id ?? createLogicalId("req");
-    const actionId = message.action_id;
+    const actionId = message.action_id ?? params.action_id;
     const mutation = isMutationMethod(method) || isFenceMethod(method);
     const spaceId = valueOf(message, params, "space_id", "spaceId");
     const pageId = valueOf(message, params, "page_id", "pageId");
@@ -678,13 +1390,25 @@ export class ServiceWorkerController {
       this.assertFence(spaceId, leaseEpoch);
     }
 
-    if (actionId)
-      this.inflight.set(actionId, {
-        requestId,
-        spaceId,
-        method,
-        dispatched: false,
-      });
+    if (actionId !== undefined && !validActionId(actionId))
+      throw new ProtocolError("schema_invalid", "action_id is invalid");
+    let journaled = false;
+    const actionContext = actionId
+      ? this.actionContextFor({
+          actionId,
+          requestId,
+          method,
+          params,
+          spaceId,
+          pageId,
+          leaseEpoch,
+          message,
+        })
+      : undefined;
+    if (actionContext) {
+      await this.registerInflightAction(actionId, actionContext);
+      journaled = true;
+    }
     try {
       const result = await this.executeHostMethod({
         method,
@@ -696,19 +1420,36 @@ export class ServiceWorkerController {
         actionId,
         message,
       });
-      if (actionId) this.inflight.delete(actionId);
-      this.reply({ requestId, actionId, ok: true, result, mutation });
-      return { ok: true, result };
+      const receipt =
+        mutation && actionId
+          ? this.emitActionReceipt(actionId, actionContext, "succeeded")
+          : undefined;
+      const resultWithReceipt =
+        receipt === undefined
+          ? result
+          : this.withActionReceipt(result, receipt);
+      const sent = this.reply({
+        requestId,
+        actionId,
+        ok: true,
+        result: resultWithReceipt,
+        mutation,
+      });
+      if (journaled && sent) this.completeInflightAction(actionId);
+      return { ok: true, result: resultWithReceipt };
     } catch (error) {
-      if (actionId) this.inflight.delete(actionId);
       const safeError = publicError(error);
-      this.reply({
+      const outcome = safeError.outcome === "unknown" ? "unknown" : "failed";
+      if (mutation && actionId)
+        this.emitActionReceipt(actionId, actionContext, outcome, safeError);
+      const sent = this.reply({
         requestId,
         actionId,
         ok: false,
         error: safeError,
         mutation,
       });
+      if (journaled && sent) this.completeInflightAction(actionId);
       return { ok: false, error: safeError };
     }
   }
@@ -723,6 +1464,32 @@ export class ServiceWorkerController {
     actionId,
   }) {
     switch (method) {
+      case "snapshot.read":
+        return this.readSnapshot({
+          spaceId,
+          pageId,
+          leaseEpoch,
+          params,
+          requestId,
+        });
+      case "action.reconcile":
+        return this.reconcileAction({
+          spaceId,
+          pageId,
+          leaseEpoch,
+          params,
+          requestId,
+          actionId,
+        });
+      case "action.execute":
+        return this.executeAllowlistedAction({
+          spaceId,
+          pageId,
+          leaseEpoch,
+          params,
+          requestId,
+          actionId,
+        });
       case "tab.inventory":
       case "page.list":
         return this.boundedInventory();
@@ -773,25 +1540,15 @@ export class ServiceWorkerController {
           reason: params.reason,
           onDispatch: () => this.markActionDispatched(actionId),
         });
-      case "debugger.command": {
-        const debuggerMethod = params.method;
-        this.assertFence(spaceId, leaseEpoch);
-        return this.debugger.sendCommand({
+      case "debugger.command":
+        return this.executeDebuggerCommand({
           spaceId,
           pageId,
           leaseEpoch,
-          method: debuggerMethod,
-          params: params.params ?? {},
-          expectedGeneration: params.expected_generation,
-          expectedTargetGeneration: params.expected_target_generation,
-          expectedNavigationGeneration: params.expected_navigation_generation,
-          expectedDocumentGeneration: params.expected_document_generation,
-          commandId: params.command_id ?? actionId ?? requestId,
-          capability: params.capability,
-          approval: params.approval,
-          onDispatch: () => this.markActionDispatched(actionId),
+          params,
+          requestId,
+          actionId,
         });
-      }
       case "group.present": {
         const record = this.tabs.assertPageDispatch({
           spaceId,
@@ -815,12 +1572,637 @@ export class ServiceWorkerController {
           requestId,
           onDispatch: () => this.markActionDispatched(actionId),
         });
+      case "event.wait":
+      case "storage.write":
+      case "cookies.write":
+      case "page.upload":
+        throw new ProtocolError(
+          "capability_unavailable",
+          `extension method is not implemented: ${method}`,
+        );
       default:
         throw new ProtocolError(
           "capability_unavailable",
           `extension method is not implemented: ${method}`,
         );
     }
+  }
+
+  async executeDebuggerCommand({
+    spaceId,
+    pageId,
+    leaseEpoch,
+    params,
+    requestId,
+    actionId,
+  }) {
+    const debuggerMethod = params.method;
+    this.assertFence(spaceId, leaseEpoch);
+    await this.debugger.attach({ spaceId, pageId, leaseEpoch });
+    return this.debugger.sendCommand({
+      spaceId,
+      pageId,
+      leaseEpoch,
+      method: debuggerMethod,
+      params: coerceDebuggerParams(debuggerMethod, commandParams(params)),
+      expectedGeneration: params.expected_generation,
+      expectedTargetGeneration: params.expected_target_generation,
+      expectedNavigationGeneration: params.expected_navigation_generation,
+      expectedDocumentGeneration: params.expected_document_generation,
+      commandId: params.command_id ?? actionId ?? requestId,
+      capability: params.capability ?? params.payload?.capability,
+      approval: params.approval ?? params.payload?.approval,
+      onDispatch: () => this.markActionDispatched(actionId),
+    });
+  }
+
+  actionRoute(params) {
+    const payload = isPlainObject(params.payload) ? params.payload : {};
+    let operation =
+      params.operation ?? params.action ?? payload.operation ?? payload.action;
+    if (typeof operation === "string")
+      operation = operation.toLowerCase().replaceAll("-", "_");
+    const methodToOperation = Object.fromEntries(
+      Object.entries(ACTION_METHODS).map(([name, method]) => [method, name]),
+    );
+    if (operation === undefined && typeof params.method === "string")
+      operation = methodToOperation[params.method];
+    if (operation === "close")
+      return { operation, method: "page.close", commandParams: {} };
+    const method = ACTION_METHODS[operation];
+    if (!method || (params.method !== undefined && params.method !== method))
+      throw new ProtocolError(
+        "capability_unavailable",
+        "action operation is not allowlisted",
+      );
+    const command = coerceDebuggerParams(
+      method,
+      commandParams({ ...params, method }),
+    );
+    if (method === "Page.navigate") {
+      if (
+        typeof command.url !== "string" ||
+        command.url.length === 0 ||
+        command.url.length > 4096
+      )
+        throw new ProtocolError(
+          "schema_invalid",
+          "navigate action requires a bounded URL",
+        );
+    }
+    if (method === "Input.insertText") {
+      if (typeof command.text !== "string" || command.text.length > 64 * 1024)
+        throw new ProtocolError(
+          "schema_invalid",
+          "input action requires bounded text",
+        );
+    }
+    if (method === "Input.dispatchMouseEvent") {
+      const type = command.type;
+      const x = scalarNumber(command.x);
+      const y = scalarNumber(command.y);
+      if (
+        !["mousePressed", "mouseReleased", "mouseWheel"].includes(type) ||
+        x === undefined ||
+        y === undefined
+      )
+        throw new ProtocolError(
+          "schema_invalid",
+          "pointer action requires an allowlisted event and coordinates",
+        );
+      command.x = x;
+      command.y = y;
+      for (const key of ["deltaX", "deltaY", "clickCount"]) {
+        if (command[key] !== undefined) {
+          const value = scalarNumber(command[key]);
+          if (value === undefined)
+            throw new ProtocolError(
+              "schema_invalid",
+              `pointer action field ${key} is invalid`,
+            );
+          command[key] = value;
+        }
+      }
+    }
+    if (method === "Input.dispatchKeyEvent") {
+      if (
+        typeof command.type !== "string" ||
+        !["keyDown", "keyUp", "rawKeyDown", "char"].includes(command.type)
+      )
+        throw new ProtocolError(
+          "schema_invalid",
+          "key action type is not allowlisted",
+        );
+    }
+    return { operation, method, commandParams: command };
+  }
+
+  async executeAllowlistedAction({
+    spaceId,
+    pageId,
+    leaseEpoch,
+    params,
+    requestId,
+    actionId,
+  }) {
+    const route = this.actionRoute(params);
+    if (route.method === "page.close") {
+      return this.tabs.closeManagedPage({
+        spaceId,
+        pageId,
+        leaseEpoch,
+        expectedGeneration: params.expected_generation,
+        expectedNavigationGeneration: params.expected_navigation_generation,
+        expectedDocumentGeneration: params.expected_document_generation,
+        cleanupProof: params.cleanup_proof ?? params.payload?.cleanup_proof,
+        onDispatch: () => this.markActionDispatched(actionId),
+      });
+    }
+    await this.debugger.attach({ spaceId, pageId, leaseEpoch });
+    return this.debugger.sendCommand({
+      spaceId,
+      pageId,
+      leaseEpoch,
+      method: route.method,
+      params: route.commandParams,
+      expectedGeneration: params.expected_generation,
+      expectedTargetGeneration: params.expected_target_generation,
+      expectedNavigationGeneration: params.expected_navigation_generation,
+      expectedDocumentGeneration: params.expected_document_generation,
+      commandId: params.command_id ?? actionId ?? requestId,
+      capability: params.capability ?? params.payload?.capability,
+      approval: params.approval ?? params.payload?.approval,
+      onDispatch: () => this.markActionDispatched(actionId),
+    });
+  }
+
+  async readContentOperation({
+    spaceId,
+    pageId,
+    leaseEpoch,
+    operation,
+    payload = {},
+    requestId,
+  }) {
+    const response = await this.sendContentRequest({
+      spaceId,
+      pageId,
+      leaseEpoch,
+      params: { operation, payload },
+      requestId: createLogicalId("req"),
+      waitForResult: true,
+    });
+    return response.result ?? {};
+  }
+
+  contentSnapshotElements(content) {
+    const elements = [
+      {
+        key: "element_root",
+        parent: null,
+        kind: "root",
+        text: null,
+        attributes: {},
+        order: 0,
+      },
+    ];
+    const title = boundedText(content.title, 512);
+    const text = boundedText(content.text, 16 * 1024);
+    elements.push({
+      key: "element_title",
+      parent: "element_root",
+      kind: "element",
+      text: title,
+      attributes: { role: "title" },
+      order: 1,
+    });
+    elements.push({
+      key: "element_body_text",
+      parent: "element_root",
+      kind: "text",
+      text,
+      attributes: {},
+      order: 2,
+    });
+    for (const [index, node] of (Array.isArray(content.nodes)
+      ? content.nodes
+      : []
+    )
+      .slice(0, MAX_SNAPSHOT_ELEMENTS - elements.length)
+      .entries()) {
+      if (!isPlainObject(node)) continue;
+      const attributes = {};
+      if (typeof node.role === "string")
+        attributes.role = boundedText(node.role, 64);
+      if (typeof node.disabled === "boolean")
+        attributes.disabled = String(node.disabled);
+      elements.push({
+        key: `element_control_${index}`,
+        parent: "element_root",
+        kind: "control",
+        text: boundedText(node.name, 256),
+        attributes,
+        order: elements.length,
+      });
+    }
+    return {
+      elements,
+      truncated:
+        title.length >= 512 ||
+        text.length >= 16 * 1024 ||
+        (Array.isArray(content.nodes) && content.nodes.length >= 256),
+    };
+  }
+
+  debuggerSnapshotElements(result) {
+    const document = result?.result?.documents?.[0];
+    if (!document || !isPlainObject(document) || !isPlainObject(document.nodes))
+      throw new ProtocolError(
+        "capability_unavailable",
+        "debugger did not return a logical DOM snapshot",
+      );
+    const strings = Array.isArray(result.result.strings)
+      ? result.result.strings
+      : [];
+    const stringAt = (value) =>
+      typeof value === "string"
+        ? value
+        : Number.isSafeInteger(value) && typeof strings[value] === "string"
+          ? strings[value]
+          : "";
+    const nodes = Array.isArray(document.nodes.nodeName)
+      ? document.nodes.nodeName.map((_, index) => index)
+      : [];
+    const elements = [];
+    for (const index of nodes.slice(0, MAX_SNAPSHOT_ELEMENTS)) {
+      const nodeType = document.nodes.nodeType?.[index];
+      const nodeName = boundedText(
+        stringAt(document.nodes.nodeName[index]),
+        128,
+      );
+      const nodeValue = boundedText(
+        stringAt(document.nodes.nodeValue?.[index]),
+        16 * 1024,
+      );
+      const kind =
+        nodeType === 9
+          ? "root"
+          : nodeType === 3
+            ? "text"
+            : nodeType === 1
+              ? "element"
+              : undefined;
+      if (!kind) continue;
+      const attributes = Object.create(null);
+      const rawAttributes = document.nodes.attributes?.[index];
+      if (Array.isArray(rawAttributes)) {
+        for (let offset = 0; offset + 1 < rawAttributes.length; offset += 2) {
+          const name = boundedText(stringAt(rawAttributes[offset]), 128);
+          if (
+            !name ||
+            name === "__proto__" ||
+            name === "constructor" ||
+            name === "prototype"
+          )
+            continue;
+          attributes[name] = boundedText(
+            stringAt(rawAttributes[offset + 1]),
+            1024,
+          );
+        }
+      }
+      const parentIndex = document.nodes.parentIndex?.[index];
+      elements.push({
+        key: `element_${index}`,
+        parent:
+          Number.isSafeInteger(parentIndex) && parentIndex >= 0
+            ? `element_${parentIndex}`
+            : null,
+        kind,
+        text: kind === "text" ? nodeValue : null,
+        attributes,
+        order: index,
+      });
+    }
+    if (elements.length === 0)
+      throw new ProtocolError(
+        "capability_unavailable",
+        "debugger DOM snapshot contained no logical nodes",
+      );
+    return {
+      elements,
+      truncated: nodes.length > MAX_SNAPSHOT_ELEMENTS,
+    };
+  }
+
+  buildSnapshotEnvelope({ spaceId, pageId, record, elements, truncated }) {
+    let boundedElements = elements
+      .slice(0, MAX_SNAPSHOT_ELEMENTS)
+      .sort(
+        (left, right) =>
+          left.order - right.order || left.key.localeCompare(right.key),
+      );
+    let wasTruncated = Boolean(truncated);
+    const nextVersion = (this.snapshotVersions.get(pageId) ?? 0) + 1;
+    this.snapshotVersions.set(pageId, nextVersion);
+    const makeEnvelope = () => {
+      const snapshotHash = snapshotElementsHash(boundedElements);
+      return {
+        schema_version: 1,
+        space_id: spaceId,
+        page_id: pageId,
+        snapshot_version: nextVersion,
+        snapshot_hash: snapshotHash,
+        base_snapshot_version: null,
+        base_hash: null,
+        result_hash: snapshotHash,
+        delta_sequence: null,
+        topology_version: 1,
+        navigation_generation: record.navigationGeneration,
+        document_generation: record.documentGeneration,
+        frame_versions: { frame_main: 1 },
+        changed: [],
+        delta_or_elements: { kind: "elements", elements: boundedElements },
+        mode: wasTruncated ? "compact" : "full",
+        operation_count: 0,
+        coherent: !wasTruncated,
+        coverage: wasTruncated ? "partial" : "complete",
+        dirty_reasons: [],
+        cache_state: "fresh",
+        resync_reason: null,
+        transport_bytes: 0,
+        utf8_bytes: textBytes(
+          `[${boundedElements.map((element) => JSON.stringify(element)).join(",")}]`,
+        ),
+        serialized_tokens: 0,
+        model_context_tokens: 0,
+        tokenizer: null,
+        budget: null,
+        omitted: wasTruncated ? ["bounded logical elements"] : [],
+        truncated: wasTruncated,
+        resync_required: false,
+        refs_epoch: nextVersion,
+      };
+    };
+    let envelope = makeEnvelope();
+    while (
+      textBytes(JSON.stringify(envelope)) > MAX_SNAPSHOT_BYTES &&
+      boundedElements.length > 1
+    ) {
+      boundedElements = boundedElements.slice(0, -1);
+      wasTruncated = true;
+      envelope = makeEnvelope();
+    }
+    envelope.transport_bytes = textBytes(JSON.stringify(envelope));
+    if (envelope.transport_bytes > MAX_SNAPSHOT_BYTES)
+      throw new ProtocolError(
+        "message_too_large",
+        "logical snapshot exceeds the control bound",
+      );
+    assertNoRawBrowserIdentifiers(envelope);
+    return envelope;
+  }
+
+  async readSnapshot({ spaceId, pageId, leaseEpoch, params, requestId }) {
+    assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
+    const record = this.tabs.getInternalByPage(pageId);
+    if (!record)
+      throw new ProtocolError("page_not_found", "logical page is not bound");
+    const effectiveLease = leaseEpoch ?? record.leaseEpoch;
+    positiveEpoch(effectiveLease, "lease_epoch");
+    const current = this.tabs.assertPageDispatch({
+      spaceId,
+      pageId,
+      leaseEpoch: effectiveLease,
+      expectedGeneration: params.expected_generation,
+      expectedTargetGeneration: params.expected_target_generation,
+      expectedNavigationGeneration: params.expected_navigation_generation,
+      expectedDocumentGeneration: params.expected_document_generation,
+      mutation: false,
+    });
+    const source = params.source;
+    if (source !== undefined && source !== "content" && source !== "debugger")
+      throw new ProtocolError(
+        "capability_unavailable",
+        "snapshot source is not allowlisted",
+      );
+    let logical;
+    if (source !== "debugger") {
+      try {
+        const [title, text, aria] = await Promise.all([
+          this.readContentOperation({
+            spaceId,
+            pageId,
+            leaseEpoch: effectiveLease,
+            operation: "document.title",
+            requestId,
+          }),
+          this.readContentOperation({
+            spaceId,
+            pageId,
+            leaseEpoch: effectiveLease,
+            operation: "document.text",
+            payload:
+              typeof params.selector === "string"
+                ? { selector: params.selector }
+                : {},
+            requestId,
+          }),
+          this.readContentOperation({
+            spaceId,
+            pageId,
+            leaseEpoch: effectiveLease,
+            operation: "aria.summary",
+            requestId,
+          }),
+        ]);
+        logical = this.contentSnapshotElements({
+          title: title.title,
+          text: text.text,
+          nodes: aria.nodes,
+        });
+      } catch (error) {
+        if (source === "content") throw error;
+      }
+    }
+    if (!logical) {
+      await this.debugger.attach({
+        spaceId,
+        pageId,
+        leaseEpoch: effectiveLease,
+      });
+      const debuggerResult = await this.debugger.sendCommand({
+        spaceId,
+        pageId,
+        leaseEpoch: effectiveLease,
+        method: "DOMSnapshot.captureSnapshot",
+        params: { computedStyles: [] },
+        expectedTargetGeneration: current.targetGeneration,
+        expectedNavigationGeneration: current.navigationGeneration,
+        expectedDocumentGeneration: current.documentGeneration,
+        commandId: requestId,
+      });
+      logical = this.debuggerSnapshotElements(debuggerResult);
+    }
+    const latest = this.tabs.assertPageDispatch({
+      spaceId,
+      pageId,
+      leaseEpoch: effectiveLease,
+      expectedTargetGeneration: current.targetGeneration,
+      expectedNavigationGeneration: current.navigationGeneration,
+      expectedDocumentGeneration: current.documentGeneration,
+      mutation: false,
+    });
+    return this.buildSnapshotEnvelope({
+      spaceId,
+      pageId,
+      record: latest,
+      elements: logical.elements,
+      truncated: logical.truncated,
+    });
+  }
+
+  async reconcileAction({
+    spaceId,
+    pageId,
+    leaseEpoch,
+    params,
+    requestId,
+    actionId,
+  }) {
+    const reconciledActionId = params.action_id ?? params.actionId ?? actionId;
+    if (!validActionId(reconciledActionId))
+      throw new ProtocolError(
+        "schema_invalid",
+        "reconciliation action_id is invalid",
+      );
+    const stored = this.actionReceipts.get(reconciledActionId);
+    const effectiveSpaceId = spaceId ?? stored?.space_id;
+    const effectivePageId = pageId ?? stored?.page_id;
+    assertLogicalScope(
+      { spaceId: effectiveSpaceId, pageId: effectivePageId },
+      { pageRequired: effectivePageId !== undefined },
+    );
+    if (stored?.space_id !== undefined && stored.space_id !== effectiveSpaceId)
+      throw new ProtocolError(
+        "permission_denied",
+        "reconciliation space is not current",
+      );
+    if (stored?.page_id !== undefined && stored.page_id !== effectivePageId)
+      throw new ProtocolError(
+        "permission_denied",
+        "reconciliation page is not current",
+      );
+    const record = effectivePageId
+      ? this.tabs.getInternalByPage(effectivePageId)
+      : undefined;
+    const effectiveLease =
+      leaseEpoch ?? record?.leaseEpoch ?? stored?.lease_epoch;
+    if (effectiveLease !== undefined)
+      positiveEpoch(effectiveLease, "lease_epoch");
+    if (effectiveLease !== undefined)
+      this.assertFence(effectiveSpaceId, effectiveLease);
+    if (record) {
+      if (
+        effectiveLease === undefined ||
+        record.spaceId !== effectiveSpaceId ||
+        record.pageId !== effectivePageId
+      )
+        throw new ProtocolError(
+          "stale_lease",
+          "reconciliation lease is not current",
+        );
+      this.tabs.assertPageDispatch({
+        spaceId: effectiveSpaceId,
+        pageId: effectivePageId,
+        leaseEpoch: effectiveLease,
+        mutation: false,
+      });
+    }
+    const context = {
+      ...(stored ?? {}),
+      action_id: reconciledActionId,
+      request_id: stored?.request_id ?? requestId,
+      ...(effectiveSpaceId !== undefined ? { space_id: effectiveSpaceId } : {}),
+      ...(effectivePageId !== undefined ? { page_id: effectivePageId } : {}),
+      ...(effectiveLease !== undefined ? { lease_epoch: effectiveLease } : {}),
+      postcondition:
+        stored?.postcondition ?? normalizePostcondition(params.postcondition),
+    };
+    const finish = (outcome, code = undefined, evidence = undefined) => {
+      const error = code ? { code, message: code } : undefined;
+      this.rememberActionReceipt(context, outcome, error);
+      const receipt = this.actionReceiptFor(reconciledActionId, {
+        ...context,
+        outcome,
+        ...(code ? { code } : {}),
+      });
+      this.handleExtensionEvent("action.receipt", receipt);
+      this.handleExtensionEvent("action.reconciled", {
+        ...receipt,
+        ...(evidence ? { evidence } : {}),
+      });
+      return {
+        outcome,
+        receipt,
+        ...(evidence ? { evidence } : {}),
+      };
+    };
+    if (stored?.outcome === "succeeded" || stored?.outcome === "failed")
+      return finish(stored.outcome, stored.code);
+    if (!record) {
+      if (stored?.method === "page.close") return finish("succeeded");
+      return finish("unknown", "unknown_outcome");
+    }
+    const observed = this.observedPageGeneration(effectivePageId);
+    const postcondition = context.postcondition;
+    if (postcondition?.kind === "page_generation") {
+      return finish(
+        observed?.document_generation === postcondition.document_generation
+          ? "succeeded"
+          : "failed",
+        observed?.document_generation === postcondition.document_generation
+          ? undefined
+          : "target_replaced",
+        { generation: observed },
+      );
+    }
+    if (postcondition?.kind === "snapshot_hash") {
+      try {
+        const snapshot = await this.readSnapshot({
+          spaceId: effectiveSpaceId,
+          pageId: effectivePageId,
+          leaseEpoch: effectiveLease,
+          params: {
+            expected_target_generation: record.targetGeneration,
+            expected_navigation_generation: record.navigationGeneration,
+            expected_document_generation: record.documentGeneration,
+          },
+          requestId,
+        });
+        const matches = snapshot.snapshot_hash === postcondition.snapshot_hash;
+        return finish(
+          matches ? "succeeded" : "failed",
+          matches ? undefined : "target_replaced",
+          {
+            generation: this.observedPageGeneration(effectivePageId),
+            snapshot_hash: snapshot.snapshot_hash,
+          },
+        );
+      } catch {
+        return finish("unknown", "unknown_outcome");
+      }
+    }
+    if (
+      (stored?.method === "debugger.command" ||
+        stored?.method === "action.execute") &&
+      stored.navigation_url &&
+      stored.navigation_generation !== undefined &&
+      record.navigationGeneration > stored.navigation_generation &&
+      record.url === stored.navigation_url
+    )
+      return finish("succeeded", undefined, { generation: observed });
+    return finish("unknown", "unknown_outcome", { generation: observed });
   }
 
   async sendContentRequest({
@@ -830,6 +2212,7 @@ export class ServiceWorkerController {
     params,
     requestId,
     onDispatch = () => {},
+    waitForResult = false,
   }) {
     const record = this.tabs.assertPageDispatch({
       spaceId,
@@ -906,6 +2289,14 @@ export class ServiceWorkerController {
         "resource_exhausted",
         "content request bound reached",
       );
+    let resolveResult;
+    let rejectResult;
+    const resultPromise = waitForResult
+      ? new Promise((resolve, reject) => {
+          resolveResult = resolve;
+          rejectResult = reject;
+        })
+      : undefined;
     this.contentPending.set(requestId, {
       spaceId,
       pageId,
@@ -918,6 +2309,8 @@ export class ServiceWorkerController {
       targetGeneration: record.targetGeneration,
       navigationGeneration: record.navigationGeneration,
       documentGeneration: record.documentGeneration,
+      resolve: resolveResult,
+      reject: rejectResult,
     });
     try {
       onDispatch();
@@ -928,7 +2321,37 @@ export class ServiceWorkerController {
         cause: error instanceof Error ? error.message : String(error),
       });
     }
-    return { accepted: true, request_id: requestId, expires_at: expiresAt };
+    const accepted = {
+      accepted: true,
+      request_id: requestId,
+      expires_at: expiresAt,
+    };
+    if (!waitForResult) return accepted;
+    let timeoutHandle;
+    try {
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          const pendingEntry = this.contentPending.get(requestId);
+          if (pendingEntry) this.contentPending.delete(requestId);
+          reject(
+            new ProtocolError(
+              "capability_unavailable",
+              "content bridge response timed out",
+            ),
+          );
+        }, CONTENT_RESPONSE_TIMEOUT_MS);
+        timeoutHandle?.unref?.();
+      });
+      const result = await Promise.race([resultPromise, timeoutPromise]);
+      if (!result?.ok)
+        throw new ProtocolError(
+          result?.error?.code ?? "content_bridge_error",
+          result?.error?.message ?? "content operation failed",
+        );
+      return { ...accepted, result: result.result ?? {} };
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   }
 
   async handleFence({
@@ -963,6 +2386,9 @@ export class ServiceWorkerController {
       }
     }
     this.fences.set(spaceId, fenceEpoch);
+    for (const actionId of unknownActionIds)
+      this.reportUnknownAction(actionId, "fence interrupted mutation");
+    this.queueActionStatePersist();
     let durable = true;
     try {
       await this.persistFences();
@@ -1013,10 +2439,12 @@ export class ServiceWorkerController {
         error,
         mutation,
       });
+      return true;
     } catch (sendError) {
-      if (actionId && mutation) {
+      if (actionId && mutation && this.inflight.has(actionId)) {
         this.handleLostDispatch([actionId], sendError);
       }
+      return false;
     }
   }
 
@@ -1126,7 +2554,15 @@ export class ServiceWorkerController {
       if (document.expiresAt <= now) this.contentDocuments.delete(tabId);
     }
     for (const [requestId, pending] of this.contentPending) {
-      if (pending.expiresAt <= now) this.contentPending.delete(requestId);
+      if (pending.expiresAt <= now) {
+        this.contentPending.delete(requestId);
+        pending.reject?.(
+          new ProtocolError(
+            "proof_expired",
+            "content result expired before it arrived",
+          ),
+        );
+      }
     }
   }
 
@@ -1205,8 +2641,15 @@ export class ServiceWorkerController {
     ) {
       this.contentDocuments.delete(record.rawTabId);
       for (const [requestId, pending] of this.contentPending) {
-        if (pending.rawTabId === record.rawTabId)
+        if (pending.rawTabId === record.rawTabId) {
           this.contentPending.delete(requestId);
+          pending.reject?.(
+            new ProtocolError(
+              "stale_generation",
+              "content document was closed before the result arrived",
+            ),
+          );
+        }
       }
     }
     return { ok: true };
@@ -1258,9 +2701,14 @@ export class ServiceWorkerController {
       if (message.ok) assertNoRawBrowserIdentifiers(message.result ?? {});
       else assertNoRawBrowserIdentifiers(message.error ?? {});
     } catch (error) {
+      this.contentPending.delete(message.request_id);
+      pending.reject?.(error);
       return { ok: false, error: publicError(error) };
     }
     this.contentPending.delete(message.request_id);
+    const settled = message.ok
+      ? { ok: true, result: message.result ?? {} }
+      : { ok: false, error: message.error };
     this.handleExtensionEvent("content.result", {
       space_id: pending.spaceId,
       page_id: pending.pageId,
@@ -1270,6 +2718,7 @@ export class ServiceWorkerController {
         ? { result: message.result ?? {} }
         : { error: message.error }),
     });
+    pending.resolve?.(settled);
     return { ok: true };
   }
 
