@@ -414,6 +414,37 @@ impl Broker {
         })
     }
 
+    /// List spaces enrolled in the extension's profile for user-control UI.
+    ///
+    /// This intentionally uses the host-issued profile binding rather than the
+    /// extension principal's ownership visibility: the side panel is the
+    /// profile owner control surface, while mutation authority still remains
+    /// fenced by the broker methods below.
+    pub fn list_profile_spaces(
+        &self,
+        authority: &AuthorityTicket,
+    ) -> Result<Vec<SpaceDescriptor>, HostError> {
+        self.with_inner(|inner| {
+            authorize_ticket(inner.ledger.state(), authority)?;
+            let profile = authority.profile_binding_id().ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::ProfileNotFound,
+                    "profile-bound authority is required for control spaces",
+                )
+            })?;
+            Ok(inner
+                .ledger
+                .state()
+                .spaces
+                .values()
+                .filter(|space| {
+                    inner.ledger.state().profile_bindings.get(&space.space_id) == Some(profile)
+                })
+                .cloned()
+                .collect())
+        })
+    }
+
     /// Read one logical space record after a principal visibility check.
     pub fn describe_space(
         &self,
@@ -460,7 +491,12 @@ impl Broker {
                 group.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
             })
             .collect();
-        Ok(ObservationSnapshot { pages, groups })
+        Ok(ObservationSnapshot {
+            pages,
+            groups,
+            safety: observation.safety,
+            recovery_observed: observation.recovery_observed,
+        })
     }
 
     /// Return the current durable handoff ticket for a visible user-owned space.
