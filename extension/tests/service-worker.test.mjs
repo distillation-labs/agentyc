@@ -347,6 +347,9 @@ test("runtime listeners register before metadata await, onMessage uses literal t
   resolveMetadata({ agentyc_extension_metadata: {} });
   await start;
   await wait();
+  assert.deepEqual(chrome.sidePanelBehaviorCalls, [
+    { openPanelOnActionClick: true },
+  ]);
   assert.equal(responded, true);
   assert.equal(response, undefined);
 
