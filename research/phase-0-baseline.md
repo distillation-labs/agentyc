@@ -154,8 +154,8 @@ The following deterministic implementation surfaces exist and pass focused check
 - `crates/agentyc-core`: transport-neutral logical IDs, lifecycle/error/protocol/snapshot/action/event contracts and negative fixtures.
 - `crates/agentyc-host`: locked atomic ledger, leases/fencing, action journal, reconciliation, event resume, snapshot cache, refs, waits, actionability, context budget seams, multi-client connection authorities, and the owner-only local IPC server.
 - `crates/agentyc-browser/src/profile.rs` and `crates/agentyc-mcp/src/state.rs`: existing profile/session and legacy state surfaces audited for the baseline.
-- `extension/`: production MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests.
-- Direct CLI/SDK, rollout evidence tooling, and the host-backed MCP compatibility adapter.
+- `extension/`: production MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests; its unpacked development identity is stable and distinct from `extension/probes/`.
+- Direct CLI and host-backed MCP clients use the owner-only local Unix socket in normal mode; offline mode is the only in-process fake-host seam. Rollout evidence tooling remains explicit and fail-closed.
 
 Current validation evidence:
 
