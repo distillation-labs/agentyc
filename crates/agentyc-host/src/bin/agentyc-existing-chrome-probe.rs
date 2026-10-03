@@ -106,6 +106,14 @@ struct PageView {
     page_id: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct ControlTicketView {
+    space_id: String,
+    broker_epoch: u64,
+    fence_epoch: u64,
+    token: String,
+}
+
 #[derive(Debug)]
 struct SpaceLease {
     space_id: String,
@@ -278,7 +286,7 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
         Ok(value) => value,
         Err(error) => return fail_closed(report, 2, error),
     };
-    let two = match create_space_with_lease(&client, &format!("probe-{run_tag}-two"), 2) {
+    let mut two = match create_space_with_lease(&client, &format!("probe-{run_tag}-two"), 2) {
         Ok(value) => value,
         Err(error) => return fail_closed(report, 2, error),
     };
@@ -430,6 +438,17 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
             format!("space.return lifecycle is {return_lifecycle}, expected user_owned"),
         );
     }
+    let control_ticket: ControlTicketView = match field(&returned, "control_ticket") {
+        Ok(ticket) => ticket,
+        Err(error) => return fail_closed(report, 6, error),
+    };
+    if control_ticket.space_id != two.space_id || control_ticket.fence_epoch == 0 {
+        return fail_closed(
+            report,
+            6,
+            "space.return control ticket scope is invalid".to_owned(),
+        );
+    }
 
     match client.request(
         "lease.acquire",
@@ -460,9 +479,51 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
             }
         }
     }
+    let ticket_json = match serde_json::to_string(&control_ticket) {
+        Ok(value) => value,
+        Err(error) => return fail_closed(report, 6, error.to_string()),
+    };
+    let reclaimed = match client.request(
+        "space.takeover_with_control_ticket",
+        BTreeMap::from([
+            ("space_id".to_owned(), two.space_id.clone()),
+            ("control_ticket".to_owned(), ticket_json),
+            ("ttl".to_owned(), "600".to_owned()),
+            ("now".to_owned(), "9".to_owned()),
+        ]),
+    ) {
+        Ok(value) => value,
+        Err(error) => return fail_closed(report, 6, format!("ticketed reclaim failed: {error}")),
+    };
+    let reclaimed_epoch: u64 = match field(&reclaimed, "lease_epoch") {
+        Ok(value) => value,
+        Err(error) => return fail_closed(report, 6, error),
+    };
+    let reclaimed_lifecycle: String = match field(&reclaimed, "lifecycle") {
+        Ok(value) => value,
+        Err(error) => return fail_closed(report, 6, error),
+    };
+    let reclaimed_fence: bool = match field(&reclaimed, "fence_acknowledged") {
+        Ok(value) => value,
+        Err(error) => return fail_closed(report, 6, error),
+    };
+    if reclaimed_lifecycle != "agent_owned"
+        || !reclaimed_fence
+        || reclaimed_epoch <= two.lease_epoch
+    {
+        return fail_closed(
+            report,
+            6,
+            "ticketed reclaim did not produce a fresh acknowledged lease".to_owned(),
+        );
+    }
+    two.lease_epoch = reclaimed_epoch;
     report.pass(
         CHECKPOINTS[6],
-        format!("space {} returned to user control", two.space_id),
+        format!(
+            "space {} returned and reclaimed with a fresh lease",
+            two.space_id
+        ),
     );
 
     let finished = match client.request(
@@ -533,13 +594,53 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
         format!("finished and released {}", one.space_id),
     );
 
-    report.skip(
+    let finished_returned = match client.request(
+        "space.finish",
+        BTreeMap::from([
+            ("space_id".to_owned(), two.space_id.clone()),
+            ("lease_epoch".to_owned(), two.lease_epoch.to_string()),
+            ("now".to_owned(), "11".to_owned()),
+        ]),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return fail_closed(report, 8, format!("returned space.finish failed: {error}"));
+        }
+    };
+    let returned_finished_lifecycle: String = match field(&finished_returned, "lifecycle") {
+        Ok(value) => value,
+        Err(error) => return fail_closed(report, 8, error),
+    };
+    if returned_finished_lifecycle != "finished" {
+        return fail_closed(report, 8, "returned space.finish did not finish".to_owned());
+    }
+    let released_returned = match client.request(
+        "space.release",
+        BTreeMap::from([
+            ("space_id".to_owned(), two.space_id.clone()),
+            ("lease_epoch".to_owned(), two.lease_epoch.to_string()),
+            ("now".to_owned(), "12".to_owned()),
+        ]),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return fail_closed(report, 8, format!("returned space.release failed: {error}"));
+        }
+    };
+    let returned_released_lifecycle: String = match field(&released_returned, "lifecycle") {
+        Ok(value) => value,
+        Err(error) => return fail_closed(report, 8, error),
+    };
+    if returned_released_lifecycle != "released" {
+        return fail_closed(
+            report,
+            8,
+            "returned space.release did not release".to_owned(),
+        );
+    }
+    report.pass(
         CHECKPOINTS[8],
-        "local protocol does not expose ticketed reclaim; returned space remains user_owned",
-    );
-    report.limitations.push(
-        "A space returned with space.return cannot be reclaimed through the current local protocol because ticketed takeover is not exposed; cleanup of that returned space requires a separate host path."
-            .to_owned(),
+        format!("finished and released returned space {}", two.space_id),
     );
 
     ProbeOutcome::Passed(report)
