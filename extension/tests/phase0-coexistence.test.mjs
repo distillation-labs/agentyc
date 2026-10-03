@@ -204,6 +204,51 @@ test("reconnect reports unknown outcomes in the next inventory and never replays
   worker.stop();
 });
 
+test("worker restart reports a durable in-flight mutation as unknown without replay", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://user.test/" }],
+  });
+  const first = await boot(chrome);
+  let release;
+  chrome.beforeTabCreate = () =>
+    new Promise((resolve) => {
+      release = resolve;
+    });
+
+  const pending = first.worker.handleHostRequest(
+    createPage("space_restart", "page_restart", 1, "restart"),
+  );
+  for (let i = 0; i < 10 && !release; i += 1) await wait();
+  assert.ok(release, "tab creation must be in flight");
+  first.worker.stop();
+  await wait();
+  const second = await boot(chrome, { connectionEpoch: 2 });
+  const inventory = second.port.sent.find(
+    (message) => message.kind === "inventory",
+  );
+  assert.ok(inventory);
+  assert.deepEqual(inventory.payload.unknown_action_ids, [
+    "action_create_restart",
+  ]);
+  assert.equal(
+    second.worker.unreportedUnknownActions.has("action_create_restart"),
+    false,
+  );
+  assert.equal(chrome.tabsCreateCalls.length, 1);
+
+  chrome.beforeTabCreate = null;
+  release();
+  await pending;
+  assert.equal(chrome.tabsCreateCalls.length, 1);
+  assert.equal(
+    second.port.sent.filter(
+      (message) => message.kind === "request" || message.kind === "response",
+    ).length,
+    0,
+  );
+  second.worker.stop();
+});
+
 test("stale or duplicate fence epochs are rejected and never lower the barrier", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://user.test/" }],
