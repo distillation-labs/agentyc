@@ -82,13 +82,13 @@ Every bullet below is a target or requirement for the staged work, not a stateme
 - Persistent local CLI with machine-readable JSON output and a thin typed Node SDK over the same protocol.
 - Task-space creation, list, resume, claim, renew, handoff, accept, pause, stop, take over, return control, finish, retain, release, and recovery.
 - Durable labeled pages inside each space; no process-global active tab.
-- Pages created by the agent are placed in a corresponding Chrome tab group when the API is available.
+- Pages created by the agent are placed in a corresponding Chrome tab group when the API is available; because Chrome groups are window-scoped, this is best-effort presentation and may drift when pages move across windows.
 - Explicit adoption of a user tab only after ownership proof and user confirmation; no implicit adoption.
 - Structured space/page records only; no `[id] name`, raw Chrome tab IDs, raw CDP target/session IDs, or numeric tab-group IDs in primary output.
 
 ### Existing Chrome integration
 
-- MV3 extension installed into the user's normal Chrome profile.
+- MV3 extension installed into the user's normal Chrome profile. The pinned unpacked identity is a trusted development build; ordinary macOS distribution requires a Web Store-signed extension or enterprise management.
 - Native Messaging bridge with exact extension-origin allowlisting and platform registration.
 - `chrome.debugger` transport for supported CDP domains, related targets, frames, network, runtime, DOM, accessibility, input, screenshots, dialogs, and lifecycle events where the capability matrix proves support.
 - `chrome.tabs`, `chrome.tabGroups`, and `chrome.sidePanel` integration for pages, visual grouping, and user control.
@@ -119,7 +119,7 @@ Every bullet below is a target or requirement for the staged work, not a stateme
 - `page` is a durable logical child/label of a space, not a Chrome tab or raw target.
 - Chrome tab, target, debugger-session, and extension runtime IDs are inventory/reconciliation hints only; they are not public logical identity.
 - A Chrome tab group is visual presentation only. Its title, color, collapsed state, membership, and movement are non-authoritative.
-- A visual group may be missing, renamed, regrouped, or changed by the user without invalidating the logical space or its durable pages.
+- A visual group is scoped to one Chrome window and may be missing, renamed, regrouped, moved across windows, or changed by the user without invalidating the logical space or its durable pages.
 - `group_id` is only a deprecated compatibility alias or an explicitly named visual-group hint. It is never a second logical object, an authorization proof, or a storage-isolation boundary.
 - Mixed user/agent groups are never cleanup units; cleanup requires proof of individual agent ownership.
 
