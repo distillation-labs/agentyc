@@ -6,7 +6,7 @@ This file is the machine-readable-by-convention registry for the plan. Only the 
 
 | Phase | Canonical file                      | Depends on | Status  | Entry condition                                                                                                     |
 | ----: | ----------------------------------- | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------- |
-|     0 | `phase-0-discovery.md`              | none       | active  | planning audit complete; no production implementation started                                                       |
+|     0 | `phase-0-discovery.md`              | none       | active  | implementation slices exist; existing-profile live evidence and Phase 0 exit gate remain open                       |
 |     1 | `phase-1-architecture.md`           | 0          | pending | Phase 0 exit gate checked and baseline artifacts exist                                                              |
 |     2 | `phase-2-contracts.md`              | 1          | pending | Phase 1 exit gate checked; architecture/security artifacts exist                                                    |
 |     3 | `phase-3-core-implementation.md`    | 2          | pending | Phase 2 schemas/fixtures pass                                                                                       |
@@ -21,7 +21,7 @@ Allowed status transitions are `pending -> active -> complete` or `pending -> ac
 ## Execution rules
 
 - Do not execute superseded files.
-- Do not create a phase-local crate or test dependency before the phase that creates it; Phase 0 uses `agentyc-tests`/standalone probes and may not depend on `agentyc-host`.
+- Do not infer phase activation from files being present. Core/host/extension/direct-client slices now exist, but Phases 1–8 remain pending. Phase 0 may audit and probe the existing host-backed path; deterministic host tests or disposable probes do not close its live existing-profile gate. Future dependencies must name existing versus planned prerequisites.
 - Every task names whether a path is existing or planned/new. Planned files are created by the task that first owns them. Later sequential phases may modify an existing shared artifact only when the task says so and limits its owned section: Phase 1 owns architecture checkers, Phase 5 owns direct context benchmarks, Phase 7 owns direct release/CI sections, and Phase 8 owns MCP adapter/release sections.
 - The canonical domain term is `space`; `space_id` is the canonical field. `group_id` is only a deprecated compatibility alias or a visual-group hint.
 - MCP is an adapter over the same host broker. Its compatibility tests and server must remain runnable throughout Phases 0–7, but MCP compatibility is not a prerequisite for direct rollout.
