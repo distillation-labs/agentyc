@@ -21,7 +21,10 @@ use serde_json::{Value, json};
 
 use crate::{
     actions::ActionResult,
-    bridge::{Bridge, BridgeDispatchResult, BridgeReconcileResult, FenceResult},
+    bridge::{
+        Bridge, BridgeDispatchResult, BridgeReconcileResult, ExtensionEpochs, FenceResult,
+        sanitize_observation_records,
+    },
     error::HostError,
     events::{EventBatch, EventQuery},
     leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult},
@@ -200,6 +203,7 @@ impl Broker {
             .into());
         }
         let capabilities = self.capabilities()?;
+        let extension_epochs = self.with_inner(|inner| Ok(inner.bridge.extension_epochs()))?;
         self.with_inner(|inner| {
             let metadata = hello
                 .client_metadata
@@ -210,6 +214,7 @@ impl Broker {
                 .clone()
                 .ok_or_else(|| CoreError::invalid_argument("handshake nonce is missing"))?;
             let profile_binding_id = metadata.profile_binding_id.clone();
+            let is_extension = metadata.client_name.as_deref() == Some("agentyc-extension");
             let (connection_epoch, principal_id, resume) = inner.ledger.update(|state| {
                 if state.used_connection_nonces.contains(&connection_nonce) {
                     return Err(CoreError::new(
@@ -223,6 +228,64 @@ impl Broker {
                     .checked_next()
                     .ok_or_else(|| CoreError::invalid_argument("connection epoch overflow"))?;
                 let principal_id = hello.principal_id.clone();
+                if is_extension {
+                    if let Some(ExtensionEpochs {
+                        worker_instance_epoch,
+                        browser_session_epoch,
+                    }) = extension_epochs
+                    {
+                        let profile_binding_id = profile_binding_id.as_ref().ok_or_else(|| {
+                            CoreError::new(
+                                ErrorCode::ProfileNotFound,
+                                "extension connection has no profile binding",
+                            )
+                        })?;
+                        if state
+                            .extension_profile_binding_id
+                            .as_ref()
+                            .is_some_and(|current| current != profile_binding_id)
+                        {
+                            return Err(CoreError::new(
+                                ErrorCode::ProfileNotFound,
+                                "extension profile binding changed without re-enrollment",
+                            )
+                            .into());
+                        }
+                        if state
+                            .extension_worker_instance_epoch
+                            .is_some_and(|current| worker_instance_epoch < current)
+                            || state
+                                .extension_browser_session_epoch
+                                .is_some_and(|current| browser_session_epoch < current)
+                        {
+                            return Err(CoreError::new(
+                                ErrorCode::PermissionDenied,
+                                "extension epoch is older than the durable host fence",
+                            )
+                            .into());
+                        }
+                        state.extension_profile_binding_id = Some(profile_binding_id.clone());
+                        state.extension_worker_instance_epoch = Some(
+                            state
+                                .extension_worker_instance_epoch
+                                .unwrap_or(0)
+                                .max(worker_instance_epoch),
+                        );
+                        state.extension_browser_session_epoch = Some(
+                            state
+                                .extension_browser_session_epoch
+                                .unwrap_or(0)
+                                .max(browser_session_epoch),
+                        );
+                    }
+                    // A Native Messaging reconnect or worker replacement must
+                    // revoke the previous extension authority before admitting
+                    // the new session. Local agent connections remain
+                    // multiplexed through the broker.
+                    state
+                        .active_connections
+                        .retain(|_, current| !current.is_extension);
+                }
                 state.connection_epoch = connection_epoch;
                 state.connection_principal_id = Some(principal_id.clone());
                 state.connection_nonce = Some(connection_nonce.clone());
@@ -241,6 +304,7 @@ impl Broker {
                         principal_id: principal_id.clone(),
                         connection_nonce: connection_nonce.clone(),
                         profile_binding_id: profile_binding_id.clone(),
+                        is_extension,
                     },
                 );
                 Ok((connection_epoch, principal_id, resume))
@@ -365,6 +429,26 @@ impl Broker {
             }
             Ok(space.clone())
         })
+    }
+
+    /// Return a fresh, space-scoped live inventory without changing ledger state.
+    pub fn page_inventory(
+        &self,
+        authority: &AuthorityTicket,
+        space_id: &SpaceId,
+    ) -> Result<Vec<Value>, HostError> {
+        self.with_inner(|inner| {
+            authorize_visible_space(inner.ledger.state(), authority, space_id)
+        })?;
+        let bridge = self.bridge()?;
+        let records = bridge.observe().map_err(HostError::Bridge)?;
+        let records = sanitize_observation_records(&records)?;
+        Ok(records
+            .into_iter()
+            .filter(|record| {
+                record.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
+            })
+            .collect())
     }
 
     /// Return the current durable handoff ticket for a visible user-owned space.
@@ -1409,7 +1493,8 @@ impl Broker {
         title: Option<&str>,
     ) -> Result<PageDescriptor, HostError> {
         let planned = self.create_page_at(space_id, authority, lease_epoch, label, now)?;
-        let proof = json!({
+        let bridge = self.bridge()?;
+        let mut proof = json!({
             "issued_by_host": true,
             "proof_id": format!("proof-create-{}-{}", planned.page_id, lease_epoch.get()),
             "kind": "creation",
@@ -1417,7 +1502,20 @@ impl Broker {
             "page_id": planned.page_id.to_string(),
             "lease_epoch": lease_epoch.get(),
         });
-        let bridge = self.bridge()?;
+        if let Some(object) = proof.as_object_mut() {
+            if let Some(profile_binding_id) = authority.profile_binding_id() {
+                object.insert(
+                    "profile_instance_id".to_owned(),
+                    json!(profile_binding_id.as_str()),
+                );
+            }
+            if let Some(epochs) = bridge.extension_epochs() {
+                object.insert(
+                    "browser_session_epoch".to_owned(),
+                    json!(epochs.browser_session_epoch),
+                );
+            }
+        }
         let record = bridge
             .create_page(space_id, &planned.page_id, lease_epoch, url, title, proof)
             .map_err(HostError::Bridge)?;
@@ -2508,7 +2606,7 @@ impl Broker {
             return Ok(cached);
         }
         let envelope = bridge
-            .snapshot(space_id, page_id)
+            .snapshot(space_id, page_id, lease_epoch)
             .map_err(HostError::Bridge)?;
         envelope
             .validate()
