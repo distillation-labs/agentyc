@@ -37,7 +37,7 @@ fn probe_succeeds_against_running_local_host_socket() {
     );
     assert_eq!(
         report["checkpoints"][8]["status"],
-        serde_json::Value::String("skipped".to_owned())
+        serde_json::Value::String("passed".to_owned())
     );
 
     server.stop();
