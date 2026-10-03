@@ -154,7 +154,7 @@ The following deterministic implementation surfaces exist and pass focused check
 - `crates/agentyc-core`: transport-neutral logical IDs, lifecycle/error/protocol/snapshot/action/event contracts and negative fixtures.
 - `crates/agentyc-host`: locked atomic ledger, leases/fencing, action journal, reconciliation, event resume, snapshot cache, refs, waits, actionability, context budget seams, multi-client connection authorities, and the owner-only local IPC server.
 - `crates/agentyc-browser/src/profile.rs` and `crates/agentyc-mcp/src/state.rs`: existing profile/session and legacy state surfaces audited for the baseline.
-- `extension/`: production MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests; its unpacked development identity is stable and distinct from `extension/probes/`.
+- `extension/`: MV3/native-messaging/debugger/tab/group/side-panel adapter with fake-Chrome tests; its trusted unpacked-development identity is stable and distinct from `extension/probes/`. It is not yet a Web Store or enterprise-managed production distribution.
 - Direct CLI and host-backed MCP clients use the owner-only local Unix socket in normal mode; offline mode is the only in-process fake-host seam. Rollout evidence tooling remains explicit and fail-closed.
 
 Current validation evidence:
@@ -189,3 +189,5 @@ Current Phase 0 status remains **blocked/active** for these evidence gates:
 The macOS disposable-profile installation/lifecycle gate and managed live performance/resource/token/context gate pass. Managed disposable evidence does not close the existing-user-profile coexistence gate.
 
 Offline, partial headed, and deterministic tests are not substitutes for those gates. No browser download, arbitrary existing debug-endpoint attachment, or user-profile mutation is implied by this baseline.
+
+The official Chrome documentation audit is recorded in `research/phase-0-chrome-docs-audit.md`. It corrected the MV3 package assets, incognito declaration, Native Messaging native-endian framing and Windows argument handling, content-message sender-origin validation, side-panel toolbar behavior, and distribution/tab-group wording. The audit does not change the live-gate result: coexistence remains missing.
