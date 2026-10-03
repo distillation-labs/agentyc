@@ -6,11 +6,12 @@
 use std::collections::BTreeMap;
 
 use agentyc_core::{
-    ActionId, ActionOperation, ActionRequest, ArtifactEnvelope, ContentHash,
+    ActionId, ActionOperation, ActionRequest, ArtifactEnvelope, BrokerEpoch, ContentHash,
     DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventScope, EventSequence,
-    FrameDecoder, HelloEnvelope, IdempotencyKey, MAX_ARTIFACT_CHUNK_BYTES,
-    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition, RequestEnvelope, RequestId,
-    ResponseEnvelope, ResumeEnvelope, SpaceId, Timestamp, decode_frame, decode_utf8, encode_frame,
+    FrameDecoder, HelloEnvelope, IdempotencyKey, LeaseEpoch, MAX_ARTIFACT_CHUNK_BYTES,
+    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition, ReconcileToken, RequestEnvelope,
+    RequestId, ResponseEnvelope, ResumeEnvelope, SpaceId, Timestamp, decode_frame, decode_utf8,
+    encode_frame,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
@@ -20,6 +21,7 @@ use crate::{
     broker::{Broker, Connection, canonical_action_hash},
     error::HostError,
     events::EventQuery,
+    leases::ControlTicket,
 };
 
 /// Bounded in-process protocol server state for one client connection.
@@ -244,13 +246,34 @@ impl ProtocolServer {
                     "space_id": returned.control_ticket.space_id(),
                     "broker_epoch": returned.control_ticket.broker_epoch(),
                     "fence_epoch": returned.control_ticket.fence_epoch(),
-                    "opaque": true,
+                    "token": returned.control_ticket.token().to_string(),
                 });
                 put_json(&mut result, "space_id", &returned.space_id)?;
                 put_json(&mut result, "released_epoch", &returned.released_epoch)?;
                 put_json(&mut result, "fence_epoch", &returned.fence_epoch)?;
                 put_json(&mut result, "lifecycle", &returned.lifecycle)?;
                 put_json(&mut result, "control_ticket", &control_ticket)?;
+            }
+            "space.takeover_with_control_ticket" => {
+                let space_id = parse_space(required(&request.params, "space_id")?)?;
+                let control_ticket = parse_control_ticket(&request.params)?;
+                let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
+                let ttl = required_u64(&request.params, "ttl")?;
+                let takeover = self.broker.takeover_with_control_ticket(
+                    &space_id,
+                    authority,
+                    &control_ticket,
+                    now,
+                    ttl,
+                )?;
+                put_json(&mut result, "space_id", &takeover.space_id)?;
+                put_json(&mut result, "lease_epoch", &takeover.lease_epoch)?;
+                put_json(
+                    &mut result,
+                    "fence_acknowledged",
+                    &takeover.fence_acknowledged,
+                )?;
+                put_json(&mut result, "lifecycle", &takeover.lifecycle)?;
             }
             "space.finish" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
@@ -333,9 +356,10 @@ impl ProtocolServer {
             }
             "page.inventory" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
-                let pages = self.broker.page_inventory(authority, &space_id)?;
+                let inventory = self.broker.page_inventory(authority, &space_id)?;
                 put_json(&mut result, "space_id", &space_id)?;
-                put_json(&mut result, "pages", &pages)?;
+                put_json(&mut result, "pages", &inventory.pages)?;
+                put_json(&mut result, "groups", &inventory.groups)?;
             }
             "action.execute" => {
                 let action_request = action_request_from_params(&request.params)?;
@@ -415,9 +439,48 @@ impl ProtocolServer {
                 let lifecycle = self.broker.lifecycle()?;
                 let broker_epoch = self.broker.broker_epoch()?;
                 let capabilities = self.broker.capabilities()?;
+                let bridge_status = self.broker.bridge_status()?;
+                let profile_instance_id = bridge_status
+                    .as_ref()
+                    .and_then(|status| status.profile_instance_id.clone())
+                    .or_else(|| {
+                        connection
+                            .authority()
+                            .profile_binding_id()
+                            .map(ToString::to_string)
+                    });
                 put_json(&mut result, "broker_epoch", &broker_epoch)?;
+                put_json(
+                    &mut result,
+                    "connection_epoch",
+                    &connection.connection_epoch,
+                )?;
                 put_json(&mut result, "lifecycle", &host_lifecycle_name(lifecycle))?;
                 put_json(&mut result, "capabilities", &capabilities)?;
+                put_json(&mut result, "profile_scope", &"existing_user_profile")?;
+                put_json(&mut result, "profile_bound", &profile_instance_id.is_some())?;
+                put_optional_json(
+                    &mut result,
+                    "profile_instance_id",
+                    profile_instance_id.as_ref(),
+                )?;
+                if let Some(status) = bridge_status {
+                    put_optional_json(
+                        &mut result,
+                        "extension_version",
+                        status.extension_version.as_ref(),
+                    )?;
+                    put_optional_json(
+                        &mut result,
+                        "worker_instance_epoch",
+                        status.worker_instance_epoch.as_ref(),
+                    )?;
+                    put_optional_json(
+                        &mut result,
+                        "browser_session_epoch",
+                        status.browser_session_epoch.as_ref(),
+                    )?;
+                }
             }
             _ => {
                 return Err(
@@ -619,6 +682,54 @@ fn required<'a>(params: &'a BTreeMap<String, String>, key: &str) -> Result<&'a s
     Ok(value)
 }
 
+fn parse_control_ticket(params: &BTreeMap<String, String>) -> Result<ControlTicket, HostError> {
+    let encoded = required(params, "control_ticket")?;
+    let value: serde_json::Value = serde_json::from_str(encoded).map_err(|error| {
+        agentyc_core::CoreError::invalid_argument(format!("invalid control_ticket: {error}"))
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument("control_ticket must be a JSON object")
+    })?;
+    let space_id = parse_space(
+        object
+            .get("space_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("control_ticket space_id is required")
+            })?,
+    )?;
+    let broker_epoch = BrokerEpoch::new(
+        object
+            .get("broker_epoch")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("control_ticket broker_epoch is required")
+            })?,
+    );
+    let fence_epoch = LeaseEpoch::new(
+        object
+            .get("fence_epoch")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("control_ticket fence_epoch is required")
+            })?,
+    );
+    let token = object
+        .get("token")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            agentyc_core::CoreError::invalid_argument("control_ticket token is required")
+        })?
+        .parse::<ReconcileToken>()
+        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    Ok(ControlTicket::new(
+        space_id,
+        broker_epoch,
+        fence_epoch,
+        token,
+    ))
+}
+
 fn parse_space(value: &str) -> Result<SpaceId, HostError> {
     value
         .parse::<SpaceId>()
@@ -741,6 +852,17 @@ fn put_json<T: Serialize>(
     Ok(())
 }
 
+fn put_optional_json<T: Serialize>(
+    result: &mut BTreeMap<String, String>,
+    key: &str,
+    value: Option<&T>,
+) -> Result<(), HostError> {
+    if let Some(value) = value {
+        put_json(result, key, value)?;
+    }
+    Ok(())
+}
+
 fn host_lifecycle_name(lifecycle: crate::HostLifecycle) -> &'static str {
     match lifecycle {
         crate::HostLifecycle::Ready => "ready",
@@ -761,7 +883,10 @@ fn _keep_protocol_types_visible(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bridge::FakeBridge, ledger::Ledger};
+    use crate::{
+        bridge::{BridgeStatus, FakeBridge, ObservationSnapshot},
+        ledger::Ledger,
+    };
     use agentyc_core::{ClientMetadata, ConnectionNonce, PROTOCOL_VERSION, PrincipalId};
     use serde_json::json;
     use std::sync::Arc;
@@ -893,29 +1018,83 @@ mod tests {
             .expect("second space id")
             .to_owned();
 
-        bridge.set_observation(vec![
-            json!({
-                "space_id": first_space_id,
-                "page_id": "page_live",
-                "ownership": "agent",
-                "lifecycle": "managed",
-                "binding_state": "bound",
-                "target_generation": 2,
-                "url": "https://example.test/one",
-                "tab_hint": "hint_one",
-                "tab_id": 7,
-                "path": "/private/profile",
-                "unknown": "discarded"
-            }),
-            json!({
-                "space_id": second_space_id,
-                "page_id": "page_foreign",
-                "ownership": "agent",
-                "lifecycle": "managed",
-                "binding_state": "bound",
-                "target_generation": 3
-            }),
-        ]);
+        bridge.set_observation_snapshot(ObservationSnapshot {
+            pages: vec![
+                json!({
+                    "space_id": first_space_id,
+                    "page_id": "page_live",
+                    "ownership": "agent",
+                    "lifecycle": "managed",
+                    "binding_state": "bound",
+                    "target_generation": 2,
+                    "url": "https://example.test/one",
+                    "tab_hint": "hint_one",
+                    "tab_id": 7,
+                    "path": "/private/profile",
+                    "unknown": "discarded"
+                }),
+                json!({
+                    "space_id": second_space_id,
+                    "page_id": "page_foreign",
+                    "ownership": "agent",
+                    "lifecycle": "managed",
+                    "binding_state": "bound",
+                    "target_generation": 3
+                }),
+                json!({
+                    "ownership": "unmanaged",
+                    "lifecycle": "unmanaged",
+                    "binding_state": "unbound",
+                    "active": true,
+                    "space_id": null,
+                    "page_id": null,
+                    "url": "https://example.test/user",
+                    "title": "User tab",
+                    "tab_hint": "user_hint"
+                }),
+                json!({
+                    "ownership": "unmanaged",
+                    "lifecycle": "unmanaged",
+                    "binding_state": "unbound",
+                    "active": true,
+                    "tab_hint": "user_missing_ids"
+                }),
+                json!({
+                    "ownership": "unmanaged",
+                    "lifecycle": "unmanaged",
+                    "binding_state": "unbound",
+                    "active": false,
+                    "tab_hint": "inactive_hint"
+                }),
+                json!({
+                    "ownership": "unmanaged",
+                    "lifecycle": "unmanaged",
+                    "binding_state": "unbound",
+                    "active": true,
+                    "space_id": second_space_id,
+                    "tab_hint": "foreign_user_hint"
+                }),
+            ],
+            groups: vec![
+                json!({
+                    "space_id": first_space_id,
+                    "hint": "group_one",
+                    "title": "Research",
+                    "present": true,
+                    "drift": false,
+                    "member_count": 1,
+                    "group_id": 7,
+                    "unknown": "discarded"
+                }),
+                json!({
+                    "space_id": second_space_id,
+                    "hint": "group_two",
+                    "present": true,
+                    "drift": false,
+                    "member_count": 1
+                }),
+            ],
+        });
 
         let live = request(
             "page.inventory",
@@ -923,11 +1102,24 @@ mod tests {
         );
         let live_pages_value = json_field(&live, "pages");
         let live_pages = live_pages_value.as_array().expect("live pages");
-        assert_eq!(live_pages.len(), 1);
+        assert_eq!(live_pages.len(), 3);
         assert_eq!(live_pages[0]["space_id"], json!(first_space_id));
         assert!(live_pages[0].get("tab_id").is_none());
         assert!(live_pages[0].get("path").is_none());
         assert!(live_pages[0].get("unknown").is_none());
+        assert!(live_pages.iter().any(|page| {
+            page["ownership"] == json!("unmanaged") && page["active"] == json!(true)
+        }));
+        assert!(!live_pages.iter().any(|page| {
+            page.get("tab_hint") == Some(&json!("inactive_hint"))
+                || page.get("tab_hint") == Some(&json!("foreign_user_hint"))
+        }));
+        let live_groups = json_field(&live, "groups");
+        let live_groups = live_groups.as_array().expect("live groups");
+        assert_eq!(live_groups.len(), 1);
+        assert_eq!(live_groups[0]["space_id"], json!(first_space_id));
+        assert!(live_groups[0].get("group_id").is_none());
+        assert!(live_groups[0].get("unknown").is_none());
 
         let listed = request(
             "page.list",
@@ -944,7 +1136,14 @@ mod tests {
     #[test]
     fn direct_methods_dispatch_bounded_json_results() {
         let directory = tempdir().expect("tempdir");
-        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let bridge = FakeBridge::new();
+        bridge.set_bridge_status(BridgeStatus {
+            profile_instance_id: Some("profile_live".to_owned()),
+            extension_version: Some("2.0.0".to_owned()),
+            worker_instance_epoch: Some(4),
+            browser_session_epoch: Some(5),
+        });
+        let broker = Broker::open(directory.path(), bridge).expect("broker");
         let mut server = ProtocolServer::new(broker);
         let hello = Envelope::Hello(HelloEnvelope {
             protocol: PROTOCOL_VERSION,
@@ -1067,6 +1266,11 @@ mod tests {
         let status = request("host.status", BTreeMap::new());
         assert_eq!(json_field(&status, "lifecycle"), "ready");
         assert!(json_field(&status, "capabilities").is_array());
+        assert_eq!(json_field(&status, "profile_instance_id"), "profile_live");
+        assert_eq!(json_field(&status, "extension_version"), "2.0.0");
+        assert_eq!(json_field(&status, "worker_instance_epoch"), 4);
+        assert_eq!(json_field(&status, "browser_session_epoch"), 5);
+        assert_eq!(json_field(&status, "connection_epoch"), 1);
 
         let takeover = request(
             "space.takeover",
