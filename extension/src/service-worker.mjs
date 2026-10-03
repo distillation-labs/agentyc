@@ -358,6 +358,9 @@ export class ServiceWorkerController {
     this.unknownActionsOverflow = false;
     this.actionReceipts = new Map();
     this.snapshotVersions = new Map();
+    this.safetyCounters = { userTabCloses: 0, focusTheft: 0 };
+    this.nativeConnectedOnce = false;
+    this.recoveryObserved = false;
     this.storedActionState = undefined;
     this.storedManagedBindings = undefined;
     this.managedBindingsWrite = Promise.resolve();
@@ -567,6 +570,7 @@ export class ServiceWorkerController {
   async rehydrateManagedBindings() {
     const stored = this.storedManagedBindings;
     this.storedManagedBindings = undefined;
+    let restored = false;
     if (
       !isPlainObject(stored) ||
       stored.profile_instance_id !== this.metadata.profileInstanceId ||
@@ -631,6 +635,14 @@ export class ServiceWorkerController {
           url: candidate.url,
           title: candidate.title,
         });
+        await this.groups
+          .presentSpace({
+            spaceId: binding.space_id,
+            tabId: candidate.rawTabId,
+            title: binding.title || "agentyc",
+          })
+          .catch(() => {});
+        restored = true;
         this.handleExtensionEvent("page.rebound", {
           space_id: binding.space_id,
           page_id: binding.page_id,
@@ -644,6 +656,7 @@ export class ServiceWorkerController {
         });
       }
     }
+    if (restored) this.recoveryObserved = true;
     await this.persistManagedBindings().catch(() => {});
   }
 
@@ -1278,6 +1291,10 @@ export class ServiceWorkerController {
   }
 
   handleNativeState(state, detail) {
+    if (state === "connected") {
+      if (this.nativeConnectedOnce) this.recoveryObserved = true;
+      this.nativeConnectedOnce = true;
+    }
     this.handleExtensionEvent(`native.${state}`, {
       state,
       ...(detail?.code ? { code: detail.code } : {}),
@@ -1368,6 +1385,13 @@ export class ServiceWorkerController {
     return {
       pages,
       groups,
+      safety: {
+        measurement_status: "measured_live",
+        current_run: true,
+        user_tab_closes: this.safetyCounters.userTabCloses,
+        focus_theft: this.safetyCounters.focusTheft,
+      },
+      recovery_observed: this.recoveryObserved,
       total_page_count: all.length,
       omitted_page_count: all.length - pages.length,
       truncated: pages.length < all.length,
@@ -1411,9 +1435,41 @@ export class ServiceWorkerController {
       }
       if (message.kind === "response" || message.kind === "action_result") {
         this.native.markActionComplete(message.action_id);
+        if (typeof message.request_id === "string") {
+          const pending = this.pending.get(message.request_id);
+          if (pending) {
+            this.pending.delete(message.request_id);
+            if (pending.timeout) clearTimeout(pending.timeout);
+            pending.resolve(
+              message.ok === true
+                ? { ok: true, result: message.result ?? {} }
+                : {
+                    ok: false,
+                    error:
+                      message.error ??
+                      errorResult("host_error", "host request failed"),
+                  },
+            );
+          }
+        }
+        const forwarded = { ...message };
+        if (
+          forwarded.result?.control_ticket &&
+          typeof forwarded.result.control_ticket === "object"
+        ) {
+          forwarded.result = {
+            ...forwarded.result,
+            control_ticket: {
+              ...forwarded.result.control_ticket,
+              ...(forwarded.result.control_ticket.token !== undefined
+                ? { token: "<redacted>" }
+                : {}),
+            },
+          };
+        }
         this.forwardHostEvent({
           event: "host.response",
-          payload: message,
+          payload: forwarded,
         });
         return { ok: true };
       }
@@ -2594,8 +2650,26 @@ export class ServiceWorkerController {
   }
 
   handleExtensionEvent(event, payload = {}) {
-    const safePayload =
+    const sourcePayload =
       payload && typeof payload === "object" ? payload : { value: payload };
+    if (event === "tab.closed" && sourcePayload.ownership === "unmanaged")
+      this.safetyCounters.userTabCloses += 1;
+    if (
+      event === "page.focus_changed" &&
+      sourcePayload.ownership === "agent" &&
+      sourcePayload.active === true
+    )
+      this.safetyCounters.focusTheft += 1;
+    let safePayload =
+      payload && typeof payload === "object"
+        ? { ...payload }
+        : { value: payload };
+    if (safePayload.ownership === "unmanaged") {
+      // User-tab URLs and titles are not needed for safety receipts and must
+      // not cross the Native Messaging/UI boundary.
+      delete safePayload.url;
+      delete safePayload.title;
+    }
     try {
       assertNoRawBrowserIdentifiers(safePayload);
     } catch {
@@ -2926,7 +3000,7 @@ export class ServiceWorkerController {
     this.usedSidePanelTickets.set(ticket.ticket_id, expiresAt);
   }
 
-  handleSidePanelRequest(message) {
+  async handleSidePanelRequest(message) {
     const action = message.action;
     const allowed = new Set([
       "create",
@@ -2956,16 +3030,46 @@ export class ServiceWorkerController {
       if (DESTRUCTIVE_SIDE_PANEL_ACTIONS.has(action))
         this.validateSidePanelTicket(message.intent_ticket, action, params);
       const requestId = createLogicalId("req");
-      const method = `space.${action}`;
+      const method =
+        action === "stop" || action === "pause" || action === "handoff"
+          ? "space.return_control"
+          : action === "retain"
+            ? "space.takeover"
+            : `space.${action}`;
       const actionId = createLogicalId("action");
-      this.native.sendRequest({
-        method,
-        params,
-        requestId,
-        actionId,
-        mutation: true,
+      const requestParams = {
+        ...params,
+        ...(message.intent_ticket
+          ? { intent_ticket: message.intent_ticket }
+          : {}),
+      };
+      const responsePromise = new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          if (!this.pending.has(requestId)) return;
+          this.pending.delete(requestId);
+          resolve({
+            ok: false,
+            error: errorResult("timeout", "host side-panel request timed out"),
+          });
+        }, CONTENT_RESPONSE_TIMEOUT_MS);
+        timeout?.unref?.();
+        this.pending.set(requestId, { resolve, timeout });
       });
-      return { ok: true, request_id: requestId };
+      try {
+        this.native.sendRequest({
+          method,
+          params: requestParams,
+          requestId,
+          actionId,
+          mutation: true,
+        });
+      } catch (error) {
+        const pending = this.pending.get(requestId);
+        this.pending.delete(requestId);
+        if (pending?.timeout) clearTimeout(pending.timeout);
+        return { ok: false, error: publicError(error) };
+      }
+      return await responsePromise;
     } catch (error) {
       return { ok: false, error: publicError(error) };
     }
