@@ -463,6 +463,7 @@ export function createLogicalId(prefix) {
 export function isMutationMethod(method) {
   return (
     typeof method === "string" &&
+    method !== "action.reconcile" &&
     (MUTATING_METHODS.has(method) || method.startsWith("action."))
   );
 }
