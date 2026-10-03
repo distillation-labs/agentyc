@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Host-owned broker, durable logical ledger, leases, action journal, and bridge seam for agentyc."
+description = "Host-owned broker, durable logical ledger, leases, action journal, and Chrome Native Messaging bridge for agentyc."
 keywords = ["browser", "automation", "broker", "ledger"]
 categories = ["development-tools", "web-programming"]
 
