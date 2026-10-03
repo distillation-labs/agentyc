@@ -54,7 +54,6 @@ struct CheckpointResult {
 #[derive(Debug, Clone, Serialize)]
 struct ProbeReport {
     success: bool,
-    socket_path: String,
     broker_epoch: Option<u64>,
     connection_epoch: Option<u64>,
     checkpoints: Vec<CheckpointResult>,
@@ -62,10 +61,9 @@ struct ProbeReport {
 }
 
 impl ProbeReport {
-    fn new(socket_path: PathBuf) -> Self {
+    fn new() -> Self {
         Self {
             success: false,
-            socket_path: socket_path.display().to_string(),
             broker_epoch: None,
             connection_epoch: None,
             checkpoints: Vec::new(),
@@ -123,7 +121,7 @@ fn main() -> ExitCode {
     let outcome = match parse_config() {
         Ok(config) => run_probe(config),
         Err(error) => {
-            let mut report = ProbeReport::new(PathBuf::from(""));
+            let mut report = ProbeReport::new();
             report.fail(CHECKPOINTS[0], error);
             for checkpoint in &CHECKPOINTS[1..] {
                 report.skip(checkpoint, "not run after earlier failure");
@@ -201,7 +199,7 @@ fn state_directory() -> PathBuf {
 }
 
 fn run_probe(config: ProbeConfig) -> ProbeOutcome {
-    let mut report = ProbeReport::new(config.socket_path.clone());
+    let mut report = ProbeReport::new();
 
     let hello = match probe_hello() {
         Ok(hello) => hello,
@@ -233,7 +231,10 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
             return fail_closed(
                 report,
                 1,
-                format!("host.status failed: {error} ({:?})", error.as_core_error().code),
+                format!(
+                    "host.status failed: {error} ({:?})",
+                    error.as_core_error().code
+                ),
             );
         }
     };
@@ -266,7 +267,10 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
     }
     report.pass(
         CHECKPOINTS[1],
-        format!("host ready; extension capabilities={}", capabilities.join(",")),
+        format!(
+            "host ready; extension capabilities={}",
+            capabilities.join(",")
+        ),
     );
 
     let run_tag = format!("{}", now_millis() % 1_000_000_000);
@@ -360,7 +364,10 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
             return fail_closed(
                 report,
                 5,
-                format!("space.takeover failed: {error} ({:?})", error.as_core_error().code),
+                format!(
+                    "space.takeover failed: {error} ({:?})",
+                    error.as_core_error().code
+                ),
             );
         }
     };
@@ -405,7 +412,10 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
             return fail_closed(
                 report,
                 6,
-                format!("space.return failed: {error} ({:?})", error.as_core_error().code),
+                format!(
+                    "space.return failed: {error} ({:?})",
+                    error.as_core_error().code
+                ),
             );
         }
     };
@@ -468,7 +478,10 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
             return fail_closed(
                 report,
                 7,
-                format!("space.finish failed: {error} ({:?})", error.as_core_error().code),
+                format!(
+                    "space.finish failed: {error} ({:?})",
+                    error.as_core_error().code
+                ),
             );
         }
     };
@@ -497,7 +510,10 @@ fn run_probe(config: ProbeConfig) -> ProbeOutcome {
             return fail_closed(
                 report,
                 7,
-                format!("space.release failed: {error} ({:?})", error.as_core_error().code),
+                format!(
+                    "space.release failed: {error} ({:?})",
+                    error.as_core_error().code
+                ),
             );
         }
     };
@@ -575,7 +591,12 @@ fn create_space_with_lease(
             "space.create",
             BTreeMap::from([("label".to_owned(), label.to_owned())]),
         )
-        .map_err(|error| format!("space.create failed: {error} ({:?})", error.as_core_error().code))?;
+        .map_err(|error| {
+            format!(
+                "space.create failed: {error} ({:?})",
+                error.as_core_error().code
+            )
+        })?;
     let space_id: String = field(&created, "space_id")?;
 
     let claimed = client
@@ -587,7 +608,12 @@ fn create_space_with_lease(
                 ("now".to_owned(), now.to_string()),
             ]),
         )
-        .map_err(|error| format!("lease.acquire failed: {error} ({:?})", error.as_core_error().code))?;
+        .map_err(|error| {
+            format!(
+                "lease.acquire failed: {error} ({:?})",
+                error.as_core_error().code
+            )
+        })?;
     let lease: LeaseView = field(&claimed, "lease")?;
 
     Ok(SpaceLease {
@@ -613,7 +639,12 @@ fn create_page(
                 ("now".to_owned(), now.to_string()),
             ]),
         )
-        .map_err(|error| format!("page.create failed: {error} ({:?})", error.as_core_error().code))?;
+        .map_err(|error| {
+            format!(
+                "page.create failed: {error} ({:?})",
+                error.as_core_error().code
+            )
+        })?;
     field(&created, "page_id")
 }
 
@@ -627,7 +658,12 @@ fn assert_page_list_contains(
             "page.list",
             BTreeMap::from([("space_id".to_owned(), space_id.to_owned())]),
         )
-        .map_err(|error| format!("page.list failed: {error} ({:?})", error.as_core_error().code))?;
+        .map_err(|error| {
+            format!(
+                "page.list failed: {error} ({:?})",
+                error.as_core_error().code
+            )
+        })?;
     let pages: Vec<PageView> = field(&listed, "pages")?;
     if pages.iter().any(|page| page.page_id == expected_page_id) {
         return Ok(());
@@ -647,7 +683,12 @@ fn assert_page_list_excludes(
             "page.list",
             BTreeMap::from([("space_id".to_owned(), space_id.to_owned())]),
         )
-        .map_err(|error| format!("page.list failed: {error} ({:?})", error.as_core_error().code))?;
+        .map_err(|error| {
+            format!(
+                "page.list failed: {error} ({:?})",
+                error.as_core_error().code
+            )
+        })?;
     let pages: Vec<PageView> = field(&listed, "pages")?;
     if pages.iter().any(|page| page.page_id == other_page_id) {
         return Err(format!(
@@ -693,7 +734,7 @@ mod tests {
 
     #[test]
     fn fail_closed_marks_following_checkpoints_skipped() {
-        let report = ProbeReport::new(PathBuf::from("/tmp/example.sock"));
+        let report = ProbeReport::new();
         let ProbeOutcome::Failed(report) = fail_closed(report, 2, "boom".to_owned()) else {
             panic!("expected failed outcome");
         };
