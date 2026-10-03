@@ -115,7 +115,8 @@ export class NativeMessagingClient {
         try {
           port = this.chrome.runtime.connectNative(this.hostName);
         } catch (error) {
-          this.handleDisconnect(error);
+          this.handleDisconnect(error, { scheduleReconnect: false });
+          this.scheduleReconnect();
           throw new ProtocolError(
             "native_host_unavailable",
             "Native Messaging connection failed",
@@ -133,6 +134,7 @@ export class NativeMessagingClient {
             const runtimeError = this.chrome?.runtime?.lastError;
             this.handleDisconnect(
               runtimeError ?? new Error("Native Messaging port disconnected"),
+              { immediateReconnect: true },
             );
           }),
         ];
@@ -365,7 +367,10 @@ export class NativeMessagingClient {
     this.scheduleReconnect();
   }
 
-  handleDisconnect(reason) {
+  handleDisconnect(
+    reason,
+    { scheduleReconnect = true, immediateReconnect = false } = {},
+  ) {
     if (this.disconnecting) return;
     const wasLive = this.state === "connected" || this.state === "handshaking";
     const unknownActions = [...this.pendingMutations];
@@ -379,7 +384,7 @@ export class NativeMessagingClient {
       this.onUnknownActions(unknownActions, reason);
     }
     this.onStateChange(this.state, reason);
-    this.scheduleReconnect();
+    if (scheduleReconnect) this.scheduleReconnect(immediateReconnect);
   }
 
   disconnectPort() {
@@ -420,7 +425,7 @@ export class NativeMessagingClient {
     this.onStateChange(state, detail);
   }
 
-  scheduleReconnect() {
+  scheduleReconnect(immediate = false) {
     if (
       !this.autoReconnect ||
       this.stopped ||
@@ -428,12 +433,14 @@ export class NativeMessagingClient {
       !this.setTimeoutFn
     )
       return;
-    const delay = Math.min(
-      MAX_RECONNECT_MS,
-      Math.max(0, this.reconnectDelayMs) *
-        2 ** Math.min(this.reconnectAttempt, 5),
-    );
-    this.reconnectAttempt += 1;
+    const delay = immediate
+      ? 0
+      : Math.min(
+          MAX_RECONNECT_MS,
+          Math.max(0, this.reconnectDelayMs) *
+            2 ** Math.min(this.reconnectAttempt, 5),
+        );
+    if (!immediate) this.reconnectAttempt += 1;
     this.reconnectTimer = this.setTimeoutFn(() => {
       this.reconnectTimer = null;
       void this.connect().catch(() => {});
