@@ -26,7 +26,10 @@ use agentyc_core::{
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use crate::bridge::{Bridge, BridgeDispatchResult, BridgeReconcileResult, FenceResult};
+use crate::bridge::{
+    Bridge, BridgeDispatchResult, BridgeReconcileResult, ExtensionEpochs, FenceResult,
+    sanitize_observation_records,
+};
 
 /// Maximum control payload accepted from or sent to Chrome.
 ///
@@ -48,6 +51,7 @@ const MAX_NATIVE_DEPTH: usize = 8;
 const MAX_NATIVE_COLLECTION_ITEMS: usize = 256;
 const MAX_NATIVE_STRING_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_TIMED_OUT_REQUESTS: usize = 256;
+const MAX_NATIVE_UNKNOWN_ACTIONS: usize = 128;
 
 /// Errors raised by the Chrome Native Messaging boundary.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -187,6 +191,13 @@ struct SessionMetadata {
     capabilities: Vec<Capability>,
 }
 
+#[derive(Debug, Default)]
+struct InventoryState {
+    pages: BTreeMap<(String, String), Value>,
+    unknown_action_ids: BTreeSet<String>,
+    unknown_actions_overflow: bool,
+}
+
 struct NativeShared {
     writer: Mutex<Box<dyn Write + Send>>,
     outbound: Mutex<()>,
@@ -198,7 +209,7 @@ struct NativeShared {
     closed_cv: Condvar,
     request_counter: AtomicU64,
     request_timeout: Duration,
-    inventory: Mutex<BTreeMap<(String, String), Value>>,
+    inventory: Mutex<InventoryState>,
 }
 
 /// A cloneable, synchronous bridge backed by one persistent Native Messaging pipe.
@@ -256,7 +267,7 @@ impl NativeMessagingBridge {
             closed_cv: Condvar::new(),
             request_counter: AtomicU64::new(1),
             request_timeout: config.request_timeout,
-            inventory: Mutex::new(BTreeMap::new()),
+            inventory: Mutex::new(InventoryState::default()),
         });
         let reader_shared = Arc::clone(&shared);
         thread::Builder::new()
@@ -371,7 +382,50 @@ impl NativeMessagingBridge {
         self.shared
             .inventory
             .lock()
-            .map(|inventory| inventory.values().cloned().collect())
+            .map(|inventory| inventory.pages.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Request a fresh bounded inventory from the extension.
+    fn live_inventory(&self) -> Result<Vec<Value>, CoreError> {
+        let result = self.request_value("tab.inventory", Map::new(), None)?;
+        let pages = result
+            .get("pages")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::InvalidJson,
+                    "live extension inventory pages are missing",
+                )
+            })?;
+        let expected_session_epoch = self
+            .hello()
+            .map_err(|error| error.as_core_error())?
+            .browser_session_epoch;
+        for page in pages {
+            if let Some(page_epoch) = page.get("browser_session_epoch").and_then(Value::as_u64)
+                && page_epoch != expected_session_epoch
+            {
+                return Err(CoreError::new(
+                    ErrorCode::TargetReplaced,
+                    "live inventory page belongs to another browser session",
+                ));
+            }
+        }
+        sanitize_observation_records(pages)
+    }
+
+    /// Return extension-reported mutation outcomes that require host reconciliation.
+    pub fn inventory_unknown_actions(&self) -> (Vec<String>, bool) {
+        self.shared
+            .inventory
+            .lock()
+            .map(|inventory| {
+                (
+                    inventory.unknown_action_ids.iter().cloned().collect(),
+                    inventory.unknown_actions_overflow,
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -636,11 +690,14 @@ impl NativeMessagingBridge {
         page_id: &PageId,
         lease_epoch: LeaseEpoch,
     ) -> Result<Value, CoreError> {
-        let inventory = self.inventory();
+        let inventory = self.live_inventory();
+        let inventory = inventory?;
         let record = inventory.into_iter().find(|record| {
             record.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
                 && record.get("page_id").and_then(Value::as_str) == Some(page_id.as_str())
                 && record.get("ownership").and_then(Value::as_str) == Some("agent")
+                && record.get("lifecycle").and_then(Value::as_str) == Some("managed")
+                && record.get("binding_state").and_then(Value::as_str) == Some("bound")
         });
         let record = record.ok_or_else(|| {
             CoreError::new(
@@ -658,10 +715,8 @@ impl NativeMessagingBridge {
             .get("tab_hint")
             .and_then(Value::as_str)
             .ok_or_else(|| CoreError::new(ErrorCode::TargetReplaced, "page hint is missing"))?;
-        let profile_instance_id = self
-            .hello()
-            .map_err(|error| error.as_core_error())?
-            .profile_instance_id;
+        let hello = self.hello().map_err(|error| error.as_core_error())?;
+        let profile_instance_id = hello.profile_instance_id;
         let browser_session_epoch = record
             .get("browser_session_epoch")
             .and_then(Value::as_u64)
@@ -671,6 +726,20 @@ impl NativeMessagingBridge {
                     "browser session epoch is missing",
                 )
             })?;
+        if browser_session_epoch != hello.browser_session_epoch {
+            return Err(CoreError::new(
+                ErrorCode::TargetReplaced,
+                "page belongs to another browser session",
+            ));
+        }
+        if let Some(record_lease_epoch) = record.get("lease_epoch").and_then(Value::as_u64)
+            && record_lease_epoch != lease_epoch.get()
+        {
+            return Err(CoreError::stale_lease(
+                record_lease_epoch,
+                lease_epoch.get(),
+            ));
+        }
         Ok(json!({
             "issued_by_host": true,
             "proof_id": self.next_request_id(),
@@ -690,6 +759,10 @@ impl NativeMessagingBridge {
 }
 
 impl Bridge for NativeMessagingBridge {
+    fn observe(&self) -> Result<Vec<Value>, CoreError> {
+        self.live_inventory()
+    }
+
     fn create_page(
         &self,
         space_id: &SpaceId,
@@ -726,6 +799,17 @@ impl Bridge for NativeMessagingBridge {
             .lock()
             .map(|session| session.capabilities.clone())
             .unwrap_or_default()
+    }
+
+    fn extension_epochs(&self) -> Option<ExtensionEpochs> {
+        self.shared
+            .session
+            .lock()
+            .ok()
+            .map(|session| ExtensionEpochs {
+                worker_instance_epoch: session.hello.worker_instance_epoch,
+                browser_session_epoch: session.hello.browser_session_epoch,
+            })
     }
 
     fn dispatch(
@@ -812,10 +896,12 @@ impl Bridge for NativeMessagingBridge {
         &self,
         space_id: &SpaceId,
         page_id: &PageId,
+        lease_epoch: LeaseEpoch,
     ) -> Result<SnapshotEnvelope, CoreError> {
         let mut params = Map::new();
         params.insert("space_id".to_owned(), json!(space_id.to_string()));
         params.insert("page_id".to_owned(), json!(page_id.to_string()));
+        params.insert("lease_epoch".to_owned(), json!(lease_epoch.get()));
         let result = self.request_value("snapshot.read", params, None)?;
         serde_json::from_value(result).map_err(|error| {
             CoreError::new(
@@ -1130,24 +1216,112 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
         .get("pages")
         .and_then(Value::as_array)
         .ok_or_else(|| NativeHostError::Protocol("inventory pages are missing".to_owned()))?;
-    let mut inventory = shared
-        .inventory
+    let session = shared
+        .session
         .lock()
-        .map_err(|_| NativeHostError::Unavailable("inventory state is poisoned".to_owned()))?;
-    inventory.clear();
+        .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?;
+    let profile_instance_id = payload
+        .get("profile_instance_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            NativeHostError::Protocol("inventory profile binding is missing".to_owned())
+        })?;
+    if profile_instance_id != session.hello.profile_instance_id {
+        return Err(NativeHostError::Protocol(
+            "inventory profile binding does not match the Native Messaging hello".to_owned(),
+        ));
+    }
+    let browser_session_epoch = session.hello.browser_session_epoch;
+    drop(session);
+
+    let unknown_action_ids = match payload.get("unknown_action_ids") {
+        None => Vec::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                let action_id = value.as_str().ok_or_else(|| {
+                    NativeHostError::Protocol(
+                        "inventory unknown action id is not a string".to_owned(),
+                    )
+                })?;
+                if !is_logical_action_id(action_id) {
+                    return Err(NativeHostError::Protocol(
+                        "inventory unknown action id is invalid".to_owned(),
+                    ));
+                }
+                Ok(action_id.to_owned())
+            })
+            .collect::<Result<Vec<_>, NativeHostError>>()?,
+        Some(_) => {
+            return Err(NativeHostError::Protocol(
+                "inventory unknown action ids are not an array".to_owned(),
+            ));
+        }
+    };
+    if unknown_action_ids.len() > MAX_NATIVE_UNKNOWN_ACTIONS {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    let unknown_actions_overflow = match payload.get("unknown_actions_overflow") {
+        None => false,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            NativeHostError::Protocol("inventory unknown action overflow is invalid".to_owned())
+        })?,
+    };
+
+    let mut valid_pages = Vec::with_capacity(pages.len());
     for page in pages {
         let Some(object) = page.as_object() else {
             return Err(NativeHostError::Protocol(
                 "inventory page is not an object".to_owned(),
             ));
         };
-        let Some(space_id) = object.get("space_id").and_then(Value::as_str) else {
+        if let Some(page_profile) = object.get("profile_instance_id").and_then(Value::as_str)
+            && page_profile != profile_instance_id
+        {
+            return Err(NativeHostError::Protocol(
+                "inventory page profile binding does not match the hello".to_owned(),
+            ));
+        }
+        if let Some(page_epoch) = object.get("browser_session_epoch").and_then(Value::as_u64)
+            && page_epoch != browser_session_epoch
+        {
+            return Err(NativeHostError::Protocol(
+                "inventory page browser session epoch is stale".to_owned(),
+            ));
+        }
+        if object.get("space_id").and_then(Value::as_str).is_none()
+            || object.get("page_id").and_then(Value::as_str).is_none()
+        {
             continue;
+        }
+        valid_pages.push(page.clone());
+    }
+    let valid_pages = sanitize_observation_records(&valid_pages).map_err(|error| {
+        NativeHostError::Protocol(format!("inventory page record is invalid: {error}"))
+    })?;
+
+    let mut inventory = shared
+        .inventory
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("inventory state is poisoned".to_owned()))?;
+    inventory.pages.clear();
+    inventory.unknown_action_ids.clear();
+    inventory.unknown_actions_overflow = unknown_actions_overflow;
+    for action_id in unknown_action_ids {
+        inventory.unknown_action_ids.insert(action_id);
+    }
+    for page in valid_pages {
+        let (Some(space_id), Some(page_id)) = (
+            page.get("space_id").and_then(Value::as_str),
+            page.get("page_id").and_then(Value::as_str),
+        ) else {
+            return Err(NativeHostError::Protocol(
+                "sanitized inventory page scope is missing".to_owned(),
+            ));
         };
-        let Some(page_id) = object.get("page_id").and_then(Value::as_str) else {
-            continue;
-        };
-        inventory.insert((space_id.to_owned(), page_id.to_owned()), page.clone());
+        inventory
+            .pages
+            .insert((space_id.to_owned(), page_id.to_owned()), page);
     }
     Ok(())
 }
@@ -1395,8 +1569,31 @@ fn assert_no_raw_browser_identifiers(value: &Value, parent: &str) -> Result<(), 
                 | "raw_window_id"
                 | "rawframeid"
                 | "raw_frame_id"
+                | "path"
+                | "file_path"
+                | "filepath"
+                | "profile_path"
+                | "user_data_dir"
+                | "user_data_directory"
+                | "executable_path"
+                | "browser_path"
+                | "chrome_path"
+                | "debugger_url"
+                | "websocket_url"
+                | "objectid"
+                | "object_id"
+                | "scriptid"
+                | "script_id"
+                | "debuggerid"
+                | "debugger_id"
+                | "nodeid"
+                | "node_id"
         ) || (normalized == "id"
-            && (parent.starts_with("target")
+            && (parent.starts_with("tab")
+                || parent.starts_with("target")
+                || parent.starts_with("window")
+                || parent.starts_with("group")
+                || parent.starts_with("browser")
                 || parent.starts_with("session")
                 || parent.starts_with("frame")
                 || parent.starts_with("execution_context")
@@ -1419,6 +1616,13 @@ fn required_string(object: &Map<String, Value>, key: &str) -> Result<String, Nat
         .filter(|value| !value.is_empty() && value.len() <= 128)
         .ok_or_else(|| NativeHostError::Protocol(format!("{key} is missing or invalid")))?;
     Ok(value.to_owned())
+}
+
+fn is_logical_action_id(value: &str) -> bool {
+    (8..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 fn required_u64(object: &Map<String, Value>, key: &str) -> Result<u64, NativeHostError> {
@@ -1543,6 +1747,10 @@ mod tests {
         let logical = json!({"request_id": "req_native_1", "action_id": "action_1"});
         assert_no_raw_browser_identifiers(&logical, "").expect("logical identifiers");
         assert!(assert_no_raw_browser_identifiers(&json!({"target_id": "raw"}), "").is_err());
+        assert!(assert_no_raw_browser_identifiers(&json!({"tab": {"id": 7}}), "").is_err());
+        assert!(
+            assert_no_raw_browser_identifiers(&json!({"path": "/private/profile"}), "").is_err()
+        );
     }
 
     #[test]
@@ -1722,8 +1930,7 @@ mod tests {
         assert_eq!(captured_frames(&capture)[0]["kind"], "hello_ok");
 
         let request_bridge = bridge.clone();
-        let request_thread =
-            thread::spawn(move || request_bridge.request_value("tab.inventory", Map::new(), None));
+        let request_thread = thread::spawn(move || request_bridge.observe());
         let request_id = loop {
             if let Some(request) = captured_frames(&capture)
                 .into_iter()
@@ -1748,12 +1955,12 @@ mod tests {
                 }),
             )))
             .expect("response input");
-        assert_eq!(
+        assert!(
             request_thread
                 .join()
                 .expect("request thread")
-                .expect("result")["pages"],
-            json!([])
+                .expect("result")
+                .is_empty()
         );
 
         let fence_bridge = bridge.clone();
@@ -1796,6 +2003,120 @@ mod tests {
                 .expect("fence result")
                 .acknowledged
         );
+
+        to_host
+            .send(frame_json(extension_message(
+                &hello,
+                4,
+                "inventory",
+                json!({
+                    "payload": {
+                        "profile_instance_id": "profile_test",
+                        "browser_session_epoch": 3,
+                        "pages": [{
+                            "space_id": "space_one",
+                            "page_id": "page_one",
+                            "ownership": "agent",
+                            "browser_session_epoch": 3,
+                            "target_generation": 1,
+                            "tab_hint": "hint_test"
+                        }],
+                        "groups": [],
+                        "unknown_action_ids": ["action_unknown"],
+                        "unknown_actions_overflow": false
+                    }
+                }),
+            )))
+            .expect("inventory input");
+        thread::sleep(Duration::from_millis(2));
+        assert_eq!(bridge.inventory().len(), 1);
+        assert_eq!(
+            bridge.inventory_unknown_actions(),
+            (vec!["action_unknown".to_owned()], false)
+        );
+
+        let close_bridge = bridge.clone();
+        let close_thread = thread::spawn(move || {
+            let space_id = SpaceId::from_suffix("one").expect("space");
+            let page_id = PageId::from_suffix("one").expect("page");
+            close_bridge.close_page(&space_id, &page_id, LeaseEpoch::new(1))
+        });
+        let live_inventory_request_id = loop {
+            let requests: Vec<_> = captured_frames(&capture)
+                .into_iter()
+                .filter(|value| value["kind"] == "request" && value["method"] == "tab.inventory")
+                .collect();
+            if requests.len() >= 2 {
+                break requests
+                    .last()
+                    .and_then(|request| request["request_id"].as_str())
+                    .expect("live inventory request id")
+                    .to_owned();
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        to_host
+            .send(frame_json(extension_message(
+                &hello,
+                5,
+                "response",
+                json!({
+                    "request_id": live_inventory_request_id,
+                    "ok": true,
+                    "result": {"pages": [], "groups": []}
+                }),
+            )))
+            .expect("live inventory response input");
+        let close_error = close_thread
+            .join()
+            .expect("close thread")
+            .expect_err("stale cache must not prove cleanup");
+        assert_eq!(close_error.code, ErrorCode::PageNotFound);
+        assert!(
+            !captured_frames(&capture)
+                .iter()
+                .any(|value| { value["kind"] == "request" && value["method"] == "page.close" })
+        );
+
+        let snapshot_bridge = bridge.clone();
+        let snapshot_thread = thread::spawn(move || {
+            let space_id = SpaceId::from_suffix("one").expect("space");
+            let page_id = PageId::from_suffix("one").expect("page");
+            snapshot_bridge.snapshot(&space_id, &page_id, LeaseEpoch::new(7))
+        });
+        let snapshot_request_id = loop {
+            if let Some(request) = captured_frames(&capture)
+                .into_iter()
+                .find(|value| value["kind"] == "request" && value["method"] == "snapshot.read")
+            {
+                assert_eq!(request["params"]["lease_epoch"], json!(7));
+                break request["request_id"]
+                    .as_str()
+                    .expect("snapshot request id")
+                    .to_owned();
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        let snapshot = crate::snapshots::empty_snapshot(
+            SpaceId::from_suffix("one").expect("space"),
+            PageId::from_suffix("one").expect("page"),
+        );
+        to_host
+            .send(frame_json(extension_message(
+                &hello,
+                6,
+                "response",
+                json!({
+                    "request_id": snapshot_request_id,
+                    "ok": true,
+                    "result": serde_json::to_value(snapshot).expect("snapshot json")
+                }),
+            )))
+            .expect("snapshot response input");
+        snapshot_thread
+            .join()
+            .expect("snapshot thread")
+            .expect("snapshot result");
 
         drop(to_host);
         assert!(matches!(
