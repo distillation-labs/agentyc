@@ -16,6 +16,7 @@ import os
 import re
 import selectors
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -40,9 +41,11 @@ _spec.loader.exec_module(_module)
 FrameDecoder = _module.FrameDecoder
 ProtocolError = _module.ProtocolError
 MAX_CHUNK_BYTES = _module.MAX_CHUNK_BYTES
+MAX_FRAME_BYTES = _module.MAX_FRAME_BYTES
 MAX_CUMULATIVE_FRAME_BYTES = _module.MAX_CUMULATIVE_FRAME_BYTES
 MAX_ENVELOPE_BYTES = _module.MAX_ENVELOPE_BYTES
 validate_host_response = _module.validate_host_response
+encode_frame = _module.encode_frame
 encode_json = _module.encode_json
 run_deterministic_suite = _module.run_deterministic_suite
 
@@ -283,6 +286,70 @@ def framed_host_smoke(
         _terminate_process_group(process, force=terminate)
 
 
+def _run_host_fault_case(
+    host_path: Path,
+    extension_origin: str,
+    name: str,
+    wire: bytes,
+    timeout: float,
+) -> dict[str, Any]:
+    """Send one malformed vector to the real host and require fail-closed exit."""
+    try:
+        process = subprocess.Popen(
+            [str(host_path), f"{extension_origin}/"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=os.name == "posix",
+        )
+    except OSError:
+        return {"name": name, "status": "unavailable", "reason": "host_could_not_start"}
+    try:
+        try:
+            stdout, stderr = process.communicate(input=wire, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(process, force=True)
+            return {"name": name, "status": "rejected", "reason": "timeout"}
+        if len(stdout) > MAX_HOST_OUTPUT_BYTES or len(stderr) > 4096:
+            return {"name": name, "status": "rejected", "reason": "output_budget_exceeded"}
+        return {
+            "name": name,
+            "status": "rejected" if process.returncode != 0 else "accepted_unexpected",
+            "exit_code": process.returncode,
+            "stdout_bytes": len(stdout),
+            "stderr_present": bool(stderr),
+        }
+    finally:
+        _terminate_process_group(process, force=False)
+
+
+def host_fault_suite(host_path: Path, extension_origin: str, timeout: float) -> dict[str, Any]:
+    """Exercise malformed inputs against the actual stdio host process.
+
+    This proves host-side fail-closed behavior only. Chrome-mediated behavior is
+    recorded separately by the live MV3 probe.
+    """
+    other_origin = "chrome-extension://" + "b" * 32
+    vectors = [
+        ("wrong_origin", encode_json(envelope("fault-origin", "n-live", "hello", other_origin))),
+        ("replayed_message", encode_json(envelope("fault-replay", "n-live", "hello", extension_origin)) * 2),
+        ("unsupported_version", encode_json({**envelope("fault-version", "n-live", "hello", extension_origin), "version": 2})),
+        ("invalid_utf8", encode_frame(b"\\xff\\xfe")),
+        ("invalid_json", encode_frame(b"not-json")),
+        ("truncated_frame", struct.pack("<I", 5) + b"ab"),
+        ("oversized_frame", struct.pack("<I", MAX_FRAME_BYTES + 1)),
+        ("wrong_phase", encode_json(envelope("fault-phase", "n-live", "probe", extension_origin))),
+    ]
+    cases = [_run_host_fault_case(host_path, extension_origin, name, wire, timeout) for name, wire in vectors]
+    passed = all(case.get("status") == "rejected" for case in cases)
+    return {
+        "status": "passed" if passed else "failed",
+        "chrome_mediated": False,
+        "cases": cases,
+        "notes": ["real host process; Chrome was not involved"],
+    }
+
+
 def check_install(extension_origin: str) -> dict[str, Any]:
     """Call the read-only registration checker without exposing its path data."""
     checker = ROOT / "scripts" / "register_native_messaging_probe.py"
@@ -315,6 +382,7 @@ def main() -> int:
         help="JSON report path under artifacts/p0-native-protocol/",
     )
     parser.add_argument("--live-host", action="store_true", help="opt in to a direct framed host smoke; never claims Chrome-mediated evidence")
+    parser.add_argument("--host-fault-suite", action="store_true", help="send bounded malformed vectors to the real host process")
     parser.add_argument(
         "--require-host-smoke",
         action="store_true",
@@ -332,11 +400,10 @@ def main() -> int:
     parser.add_argument("--host-path", default=str(HOST_PATH), help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=float, default=2.0, help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.require_live or args.require_host_smoke:
+    if args.require_live or args.require_host_smoke or args.host_fault_suite:
         args.live_host = True
-    if args.require_live:
-        if not args.check_install:
-            parser.error("--require-live also requires --check-install and an explicit registered extension origin")
+    if args.require_live and not args.check_install:
+        parser.error("--require-live also requires --check-install and an explicit registered extension origin")
     if args.check_install and not args.extension_origin:
         parser.error("--check-install requires --extension-origin")
     if args.timeout <= 0:
@@ -357,7 +424,7 @@ def main() -> int:
         "mode": "live-host" if args.live_host else "offline",
         "live": {
             "requested": bool(args.live_host),
-            "required": bool(args.require_live or args.require_host_smoke),
+            "required": bool(args.require_live or args.require_host_smoke or args.host_fault_suite),
             "chrome_mediated": False,
             "status": "not_requested",
         },
@@ -374,13 +441,15 @@ def main() -> int:
                 report["status"] = "live_required_unavailable"
     if args.live_host and report["status"] != "live_required_unavailable":
         live = framed_host_smoke(host_path, args.extension_origin, args.timeout)
+        fault_suite = host_fault_suite(host_path, args.extension_origin, args.timeout) if args.host_fault_suite else None
         report["live"] = {
             "requested": True,
-            "required": bool(args.require_live or args.require_host_smoke),
+            "required": bool(args.require_live or args.require_host_smoke or args.host_fault_suite),
             "chrome_mediated": False,
             **live,
+            **({"fault_suite": fault_suite} if fault_suite is not None else {}),
         }
-        if live["status"] == "passed":
+        if live["status"] == "passed" and (fault_suite is None or fault_suite["status"] == "passed"):
             # This path launches only the registered host directly; Chrome-mediated
             # evidence must never be inferred from a host-only handshake.
             if args.require_live:
