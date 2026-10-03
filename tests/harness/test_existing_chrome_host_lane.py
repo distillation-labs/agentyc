@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -69,6 +70,80 @@ class ExistingChromeHostLaneTests(unittest.TestCase):
         self.assertNotIn("--offline", argv)
         self.assertNotIn("--cdp-url", argv)
         self.assertNotIn("--websocket-url", argv)
+
+    def _host_probe_output(self, *, success: bool = False) -> bytes:
+        return json.dumps(
+            {
+                "success": success,
+                "socket_path": "[REDACTED]",
+                "broker_epoch": 1,
+                "connection_epoch": 2,
+                "checkpoints": [
+                    {"name": name, "status": "passed" if success else "skipped", "detail": "/Users/private-id"}
+                    for name in _runner.HOST_PROBE_CHECKPOINTS
+                ],
+                "limitations": ["host-only logical probe"],
+            }
+        ).encode("utf-8")
+
+    def test_host_probe_parser_requires_redacted_path_and_exact_ten_checkpoints(self) -> None:
+        response = _runner._parse_host_probe_response(self._host_probe_output(), 1)
+        self.assertEqual(response.transport, "complete")
+        self.assertFalse(response.success)
+        self.assertEqual(len(response.checkpoints), 10)
+        self.assertNotIn("/Users/private-id", json.dumps(response.__dict__, sort_keys=True))
+
+        raw = json.loads(self._host_probe_output())
+        raw["socket_path"] = "/Users/private/socket"
+        accepted = _runner._parse_host_probe_response(json.dumps(raw).encode("utf-8"), 1)
+        self.assertEqual(accepted.transport, "complete")
+        self.assertNotIn("/Users/private/socket", json.dumps(accepted.__dict__, sort_keys=True))
+
+    def test_real_host_probe_is_preferred_but_cannot_close_browser_gate(self) -> None:
+        with (
+            patch.object(_runner, "resolve_host_probe", return_value=("/probe", "configured")),
+            patch.object(
+                _runner,
+                "_run_bounded_process",
+                return_value=("completed", 1, self._host_probe_output(), b""),
+            ) as process,
+        ):
+            live = _runner.orchestrate_live(
+                cli_path=None,
+                state_dir=None,
+                cli_timeout=1.0,
+                operator_checkpoint=False,
+                checkpoint_timeout=1.0,
+            )
+        self.assertTrue(live["host_probe_used"])
+        self.assertEqual(live["status"], "live_observation_incomplete")
+        self.assertFalse(_runner._live_evidence_is_complete(live))
+        self.assertEqual(len(live["scenarios"]), 10)
+        self.assertEqual(len(process.call_args.args[0]), 1)
+
+    def test_offline_report_always_has_ten_non_live_scenarios_and_enrollment(self) -> None:
+        live = {
+            "status": "live_passed",
+            "executed": True,
+            "reason": "/Users/private/report.json",
+            "scenarios": [
+                {"name": name, "status": "live_passed"}
+                for name in _runner.REQUIRED_LIVE_SCENARIOS
+            ],
+        }
+        report = _runner.safe_report(
+            mode="offline",
+            manifest=_runner.validate_manifest(),
+            contract=_runner.validate_scenario(2, 2),
+            live=live,
+        )
+        self.assertEqual(report["evidence_mode"], "offline")
+        self.assertEqual(report["status"], "offline_passed")
+        self.assertEqual(len(report["scenarios"]), 10)
+        self.assertTrue(all(item["status"] != "live_passed" for item in report["scenarios"]))
+        self.assertEqual(set(report["enrollment"]), {"profile", "host", "extension"})
+        self.assertTrue(all(not item["enrolled"] for item in report["enrollment"].values()))
+        self.assertNotIn("/Users/private", json.dumps(report, sort_keys=True))
 
     def test_descriptor_shaped_claim_cannot_be_complete_live_evidence(self) -> None:
         live = {
