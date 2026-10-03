@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     fs,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use agentyc_core::{
@@ -18,6 +21,8 @@ use agentyc_host::{
     empty_snapshot,
 };
 use tempfile::tempdir;
+
+static AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 fn principal(suffix: &str) -> PrincipalId {
     PrincipalId::from_suffix(suffix).expect("valid principal")
@@ -36,17 +41,23 @@ fn authority_with_profile(
     suffix: &str,
     profile_suffix: Option<&str>,
 ) -> AuthorityTicket {
+    let nonce_suffix = format!(
+        "{suffix}-{}",
+        AUTHORITY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
     let hello = HelloEnvelope {
         protocol: PROTOCOL_VERSION,
         supported_protocols: vec![PROTOCOL_VERSION],
         principal_id: principal(suffix),
         resume_from: None,
         client_metadata: Some(ClientMetadata {
-            client_id: Some(ClientId::from_suffix(format!("client-{suffix}")).expect("client")),
+            client_id: Some(
+                ClientId::from_suffix(format!("client-{nonce_suffix}")).expect("client"),
+            ),
             client_name: Some("host-integration-test".to_owned()),
             client_version: Some("2".to_owned()),
             connection_nonce: Some(
-                ConnectionNonce::from_suffix(format!("nonce-{suffix}")).expect("nonce"),
+                ConnectionNonce::from_suffix(format!("nonce-{nonce_suffix}")).expect("nonce"),
             ),
             profile_binding_id: profile_suffix
                 .map(|value| ProfileBindingId::from_suffix(value).expect("profile")),
@@ -820,7 +831,7 @@ fn canonical_hash_and_principal_reads_are_enforced() {
 }
 
 #[test]
-fn current_connection_authority_fences_stale_connections_and_echoes_nonce() {
+fn multiple_connection_authorities_coexist_and_echo_their_nonces() {
     let directory = tempdir().expect("tempdir");
     let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
     let hello = |suffix: &str| HelloEnvelope {
@@ -843,6 +854,15 @@ fn current_connection_authority_fences_stale_connections_and_echoes_nonce() {
         .validate_against(&hello_one)
         .expect("handshake echo");
     let second = broker.hello(&hello("two")).expect("second hello");
+    broker
+        .list_spaces(first.authority())
+        .expect("first authority remains active");
+    broker
+        .create_space(second.authority(), "current")
+        .expect("second authority admitted");
+    broker
+        .disconnect(first.authority())
+        .expect("first authority disconnected");
     assert!(matches!(
         broker.list_spaces(first.authority()),
         Err(HostError::Core(agentyc_core::CoreError {
@@ -851,8 +871,8 @@ fn current_connection_authority_fences_stale_connections_and_echoes_nonce() {
         }))
     ));
     broker
-        .create_space(second.authority(), "current")
-        .expect("current authority admitted");
+        .list_spaces(second.authority())
+        .expect("second authority remains active");
 }
 
 #[test]
