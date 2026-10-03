@@ -343,8 +343,9 @@ commands:
         "python3",
         "scripts/run_native_messaging_probe.py",
         "--require-host-smoke",
+        "--host-fault-suite",
         "--artifact",
-        "artifacts/p0-native-protocol/host-smoke.json",
+        "artifacts/p0-native-protocol/host-fault-suite.json",
       ]
     cwd: "."
     timeout_seconds: 60
@@ -463,9 +464,9 @@ commands:
       stdout: "console"
       stderr: "console"
   - id: "direct-benchmark-live-required"
-    status: "planned"
+    status: "required"
     layer: "performance"
-    environment: ["headed-chrome"]
+    environment: ["macos", "managed-disposable-chrome"]
     fixture: "browser-task-space-live-benchmark"
     owner: "Japneet Kalkat"
     quarantine: false
@@ -474,7 +475,10 @@ commands:
         "python3",
         "scripts/run_direct_benchmark.py",
         "--mode",
-        "target",
+        "managed",
+        "--headless",
+        "--browser-executable",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "--warmups",
         "10",
         "--samples",
@@ -486,15 +490,12 @@ commands:
         "--spaces",
         "1,2,4,8",
         "--artifact-dir",
-        "artifacts/p0-performance-live",
+        "artifacts/p0-performance",
       ]
     cwd: "."
-    timeout_seconds: 900
-    prerequisites:
-      [
-        "real headed-Chrome benchmark implementation and resource/token instrumentation",
-      ]
-    artifacts: ["artifacts/p0-performance-live/"]
+    timeout_seconds: 1800
+    prerequisites: []
+    artifacts: ["artifacts/p0-performance/"]
     result:
       success_exit_codes: [0]
       failure_is_error: true
@@ -552,8 +553,32 @@ commands:
       failure_is_error: true
       stdout: "console"
       stderr: "console"
+  - id: "installation-lifecycle"
+    status: "required"
+    layer: "release"
+    environment: ["macos", "managed-disposable-chrome"]
+    fixture: "installation-lifecycle"
+    owner: "Japneet Kalkat"
+    quarantine: false
+    command:
+      [
+        "python3",
+        "scripts/run_install_lifecycle.py",
+        "--run",
+        "--artifact-dir",
+        "artifacts/p0-installation",
+      ]
+    cwd: "."
+    timeout_seconds: 180
+    prerequisites: []
+    artifacts: ["artifacts/p0-installation/"]
+    result:
+      success_exit_codes: [0]
+      failure_is_error: true
+      stdout: "console"
+      stderr: "console"
   - id: "installation-drill"
-    status: "planned"
+    status: "required"
     layer: "release"
     environment: ["isolated-platform-profile"]
     fixture: "installation-rollback"
@@ -566,9 +591,10 @@ commands:
         "--drill",
         "--required",
         "--extension-id",
-        "<operator-supplied-extension-id>",
+        "hlnmcimoechnbccahemchokemgceaffp",
         "--clean-profile",
-        "artifacts/p0-installation/profile",
+        "--lifecycle-record",
+        "artifacts/p0-installation/lifecycle-record.json",
         "--artifact-dir",
         "artifacts/p0-installation",
       ]
@@ -576,8 +602,8 @@ commands:
     timeout_seconds: 900
     prerequisites:
       [
+        "installation-lifecycle",
         "P0-T2 extension package",
-        "exact installed extension ID supplied at run time",
         "platform Native Messaging registration fixtures",
       ]
     artifacts: ["artifacts/p0-installation/"]
@@ -680,16 +706,18 @@ test_targets:
     status: "required"
     command_id: "direct-benchmark-offline"
   - id: "p0-t6-live-benchmark"
-    status: "planned"
+    status: "required"
     command_id: "direct-benchmark-live-required"
-    prerequisite: "real headed-Chrome benchmark implementation and resource/token instrumentation"
   - id: "p0-t7-preflight"
     status: "required"
     command_id: "installation-preflight"
+  - id: "p0-t7-lifecycle"
+    status: "required"
+    command_id: "installation-lifecycle"
   - id: "p0-t7-installation"
-    status: "planned"
+    status: "required"
     command_id: "installation-drill"
-    prerequisite: "exact extension ID, platform installation fixtures, and disposable profile"
+    prerequisite: "installation-lifecycle and platform installation fixtures"
   - id: "p0-t8-baseline-review"
     status: "planned"
     command_id: "baseline-addendum-review"
