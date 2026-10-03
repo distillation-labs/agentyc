@@ -1,0 +1,9 @@
+{
+  "name": "com.agentyc.host",
+  "description": "agentyc production Chrome Native Messaging host",
+  "path": "__AGENTYC_NATIVE_HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__AGENTYC_EXTENSION_ID__/"
+  ]
+}
