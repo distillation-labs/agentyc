@@ -16,6 +16,7 @@ import { FramesRegistry } from "./frames.mjs";
 import { PAGE_OPERATIONS } from "./page-bridge.mjs";
 
 const METADATA_KEY = "agentyc_extension_metadata";
+const FENCE_KEY = "agentyc_space_fences";
 const VERSION = (() => {
   try {
     const version = globalThis.chrome?.runtime?.getManifest?.().version;
@@ -32,6 +33,11 @@ const MAX_SIDE_PANEL_TICKET_LIFETIME_MS = 15 * 60 * 1000;
 const MAX_MUTATION_QUEUES = 256;
 const MAX_CONTENT_PENDING = 256;
 const MAX_SIDE_PANEL_TICKETS = 1024;
+const MAX_PERSISTED_FENCES = 1024;
+const MAX_INVENTORY_PAGES = 200;
+const MAX_INVENTORY_GROUPS = 64;
+const MAX_INVENTORY_BYTES = 512 * 1024;
+const MAX_UNREPORTED_UNKNOWN_ACTIONS = 128;
 const DESTRUCTIVE_SIDE_PANEL_ACTIONS = new Set([
   "stop",
   "takeover",
@@ -120,6 +126,8 @@ export class ServiceWorkerController {
     this.usedSidePanelTickets = new Map();
     this.sessionAdvancePromise = null;
     this.sidePanelListeners = [];
+    this.unreportedUnknownActions = new Set();
+    this.unknownActionsOverflow = false;
 
     const hintSalt = `worker:${workerInstanceEpoch ?? 0}`;
     this.groups = new GroupsRegistry({
@@ -179,6 +187,7 @@ export class ServiceWorkerController {
     this.installRuntimeListener();
     this.startPromise = (async () => {
       await this.loadMetadata();
+      await this.loadFences();
       this.tabs.setIdentity(this.metadata);
       this.debugger.setIdentity(this.metadata);
       this.started = true;
@@ -252,6 +261,49 @@ export class ServiceWorkerController {
         worker_instance_epoch: workerInstanceEpoch,
         browser_session_epoch: browserSessionEpoch,
         ui_version: VERSION,
+      },
+    });
+  }
+
+  /**
+   * Fence floors survive a worker restart inside the same browser session so a
+   * stale lease cannot bind or dispatch after Chrome terminates the worker.
+   * Floors only ever restrict; they never grant ownership or leases.
+   */
+  async loadFences() {
+    let stored;
+    try {
+      stored = (await storageGet(this.storage, FENCE_KEY))[FENCE_KEY];
+    } catch {
+      return;
+    }
+    if (
+      !stored ||
+      stored.profile_instance_id !== this.metadata.profileInstanceId ||
+      stored.browser_session_epoch !== this.metadata.browserSessionEpoch ||
+      !Array.isArray(stored.fences)
+    )
+      return;
+    for (const entry of stored.fences.slice(0, MAX_PERSISTED_FENCES)) {
+      if (!Array.isArray(entry)) continue;
+      const [spaceId, epoch] = entry;
+      try {
+        assertLogicalScope({ spaceId });
+        positiveEpoch(epoch, "fence_epoch");
+      } catch {
+        continue;
+      }
+      this.fences.set(spaceId, Math.max(this.fences.get(spaceId) ?? 0, epoch));
+      this.tabs.restoreFence(spaceId, epoch);
+    }
+  }
+
+  async persistFences() {
+    await storageSet(this.storage, {
+      [FENCE_KEY]: {
+        profile_instance_id: this.metadata.profileInstanceId,
+        browser_session_epoch: this.metadata.browserSessionEpoch,
+        fences: [...this.fences.entries()].slice(0, MAX_PERSISTED_FENCES),
       },
     });
   }
@@ -340,12 +392,7 @@ export class ServiceWorkerController {
       const unknownActions = [...this.inflight.keys()];
       this.inflight.clear();
       for (const actionId of unknownActions) {
-        this.handleExtensionEvent("action.unknown", {
-          action_id: actionId,
-          outcome: "unknown",
-          code: "unknown_outcome",
-          reason: "browser session changed",
-        });
+        this.reportUnknownAction(actionId, "browser session changed");
       }
       this.fences.clear();
       this.mutationTails.clear();
@@ -364,6 +411,7 @@ export class ServiceWorkerController {
           ui_version: VERSION,
         },
       });
+      await this.persistFences().catch(() => {});
       this.handleExtensionEvent("browser.session_changed", {
         browser_session_epoch: nextEpoch,
         reason,
@@ -418,26 +466,83 @@ export class ServiceWorkerController {
     for (const actionId of actionIds) {
       const pending = this.inflight.get(actionId);
       this.inflight.delete(actionId);
-      this.handleExtensionEvent("action.unknown", {
-        action_id: actionId,
-        outcome: "unknown",
-        code: "unknown_outcome",
-        reason: reason instanceof Error ? reason.message : String(reason),
-      });
+      this.reportUnknownAction(
+        actionId,
+        reason instanceof Error ? reason.message : String(reason),
+      );
       if (pending?.requestId) this.pending.delete(pending.requestId);
     }
   }
 
+  /**
+   * Unknown outcomes are never replayed. When the host cannot hear the event
+   * (the transport is the thing that was lost), the id is held, bounded, and
+   * reported in the next inventory so the host can reconcile it.
+   */
+  reportUnknownAction(actionId, reason) {
+    if (!this.native.connected) {
+      if (this.unreportedUnknownActions.size < MAX_UNREPORTED_UNKNOWN_ACTIONS)
+        this.unreportedUnknownActions.add(actionId);
+      else this.unknownActionsOverflow = true;
+    }
+    this.handleExtensionEvent("action.unknown", {
+      action_id: actionId,
+      outcome: "unknown",
+      code: "unknown_outcome",
+      reason,
+    });
+  }
+
+  /**
+   * Inventory must stay inside the control-envelope bounds: an oversized
+   * inventory would otherwise be rejected locally and tear down the transport
+   * on every reconnect. Managed pages are listed first, then other bound or
+   * active tabs, so omissions only ever hide ordinary unmanaged user tabs.
+   */
+  boundedInventory() {
+    const all = this.tabs.inventory();
+    const rank = (page) =>
+      page.ownership !== "unmanaged" ? 0 : page.active === true ? 1 : 2;
+    const ordered = all
+      .map((page, index) => ({ page, index }))
+      .sort((a, b) => rank(a.page) - rank(b.page) || a.index - b.index)
+      .map(({ page }) => page);
+    const encoder = new TextEncoder();
+    const pages = [];
+    let bytes = 0;
+    for (const page of ordered) {
+      if (pages.length >= MAX_INVENTORY_PAGES) break;
+      const size = encoder.encode(JSON.stringify(page)).byteLength + 1;
+      if (bytes + size > MAX_INVENTORY_BYTES) break;
+      pages.push(page);
+      bytes += size;
+    }
+    const groups = this.groups.listHints().slice(0, MAX_INVENTORY_GROUPS);
+    return {
+      pages,
+      groups,
+      total_page_count: all.length,
+      omitted_page_count: all.length - pages.length,
+      truncated: pages.length < all.length,
+    };
+  }
+
   async sendInventory() {
     if (!this.native.connected) return;
+    const unknownActionIds = [...this.unreportedUnknownActions];
+    const overflow = this.unknownActionsOverflow;
     try {
       this.native.send("inventory", {
         payload: {
           profile_instance_id: this.metadata.profileInstanceId,
-          pages: this.tabs.inventory(),
-          groups: this.groups.listHints(),
+          ...this.boundedInventory(),
+          unknown_action_ids: unknownActionIds,
+          unknown_actions_overflow: overflow,
         },
       });
+      for (const actionId of unknownActionIds)
+        this.unreportedUnknownActions.delete(actionId);
+      if (overflow) this.unknownActionsOverflow = false;
     } catch {
       // A disconnect between state notification and post is handled as a loss.
     }
@@ -620,10 +725,7 @@ export class ServiceWorkerController {
     switch (method) {
       case "tab.inventory":
       case "page.list":
-        return {
-          pages: this.tabs.inventory(),
-          groups: this.groups.listHints(),
-        };
+        return this.boundedInventory();
       case "page.create":
         return this.tabs.createAgentPage({
           spaceId,
@@ -829,7 +931,14 @@ export class ServiceWorkerController {
     return { accepted: true, request_id: requestId, expires_at: expiresAt };
   }
 
-  handleFence({ message, params, requestId, actionId, spaceId, leaseEpoch }) {
+  async handleFence({
+    message,
+    params,
+    requestId,
+    actionId,
+    spaceId,
+    leaseEpoch,
+  }) {
     assertLogicalScope({ spaceId });
     positiveEpoch(leaseEpoch, "lease_epoch");
     const fenceEpoch = positiveEpoch(
@@ -854,12 +963,21 @@ export class ServiceWorkerController {
       }
     }
     this.fences.set(spaceId, fenceEpoch);
+    let durable = true;
+    try {
+      await this.persistFences();
+    } catch {
+      // The in-memory barrier is already active; the host is told it will not
+      // survive a worker restart so it can re-fence after the next handshake.
+      durable = false;
+    }
     const result = {
       space_id: spaceId,
       fence_epoch: fenceEpoch,
       drained_request_ids: [],
       unknown_action_ids: unknownActionIds,
       affected_page_count: drain.affected_page_ids.length,
+      durable,
     };
     try {
       this.native.send("fence_ack", {
@@ -1103,8 +1221,16 @@ export class ServiceWorkerController {
         error: errorResult("stale_request", "content result is not pending"),
       };
     const record = this.senderTabRecord(sender);
+    if (!record) {
+      return {
+        ok: false,
+        error: errorResult(
+          "permission_denied",
+          "content sender is not authorized for the managed page",
+        ),
+      };
+    }
     if (
-      !record ||
       record.rawTabId !== pending.rawTabId ||
       record.spaceId !== pending.spaceId ||
       record.pageId !== pending.pageId ||
