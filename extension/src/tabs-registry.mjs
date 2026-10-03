@@ -1158,6 +1158,8 @@ export class TabsRegistry {
       record.bindingState = "lost";
       this.emit("page.lost", record, { reason: "tab_removed" });
       this.byPage.delete(record.pageId);
+    } else {
+      this.emit("tab.closed", record, { reason: "tab_removed" });
     }
     this.byRawTab.delete(tabId);
     this.groups?.removeTab(tabId);
