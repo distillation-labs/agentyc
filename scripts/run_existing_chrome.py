@@ -47,6 +47,8 @@ MAX_LIVE_RECEIPTS = 96
 DESCRIPTOR_SCHEMA_VERSION = 2
 DIRECT_CLI_ENV = "AGENTYC_CLI"
 DIRECT_CLI_DEFAULT = ROOT / "target" / "debug" / "agentyc"
+HOST_PROBE_ENV = "AGENTYC_EXISTING_CHROME_PROBE"
+HOST_PROBE_DEFAULT = ROOT / "target" / "debug" / "agentyc-existing-chrome-probe"
 CHECKPOINT_ENV = "AGENTYC_EXISTING_CHROME_OPERATOR_CHECKPOINT"
 CHECKPOINT_TOKEN_PREFIX = "AGENTYC_EXISTING_CHROME_CHECKPOINT_V1"
 LIVE_PRINCIPALS = ("agent-a", "agent-b")
@@ -62,6 +64,21 @@ REQUIRED_LIVE_SCENARIOS = (
     "host-restart-recovery",
     "chrome-restart-recovery",
     "extension-update-recovery",
+)
+# Newer probe builds use the browser-scenario names; older available builds
+# use the legacy logical checkpoint names below. Both are adapted to the
+# runner's exact ten-scenario output and neither is browser evidence.
+HOST_PROBE_CHECKPOINTS = REQUIRED_LIVE_SCENARIOS
+LEGACY_HOST_PROBE_CHECKPOINTS = (
+    "connect.local_socket",
+    "connect.host_extension",
+    "scenario.two_spaces",
+    "scenario.page_create_list",
+    "scenario.isolation",
+    "scenario.lease_takeover",
+    "scenario.return_control",
+    "scenario.cleanup",
+    "scenario.cleanup_returned_space",
 )
 
 EXPECTED_FIXTURES = {
@@ -128,6 +145,31 @@ class DirectCliResponse:
         self.ok = ok
         self.result = result
         self.error_code = error_code
+        self.reason_code = reason_code
+
+
+class HostProbeResponse:
+    """A normalized report from the real host-backed probe executable."""
+
+    def __init__(
+        self,
+        transport: str,
+        *,
+        success: bool | None = None,
+        broker_epoch: int | None = None,
+        connection_epoch: int | None = None,
+        checkpoints: list[dict[str, str]] | None = None,
+        limitations_count: int = 0,
+        returncode: int | None = None,
+        reason_code: str | None = None,
+    ) -> None:
+        self.transport = transport
+        self.success = success
+        self.broker_epoch = broker_epoch
+        self.connection_epoch = connection_epoch
+        self.checkpoints = checkpoints or []
+        self.limitations_count = limitations_count
+        self.returncode = returncode
         self.reason_code = reason_code
 
 
@@ -282,6 +324,104 @@ def _parse_direct_response(
     return DirectCliResponse("complete", ok=False, error_code=code)
 
 
+def _parse_host_probe_response(stdout: bytes, returncode: int | None) -> HostProbeResponse:
+    """Parse the host probe without retaining IDs, details, or private paths."""
+    try:
+        text = stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return HostProbeResponse("malformed_response", reason_code="stdout_not_utf8", returncode=returncode)
+    payload = text.lstrip()
+    if not payload:
+        return HostProbeResponse("malformed_response", reason_code="stdout_empty", returncode=returncode)
+    decoder = json.JSONDecoder()
+    try:
+        value, end = decoder.raw_decode(payload)
+    except json.JSONDecodeError:
+        return HostProbeResponse("malformed_response", reason_code="stdout_not_json", returncode=returncode)
+    if payload[end:].strip():
+        return HostProbeResponse("malformed_response", reason_code="multiple_stdout_values", returncode=returncode)
+    if not isinstance(value, dict) or type(value.get("success")) is not bool:
+        return HostProbeResponse("malformed_response", reason_code="response_shape_invalid", returncode=returncode)
+    socket_path = value.get("socket_path")
+    if not isinstance(socket_path, str) or len(socket_path) > 2048:
+        return HostProbeResponse("malformed_response", reason_code="socket_path_invalid", returncode=returncode)
+
+    checkpoints = value.get("checkpoints")
+    if not isinstance(checkpoints, list):
+        return HostProbeResponse("malformed_response", reason_code="checkpoint_count_invalid", returncode=returncode)
+    checkpoint_names = [item.get("name") for item in checkpoints if isinstance(item, dict)]
+    if tuple(checkpoint_names) == HOST_PROBE_CHECKPOINTS:
+        checkpoint_format = "scenario"
+    elif tuple(checkpoint_names) == LEGACY_HOST_PROBE_CHECKPOINTS:
+        checkpoint_format = "legacy"
+    else:
+        return HostProbeResponse("malformed_response", reason_code="checkpoint_order_invalid", returncode=returncode)
+    if len(checkpoints) != len(checkpoint_names):
+        return HostProbeResponse("malformed_response", reason_code="checkpoint_shape_invalid", returncode=returncode)
+    raw_statuses: dict[str, str] = {}
+    for checkpoint in checkpoints:
+        status = checkpoint.get("status")
+        detail = checkpoint.get("detail")
+        if status not in {"passed", "failed", "skipped"} or not isinstance(detail, str) or len(detail) > 2048:
+            return HostProbeResponse("malformed_response", reason_code="checkpoint_shape_invalid", returncode=returncode)
+        # Details and socket_path may contain logical IDs or absolute paths.
+        # Neither is retained; only bounded status values become evidence.
+        raw_statuses[checkpoint["name"]] = status
+
+    normalized: list[dict[str, str]] = []
+    if checkpoint_format == "scenario":
+        normalized = [
+            {"name": name, "status": raw_statuses[name]}
+            for name in HOST_PROBE_CHECKPOINTS
+        ]
+    else:
+        legacy_to_scenario = {
+            "scenario.two_spaces": "two-space-isolation",
+            "scenario.isolation": "two-space-isolation",
+            "scenario.lease_takeover": "takeover-fence",
+            "scenario.return_control": "return-control-fresh-lease",
+            "scenario.cleanup": "agent-page-cleanup",
+            "scenario.cleanup_returned_space": "agent-page-cleanup",
+        }
+        mapped = {name: "skipped" for name in HOST_PROBE_CHECKPOINTS}
+        for legacy_name, scenario_name in legacy_to_scenario.items():
+            if raw_statuses.get(legacy_name) == "passed":
+                mapped[scenario_name] = "passed"
+            elif raw_statuses.get(legacy_name) == "failed" and mapped[scenario_name] != "passed":
+                mapped[scenario_name] = "failed"
+        normalized = [{"name": name, "status": mapped[name]} for name in HOST_PROBE_CHECKPOINTS]
+
+    limitations = value.get("limitations", [])
+    if (
+        not isinstance(limitations, list)
+        or len(limitations) > 32
+        or any(not isinstance(item, str) or len(item) > 2048 for item in limitations)
+    ):
+        return HostProbeResponse("malformed_response", reason_code="limitations_shape_invalid", returncode=returncode)
+
+    epochs: list[int | None] = []
+    for key in ("broker_epoch", "connection_epoch"):
+        epoch = value.get(key)
+        if epoch is not None and (type(epoch) is not int or epoch <= 0):
+            return HostProbeResponse("malformed_response", reason_code=f"{key}_invalid", returncode=returncode)
+        epochs.append(epoch)
+    if value["success"] and any(status != "passed" for status in raw_statuses.values()):
+        return HostProbeResponse("malformed_response", reason_code="success_checkpoint_mismatch", returncode=returncode)
+    if returncode is None:
+        return HostProbeResponse("malformed_response", reason_code="exit_code_missing", returncode=returncode)
+    if (value["success"] and returncode != 0) or (not value["success"] and returncode == 0):
+        return HostProbeResponse("malformed_response", reason_code="success_exit_code_mismatch", returncode=returncode)
+    return HostProbeResponse(
+        "complete",
+        success=value["success"],
+        broker_epoch=epochs[0],
+        connection_epoch=epochs[1],
+        checkpoints=normalized,
+        limitations_count=len(limitations),
+        returncode=returncode,
+    )
+
+
 class DirectCli:
     """Small public-contract client; it never enables offline or CDP modes."""
 
@@ -339,6 +479,30 @@ def resolve_direct_cli(value: str | None) -> tuple[str | None, str]:
     if DIRECT_CLI_DEFAULT.is_file() and os.access(DIRECT_CLI_DEFAULT, os.X_OK):
         return str(DIRECT_CLI_DEFAULT), "repository_debug_binary"
     return None, "cli_not_found"
+
+
+def resolve_host_probe(value: str | None) -> tuple[str | None, str]:
+    """Resolve the real host probe without accepting a descriptor as a probe."""
+    configured = value if value is not None else os.environ.get(HOST_PROBE_ENV)
+    if configured is not None:
+        candidate = configured.strip()
+        if not candidate or any(character in candidate for character in "\x00\r\n"):
+            return None, "host_probe_not_configured"
+        path_candidate = Path(candidate).expanduser()
+        if path_candidate.is_absolute() or "/" in candidate or "\\" in candidate:
+            if not path_candidate.is_absolute():
+                path_candidate = ROOT / path_candidate
+            if path_candidate.is_file() and os.access(path_candidate, os.X_OK):
+                return str(path_candidate), "configured"
+            return None, "host_probe_not_executable"
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved, "configured"
+        return None, "host_probe_not_found"
+
+    if HOST_PROBE_DEFAULT.is_file() and os.access(HOST_PROBE_DEFAULT, os.X_OK):
+        return str(HOST_PROBE_DEFAULT), "repository_debug_binary"
+    return None, "host_probe_not_found"
 
 
 def _fake_host_requested() -> bool:
@@ -511,15 +675,135 @@ def _append_receipt(
         receipts.append(_receipt(operation, response, expected_rejection=expected_rejection))
 
 
+ENROLLMENT_COMPONENTS = ("profile", "host", "extension")
+_ENROLLMENT_STATUSES = {"bound", "connected", "installed", "enrolled", "not_observed", "descriptor_only"}
+_NON_LIVE_SCENARIO_STATUSES = {"live_passed", "passed", "success", "completed"}
+
+
+def _empty_enrollment(*, source: str = "none", current_run: bool = False) -> dict[str, dict[str, Any]]:
+    return {
+        component: {
+            "enrolled": False,
+            "observed": False,
+            "current_run": current_run,
+            "source": source,
+            "status": "not_observed",
+        }
+        for component in ENROLLMENT_COMPONENTS
+    }
+
+
+def _observed_host_enrollment(*, source: str, current_run: bool) -> dict[str, dict[str, Any]]:
+    evidence = _empty_enrollment(source=source, current_run=False)
+    if current_run:
+        for component in ("host", "extension"):
+            evidence[component].update({"observed": True, "current_run": True, "status": "connected"})
+    return evidence
+
+
+def _normalize_enrollment(value: Any, *, default_source: str = "none") -> dict[str, dict[str, Any]]:
+    """Keep enrollment claims explicit and require observation for enrollment."""
+    normalized = _empty_enrollment(source=default_source, current_run=False)
+    if not isinstance(value, dict):
+        return normalized
+    for component in ENROLLMENT_COMPONENTS:
+        raw = value.get(component)
+        if not isinstance(raw, dict):
+            continue
+        source = raw.get("source") if isinstance(raw.get("source"), str) else default_source
+        current_run = raw.get("current_run") is True
+        observed = raw.get("observed") is True
+        status = raw.get("status") if raw.get("status") in _ENROLLMENT_STATUSES else "not_observed"
+        if raw.get("observed") is not True:
+            status = "descriptor_only" if source == "descriptor" else "not_observed"
+        enrolled = (
+            raw.get("enrolled") is True
+            and observed
+            and current_run
+            and source not in {"descriptor", "offline", "operator_acknowledgement", "operator"}
+        )
+        normalized[component] = {
+            "enrolled": enrolled,
+            "observed": observed,
+            "current_run": current_run,
+            "source": source,
+            "status": status,
+        }
+    return normalized
+
+
 def _initial_scenarios() -> list[dict[str, Any]]:
     return [
         {
             "name": name,
             "status": "not_observed",
-            "observation": {"source": "none", "observed": False, "reason_code": "not_attempted"},
+            "observation": {
+                "source": "none",
+                "observed": False,
+                "current_run": False,
+                "browser_observed": False,
+                "reason_code": "not_attempted",
+            },
         }
         for name in REQUIRED_LIVE_SCENARIOS
     ]
+
+
+def _normalize_scenarios(value: Any, *, live_complete: bool = False) -> list[dict[str, Any]]:
+    """Return exactly the ordered ten records without promoting claims to live."""
+    records: dict[str, dict[str, Any]] = {}
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if name in REQUIRED_LIVE_SCENARIOS and name not in records:
+                records[name] = item
+
+    normalized = _initial_scenarios()
+    for scenario in normalized:
+        raw = records.get(scenario["name"])
+        if raw is None:
+            continue
+        raw_status = raw.get("status") if isinstance(raw.get("status"), str) else "not_observed"
+        observation = raw.get("observation")
+        if not isinstance(observation, dict):
+            observation = {}
+        source = observation.get("source") if isinstance(observation.get("source"), str) else "none"
+        observed = observation.get("observed") is True
+        current_run = observation.get("current_run") is True
+        browser_observed = observation.get("browser_observed") is True
+        reason_code_value = observation.get("reason_code")
+        reason_code = reason_code_value if isinstance(reason_code_value, str) else "observation_unavailable"
+        receipt_refs = observation.get("receipt_refs")
+        safe_receipt_refs = (
+            [item for item in receipt_refs if isinstance(item, str) and len(item) <= 160]
+            if isinstance(receipt_refs, list)
+            else []
+        )
+        status = raw_status if isinstance(raw_status, str) else "not_observed"
+        if not live_complete and status in _NON_LIVE_SCENARIO_STATUSES:
+            status = "not_observed"
+            observed = False
+            current_run = False
+            browser_observed = False
+            source = "none"
+            reason_code = "live_evidence_incomplete"
+            safe_receipt_refs = []
+        safe_observation: dict[str, Any] = {
+            "source": source,
+            "observed": observed,
+            "current_run": current_run,
+            "browser_observed": browser_observed,
+            "reason_code": reason_code[:160],
+        }
+        if safe_receipt_refs:
+            safe_observation["receipt_refs"] = safe_receipt_refs
+        if observation.get("operator_acknowledged") is True:
+            safe_observation["operator_acknowledged"] = True
+        scenario["status"] = status[:96]
+        scenario["observation"] = safe_observation
+    return normalized
 
 
 def _set_scenario(
@@ -536,6 +820,8 @@ def _set_scenario(
             observation: dict[str, Any] = {
                 "source": "direct_cli" if receipt_refs else "none",
                 "observed": bool(receipt_refs),
+                "current_run": bool(receipt_refs),
+                "browser_observed": False,
                 "reason_code": reason_code,
             }
             if receipt_refs:
@@ -572,26 +858,175 @@ def _operator_checkpoint(name: str, timeout: float) -> tuple[bool, str]:
         return False, "controlling_tty_unavailable"
 
 
+def _host_probe_scenarios(response: HostProbeResponse) -> list[dict[str, Any]]:
+    scenarios = _initial_scenarios()
+    for scenario, checkpoint in zip(scenarios, response.checkpoints):
+        if checkpoint["status"] == "passed":
+            scenario["status"] = "host_observed_not_browser"
+            scenario["observation"] = {
+                "source": "host_probe",
+                "observed": True,
+                "current_run": True,
+                "browser_observed": False,
+                "reason_code": "host_probe_checkpoint_passed",
+            }
+        elif checkpoint["status"] == "failed":
+            scenario["observation"]["reason_code"] = "host_probe_checkpoint_failed"
+        else:
+            scenario["observation"]["reason_code"] = "host_probe_checkpoint_skipped"
+    return scenarios
+
+
 def _live_unavailable(reason_code: str, *, cli_reason: str | None = None) -> dict[str, Any]:
     live: dict[str, Any] = {
         "requested": True,
         "required": True,
         "status": "live_required_unavailable",
         "executed": False,
+        "current_run": False,
         "evidence_status": "direct_cli_unavailable",
+        "provenance": "unavailable",
         "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
+        "operator_claims_used": False,
+        "host_probe_used": False,
         "reason": (
             "no valid existing-Chrome/extension harness descriptor is accepted; "
             "host-backed direct CLI preflight is unavailable"
         ),
         "reason_code": reason_code,
-        "browser": {"launch": False, "download": False, "cdp_url_used": False, "attached": False},
+        "browser": {
+            "observed": False,
+            "launch": False,
+            "download": False,
+            "cdp_url_used": False,
+            "attached": False,
+        },
+        "enrollment": _empty_enrollment(),
         "scenarios": _initial_scenarios(),
+        "safety": {
+            "measurement_status": "not_measured_live_incomplete",
+            "current_run": False,
+            "user_tab_closes": None,
+            "focus_theft": None,
+            "cross_space_mutations": None,
+            "stale_agent_mutations": None,
+        },
         "release_gates": {"eligible": False, "reason_code": "live_observation_incomplete"},
     }
     if cli_reason:
         live["cli_status"] = cli_reason
     return live
+
+
+def orchestrate_host_probe(
+    *,
+    executable: str,
+    resolution: str,
+    state_dir: str | None,
+    timeout: float,
+) -> dict[str, Any]:
+    """Run the real host probe and keep its logical observations non-live."""
+    environment = os.environ.copy()
+    if state_dir is not None and state_dir.strip():
+        environment["AGENTYC_STATE_DIR"] = state_dir.strip()
+    process_status, returncode, stdout, _stderr = _run_bounded_process(
+        [executable],
+        env=environment,
+        timeout=timeout,
+    )
+    if process_status != "completed":
+        live = _live_unavailable(f"host_probe_{process_status}", cli_reason=resolution)
+        live.update(
+            {
+                "evidence_status": "host_probe_unavailable",
+                "provenance": "host_probe_attempted_current_run",
+                "current_run": True,
+                "host_probe_used": True,
+                "executed": process_status not in {"cli_not_found", "cli_not_executable", "cli_unavailable"},
+                "host_probe": {
+                    "source": "host_probe",
+                    "current_run": True,
+                    "executed": True,
+                    "transport": process_status,
+                },
+            }
+        )
+        return live
+
+    response = _parse_host_probe_response(stdout, returncode)
+    if response.transport != "complete":
+        live = _live_unavailable(response.reason_code or "host_probe_response_invalid", cli_reason=resolution)
+        live.update(
+            {
+                "evidence_status": "host_probe_response_invalid",
+                "provenance": "host_probe_current_run",
+                "current_run": True,
+                "host_probe_used": True,
+                "executed": True,
+                "host_probe": {
+                    "source": "host_probe",
+                    "current_run": True,
+                    "executed": True,
+                    "transport": "malformed_response",
+                },
+            }
+        )
+        return live
+
+    host_connected = response.broker_epoch is not None and response.connection_epoch is not None
+    scenarios = _host_probe_scenarios(response)
+    return {
+        "requested": True,
+        "required": True,
+        "status": "live_observation_incomplete",
+        "executed": True,
+        "current_run": True,
+        "evidence_status": "live_observation_incomplete",
+        "provenance": "host_probe_current_run",
+        "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
+        "operator_claims_used": False,
+        "host_probe_used": True,
+        "host_probe": {
+            "source": "host_probe",
+            "current_run": True,
+            "executed": True,
+            "success": response.success,
+            "return_code": response.returncode,
+            "broker_epoch_observed": response.broker_epoch is not None,
+            "connection_epoch_observed": response.connection_epoch is not None,
+            "checkpoint_count": len(response.checkpoints),
+            "limitations_count": response.limitations_count,
+        },
+        "preflight": {
+            "observed": host_connected,
+            "source": "host_probe",
+            "bridge": "extension" if host_connected else "unknown",
+            "browser_observed": False,
+        },
+        "browser": {
+            "observed": False,
+            "launch": False,
+            "download": False,
+            "cdp_url_used": False,
+            "attached": False,
+        },
+        "enrollment": _observed_host_enrollment(
+            source="host_probe_current_run",
+            current_run=True,
+        )
+        if host_connected
+        else _empty_enrollment(source="host_probe_current_run"),
+        "scenarios": scenarios,
+        "safety": {
+            "measurement_status": "not_measured_live_incomplete",
+            "current_run": True,
+            "user_tab_closes": None,
+            "focus_theft": None,
+            "cross_space_mutations": None,
+            "stale_agent_mutations": None,
+        },
+        "release_gates": {"eligible": False, "reason_code": "browser_observations_missing"},
+    }
 
 
 def orchestrate_live(
@@ -601,10 +1036,22 @@ def orchestrate_live(
     cli_timeout: float,
     operator_checkpoint: bool,
     checkpoint_timeout: float,
+    host_probe_path: str | None = None,
 ) -> dict[str, Any]:
-    """Run only host-backed logical operations and return bounded observations."""
+    """Run the real host probe first, then the bounded direct-CLI fallback."""
     if _fake_host_requested():
         return _live_unavailable("fake_host_environment_forbidden")
+    if cli_path is None:
+        host_probe, probe_resolution = resolve_host_probe(host_probe_path)
+        if host_probe is not None:
+            return orchestrate_host_probe(
+                executable=host_probe,
+                resolution=probe_resolution,
+                state_dir=state_dir,
+                timeout=cli_timeout,
+            )
+        if host_probe_path is not None:
+            return _live_unavailable(probe_resolution, cli_reason=probe_resolution)
     executable, resolution = resolve_direct_cli(cli_path)
     if executable is None:
         return _live_unavailable(resolution, cli_reason=resolution)
@@ -619,19 +1066,44 @@ def orchestrate_live(
     host_observation, host_reason = _host_status_observation(preflight)
     if host_observation is None:
         live = _live_unavailable(host_reason or "host_status_invalid", cli_reason=resolution)
-        live["executed"] = preflight.transport == "complete"
-        live["preflight"] = {
-            "observed": False,
-            "executor_receipt": preflight.transport == "complete",
-            "reason_code": host_reason,
-        }
-        live["receipts"] = receipts
+        live.update(
+            {
+                "executed": preflight.transport == "complete",
+                "current_run": True,
+                "provenance": "direct_cli_current_run",
+                "operator_claims_used": bool(operator_checkpoint),
+                "preflight": {
+                    "observed": False,
+                    "source": "direct_cli",
+                    "executor_receipt": preflight.transport == "complete",
+                    "reason_code": host_reason,
+                },
+                "enrollment": _empty_enrollment(source="direct_cli_current_run"),
+                "receipts": receipts,
+            }
+        )
         return live
     if "action" not in host_observation["capabilities"]:
         live = _live_unavailable("required_action_capability_missing", cli_reason=resolution)
-        live["executed"] = True
-        live["preflight"] = {"observed": True, "bridge": "extension", "action_capability": False}
-        live["receipts"] = receipts
+        live.update(
+            {
+                "executed": True,
+                "current_run": True,
+                "provenance": "direct_cli_current_run",
+                "operator_claims_used": bool(operator_checkpoint),
+                "preflight": {
+                    "observed": True,
+                    "source": "direct_cli",
+                    "bridge": "extension",
+                    "action_capability": False,
+                },
+                "enrollment": _observed_host_enrollment(
+                    source="direct_cli_current_run",
+                    current_run=True,
+                ),
+                "receipts": receipts,
+            }
+        )
         return live
 
     live: dict[str, Any] = {
@@ -639,9 +1111,12 @@ def orchestrate_live(
         "required": True,
         "status": "live_observation_incomplete",
         "executed": True,
+        "current_run": True,
         "evidence_status": "live_observation_incomplete",
         "provenance": "direct_cli_current_run",
         "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
+        "operator_claims_used": bool(operator_checkpoint),
+        "host_probe_used": False,
         "preflight": {
             "observed": True,
             "source": "direct_cli",
@@ -650,7 +1125,17 @@ def orchestrate_live(
             "action_capability": True,
             "direct_path_safe": True,
         },
-        "browser": {"launch": False, "download": False, "cdp_url_used": False, "attached": False},
+        "browser": {
+            "observed": False,
+            "launch": False,
+            "download": False,
+            "cdp_url_used": False,
+            "attached": False,
+        },
+        "enrollment": _observed_host_enrollment(
+            source="direct_cli_current_run",
+            current_run=True,
+        ),
         "scenarios": scenarios,
         "release_gates": {"eligible": False, "reason_code": "required_browser_observations_missing"},
         "_execution_token": _LIVE_EXECUTION_TOKEN,
@@ -895,8 +1380,8 @@ def orchestrate_live(
                 _set_scenario(
                     scenarios,
                     name,
-                    "host_observed",
-                    "broker_epoch_changed_after_checkpoint",
+                    "operator_checkpoint_required",
+                    "operator_acknowledgement_not_browser_observation",
                     receipt_refs=(f"checkpoint.host.status.{name}", f"checkpoint.events.resume.{name}"),
                     operator_acknowledged=True,
                 )
@@ -915,6 +1400,15 @@ def orchestrate_live(
 
     live["scenarios"] = scenarios
     live["receipts"] = receipts
+    live["operator_claims_used"] = bool(operator_checkpoint)
+    live["safety"] = {
+        "measurement_status": "not_measured_live_incomplete",
+        "current_run": True,
+        "user_tab_closes": None,
+        "focus_theft": None,
+        "cross_space_mutations": None,
+        "stale_agent_mutations": None,
+    }
     live["cleanup"] = {
         "spaces_attempted": len(spaces),
         "spaces_released": sum(1 for receipt in receipts if receipt["operation"].startswith("space.release.") and receipt.get("ok") is True),
@@ -1050,36 +1544,58 @@ def redact(value: Any, depth: int = 0) -> Any:
 
 
 def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
-    """Allow live green only for receipts produced by this direct-CLI run."""
+    """Allow live green only for current-run browser observations."""
     if (
         live.get("_execution_token") is not _LIVE_EXECUTION_TOKEN
         or live.get("executed") is not True
+        or live.get("current_run") is not True
         or live.get("status") != "live_passed"
         or live.get("evidence_status") != "live_passed"
+        or live.get("evidence_mode") != "live"
         or live.get("provenance") != "direct_cli_current_run"
         or live.get("descriptor_policy") != "descriptors_not_accepted_as_live_evidence"
-        or live.get("operator_claims_used") is True
+        or live.get("operator_claims_used") is not False
+        or live.get("host_probe_used") is not False
+        or live.get("browser_observed") is not True
     ):
         return False
     browser = live.get("browser")
     preflight = live.get("preflight")
     receipts = live.get("receipts")
     scenarios = live.get("scenarios")
+    enrollment = live.get("enrollment")
+    safety = live.get("safety")
     if (
         not isinstance(browser, dict)
+        or browser.get("observed") is not True
         or browser.get("launch") is not False
         or browser.get("download") is not False
         or browser.get("cdp_url_used") is not False
-        or browser.get("attached") is not False
         or not isinstance(preflight, dict)
         or preflight.get("observed") is not True
         or preflight.get("source") != "direct_cli"
         or not isinstance(receipts, list)
         or not receipts
         or not isinstance(scenarios, list)
-        or len(scenarios) != len(REQUIRED_LIVE_SCENARIOS)
+        or tuple(item.get("name") for item in scenarios if isinstance(item, dict)) != REQUIRED_LIVE_SCENARIOS
+        or not isinstance(enrollment, dict)
+        or not isinstance(safety, dict)
+        or safety.get("measurement_status") != "measured_live"
+        or safety.get("current_run") is not True
     ):
         return False
+    for component in ENROLLMENT_COMPONENTS:
+        item = enrollment.get(component)
+        if (
+            not isinstance(item, dict)
+            or item.get("enrolled") is not True
+            or item.get("observed") is not True
+            or item.get("current_run") is not True
+            or item.get("status") not in {"bound", "connected", "installed", "enrolled"}
+            or not isinstance(item.get("source"), str)
+            or not item["source"].endswith("_current_run")
+        ):
+            return False
     receipt_operations: set[str] = set()
     for receipt in receipts:
         if (
@@ -1091,26 +1607,26 @@ def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
         ):
             return False
         receipt_operations.add(receipt["operation"])
-    seen: set[str] = set()
-    for scenario in scenarios:
-        if not isinstance(scenario, dict):
+    for key in ("user_tab_closes", "focus_theft", "cross_space_mutations", "stale_agent_mutations"):
+        if type(safety.get(key)) is not int or safety[key] != 0:
             return False
-        name = scenario.get("name")
-        if name in seen or name not in REQUIRED_LIVE_SCENARIOS or scenario.get("status") != "live_passed":
+    for expected_name, scenario in zip(REQUIRED_LIVE_SCENARIOS, scenarios):
+        if not isinstance(scenario, dict) or scenario.get("name") != expected_name or scenario.get("status") != "live_passed":
             return False
-        seen.add(name)
         observation = scenario.get("observation")
         if (
             not isinstance(observation, dict)
-            or observation.get("source") != "direct_cli"
+            or observation.get("source") != "browser_current_run"
             or observation.get("observed") is not True
+            or observation.get("current_run") is not True
+            or observation.get("browser_observed") is not True
             or observation.get("operator_acknowledged") is True
             or not isinstance(observation.get("receipt_refs"), list)
             or not observation["receipt_refs"]
             or any(reference not in receipt_operations for reference in observation["receipt_refs"])
         ):
             return False
-    return seen == set(REQUIRED_LIVE_SCENARIOS)
+    return True
 
 
 def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
@@ -1131,7 +1647,26 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
         if requested_live and live.get("executed")
         else "offline"
     )
+    scenarios = _normalize_scenarios(live.get("scenarios"), live_complete=executed)
+    enrollment = _normalize_enrollment(
+        live.get("enrollment"),
+        default_source="direct_cli_current_run" if requested_live else "offline",
+    )
+    report_live["scenarios"] = scenarios
+    report_live["enrollment"] = enrollment
+    report_live["current_run"] = live.get("current_run") is True
+    report_live["operator_claims_used"] = live.get("operator_claims_used") is True
+    report_live["host_probe_used"] = live.get("host_probe_used") is True
+    if executed:
+        report_live["evidence_mode"] = "live"
+    elif report_live.get("status") == "live_passed":
+        report_live["status"] = "live_observation_incomplete"
+        report_live["evidence_status"] = "live_observation_incomplete"
     measured = executed
+    safety_counters = {
+        key: 0 if measured else None
+        for key in ("user_tab_closes", "focus_theft", "cross_space_mutations", "stale_agent_mutations")
+    }
     return redact_for_persistence(
         {
             "schema_version": 1,
@@ -1151,10 +1686,11 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
                 "scenario": contract,
             },
             "live": report_live,
-            "enrollment": None,
-            "scenarios": live.get("scenarios", []),
+            "enrollment": enrollment,
+            "scenarios": scenarios,
             "execution_policy": {
-                "attached": False,
+                "attached": executed,
+                "current_run": executed,
                 "host_executor_used": bool(live.get("executed")),
                 "browser_launch": False,
                 "browser_download": False,
@@ -1164,12 +1700,9 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
                 "browser_launch": "never",
                 "browser_download": "never",
                 "user_tab_close": 0 if measured else None,
-                "user_tab_closes": 0 if measured else None,
-                "focus_theft_outside_user_action": 0 if measured else None,
-                "focus_theft": 0 if measured else None,
-                "cross_space_mutations": 0 if measured else None,
-                "stale_agent_mutations": 0 if measured else None,
+                **safety_counters,
                 "measurement_status": "measured_live" if measured else ("not_measured_live_incomplete" if requested_live else "not_measured_offline"),
+                "current_run": measured,
                 "raw_browser_ids_logged": False,
                 "secrets_logged": False,
             },
@@ -1183,8 +1716,8 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
             },
             "limitations": [
                 "Offline mode validates fixture contracts only; it is not evidence from a live Chrome profile.",
-                "The headed lane invokes only the public host-backed direct CLI and never launches, downloads, or attaches to Chrome or CDP.",
-                "Enrollment descriptors and operator acknowledgements are not accepted as live evidence; current public CLI observations do not expose all ten browser lifecycle scenarios.",
+                "The headed lane invokes only the public host-backed probe or direct CLI and never launches, downloads, or attaches to Chrome or CDP.",
+                "Enrollment descriptors and operator acknowledgements are not accepted as live evidence; host logical observations do not establish browser coexistence.",
             ],
         }
     )
@@ -1271,16 +1804,20 @@ def _descriptor_errors(descriptor: dict[str, Any]) -> list[str]:
 
     evidence = descriptor.get("evidence")
     if evidence is not None:
-        if not isinstance(evidence, dict) or evidence.get("executed") is not True or evidence.get("status") != "live_passed":
+        if not isinstance(evidence, dict):
+            errors.append("descriptor evidence must be an object")
+        elif evidence.get("executed") is False and evidence.get("status") == "descriptor_only":
+            pass
+        elif evidence.get("executed") is not True or evidence.get("status") != "live_passed":
             errors.append("live evidence must be executed and live_passed")
         else:
             scenarios = evidence.get("scenarios")
             if not isinstance(scenarios, list) or len(scenarios) != len(REQUIRED_LIVE_SCENARIOS) or any(not isinstance(item, dict) for item in scenarios):
                 errors.append("live evidence must include exactly all ten scenarios")
             else:
-                names = {item.get("name") for item in scenarios}
-                if names != set(REQUIRED_LIVE_SCENARIOS) or any(item.get("status") != "live_passed" for item in scenarios):
-                    errors.append("live scenario evidence is incomplete or skipped")
+                names = tuple(item.get("name") for item in scenarios)
+                if names != REQUIRED_LIVE_SCENARIOS or any(item.get("status") != "live_passed" for item in scenarios):
+                    errors.append("live scenario evidence is incomplete, duplicated, or skipped")
     return sorted(set(errors))
 
 
@@ -1306,30 +1843,45 @@ def load_enrolled_descriptor(path_value: str | None) -> dict[str, Any] | None:
         return None
     if not isinstance(descriptor, dict) or _descriptor_errors(descriptor):
         return None
-    enrollment = descriptor["enrollment"]
-    browser = descriptor["browser"]
-    safety = descriptor["safety"]
-    evidence = descriptor.get("evidence") if isinstance(descriptor.get("evidence"), dict) else None
+    descriptor_browser = descriptor["browser"]
+    descriptor_safety = descriptor["safety"]
+    descriptor_enrollment = {
+        component: {
+            "enrolled": False,
+            "observed": False,
+            "current_run": False,
+            "source": "descriptor",
+            "status": "descriptor_only",
+        }
+        for component in ENROLLMENT_COMPONENTS
+    }
+    # Descriptors describe setup only. Embedded live claims are discarded.
     return redact_for_persistence(
         {
             "status": "harness_supplied",
             "descriptor_version": DESCRIPTOR_SCHEMA_VERSION,
-            "enrollment": enrollment,
+            "enrollment": descriptor_enrollment,
             "browser": {
-                "status": browser["status"],
+                "status": descriptor_browser["status"],
+                "observed": False,
+                "current_run": False,
                 "launch": False,
                 "download": False,
                 "cdp_url_used": False,
             },
             "profile_scope": "existing_user_profile",
             "safety": {
-                "user_tab_preserved": safety["user_tab_preserved"],
-                "focus_theft": safety["focus_theft"],
+                "user_tab_preserved": descriptor_safety["user_tab_preserved"],
+                "focus_theft": descriptor_safety["focus_theft"],
             },
-            "executed": bool(evidence and evidence.get("executed") is True),
-            "evidence_status": evidence.get("status") if evidence else "descriptor_only",
-            "scenarios": evidence.get("scenarios", []) if evidence else [],
-            "release_gates": evidence.get("release_gates") if evidence else None,
+            "executed": False,
+            "current_run": False,
+            "live_passed": False,
+            "evidence_status": "descriptor_only",
+            "provenance": "descriptor",
+            "operator_claims_used": False,
+            "scenarios": _initial_scenarios(),
+            "release_gates": None,
         }
     )
 
@@ -1347,6 +1899,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--dry-run", action="store_true", help="validate local fixtures without any live lane")
     result.add_argument("--harness", help="legacy input ignored; descriptors never establish live evidence")
     result.add_argument("--cli", dest="cli_path", help="existing direct CLI executable; never interpreted through a shell")
+    result.add_argument("--host-probe", dest="host_probe_path", help="real existing-Chrome host probe executable; never interpreted through a shell")
     result.add_argument("--state-dir", help="optional direct-CLI host state directory")
     result.add_argument("--cli-timeout", type=float, default=MAX_CLI_TIMEOUT_SECONDS)
     result.add_argument("--operator-checkpoint", action="store_true", help="use bounded fixed-token operator checkpoints for unautomated lifecycle steps")
@@ -1396,6 +1949,7 @@ def main(argv: list[str] | None = None) -> int:
             cli_path=args.cli_path,
             state_dir=args.state_dir,
             cli_timeout=args.cli_timeout,
+            host_probe_path=args.host_probe_path,
             operator_checkpoint=bool(
                 args.operator_checkpoint
                 or os.environ.get(CHECKPOINT_ENV, "").strip().lower() in {"1", "true", "yes"}
