@@ -37,6 +37,8 @@ function logicalProof(
     tabHint,
     profileInstanceId,
     browserSessionEpoch,
+    requireProfileInstanceId = false,
+    requireBrowserSessionEpoch = false,
     now = Date.now(),
   } = {},
 ) {
@@ -103,24 +105,42 @@ function logicalProof(
       `${kind} proof generation is not current`,
     );
   }
-  if (
-    profileInstanceId !== undefined &&
-    proof.profile_instance_id !== undefined &&
-    proof.profile_instance_id !== profileInstanceId
-  ) {
-    throw new ProtocolError(
-      "permission_denied",
-      `${kind} proof profile does not match the live profile`,
-    );
+  if (profileInstanceId !== undefined) {
+    if (requireProfileInstanceId && proof.profile_instance_id === undefined) {
+      throw new ProtocolError(
+        "permission_denied",
+        `${kind} proof profile is required`,
+      );
+    }
+    if (
+      proof.profile_instance_id !== undefined &&
+      proof.profile_instance_id !== profileInstanceId
+    ) {
+      throw new ProtocolError(
+        "permission_denied",
+        `${kind} proof profile does not match the live profile`,
+      );
+    }
   }
-  if (
-    browserSessionEpoch !== undefined &&
-    proof.browser_session_epoch !== browserSessionEpoch
-  ) {
-    throw new ProtocolError(
-      "stale_epoch",
-      `${kind} proof browser session does not match`,
-    );
+  if (browserSessionEpoch !== undefined) {
+    if (
+      requireBrowserSessionEpoch &&
+      proof.browser_session_epoch === undefined
+    ) {
+      throw new ProtocolError(
+        "stale_epoch",
+        `${kind} proof browser session is required`,
+      );
+    }
+    if (
+      proof.browser_session_epoch !== undefined &&
+      proof.browser_session_epoch !== browserSessionEpoch
+    ) {
+      throw new ProtocolError(
+        "stale_epoch",
+        `${kind} proof browser session does not match`,
+      );
+    }
   }
   if (tabHint !== undefined && proof.tab_hint !== tabHint) {
     throw new ProtocolError(
@@ -205,11 +225,15 @@ export class TabsRegistry {
     this.started = false;
   }
 
-  setIdentity({ profileInstanceId, browserSessionEpoch } = {}) {
+  setIdentity({ profileInstanceId, browserSessionEpoch, hintSalt } = {}) {
     if (profileInstanceId !== undefined)
       this.profileInstanceId = profileInstanceId;
     if (browserSessionEpoch !== undefined)
       this.browserSessionEpoch = browserSessionEpoch;
+    if (typeof hintSalt === "string") {
+      this.hintSalt = hintSalt;
+      this.groups?.setHintSalt?.(hintSalt);
+    }
   }
 
   pruneProofs() {
@@ -225,7 +249,7 @@ export class TabsRegistry {
     }
   }
 
-  consumeProof(used, proofId, expiresAt) {
+  assertProofCapacity(used, proofId) {
     this.pruneProofs();
     if (used.has(proofId)) {
       throw new ProtocolError("replay_rejected", "proof was already consumed");
@@ -235,6 +259,10 @@ export class TabsRegistry {
         "resource_exhausted",
         "proof replay cache is full",
       );
+  }
+
+  consumeProof(used, proofId, expiresAt) {
+    this.assertProofCapacity(used, proofId);
     used.set(proofId, expiresAt);
   }
 
@@ -421,6 +449,8 @@ export class TabsRegistry {
       pageId,
       leaseEpoch,
       kind: "page claim",
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
       now: this.now(),
     });
     const rawTabId = tabId ?? tab?.id;
@@ -456,6 +486,23 @@ export class TabsRegistry {
         "logical page is already bound to another live tab",
       );
     }
+    if (
+      record.pageId !== undefined &&
+      (record.pageId !== pageId || record.spaceId !== spaceId)
+    ) {
+      const canRebind =
+        proof.rebind === true &&
+        record.bindingState !== "bound" &&
+        record.bindingState !== "user_owned";
+      if (!canRebind) {
+        throw new ProtocolError(
+          "ambiguous_binding",
+          "live tab is already bound to another logical page",
+        );
+      }
+      this.byPage.delete(record.pageId);
+    }
+    this.byPage.set(pageId, record);
     record.spaceId = spaceId;
     record.pageId = pageId;
     record.ownership = "agent";
@@ -480,7 +527,6 @@ export class TabsRegistry {
     record.sessionEpoch = this.browserSessionEpoch;
     record.claimProofId = proof.proof_id;
     this.hostCreatedTabIds.delete(rawTabId);
-    this.byPage.set(pageId, record);
     this.groups?.claimTab(spaceId, rawTabId);
     this.emit("page.bound", record, { reason: "host_claim" });
     return this.publicRecord(record);
@@ -533,6 +579,8 @@ export class TabsRegistry {
       pageId,
       leaseEpoch,
       kind: "page creation",
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
       now: this.now(),
     });
     if (isRestrictedUrl(url))
@@ -639,6 +687,8 @@ export class TabsRegistry {
       requireExpiry: true,
       profileInstanceId: this.profileInstanceId,
       browserSessionEpoch: this.browserSessionEpoch,
+      requireProfileInstanceId: true,
+      requireBrowserSessionEpoch: true,
       now: this.now(),
     });
     if (
@@ -662,6 +712,8 @@ export class TabsRegistry {
       tabHint,
       profileInstanceId: this.profileInstanceId,
       browserSessionEpoch: this.browserSessionEpoch,
+      requireProfileInstanceId: true,
+      requireBrowserSessionEpoch: true,
       now: this.now(),
     });
     this.pruneProofs();
@@ -674,6 +726,8 @@ export class TabsRegistry {
         "adoption proof or intent ticket was already consumed",
       );
     }
+    this.assertProofCapacity(this.usedAdoptionProofs, ownershipProof.proof_id);
+    this.assertProofCapacity(this.usedIntentTickets, intentTicket.ticket_id);
     const candidates = [...this.byRawTab.values()].filter(
       (record) =>
         record.ownership === "unmanaged" &&
@@ -700,6 +754,8 @@ export class TabsRegistry {
       tabHint,
       profileInstanceId: this.profileInstanceId,
       browserSessionEpoch: this.browserSessionEpoch,
+      requireProfileInstanceId: true,
+      requireBrowserSessionEpoch: true,
       now: this.now(),
     });
     logicalProof(ticketProof, {
@@ -713,6 +769,8 @@ export class TabsRegistry {
       tabHint,
       profileInstanceId: this.profileInstanceId,
       browserSessionEpoch: this.browserSessionEpoch,
+      requireProfileInstanceId: true,
+      requireBrowserSessionEpoch: true,
       now: this.now(),
     });
     onDispatch();
@@ -905,6 +963,7 @@ export class TabsRegistry {
       tabHint: expectedTabHint,
       profileInstanceId: this.profileInstanceId,
       browserSessionEpoch: this.browserSessionEpoch,
+      requireBrowserSessionEpoch: true,
       now: this.now(),
     });
     if (proof.ownership !== "agent") {
