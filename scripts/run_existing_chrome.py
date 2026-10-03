@@ -2,8 +2,9 @@
 """Run the Phase 0 existing-Chrome coexistence probe.
 
 The default lane is an offline, deterministic fixture-contract check.  Headed
-lanes are intentionally fail-closed: they only accept an explicit, existing
-harness descriptor and never launch, download, attach to, or control Chrome.
+lanes use only the public host-backed direct CLI against an already-running
+extension bridge.  This runner never launches Chrome, discovers or attaches to
+CDP, accepts a copied debugger endpoint, or treats a descriptor as live proof.
 The report contains logical scenario names only; browser IDs, secrets, paths,
 and page bodies are never persisted.
 """
@@ -12,9 +13,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
+import selectors
+import shutil
+import signal
+import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +36,19 @@ DEFAULT_ARTIFACT_ROOT = (ROOT / "artifacts" / "p0-coexistence").resolve()
 MAX_REPORT_BYTES = 64 * 1024
 MAX_ARTIFACT_FILES = 8
 MAX_EXISTING_ARTIFACT_BYTES = 512 * 1024
+MAX_CLI_STDOUT_BYTES = 128 * 1024
+MAX_CLI_STDERR_BYTES = 16 * 1024
+MAX_CLI_TIMEOUT_SECONDS = 15.0
+MAX_OPERATOR_CHECKPOINT_SECONDS = 60.0
+MAX_OPERATOR_LINE_CHARS = 160
+MAX_LIVE_RECEIPTS = 96
 
 DESCRIPTOR_SCHEMA_VERSION = 2
+DIRECT_CLI_ENV = "AGENTYC_CLI"
+DIRECT_CLI_DEFAULT = ROOT / "target" / "debug" / "agentyc"
+CHECKPOINT_ENV = "AGENTYC_EXISTING_CHROME_OPERATOR_CHECKPOINT"
+CHECKPOINT_TOKEN_PREFIX = "AGENTYC_EXISTING_CHROME_CHECKPOINT_V1"
+LIVE_PRINCIPALS = ("agent-a", "agent-b")
 REQUIRED_LIVE_SCENARIOS = (
     "user-tab-preservation",
     "two-space-isolation",
