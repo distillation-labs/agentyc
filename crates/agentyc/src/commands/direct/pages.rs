@@ -130,6 +130,8 @@ fn inventory(context: &DirectContext, args: PageInventoryArgs) -> DirectResult<V
             "space_id": space_id,
             "pages": inventory.pages,
             "groups": inventory.groups,
+            "safety": inventory.safety,
+            "recovery_observed": inventory.recovery_observed,
         }));
     }
 
@@ -141,5 +143,7 @@ fn inventory(context: &DirectContext, args: PageInventoryArgs) -> DirectResult<V
         "space_id": remote_string(&response, "space_id")?,
         "pages": remote_field(&response, "pages")?,
         "groups": remote_field(&response, "groups")?,
+        "safety": remote_field(&response, "safety")?,
+        "recovery_observed": remote_field(&response, "recovery_observed")?,
     }))
 }
