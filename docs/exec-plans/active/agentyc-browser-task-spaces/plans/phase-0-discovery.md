@@ -11,20 +11,21 @@ depends_on: none
 
 ## Objective
 
-Prove the target product boundary before implementation: a normal user-approved Chrome profile, an installed MV3 extension, a Native Messaging host, one host broker, two independent agent clients, and no copied CDP URL or automatic browser launch. Convert all remaining Chrome, permissions, profile, protocol, token, and performance assumptions into signed parameters.
+Prove the target product boundary before activating later phases or rollout: a normal user-approved Chrome profile, an installed MV3 extension, a Native Messaging host, one host broker, two independent agent clients, and no copied CDP URL or automatic browser launch. Convert all remaining Chrome, permissions, profile, protocol, token, and performance assumptions into signed parameters.
 
 ## Handoff in
 
 - **Inputs:** revised README; `research/decision-supersession.md`; S-018–S-025; current crates and tests; read-only ego-lite reference.
-- **Must already be true:** production implementation remains gated; Phase 0 test/probe scaffolding may change, while existing production crates are not migrated by this plan.
+- **Must already be true:** later-phase activation and production rollout remain gated. Core/host/extension/direct-client slices already exist; their presence and deterministic tests are not live proof. This Phase 0 audit does not authorize further production migration.
 - **Do not reopen:** existing Chrome is the default; MCP is adapter-only; no automatic browser launch/download; task spaces/pages are canonical; raw IDs and `[id] name` are forbidden in primary output.
 
 ## Confirmed facts
 
-- Current CLI launches a temporary profile when no `--cdp-url` is supplied: `crates/agentyc/src/main.rs::run_action`, `crates/agentyc-runtime/src/lib.rs::BrowserRuntime::open`, `crates/agentyc-browser/src/launcher.rs`.
-- Current browser state assumes one `active_page`: `crates/agentyc-browser/src/session.rs`.
-- Current MCP owns browser/server state and lazily opens a browser: `crates/agentyc-mcp/src/tools/mod.rs`, `tools/navigation.rs`, `lib.rs`.
-- Chrome remote-debugging switches cannot be the default-profile bridge from Chrome 136 (S-018).
+- The historical/explicit legacy CLI path launches a temporary profile when no `--cdp-url` is supplied: `crates/agentyc/src/main.rs::run_action`, `crates/agentyc-runtime/src/lib.rs::BrowserRuntime::open`, `crates/agentyc-browser/src/launcher.rs`.
+- The legacy browser session assumes one `active_page`: `crates/agentyc-browser/src/session.rs`.
+- The historical/explicit legacy MCP path owns browser/server state and lazily opens a browser: `crates/agentyc-mcp/src/tools/mod.rs`, `tools/navigation.rs`, `lib.rs`.
+- Normal direct CLI and host-backed MCP clients use the owner-only local socket; only the explicit offline seam constructs a fake broker. The Chrome-launched `agentyc-native-host` owns the durable broker and a separate Native Messaging stdio bridge. See [the host-backed probe audit](../../../../../research/phase-0-host-backed-probe.md).
+- Chrome 136+ ignores remote-debugging port/pipe switches against the default data directory unless a non-standard `--user-data-dir` is supplied (S-018). The product's existing-profile lane independently forbids copied CDP endpoints, profile copies, launch, and download; this is not a claim that Chrome forbids every opt-in debugging mechanism.
 - `chrome.debugger` requires a sensitive permission, has an allowlisted CDP domain set, and supports flat related sessions from Chrome 125 (S-019).
 - Native Messaging has exact-origin registration and bounded messages; it is not itself automation (S-020).
 - MV3 workers restart and cannot be the authoritative lease/ledger owner (S-021).
@@ -35,7 +36,7 @@ Prove the target product boundary before implementation: a normal user-approved 
 - A stable Web Store/managed extension ID is the production distribution identity; a pinned `key` gives the unpacked-development build a stable separate ID. Unpacked development is for trusted personal development and is not production distribution evidence.
 - A profile-scoped extension instance UUID is only a binding selector, never authentication. First enrollment and every rebind require explicit user confirmation; mismatch, copied profile, reinstall, storage reset, or extension-ID change enters `rebind_required` and fences prior authority.
 - A native host shim can forward to one owner-readable local host socket without creating a second broker when Chrome reconnects; direct same-user execution of the native binary is not cryptographically distinguishable from Chrome-launched execution.
-- `Accessibility`, `DOM`, `DOMSnapshot`, `Input`, `Network`, `Page`, `Runtime`, `Target`, `IO`, and `Log` are sufficient for the core capability set; missing domains become typed unsupported results.
+- Chrome exposes selected debugger domains including `Target`, but the current product method allowlist only covers selected `Accessibility`, `DOM`, `DOMSnapshot`, `Input`, `Network`, `Page`, `Runtime`, `IO`, and `Log` methods and denies `Target` commands. Root-target support does not establish child-session/OOPIF execution. Flat sessions require explicit routing; auto-attach is not recursive. DevTools/user cancellation and enterprise attach denials must fail closed, not trigger a CDP fallback.
 - A side panel is available for the supported Chrome floor and can expose pause/takeover/finish without stealing focus unless the user opens it.
 - The chosen tokenizer adapter represents deployed coding-agent measurements; bytes/chars are reported separately.
 
@@ -51,7 +52,7 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 
 ### Current execution blocker
 
-The installed branded Chrome rejects command-line unpacked-extension loading. The P0-T2 replacement uses the public trusted browser-target CDP `Extensions.loadUnpacked` API in an owned disposable profile, verifies `Extensions.getExtensions` identity/path/version/enabled state, runs the probe, uninstalls the exact extension, and verifies post-uninstall absence. The live Chrome 154 run passed with no file picker, private extension APIs, or manual acknowledgement. P0-T6 now has a live managed benchmark with the exact 64-cell/64,000-sample matrix, and P0-T7 has live macOS disposable lifecycle evidence accepted by the installation drill. The MV3 development manifest now has a stable unpacked-development identity distinct from the probe, includes the required distribution icon assets, explicitly disallows incognito, and registration derives the exact host origin from that manifest. The production Native Messaging bridge, exact-origin registration, owner-only local socket, direct CLI client, and remote MCP client are implemented and tested. The remaining blocker is P0-T5: the current checkout has no independently enrolled production extension in the existing user profile and `run_existing_chrome.py` still has no live ten-scenario executor, so no live coexistence artifact exists. Owner: Japneet Kalkat. Impact: Phase 0 remains active and Phase 1 cannot be activated. Release posture: blocked; no coexistence gate is inferred from managed disposable evidence. Next action: use an approved production extension enrollment/distribution path, then capture live evidence without launching, attaching to, or mutating arbitrary Chrome.
+P0-T2 has recorded Chrome 154 test-extension/test-host evidence in an owned disposable profile. Its public browser-target `Extensions.loadUnpacked`/`getExtensions`/`uninstall` flow is experimental and version-observed; fixture/control-page CDP instrumentation is also used. It is not a production-profile fallback or a real broker coexistence test. The product Native Messaging bridge, exact-origin registration, owner-only socket, direct CLI, and host-backed MCP slices exist, but no independently captured existing-user-profile coexistence evidence is available. `run_existing_chrome.py` currently validates descriptors; it does not execute the ten scenarios. P0-T6/P0-T7 artifacts pass current checkers but leave the stronger product/tokenizer/rollback requirements open. Owner: Japneet Kalkat. Impact: Phase 0 stays active and Phase 1 cannot be activated. Release posture: blocked. Next action: verify approved product extension/host/profile enrollment and capture real host-backed scenarios with [operator checkpoints](../../../../../research/phase-0-host-backed-probe.md); do not launch, debug, or mutate arbitrary Chrome.
 
 ## Scope
 
@@ -74,18 +75,18 @@ The installed branded Chrome rejects command-line unpacked-extension loading. Th
 - Changing default CLI/MCP behavior.
 - Choosing visual branding beyond functional side-panel states.
 
-## Installation evidence split (planned contract; unproven)
+## Installation evidence split (checker evidence versus product proof)
 
 Installation evidence has two separate targets and statuses:
 
 - **Installation preflight:** a read-only registration/origin/host prerequisite check. It is required before the live Native Messaging probe. `--check-install` only checks prerequisites; it does not prove installation, update, uninstall, downgrade, rollback, or user-tab preservation.
-- **Explicit installation drill:** a separate planned release-evidence target using a clean profile to exercise install, update, uninstall, downgrade, and rollback, and to verify that the user's existing Chrome and tabs remain untouched. This is the P0-T7 drill, not the P0-T3 preflight.
+- **Explicit installation drill:** `run_install_lifecycle.py` records staged test-extension load/reload/uninstall in an owned disposable Chrome; `run_install_drill.py` validates that lifecycle record separately from registration. This is P0-T7 evidence, not the P0-T3 preflight. The runner-local ledger, one owned fixture page, and process-liveness kill-switch fields do not prove production ledger rollback, mutation fencing, or existing-user-tab preservation.
 
-The test-manifest contract must name preflight and drill targets separately, record separate statuses, and express the live Native Messaging probe's dependency on the read-only preflight. No combined live-probe target may treat `--check-install` as installation evidence. Neither target is claimed to have run.
+The test manifest names preflight and drill targets separately. No combined live-probe target may treat `--check-install` as installation evidence. Archived macOS disposable lifecycle/drill artifacts pass the current checker; that result is not proof of the full P0-T7 done-when contract.
 
 ## Affected surfaces
 
-- **Files/tests:** add test-only probes under `extension/probes/` and `tests/probes/`; use the existing `crates/agentyc-tests` target or a standalone probe harness, not the not-yet-created `agentyc-host` crate; add local fixtures under `tests/fixtures/browser-task-spaces/` and `tests/fixtures/mcp/`; add `tests/test-manifest.yaml`, `tests/harness/`, `tests/replay/`, and `tests/fixtures/browser-task-spaces/`; write `research/phase-0-baseline.md` and artifacts under `artifacts/`.
+- **Files/tests:** add test-only probes under `extension/probes/` and `tests/probes/`; use the existing `crates/agentyc-tests` target, standalone probes, or explicitly scoped probes of the now-existing `agentyc-host` path; add local fixtures under `tests/fixtures/browser-task-spaces/` and `tests/fixtures/mcp/`; add `tests/test-manifest.yaml`, `tests/harness/`, `tests/replay/`, and `tests/fixtures/browser-task-spaces/`; write `research/phase-0-baseline.md` and artifacts under `artifacts/`.
 - **Contracts/data:** baseline schema for Chrome version, extension ID/mode, permissions, host handshake, profile instance, latency, round trips, tokens, scans, RSS, event loss, and safety outcomes.
 - **Ownership:** probe owns its temporary test data; it must not mutate user tabs outside an explicit test profile; production broker remains unchanged.
 
@@ -136,21 +137,21 @@ The test-manifest contract must name preflight and drill targets separately, rec
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T5 — Measure existing-profile coexistence, lifecycle epochs, and user-control safety.
-  - **Files/surfaces:** headed test profile, extension probe, local fixture pages, `tests/browser_task_spaces_existing_chrome.rs` registered in `crates/agentyc-tests/Cargo.toml` with its required harness dependencies, and `scripts/run_existing_chrome.py`.
+  - **Files/surfaces:** approved existing user profile, product `extension/` and `com.agentyc.host`/broker/local-socket path, local fixtures, the existing `tests/browser_task_spaces_existing_chrome.rs` fixture smoke, and `scripts/run_existing_chrome.py` descriptor validator. A real ten-scenario executor and independent capture remain prerequisites, not implemented by the validator.
   - **Done when:** the required feasibility scenarios pass with zero user-tab closes, zero focus theft outside explicit user actions, zero cross-space successful mutations, correct pause/takeover/return semantics, and explicit profile-sharing warnings; browser-session, worker-instance, connection, and broker epochs are observed separately; multiple Chrome profiles, incognito windows, extension reinstall/update, copied-profile identity mismatch, and stale-ledger attachment are either supported with proof or rejected before mutation authority. Takeover also proves the extension-side fence barrier drains/rejects lower-epoch commands queued in the host, Native Messaging pipe, worker, debugger, and content-script bridge.
-  - **Validation:** `python3 scripts/run_existing_chrome.py --headed --spaces 2 --agents 2 --artifact-dir artifacts/p0-coexistence`; run each scenario with deterministic seeds and at least 200 valid latency samples where a tail metric gates; inject user tab creation/activation/input/move/close, group edits, DevTools attach/detach, worker termination, host crash, Native Messaging EOF, renderer/Chrome restart, sleep/wake, and takeover failure after each fence step; save trace, environment manifest, screenshots, and replay command.
+  - **Validation:** after independent live capture, validate the schema-2 descriptor with `python3 scripts/run_existing_chrome.py --headed --require-live --harness artifacts/p0-coexistence/enrollment.json --spaces 2 --agents 2 --artifact-dir artifacts/p0-coexistence`. That command does not execute scenarios; without executed evidence it fails with `live_descriptor_validated_not_executed`. Follow [the operator checkpoints](../../../../../research/phase-0-host-backed-probe.md) for enrollment, human focus/input, takeover/return, debugger cancellation, approved worker/host/Chrome restart and extension update, and final cleanup. Required fault injections, seeded traces, screenshots, and ≥200 valid latency samples for gating p95 remain executor requirements, not features of the descriptor validator.
   - **Owner:** Japneet Kalkat.
 
-- [x] P0-T6 — Measure context, latency, and resource baselines.
+- [ ] P0-T6 — Measure context, latency, and resource baselines.
   - **Files/surfaces:** `tests/benchmark.rs`; new registered `tests/direct_benchmark.rs`, `tests/browser_task_spaces_existing_chrome.rs`; `scripts/run_direct_benchmark.py`; test tokenizer adapter; `docs/release-gate.md`.
   - **Done when:** report includes time to first useful action, warm metadata/action/wait p50/p95/p99, SDK batch versus separate CLI calls, transport/UTF-8/serialized/model-context token counts with tokenizer metadata, clean-snapshot DOM scans, delta/full actionable-control coverage, Chrome CPU/RSS, host RSS, event lag, reconnect time, stale-ref/unknown rates, and human-tab responsiveness. It contains a committed baseline manifest with environment, fixture hash, cache state, concurrency, sample count, and confidence intervals.
-  - **Validation:** `python3 scripts/run_direct_benchmark.py --mode managed --headless --browser-executable /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --warmups 10 --samples 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`. This produced a live 64-cell/64,000-sample committed generation. The managed lane is disposable-browser evidence, not existing-user-Chrome coexistence evidence; thirty samples are smoke-only and cannot gate p95/p99.
+  - **Validation:** `python3 scripts/run_direct_benchmark.py --mode managed --headless --browser-executable /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --warmups 10 --samples 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`. The archived live 64-cell/64,000-sample generation passes the current performance checker. It uses disposable CDP instrumentation: byte/4 token estimates, three evaluations versus one for batching, CDP reconnect, Python runner RSS, and page-evaluation responsiveness. Cache/delta measurements are runner-local. It does not satisfy the production tokenizer, host/extension/CLI/SDK end-to-end, or headed human-coexistence requirements above, so P0-T6 remains open. Thirty samples are smoke-only and cannot gate p95/p99.
   - **Owner:** Japneet Kalkat.
 
-- [x] P0-T7 — Run the explicit installation drill, separate from installation preflight.
-  - **Files/surfaces:** planned `install/native-messaging/`, extension package metadata, `scripts/run_install_drill.py`, `docs/installation.md`; no default rollout changes. The task must publish macOS/Linux/Windows registration, signing, update, uninstall, and downgrade assumptions even when a platform is deferred.
+- [ ] P0-T7 — Run the explicit installation drill, separate from installation preflight.
+  - **Files/surfaces:** existing `install/native-messaging/`, extension package metadata, `scripts/register_native_host.py`, `scripts/run_install_lifecycle.py`, `scripts/run_install_drill.py`, and `docs/installation.md`; no default rollout changes. The task must publish macOS/Linux/Windows registration, signing, update, uninstall, and downgrade assumptions even when a platform is deferred.
   - **Done when:** macOS user-level registration works; Linux/Windows support is either tested or explicitly deferred with an owner; stable/unpacked extension IDs and host manifests are documented; install, update, uninstall, downgrade, and rollback leave user Chrome and tabs unchanged.
-  - **Validation:** `python3 scripts/run_install_lifecycle.py --run --artifact-dir artifacts/p0-installation`, followed by `python3 scripts/run_install_drill.py --drill --required --extension-id hlnmcimoechnbccahemchokemgceaffp --clean-profile --lifecycle-record artifacts/p0-installation/lifecycle-record.json --artifact-dir artifacts/p0-installation`. The macOS disposable-profile lifecycle record and drill report pass install, update, uninstall, downgrade, rollback, and rollback-safety checks. Linux/Windows remain explicitly deferred.
+  - **Validation:** `python3 scripts/run_install_lifecycle.py --run --artifact-dir artifacts/p0-installation`, followed by `python3 scripts/run_install_drill.py --drill --required --extension-id hlnmcimoechnbccahemchokemgceaffp --clean-profile --lifecycle-record artifacts/p0-installation/lifecycle-record.json --artifact-dir artifacts/p0-installation`. The archived macOS disposable record/drill passes the current installation checker. The default fixture is `extension/probes/`; version changes are unpacked reloads, preservation checks one owned fixture, and rollback/kill-switch fields use a runner-local ledger and process liveness. Production registration/enrollment, broker mutation rejection and durable-ledger rollback, and existing-user-tab preservation still need observations, so P0-T7 remains open. Linux/Windows remain explicitly deferred with owner Japneet Kalkat.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P0-T8 — Freeze the baseline addendum and phase gates.
@@ -163,7 +164,7 @@ The test-manifest contract must name preflight and drill targets separately, rec
 
 - [ ] No test requires a copied CDP URL or automatically launches/downloads a browser for the target path.
 - [ ] Chrome official distribution constraints are recorded: unpacked is development-only, Web Store is the ordinary-user path, and macOS self-hosting is enterprise-managed.
-- [ ] Every Phase 0 test target is registered and runnable; no validation depends on `agentyc-host` before Phase 3 creates it.
+- [ ] Every Phase 0 validation names existing prerequisites; the existing host-backed path is distinguished from the test-only probe and missing live executor.
 - [ ] Profile binding is treated as enrollment/reconciliation, not authentication; incognito and copied-profile behavior is explicit.
 - [ ] Extension-side takeover fencing and no-replay behavior are tested.
 - [ ] Tests distinguish existing Chrome from temporary managed test Chrome.
