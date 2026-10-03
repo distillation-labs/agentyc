@@ -16,13 +16,14 @@ import json
 import math
 import os
 import re
+import select
 import selectors
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,7 @@ DIRECT_CLI_DEFAULT = ROOT / "target" / "debug" / "agentyc"
 CHECKPOINT_ENV = "AGENTYC_EXISTING_CHROME_OPERATOR_CHECKPOINT"
 CHECKPOINT_TOKEN_PREFIX = "AGENTYC_EXISTING_CHROME_CHECKPOINT_V1"
 LIVE_PRINCIPALS = ("agent-a", "agent-b")
+_LIVE_EXECUTION_TOKEN = object()
 REQUIRED_LIVE_SCENARIOS = (
     "user-tab-preservation",
     "two-space-isolation",
@@ -109,6 +111,823 @@ _BROWSER_ID = re.compile(r"^[a-p]{32}$")
 
 class ProbeError(ValueError):
     """A deterministic input or fixture contract failure."""
+
+
+class DirectCliResponse:
+    """A bounded, shape-checked response from one public direct-CLI call."""
+
+    def __init__(
+        self,
+        transport: str,
+        ok: bool | None = None,
+        result: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        reason_code: str | None = None,
+    ) -> None:
+        self.transport = transport
+        self.ok = ok
+        self.result = result
+        self.error_code = error_code
+        self.reason_code = reason_code
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    """Stop only the bounded child process group used for one CLI call."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (AttributeError, OSError, ProcessLookupError):
+        try:
+            process.kill()
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        process.wait(timeout=1.0)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _run_bounded_process(
+    argv: list[str],
+    *,
+    env: dict[str, str],
+    timeout: float,
+) -> tuple[str, int | None, bytes, bytes]:
+    """Run one non-shell child without allowing unbounded pipes or hangs."""
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=str(ROOT),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        return "cli_not_found", None, b"", b""
+    except PermissionError:
+        return "cli_not_executable", None, b"", b""
+    except OSError:
+        return "cli_unavailable", None, b"", b""
+
+    streams = {
+        process.stdout: ("stdout", MAX_CLI_STDOUT_BYTES),
+        process.stderr: ("stderr", MAX_CLI_STDERR_BYTES),
+    }
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    selector = selectors.DefaultSelector()
+    for stream, stream_data in streams.items():
+        if stream is not None:
+            selector.register(stream, selectors.EVENT_READ, stream_data)
+
+    status = "completed"
+    deadline = time.monotonic() + timeout
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                status = "cli_timeout"
+                _terminate_process(process)
+                break
+            ready = selector.select(remaining)
+            if not ready:
+                status = "cli_timeout"
+                _terminate_process(process)
+                break
+            for key, _ in ready:
+                stream_name, maximum = key.data
+                try:
+                    chunk = os.read(key.fd, 8192)
+                except OSError:
+                    status = "cli_io_error"
+                    _terminate_process(process)
+                    chunk = b""
+                if not chunk:
+                    try:
+                        selector.unregister(key.fileobj)
+                    except (KeyError, ValueError):
+                        pass
+                    continue
+                buffer = buffers[stream_name]
+                if len(buffer) + len(chunk) > maximum:
+                    status = f"{stream_name}_oversized"
+                    _terminate_process(process)
+                    break
+                buffer.extend(chunk)
+            if status != "completed":
+                break
+
+        if status == "completed":
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                status = "cli_timeout"
+                _terminate_process(process)
+    finally:
+        selector.close()
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+    return status, process.returncode, bytes(buffers["stdout"]), bytes(buffers["stderr"])
+
+
+def _parse_direct_response(
+    stdout: bytes,
+    returncode: int | None,
+) -> DirectCliResponse:
+    """Parse exactly one direct-CLI JSON record and no diagnostic text."""
+    try:
+        text = stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return DirectCliResponse("malformed_response", reason_code="stdout_not_utf8")
+    decoder = json.JSONDecoder()
+    payload = text.lstrip()
+    if not payload:
+        return DirectCliResponse("malformed_response", reason_code="stdout_empty")
+    try:
+        value, end = decoder.raw_decode(payload)
+    except json.JSONDecodeError:
+        return DirectCliResponse("malformed_response", reason_code="stdout_not_json")
+    if payload[end:].strip():
+        return DirectCliResponse("malformed_response", reason_code="multiple_stdout_values")
+    if not isinstance(value, dict) or type(value.get("ok")) is not bool:
+        return DirectCliResponse("malformed_response", reason_code="response_envelope_invalid")
+
+    if value["ok"]:
+        result = value.get("result")
+        if not isinstance(result, dict):
+            return DirectCliResponse("malformed_response", reason_code="success_result_invalid")
+        if returncode != 0:
+            return DirectCliResponse("malformed_response", reason_code="success_exit_code_mismatch")
+        return DirectCliResponse("complete", ok=True, result=result)
+
+    error = value.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    if (
+        not isinstance(code, str)
+        or not code
+        or len(code) > 96
+        or re.fullmatch(r"[a-z0-9_]+", code) is None
+    ):
+        return DirectCliResponse("malformed_response", reason_code="failure_error_invalid")
+    if returncode == 0:
+        return DirectCliResponse("malformed_response", reason_code="failure_exit_code_mismatch")
+    return DirectCliResponse("complete", ok=False, error_code=code)
+
+
+class DirectCli:
+    """Small public-contract client; it never enables offline or CDP modes."""
+
+    def __init__(self, executable: str, *, state_dir: str | None, timeout: float) -> None:
+        if not math.isfinite(timeout) or timeout <= 0 or timeout > MAX_CLI_TIMEOUT_SECONDS:
+            raise ProbeError("direct CLI timeout is outside the bounded range")
+        self.executable = executable
+        self.state_dir = state_dir.strip() if isinstance(state_dir, str) and state_dir.strip() else None
+        self.timeout = timeout
+        self.environment = os.environ.copy()
+
+    def call(self, command: list[str], *, principal: str) -> DirectCliResponse:
+        if principal not in LIVE_PRINCIPALS:
+            return DirectCliResponse("invalid_request", reason_code="principal_not_allowed")
+        if not command or any(not isinstance(item, str) or not item for item in command):
+            return DirectCliResponse("invalid_request", reason_code="command_invalid")
+        unsafe_options = {"--offline", "--cdp-url", "--websocket-url", "--target-id", "--session-id", "--tab-id"}
+        if any(item.split("=", 1)[0] in unsafe_options for item in command):
+            return DirectCliResponse("invalid_request", reason_code="unsafe_cli_option")
+
+        argv = [self.executable]
+        if self.state_dir is not None:
+            argv.extend(("--state-dir", self.state_dir))
+        argv.extend(("--principal", principal, "--json"))
+        argv.extend(command)
+        status, returncode, stdout, _stderr = _run_bounded_process(
+            argv,
+            env=self.environment,
+            timeout=self.timeout,
+        )
+        if status != "completed":
+            return DirectCliResponse(status, reason_code=status)
+        return _parse_direct_response(stdout, returncode)
+
+
+def resolve_direct_cli(value: str | None) -> tuple[str | None, str]:
+    """Resolve an executable path or command name without invoking a shell."""
+    configured = value if value is not None else os.environ.get(DIRECT_CLI_ENV)
+    if configured is not None:
+        candidate = configured.strip()
+        if not candidate or any(character in candidate for character in "\x00\r\n"):
+            return None, "cli_not_configured"
+        path_candidate = Path(candidate).expanduser()
+        if path_candidate.is_absolute() or "/" in candidate or "\\" in candidate:
+            if not path_candidate.is_absolute():
+                path_candidate = ROOT / path_candidate
+            if path_candidate.is_file() and os.access(path_candidate, os.X_OK):
+                return str(path_candidate), "configured"
+            return None, "cli_not_executable"
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved, "configured"
+        return None, "cli_not_found"
+
+    if DIRECT_CLI_DEFAULT.is_file() and os.access(DIRECT_CLI_DEFAULT, os.X_OK):
+        return str(DIRECT_CLI_DEFAULT), "repository_debug_binary"
+    return None, "cli_not_found"
+
+
+def _fake_host_requested() -> bool:
+    return os.environ.get("AGENTYC_FAKE_HOST", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _logical_id(value: Any, prefix: str) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 < len(value) <= 128
+        and value.startswith(prefix)
+        and re.fullmatch(r"[A-Za-z0-9_-]+", value) is not None
+    )
+
+
+def _positive_integer(value: Any) -> bool:
+    return type(value) is int and value > 0
+
+
+def _host_status_observation(response: DirectCliResponse) -> tuple[dict[str, Any] | None, str | None]:
+    if response.transport != "complete":
+        return None, response.reason_code or "host_status_transport_unavailable"
+    if response.ok is not True or not isinstance(response.result, dict):
+        return None, response.error_code or "host_status_rejected"
+    result = response.result
+    bridge = result.get("bridge")
+    direct_path = result.get("direct_path")
+    capabilities = bridge.get("capabilities") if isinstance(bridge, dict) else None
+    if (
+        result.get("lifecycle") != "ready"
+        or not isinstance(bridge, dict)
+        or bridge.get("mode") != "extension"
+        or bridge.get("connected") is not True
+        or bridge.get("test_seam") is not False
+        or not isinstance(capabilities, list)
+        or not capabilities
+        or any(not isinstance(item, str) or len(item) > 64 for item in capabilities)
+        or not isinstance(direct_path, dict)
+        or direct_path.get("browser_auto_launch") is not False
+        or direct_path.get("copied_debug_endpoint") is not False
+        or direct_path.get("logical_ids_only") is not True
+    ):
+        return None, "host_status_does_not_prove_safe_extension_bridge"
+    broker_epoch = result.get("broker_epoch")
+    if not _positive_integer(broker_epoch):
+        return None, "host_status_epoch_invalid"
+    return {
+        "lifecycle": "ready",
+        "bridge_connected": True,
+        "test_seam": False,
+        "capabilities": tuple(capabilities),
+        "broker_epoch": broker_epoch,
+    }, None
+
+
+def _space_create_result(response: DirectCliResponse) -> str | None:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    value = result.get("space_id")
+    return value if result.get("lifecycle") == "created" and _logical_id(value, "space_") else None
+
+
+def _claim_result(response: DirectCliResponse, expected_space: str) -> int | None:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    lease = result.get("lease")
+    epoch = lease.get("lease_epoch") if isinstance(lease, dict) else None
+    if (
+        result.get("space_id") != expected_space
+        or result.get("lifecycle") != "agent_owned"
+        or not isinstance(lease, dict)
+        or not _positive_integer(epoch)
+    ):
+        return None
+    return epoch
+
+
+def _page_create_result(response: DirectCliResponse, expected_space: str) -> str | None:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    page_id = result.get("page_id")
+    if result.get("space_id") != expected_space or not _logical_id(page_id, "page_"):
+        return None
+    return page_id
+
+
+def _page_list_count(response: DirectCliResponse, expected_space: str) -> int | None:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    pages = result.get("pages")
+    if result.get("space_id") != expected_space or not isinstance(pages, list) or len(pages) > 256:
+        return None
+    return len(pages)
+
+
+def _event_count(response: DirectCliResponse) -> int | None:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    events = response.result.get("events")
+    resume = response.result.get("resume")
+    if not isinstance(events, list) or len(events) > 1024 or resume not in {"accepted", "resync_required"}:
+        return None
+    return len(events)
+
+
+def _takeover_result(response: DirectCliResponse, expected_space: str, old_epoch: int) -> int | None:
+    if response.transport != "complete" or response.ok is not True or not isinstance(response.result, dict):
+        return None
+    result = response.result
+    epoch = result.get("lease_epoch")
+    if (
+        result.get("space_id") != expected_space
+        or result.get("lifecycle") != "agent_owned"
+        or result.get("fence_acknowledged") is not True
+        or type(epoch) is not int
+        or epoch <= old_epoch
+    ):
+        return None
+    return epoch
+
+
+def _lifecycle_result(response: DirectCliResponse, expected: str) -> bool:
+    return bool(
+        response.transport == "complete"
+        and response.ok is True
+        and isinstance(response.result, dict)
+        and response.result.get("lifecycle") == expected
+    )
+
+
+def _expected_rejection(response: DirectCliResponse, code: str) -> bool:
+    return response.transport == "complete" and response.ok is False and response.error_code == code
+
+
+def _receipt(
+    operation: str,
+    response: DirectCliResponse,
+    *,
+    expected_rejection: bool = False,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "operation": operation,
+        "source": "direct_cli",
+        "current_run": True,
+        "observed": response.transport == "complete",
+        "ok": response.ok is True,
+    }
+    if response.transport != "complete":
+        record["reason_code"] = response.reason_code or "cli_unavailable"
+    elif response.ok is True:
+        record["result_receipt"] = "accepted"
+    else:
+        record["failure_code"] = response.error_code or "direct_cli_rejected"
+        record["expected_rejection"] = expected_rejection
+    return record
+
+
+def _append_receipt(
+    receipts: list[dict[str, Any]],
+    operation: str,
+    response: DirectCliResponse,
+    *,
+    expected_rejection: bool = False,
+) -> None:
+    if len(receipts) < MAX_LIVE_RECEIPTS:
+        receipts.append(_receipt(operation, response, expected_rejection=expected_rejection))
+
+
+def _initial_scenarios() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "status": "not_observed",
+            "observation": {"source": "none", "observed": False, "reason_code": "not_attempted"},
+        }
+        for name in REQUIRED_LIVE_SCENARIOS
+    ]
+
+
+def _set_scenario(
+    scenarios: list[dict[str, Any]],
+    name: str,
+    status: str,
+    reason_code: str,
+    *,
+    receipt_refs: tuple[str, ...] = (),
+    operator_acknowledged: bool = False,
+) -> None:
+    for scenario in scenarios:
+        if scenario["name"] == name:
+            observation: dict[str, Any] = {
+                "source": "direct_cli" if receipt_refs else "none",
+                "observed": bool(receipt_refs),
+                "reason_code": reason_code,
+            }
+            if receipt_refs:
+                observation["receipt_refs"] = list(receipt_refs)
+            if operator_acknowledged:
+                observation["operator_acknowledged"] = True
+            scenario["status"] = status
+            scenario["observation"] = observation
+            return
+
+
+def _operator_checkpoint(name: str, timeout: float) -> tuple[bool, str]:
+    """Accept only a fixed acknowledgement; it is never used as evidence."""
+    token = f"{CHECKPOINT_TOKEN_PREFIX} {name} ACK"
+    print(
+        f"Operator checkpoint required for {name}. Enter exactly: {token}",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        with ExitStack() as stack:
+            stream = sys.stdin
+            if not stream.isatty():
+                stream = stack.enter_context(open("/dev/tty", "r", encoding="utf-8"))
+            ready, _, _ = select.select([stream], [], [], timeout)
+            if not ready:
+                return False, "checkpoint_timeout"
+            line = stream.readline(MAX_OPERATOR_LINE_CHARS + 1)
+            if len(line) > MAX_OPERATOR_LINE_CHARS:
+                return False, "checkpoint_line_oversized"
+            acknowledged = line.strip() == token
+            return acknowledged, "acknowledged" if acknowledged else "checkpoint_token_invalid"
+    except (OSError, ValueError):
+        return False, "controlling_tty_unavailable"
+
+
+def _live_unavailable(reason_code: str, *, cli_reason: str | None = None) -> dict[str, Any]:
+    live: dict[str, Any] = {
+        "requested": True,
+        "required": True,
+        "status": "live_required_unavailable",
+        "executed": False,
+        "evidence_status": "direct_cli_unavailable",
+        "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
+        "reason": (
+            "no valid existing-Chrome/extension harness descriptor is accepted; "
+            "host-backed direct CLI preflight is unavailable"
+        ),
+        "reason_code": reason_code,
+        "browser": {"launch": False, "download": False, "cdp_url_used": False, "attached": False},
+        "scenarios": _initial_scenarios(),
+        "release_gates": {"eligible": False, "reason_code": "live_observation_incomplete"},
+    }
+    if cli_reason:
+        live["cli_status"] = cli_reason
+    return live
+
+
+def orchestrate_live(
+    *,
+    cli_path: str | None,
+    state_dir: str | None,
+    cli_timeout: float,
+    operator_checkpoint: bool,
+    checkpoint_timeout: float,
+) -> dict[str, Any]:
+    """Run only host-backed logical operations and return bounded observations."""
+    if _fake_host_requested():
+        return _live_unavailable("fake_host_environment_forbidden")
+    executable, resolution = resolve_direct_cli(cli_path)
+    if executable is None:
+        return _live_unavailable(resolution, cli_reason=resolution)
+
+    cli = DirectCli(executable, state_dir=state_dir, timeout=cli_timeout)
+    receipts: list[dict[str, Any]] = []
+    scenarios = _initial_scenarios()
+    spaces: list[dict[str, Any]] = []
+    failures: list[str] = []
+    preflight = cli.call(["host", "status"], principal=LIVE_PRINCIPALS[0])
+    _append_receipt(receipts, "host.status.preflight", preflight)
+    host_observation, host_reason = _host_status_observation(preflight)
+    if host_observation is None:
+        live = _live_unavailable(host_reason or "host_status_invalid", cli_reason=resolution)
+        live["executed"] = preflight.transport == "complete"
+        live["preflight"] = {
+            "observed": False,
+            "executor_receipt": preflight.transport == "complete",
+            "reason_code": host_reason,
+        }
+        live["receipts"] = receipts
+        return live
+    if "action" not in host_observation["capabilities"]:
+        live = _live_unavailable("required_action_capability_missing", cli_reason=resolution)
+        live["executed"] = True
+        live["preflight"] = {"observed": True, "bridge": "extension", "action_capability": False}
+        live["receipts"] = receipts
+        return live
+
+    live: dict[str, Any] = {
+        "requested": True,
+        "required": True,
+        "status": "live_observation_incomplete",
+        "executed": True,
+        "evidence_status": "live_observation_incomplete",
+        "provenance": "direct_cli_current_run",
+        "descriptor_policy": "descriptors_not_accepted_as_live_evidence",
+        "preflight": {
+            "observed": True,
+            "source": "direct_cli",
+            "bridge": "extension",
+            "lifecycle": "ready",
+            "action_capability": True,
+            "direct_path_safe": True,
+        },
+        "browser": {"launch": False, "download": False, "cdp_url_used": False, "attached": False},
+        "scenarios": scenarios,
+        "release_gates": {"eligible": False, "reason_code": "required_browser_observations_missing"},
+        "_execution_token": _LIVE_EXECUTION_TOKEN,
+    }
+
+    try:
+        for label, principal, page_label in (
+            ("research", LIVE_PRINCIPALS[0], "results"),
+            ("testing", LIVE_PRINCIPALS[1], "app"),
+        ):
+            create_operation = f"space.create.{label}"
+            create = cli.call(["space", "create", "--label", label], principal=principal)
+            _append_receipt(receipts, create_operation, create)
+            space_id = _space_create_result(create)
+            if space_id is None:
+                failures.append(f"{label}_space_create_invalid")
+                continue
+            space = {
+                "label": label,
+                "principal": principal,
+                "space_id": space_id,
+                "lease_epoch": None,
+                "page_id": None,
+                "cleanup_ok": False,
+            }
+            spaces.append(space)
+
+            claim_operation = f"space.claim.{label}"
+            claim = cli.call(["space", "claim", "--space-id", space_id], principal=principal)
+            _append_receipt(receipts, claim_operation, claim)
+            lease_epoch = _claim_result(claim, space_id)
+            if lease_epoch is None:
+                failures.append(f"{label}_space_claim_invalid")
+                continue
+            space["lease_epoch"] = lease_epoch
+
+            page_operation = f"page.create.{label}"
+            page = cli.call(
+                [
+                    "page",
+                    "create",
+                    "--space-id",
+                    space_id,
+                    "--lease-epoch",
+                    str(lease_epoch),
+                    "--label",
+                    page_label,
+                ],
+                principal=principal,
+            )
+            _append_receipt(receipts, page_operation, page)
+            page_id = _page_create_result(page, space_id)
+            if page_id is None:
+                failures.append(f"{label}_planned_page_create_invalid")
+            else:
+                space["page_id"] = page_id
+
+            listed = cli.call(["page", "list", "--space-id", space_id], principal=principal)
+            _append_receipt(receipts, f"page.list.{label}", listed)
+            if _page_list_count(listed, space_id) is None:
+                failures.append(f"{label}_page_list_invalid")
+
+            events = cli.call(
+                ["events", "--space-id", space_id, "--after-sequence", "0", "--limit", "64"],
+                principal=principal,
+            )
+            _append_receipt(receipts, f"events.resume.{label}", events)
+            if _event_count(events) is None:
+                failures.append(f"{label}_events_invalid")
+
+        if len(spaces) == 2 and all(space["lease_epoch"] is not None for space in spaces):
+            first, second = spaces
+            cross_space = cli.call(
+                [
+                    "page",
+                    "create",
+                    "--space-id",
+                    first["space_id"],
+                    "--lease-epoch",
+                    str(first["lease_epoch"]),
+                    "--label",
+                    "cross-space-probe",
+                ],
+                principal=second["principal"],
+            )
+            _append_receipt(receipts, "page.create.cross_space_rejection", cross_space, expected_rejection=True)
+            if _expected_rejection(cross_space, "space_forbidden"):
+                _set_scenario(
+                    scenarios,
+                    "two-space-isolation",
+                    "host_observed",
+                    "cross_space_mutation_rejected_by_host",
+                    receipt_refs=("page.create.cross_space_rejection",),
+                )
+            else:
+                failures.append("cross_space_mutation_rejection_invalid")
+
+            old_epoch = first["lease_epoch"]
+            takeover = cli.call(
+                ["space", "takeover", "--space-id", first["space_id"]],
+                principal=first["principal"],
+            )
+            _append_receipt(receipts, "space.takeover.research", takeover)
+            new_epoch = _takeover_result(takeover, first["space_id"], old_epoch)
+            if new_epoch is None:
+                failures.append("takeover_fence_invalid")
+            else:
+                first["lease_epoch"] = new_epoch
+                stale = cli.call(
+                    [
+                        "page",
+                        "create",
+                        "--space-id",
+                        first["space_id"],
+                        "--lease-epoch",
+                        str(old_epoch),
+                        "--label",
+                        "stale-lease-probe",
+                    ],
+                    principal=first["principal"],
+                )
+                _append_receipt(receipts, "page.create.stale_lease_rejection", stale, expected_rejection=True)
+                if _expected_rejection(stale, "stale_lease"):
+                    _set_scenario(
+                        scenarios,
+                        "takeover-fence",
+                        "host_observed",
+                        "fence_acknowledged_and_stale_epoch_rejected",
+                        receipt_refs=("space.takeover.research", "page.create.stale_lease_rejection"),
+                    )
+                else:
+                    failures.append("stale_epoch_rejection_invalid")
+
+        for space in spaces:
+            if space["lease_epoch"] is None:
+                continue
+            listed = cli.call(["page", "list", "--space-id", space["space_id"]], principal=space["principal"])
+            _append_receipt(receipts, f"page.list.cleanup.{space['label']}", listed)
+            if _page_list_count(listed, space["space_id"]) is None:
+                failures.append(f"{space['label']}_cleanup_page_list_invalid")
+
+    except (KeyError, OSError, TypeError, ValueError):
+        failures.append("live_orchestration_exception")
+    finally:
+        for space in reversed(spaces):
+            lease_epoch = space.get("lease_epoch")
+            space["cleanup_ok"] = False
+            if not isinstance(lease_epoch, int):
+                continue
+            finish = cli.call(
+                [
+                    "space",
+                    "finish",
+                    "--space-id",
+                    space["space_id"],
+                    "--lease-epoch",
+                    str(lease_epoch),
+                ],
+                principal=space["principal"],
+            )
+            _append_receipt(receipts, f"space.finish.{space['label']}", finish)
+            if not _lifecycle_result(finish, "finished"):
+                failures.append(f"{space['label']}_finish_invalid")
+                continue
+            release = cli.call(
+                [
+                    "space",
+                    "release",
+                    "--space-id",
+                    space["space_id"],
+                    "--lease-epoch",
+                    str(lease_epoch),
+                ],
+                principal=space["principal"],
+            )
+            _append_receipt(receipts, f"space.release.{space['label']}", release)
+            if not _lifecycle_result(release, "released"):
+                failures.append(f"{space['label']}_release_invalid")
+            else:
+                space["cleanup_ok"] = True
+
+    if all(
+        scenario["status"] == "not_observed"
+        for scenario in scenarios
+        if scenario["name"] in {"two-space-isolation", "takeover-fence"}
+    ):
+        failures.append("host_scenario_receipts_incomplete")
+
+    cleanup_refs = tuple(
+        receipt["operation"]
+        for receipt in receipts
+        if receipt["operation"].startswith(("space.finish.", "space.release.")) and receipt.get("ok") is True
+    )
+    page_spaces = [space for space in spaces if space.get("page_id") is not None]
+    if page_spaces and all(space.get("cleanup_ok") is True for space in page_spaces):
+        _set_scenario(
+            scenarios,
+            "agent-page-cleanup",
+            "host_observed_not_browser",
+            "planned_logical_pages_released_without_managed_browser_page",
+            receipt_refs=cleanup_refs,
+        )
+
+    if spaces and not all(space.get("cleanup_ok") is True for space in spaces):
+        failures.append("cleanup_incomplete")
+
+    checkpoint_names = (
+        "user-tab-preservation",
+        "focus-stability",
+        "return-control-fresh-lease",
+        "worker-restart-recovery",
+        "host-restart-recovery",
+        "chrome-restart-recovery",
+        "extension-update-recovery",
+    )
+    if operator_checkpoint and not failures:
+        for name in checkpoint_names:
+            acknowledged, checkpoint_status = _operator_checkpoint(name, checkpoint_timeout)
+            checkpoint_record: dict[str, Any] = {
+                "name": name,
+                "acknowledged": acknowledged,
+                "status": checkpoint_status,
+                "evidence": "acknowledgement_only",
+            }
+            live.setdefault("operator_checkpoints", []).append(checkpoint_record)
+            if not acknowledged:
+                _set_scenario(scenarios, name, "operator_checkpoint_required", checkpoint_status)
+                continue
+            after_status = cli.call(["host", "status"], principal=LIVE_PRINCIPALS[0])
+            _append_receipt(receipts, f"checkpoint.host.status.{name}", after_status)
+            after_observation, after_reason = _host_status_observation(after_status)
+            after_events = cli.call(
+                ["events", "--after-sequence", "0", "--limit", "32"],
+                principal=LIVE_PRINCIPALS[0],
+            )
+            _append_receipt(receipts, f"checkpoint.events.resume.{name}", after_events)
+            events_observed = _event_count(after_events) is not None
+            if after_observation is None or not events_observed:
+                _set_scenario(scenarios, name, "operator_checkpoint_required", after_reason or "post_checkpoint_observation_invalid", operator_acknowledged=True)
+                continue
+            if name == "host-restart-recovery" and after_observation["broker_epoch"] != host_observation["broker_epoch"]:
+                _set_scenario(
+                    scenarios,
+                    name,
+                    "host_observed",
+                    "broker_epoch_changed_after_checkpoint",
+                    receipt_refs=(f"checkpoint.host.status.{name}", f"checkpoint.events.resume.{name}"),
+                    operator_acknowledged=True,
+                )
+            else:
+                _set_scenario(
+                    scenarios,
+                    name,
+                    "operator_checkpoint_required",
+                    "operator_acknowledgement_not_browser_observation",
+                    receipt_refs=(f"checkpoint.host.status.{name}", f"checkpoint.events.resume.{name}"),
+                    operator_acknowledged=True,
+                )
+    else:
+        for name in checkpoint_names:
+            _set_scenario(scenarios, name, "operator_checkpoint_required", "operator_checkpoint_not_requested")
+
+    live["scenarios"] = scenarios
+    live["receipts"] = receipts
+    live["cleanup"] = {
+        "spaces_attempted": len(spaces),
+        "spaces_released": sum(1 for receipt in receipts if receipt["operation"].startswith("space.release.") and receipt.get("ok") is True),
+        "status": (
+            "not_attempted"
+            if not spaces
+            else "passed" if all(space.get("cleanup_ok") is True for space in spaces) else "incomplete"
+        ),
+    }
+    live["failures"] = sorted(set(failures))
+    live["status"] = "operator_checkpoint_required" if operator_checkpoint and not failures else "live_observation_incomplete"
+    live["evidence_status"] = "operator_checkpoint_required" if operator_checkpoint and not failures else "live_observation_incomplete"
+    return live
 
 
 def read_json(path: Path) -> Any:
@@ -230,8 +1049,89 @@ def redact(value: Any, depth: int = 0) -> Any:
     return value
 
 
+def _live_evidence_is_complete(live: dict[str, Any]) -> bool:
+    """Allow live green only for receipts produced by this direct-CLI run."""
+    if (
+        live.get("_execution_token") is not _LIVE_EXECUTION_TOKEN
+        or live.get("executed") is not True
+        or live.get("status") != "live_passed"
+        or live.get("evidence_status") != "live_passed"
+        or live.get("provenance") != "direct_cli_current_run"
+        or live.get("descriptor_policy") != "descriptors_not_accepted_as_live_evidence"
+        or live.get("operator_claims_used") is True
+    ):
+        return False
+    browser = live.get("browser")
+    preflight = live.get("preflight")
+    receipts = live.get("receipts")
+    scenarios = live.get("scenarios")
+    if (
+        not isinstance(browser, dict)
+        or browser.get("launch") is not False
+        or browser.get("download") is not False
+        or browser.get("cdp_url_used") is not False
+        or browser.get("attached") is not False
+        or not isinstance(preflight, dict)
+        or preflight.get("observed") is not True
+        or preflight.get("source") != "direct_cli"
+        or not isinstance(receipts, list)
+        or not receipts
+        or not isinstance(scenarios, list)
+        or len(scenarios) != len(REQUIRED_LIVE_SCENARIOS)
+    ):
+        return False
+    receipt_operations: set[str] = set()
+    for receipt in receipts:
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("source") != "direct_cli"
+            or receipt.get("current_run") is not True
+            or receipt.get("observed") is not True
+            or not isinstance(receipt.get("operation"), str)
+        ):
+            return False
+        receipt_operations.add(receipt["operation"])
+    seen: set[str] = set()
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            return False
+        name = scenario.get("name")
+        if name in seen or name not in REQUIRED_LIVE_SCENARIOS or scenario.get("status") != "live_passed":
+            return False
+        seen.add(name)
+        observation = scenario.get("observation")
+        if (
+            not isinstance(observation, dict)
+            or observation.get("source") != "direct_cli"
+            or observation.get("observed") is not True
+            or observation.get("operator_acknowledged") is True
+            or not isinstance(observation.get("receipt_refs"), list)
+            or not observation["receipt_refs"]
+            or any(reference not in receipt_operations for reference in observation["receipt_refs"])
+        ):
+            return False
+    return seen == set(REQUIRED_LIVE_SCENARIOS)
+
+
 def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
-    executed = live.get("executed") is True and live.get("evidence_status") == "live_passed"
+    executed = _live_evidence_is_complete(live)
+    requested_live = mode == "headed"
+    reported_status = live.get("status", "offline_passed") if requested_live else "offline_passed"
+    if requested_live and reported_status == "live_passed" and not executed:
+        reported_status = "live_observation_incomplete"
+    report_live = dict(live)
+    report_live.pop("_execution_token", None)
+    preflight_observed = isinstance(live.get("preflight"), dict) and live["preflight"].get("observed") is True
+    evidence_mode = (
+        "live"
+        if executed
+        else "live_observed_incomplete"
+        if requested_live and preflight_observed
+        else "live_attempted_incomplete"
+        if requested_live and live.get("executed")
+        else "offline"
+    )
+    measured = executed
     return redact_for_persistence(
         {
             "schema_version": 1,
@@ -240,8 +1140,8 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
             "probe": "existing-chrome-coexistence",
             "kind": "existing-chrome-coexistence",
             "mode": mode,
-            "evidence_mode": "live" if executed else "offline",
-            "status": live.get("status", "offline_passed"),
+            "evidence_mode": evidence_mode,
+            "status": reported_status,
             "release_eligible": False,
             "spaces": len(contract["spaces"]),
             "agents": len({item["agent"] for item in contract["spaces"]}),
@@ -250,11 +1150,12 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
                 "fixture_count": len(manifest.get("fixtures", [])),
                 "scenario": contract,
             },
-            "live": live,
-            "enrollment": live.get("enrollment"),
+            "live": report_live,
+            "enrollment": None,
             "scenarios": live.get("scenarios", []),
             "execution_policy": {
-                "attached": executed,
+                "attached": False,
+                "host_executor_used": bool(live.get("executed")),
                 "browser_launch": False,
                 "browser_download": False,
                 "cdp_url_used": False,
@@ -262,13 +1163,13 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
             "safety": {
                 "browser_launch": "never",
                 "browser_download": "never",
-                "user_tab_close": 0 if executed else None,
-                "user_tab_closes": 0 if executed else None,
-                "focus_theft_outside_user_action": 0 if executed else None,
-                "focus_theft": 0 if executed else None,
-                "cross_space_mutations": 0 if executed else None,
-                "stale_agent_mutations": 0 if executed else None,
-                "measurement_status": "measured_live" if executed else "not_measured_offline",
+                "user_tab_close": 0 if measured else None,
+                "user_tab_closes": 0 if measured else None,
+                "focus_theft_outside_user_action": 0 if measured else None,
+                "focus_theft": 0 if measured else None,
+                "cross_space_mutations": 0 if measured else None,
+                "stale_agent_mutations": 0 if measured else None,
+                "measurement_status": "measured_live" if measured else ("not_measured_live_incomplete" if requested_live else "not_measured_offline"),
                 "raw_browser_ids_logged": False,
                 "secrets_logged": False,
             },
@@ -282,7 +1183,8 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
             },
             "limitations": [
                 "Offline mode validates fixture contracts only; it is not evidence from a live Chrome profile.",
-                "This runner never launches, downloads, or attaches to the product browser; live evidence is caller-supplied from an enrolled host/extension descriptor.",
+                "The headed lane invokes only the public host-backed direct CLI and never launches, downloads, or attaches to Chrome or CDP.",
+                "Enrollment descriptors and operator acknowledgements are not accepted as live evidence; current public CLI observations do not expose all ten browser lifecycle scenarios.",
             ],
         }
     )
@@ -432,18 +1334,23 @@ def load_enrolled_descriptor(path_value: str | None) -> dict[str, Any] | None:
     )
 
 
-# Backward-compatible function name; the accepted input is now the strict
-# enrollment descriptor above, never an arbitrary CDP/browser handle.
+# Legacy test helper only. The live execution path deliberately never calls
+# this loader; descriptors cannot establish live evidence.
 def load_harness(path_value: str | None) -> dict[str, Any] | None:
     return load_enrolled_descriptor(path_value)
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--headed", action="store_true", help="require an explicit existing-Chrome harness descriptor")
-    result.add_argument("--require-live", action="store_true", help="same as --headed; fail closed without a supplied harness")
-    result.add_argument("--dry-run", action="store_true", help="validate local fixtures without any live-harness lane")
-    result.add_argument("--harness", help="read-only JSON descriptor for an already-running Chrome and installed extension")
+    result.add_argument("--headed", action="store_true", help="run the existing-Chrome host-backed lane without launching Chrome")
+    result.add_argument("--require-live", action="store_true", help="same as --headed; fail closed unless the live host lane passes")
+    result.add_argument("--dry-run", action="store_true", help="validate local fixtures without any live lane")
+    result.add_argument("--harness", help="legacy input ignored; descriptors never establish live evidence")
+    result.add_argument("--cli", dest="cli_path", help="existing direct CLI executable; never interpreted through a shell")
+    result.add_argument("--state-dir", help="optional direct-CLI host state directory")
+    result.add_argument("--cli-timeout", type=float, default=MAX_CLI_TIMEOUT_SECONDS)
+    result.add_argument("--operator-checkpoint", action="store_true", help="use bounded fixed-token operator checkpoints for unautomated lifecycle steps")
+    result.add_argument("--checkpoint-timeout", type=float, default=30.0)
     result.add_argument("--spaces", type=int, default=2)
     result.add_argument("--agents", type=int, default=2)
     result.add_argument("--artifact-dir", default="artifacts/p0-coexistence")
@@ -454,6 +1361,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.require_live:
         args.headed = True
+    if args.dry_run:
+        if args.headed:
+            print("existing-Chrome probe error: --dry-run cannot be combined with --headed or --require-live", file=sys.stderr)
+            return 2
+        args.headed = False
     if args.spaces < 0 or args.agents < 0:
         print("existing-Chrome probe error: counts must be non-negative", file=sys.stderr)
         return 2
@@ -463,45 +1375,37 @@ def main(argv: list[str] | None = None) -> int:
         validate_artifact_budget(artifact_dir)
         manifest = validate_manifest()
         contract = validate_scenario(args.spaces, args.agents)
+        if not math.isfinite(args.cli_timeout) or args.cli_timeout <= 0 or args.cli_timeout > MAX_CLI_TIMEOUT_SECONDS:
+            raise ProbeError("--cli-timeout must be positive, finite, and bounded")
+        if not math.isfinite(args.checkpoint_timeout) or args.checkpoint_timeout <= 0 or args.checkpoint_timeout > MAX_OPERATOR_CHECKPOINT_SECONDS:
+            raise ProbeError("--checkpoint-timeout must be positive, finite, and bounded")
     except ProbeError as exc:
         print(f"existing-Chrome probe error: {exc}", file=sys.stderr)
         return 2
 
-    live: dict[str, Any] = {"requested": bool(args.headed), "required": bool(args.headed), "status": "not_requested", "executed": False, "evidence_status": "not_requested"}
+    live: dict[str, Any] = {
+        "requested": bool(args.headed),
+        "required": bool(args.headed),
+        "status": "not_requested",
+        "executed": False,
+        "evidence_status": "not_requested",
+    }
     status = "offline_passed"
     if args.headed:
-        harness = load_harness(args.harness or os.environ.get("AGENTYC_EXISTING_CHROME_HARNESS"))
-        if harness is None:
-            status = "live_required_unavailable"
-            live = {
-                "requested": True,
-                "required": True,
-                "status": status,
-                "executed": False,
-                "evidence_status": "descriptor_missing_or_invalid",
-                "reason": "no valid existing-Chrome/extension harness descriptor or enrolled host/extension descriptor was supplied",
-            }
-        else:
-            executed = harness.get("executed") is True and harness.get("evidence_status") == "live_passed"
-            status = "live_passed" if executed else "live_descriptor_validated_not_executed"
-            live = {
-                "requested": True,
-                "required": True,
-                "status": status,
-                "executed": executed,
-                "evidence_status": harness.get("evidence_status"),
-                "enrollment": harness.get("enrollment"),
-                "browser": harness.get("browser"),
-                "profile_scope": harness.get("profile_scope"),
-                "safety": harness.get("safety"),
-                "scenarios": harness.get("scenarios", []),
-                "release_gates": harness.get("release_gates"),
-            }
+        live = orchestrate_live(
+            cli_path=args.cli_path,
+            state_dir=args.state_dir,
+            cli_timeout=args.cli_timeout,
+            operator_checkpoint=bool(
+                args.operator_checkpoint
+                or os.environ.get(CHECKPOINT_ENV, "").strip().lower() in {"1", "true", "yes"}
+            ),
+            checkpoint_timeout=args.checkpoint_timeout,
+        )
+        status = str(live.get("status", "live_required_unavailable"))
 
     report = safe_report(mode="headed" if args.headed else "offline", manifest=manifest, contract=contract, live=live)
-    report["status"] = status
-    if status != "offline_passed":
-        report["limitations"].append("No browser action was executed by this probe; live evidence must come from the supplied harness.")
+    status = str(report.get("status", status))
     add_envelope(report, kind="existing-chrome-coexistence")
     rendered = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
     encoded = rendered.encode("utf-8")
@@ -515,8 +1419,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"existing-Chrome probe error: cannot write bounded report: {exc.__class__.__name__}", file=sys.stderr)
         return 2
     print(rendered, end="")
-    # The runner itself never attaches. A headed lane is green only when the
-    # descriptor includes independently captured, executed live evidence.
     return 0 if (not args.headed or status == "live_passed") else 1
 
 
