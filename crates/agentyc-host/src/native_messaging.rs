@@ -27,8 +27,8 @@ use serde_json::{Map, Value, json};
 use thiserror::Error;
 
 use crate::bridge::{
-    Bridge, BridgeDispatchResult, BridgeReconcileResult, ExtensionEpochs, FenceResult,
-    sanitize_observation_records,
+    Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeStatus, ExtensionEpochs,
+    FenceResult, ObservationSnapshot, sanitize_observation_snapshot,
 };
 
 /// Maximum control payload accepted from or sent to Chrome.
@@ -40,6 +40,8 @@ pub const MAX_NATIVE_CONTROL_BYTES: usize = 1024 * 1024;
 pub const MAX_NATIVE_READ_CHUNK_BYTES: usize = 64 * 1024;
 /// Maximum queued unsolicited events retained for the host.
 pub const MAX_NATIVE_EVENT_QUEUE: usize = 256;
+/// Maximum inbound extension requests retained for the host supervisor.
+pub const MAX_NATIVE_REQUEST_QUEUE: usize = 256;
 /// Maximum number of request/response operations waiting on one connection.
 pub const MAX_NATIVE_PENDING_REQUESTS: usize = 256;
 /// Default time allowed for an extension response.
@@ -191,9 +193,24 @@ struct SessionMetadata {
     capabilities: Vec<Capability>,
 }
 
+/// One validated inbound request waiting for the native-host supervisor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeRequest {
+    /// Extension-generated logical request identity used for response correlation.
+    pub request_id: String,
+    /// Optional extension-generated logical mutation identity.
+    pub action_id: Option<String>,
+    /// Logical host method requested by the extension.
+    pub method: String,
+    /// Untrusted request parameters retained until supervisor validation.
+    pub params: Value,
+}
+
 #[derive(Debug, Default)]
 struct InventoryState {
     pages: BTreeMap<(String, String), Value>,
+    unmanaged_pages: Vec<Value>,
+    groups: Vec<Value>,
     unknown_action_ids: BTreeSet<String>,
     unknown_actions_overflow: bool,
 }
@@ -205,6 +222,7 @@ struct NativeShared {
     pending: Mutex<BTreeMap<String, SyncSender<Result<Value, NativeHostError>>>>,
     timed_out: Mutex<BTreeSet<String>>,
     events: Mutex<VecDeque<Value>>,
+    requests: Mutex<VecDeque<NativeRequest>>,
     closed: Mutex<Option<NativeHostError>>,
     closed_cv: Condvar,
     request_counter: AtomicU64,
@@ -263,6 +281,7 @@ impl NativeMessagingBridge {
             pending: Mutex::new(BTreeMap::new()),
             timed_out: Mutex::new(BTreeSet::new()),
             events: Mutex::new(VecDeque::new()),
+            requests: Mutex::new(VecDeque::new()),
             closed: Mutex::new(None),
             closed_cv: Condvar::new(),
             request_counter: AtomicU64::new(1),
@@ -367,6 +386,34 @@ impl NativeMessagingBridge {
         closed.clone().unwrap_or_else(NativeHostError::disconnected)
     }
 
+    /// Return the first terminal transport error without waiting.
+    pub fn closed(&self) -> Option<NativeHostError> {
+        self.shared
+            .closed
+            .lock()
+            .map(|closed| closed.clone())
+            .unwrap_or_else(|_| {
+                Some(NativeHostError::Unavailable(
+                    "closed state is poisoned".to_owned(),
+                ))
+            })
+    }
+
+    /// Return whether the reader has observed a terminal transport failure.
+    pub fn is_closed(&self) -> bool {
+        self.closed().is_some()
+    }
+
+    /// Return and clear bounded inbound extension requests without waiting.
+    pub fn drain_requests(&self) -> Vec<NativeRequest> {
+        let mut requests = self
+            .shared
+            .requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        requests.drain(..).collect()
+    }
+
     /// Return and clear bounded unsolicited extension events.
     pub fn drain_events(&self) -> Vec<Value> {
         let mut events = self
@@ -379,15 +426,27 @@ impl NativeMessagingBridge {
 
     /// Return the latest logical inventory records observed from the extension.
     pub fn inventory(&self) -> Vec<Value> {
+        self.inventory_snapshot().pages
+    }
+
+    /// Return the latest cached logical pages and visual group hints.
+    pub fn inventory_snapshot(&self) -> ObservationSnapshot {
         self.shared
             .inventory
             .lock()
-            .map(|inventory| inventory.pages.values().cloned().collect())
+            .map(|inventory| {
+                let mut pages: Vec<_> = inventory.pages.values().cloned().collect();
+                pages.extend(inventory.unmanaged_pages.iter().cloned());
+                ObservationSnapshot {
+                    pages,
+                    groups: inventory.groups.clone(),
+                }
+            })
             .unwrap_or_default()
     }
 
     /// Request a fresh bounded inventory from the extension.
-    fn live_inventory(&self) -> Result<Vec<Value>, CoreError> {
+    fn live_inventory(&self) -> Result<ObservationSnapshot, CoreError> {
         let result = self.request_value("tab.inventory", Map::new(), None)?;
         let pages = result
             .get("pages")
@@ -396,6 +455,15 @@ impl NativeMessagingBridge {
                 CoreError::new(
                     ErrorCode::InvalidJson,
                     "live extension inventory pages are missing",
+                )
+            })?;
+        let groups = result
+            .get("groups")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::InvalidJson,
+                    "live extension inventory groups are missing",
                 )
             })?;
         let expected_session_epoch = self
@@ -412,7 +480,10 @@ impl NativeMessagingBridge {
                 ));
             }
         }
-        sanitize_observation_records(pages)
+        sanitize_observation_snapshot(ObservationSnapshot {
+            pages: pages.to_vec(),
+            groups: groups.to_vec(),
+        })
     }
 
     /// Return extension-reported mutation outcomes that require host reconciliation.
@@ -540,6 +611,48 @@ impl NativeMessagingBridge {
             }
         };
         response_result(response)
+    }
+
+    /// Return one correlated response to an inbound extension request.
+    pub fn respond(
+        &self,
+        request: &NativeRequest,
+        result: Result<Value, CoreError>,
+    ) -> Result<(), NativeHostError> {
+        if agentyc_core::RequestId::new(request.request_id.clone()).is_err() {
+            return Err(NativeHostError::Protocol(
+                "Native Messaging request_id is not a logical request id".to_owned(),
+            ));
+        }
+        if let Some(action_id) = &request.action_id
+            && agentyc_core::ActionId::new(action_id.clone()).is_err()
+        {
+            return Err(NativeHostError::Protocol(
+                "Native Messaging action_id is not a logical action id".to_owned(),
+            ));
+        }
+        let mut fields = Map::new();
+        fields.insert("request_id".to_owned(), json!(request.request_id));
+        if let Some(action_id) = &request.action_id {
+            fields.insert("action_id".to_owned(), json!(action_id));
+        }
+        match result {
+            Ok(result) => {
+                assert_no_raw_browser_identifiers(&result, "result")?;
+                fields.insert("ok".to_owned(), json!(true));
+                fields.insert("result".to_owned(), result);
+            }
+            Err(error) => {
+                fields.insert("ok".to_owned(), json!(false));
+                fields.insert(
+                    "error".to_owned(),
+                    serde_json::to_value(error).map_err(|_| {
+                        NativeHostError::Protocol("response error is not JSON".to_owned())
+                    })?,
+                );
+            }
+        }
+        self.post("response", fields)
     }
 
     fn next_request_id(&self) -> String {
@@ -690,8 +803,7 @@ impl NativeMessagingBridge {
         page_id: &PageId,
         lease_epoch: LeaseEpoch,
     ) -> Result<Value, CoreError> {
-        let inventory = self.live_inventory();
-        let inventory = inventory?;
+        let inventory = self.live_inventory()?.pages;
         let record = inventory.into_iter().find(|record| {
             record.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
                 && record.get("page_id").and_then(Value::as_str) == Some(page_id.as_str())
@@ -759,8 +871,17 @@ impl NativeMessagingBridge {
 }
 
 impl Bridge for NativeMessagingBridge {
-    fn observe(&self) -> Result<Vec<Value>, CoreError> {
+    fn observe(&self) -> Result<ObservationSnapshot, CoreError> {
         self.live_inventory()
+    }
+
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        self.shared.session.lock().ok().map(|session| BridgeStatus {
+            profile_instance_id: Some(session.hello.profile_instance_id.clone()),
+            extension_version: Some(session.hello.extension_version.clone()),
+            worker_instance_epoch: Some(session.hello.worker_instance_epoch),
+            browser_session_epoch: Some(session.hello.browser_session_epoch),
+        })
     }
 
     fn create_page(
@@ -1132,6 +1253,7 @@ fn handle_inbound(payload: Vec<u8>, shared: &NativeShared) -> Result<(), NativeH
                 ));
             }
         }
+        "request" => enqueue_request(shared, value)?,
         "event" => enqueue_event(shared, value)?,
         "inventory" => {
             record_inventory(shared, &value)?;
@@ -1195,6 +1317,49 @@ fn validate_common(
     Ok(())
 }
 
+fn enqueue_request(shared: &NativeShared, value: Value) -> Result<(), NativeHostError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeHostError::Protocol("Native Messaging request is not an object".to_owned())
+    })?;
+    let request_id = required_string(object, "request_id")?;
+    if agentyc_core::RequestId::new(request_id.clone()).is_err() {
+        return Err(NativeHostError::Protocol(
+            "Native Messaging request_id is not a logical request id".to_owned(),
+        ));
+    }
+    let method = required_string(object, "method")?;
+    let action_id = object
+        .get("action_id")
+        .map(|value| {
+            let action_id = value.as_str().ok_or_else(|| {
+                NativeHostError::Protocol("Native Messaging action_id is invalid".to_owned())
+            })?;
+            if agentyc_core::ActionId::new(action_id).is_err() {
+                return Err(NativeHostError::Protocol(
+                    "Native Messaging action_id is not a logical action id".to_owned(),
+                ));
+            }
+            Ok(action_id.to_owned())
+        })
+        .transpose()?;
+    let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
+    let request = NativeRequest {
+        request_id,
+        action_id,
+        method,
+        params,
+    };
+    let mut requests = shared
+        .requests
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("request state is poisoned".to_owned()))?;
+    if requests.len() >= MAX_NATIVE_REQUEST_QUEUE {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    requests.push_back(request);
+    Ok(())
+}
+
 fn enqueue_event(shared: &NativeShared, value: Value) -> Result<(), NativeHostError> {
     let mut events = shared
         .events
@@ -1216,6 +1381,10 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
         .get("pages")
         .and_then(Value::as_array)
         .ok_or_else(|| NativeHostError::Protocol("inventory pages are missing".to_owned()))?;
+    let groups = payload
+        .get("groups")
+        .and_then(Value::as_array)
+        .ok_or_else(|| NativeHostError::Protocol("inventory groups are missing".to_owned()))?;
     let session = shared
         .session
         .lock()
@@ -1268,7 +1437,6 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
         })?,
     };
 
-    let mut valid_pages = Vec::with_capacity(pages.len());
     for page in pages {
         let Some(object) = page.as_object() else {
             return Err(NativeHostError::Protocol(
@@ -1289,35 +1457,32 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
                 "inventory page browser session epoch is stale".to_owned(),
             ));
         }
-        if object.get("space_id").and_then(Value::as_str).is_none()
-            || object.get("page_id").and_then(Value::as_str).is_none()
-        {
-            continue;
-        }
-        valid_pages.push(page.clone());
     }
-    let valid_pages = sanitize_observation_records(&valid_pages).map_err(|error| {
-        NativeHostError::Protocol(format!("inventory page record is invalid: {error}"))
-    })?;
+    let valid_snapshot = sanitize_observation_snapshot(ObservationSnapshot {
+        pages: pages.to_vec(),
+        groups: groups.to_vec(),
+    })
+    .map_err(|error| NativeHostError::Protocol(format!("inventory is invalid: {error}")))?;
 
     let mut inventory = shared
         .inventory
         .lock()
         .map_err(|_| NativeHostError::Unavailable("inventory state is poisoned".to_owned()))?;
     inventory.pages.clear();
+    inventory.unmanaged_pages.clear();
+    inventory.groups = valid_snapshot.groups;
     inventory.unknown_action_ids.clear();
     inventory.unknown_actions_overflow = unknown_actions_overflow;
     for action_id in unknown_action_ids {
         inventory.unknown_action_ids.insert(action_id);
     }
-    for page in valid_pages {
+    for page in valid_snapshot.pages {
         let (Some(space_id), Some(page_id)) = (
             page.get("space_id").and_then(Value::as_str),
             page.get("page_id").and_then(Value::as_str),
         ) else {
-            return Err(NativeHostError::Protocol(
-                "sanitized inventory page scope is missing".to_owned(),
-            ));
+            inventory.unmanaged_pages.push(page);
+            continue;
         };
         inventory
             .pages
@@ -1712,7 +1877,7 @@ fn current_millis() -> u64 {
 mod tests {
     use super::*;
     use agentyc_core::{ActionId, ActionOperation, ContentHash, IdempotencyKey, RequestId};
-    use std::sync::mpsc::Receiver;
+    use std::{sync::mpsc::Receiver, time::Instant};
 
     #[test]
     fn chrome_origin_requires_exact_extension_id_and_normalizes_only_trailing_slash() {
@@ -1881,6 +2046,116 @@ mod tests {
     }
 
     #[test]
+    fn inbound_requests_are_drained_and_responses_keep_correlation() {
+        let (to_host, from_extension) = mpsc::sync_channel(8);
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let hello = NativeHello {
+            protocol: PROTOCOL_VERSION,
+            nonce: "nonce_request_test".to_owned(),
+            sequence: 1,
+            worker_instance_epoch: 2,
+            browser_session_epoch: 3,
+            profile_instance_id: "profile_request_test".to_owned(),
+            extension_version: "0.1.0".to_owned(),
+            capabilities: vec!["logical_tabs".to_owned()],
+        };
+        to_host
+            .send(frame_json(json!({
+                "protocol": PROTOCOL_VERSION,
+                "kind": "hello",
+                "nonce": hello.nonce,
+                "sequence": 1,
+                "worker_instance_epoch": hello.worker_instance_epoch,
+                "browser_session_epoch": hello.browser_session_epoch,
+                "profile_instance_id": hello.profile_instance_id,
+                "extension_version": hello.extension_version,
+                "capabilities": hello.capabilities,
+            })))
+            .expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        let writer = CaptureWriter(Arc::clone(&capture));
+        let config =
+            NativeMessagingConfig::new("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .expect("origin")
+                .with_handshake_timeout(Duration::from_secs(1));
+        let (accepted, bridge) =
+            NativeMessagingBridge::accept(reader, writer, config).expect("accept");
+        assert_eq!(accepted, hello);
+        assert!(bridge.closed().is_none());
+        bridge
+            .complete_handshake(
+                &hello,
+                BrokerEpoch::new(1),
+                agentyc_core::ConnectionEpoch::new(1),
+                &[Capability::Action],
+            )
+            .expect("hello_ok");
+
+        to_host
+            .send(frame_json(extension_message(
+                &hello,
+                2,
+                "request",
+                json!({
+                    "request_id": "req_side_panel_1",
+                    "action_id": "action_side_panel_1",
+                    "method": "space.create",
+                    "params": {"label": "panel"}
+                }),
+            )))
+            .expect("request input");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let request = loop {
+            let mut requests = bridge.drain_requests();
+            if let Some(request) = requests.pop() {
+                break request;
+            }
+            assert!(!bridge.is_closed(), "request reader closed unexpectedly");
+            assert!(Instant::now() < deadline, "request was not queued");
+            thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(request.request_id, "req_side_panel_1");
+        assert_eq!(request.action_id.as_deref(), Some("action_side_panel_1"));
+        assert_eq!(request.method, "space.create");
+        assert_eq!(request.params, json!({"label": "panel"}));
+        assert!(bridge.drain_requests().is_empty());
+
+        bridge
+            .respond(
+                &request,
+                Ok(json!({
+                    "space_id": "space_panel",
+                    "lifecycle": "created"
+                })),
+            )
+            .expect("response");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let response = loop {
+            if let Some(response) = captured_frames(&capture)
+                .into_iter()
+                .find(|value| value["kind"] == "response")
+            {
+                break response;
+            }
+            assert!(Instant::now() < deadline, "response was not written");
+            thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(response["request_id"], json!("req_side_panel_1"));
+        assert_eq!(response["action_id"], json!("action_side_panel_1"));
+        assert_eq!(response["ok"], json!(true));
+        assert_eq!(response["result"]["space_id"], json!("space_panel"));
+
+        drop(to_host);
+        assert!(matches!(
+            bridge.wait_closed(),
+            NativeHostError::Unavailable(_)
+        ));
+    }
+
+    #[test]
     fn live_bridge_handshakes_correlates_responses_and_acknowledges_fences() {
         let (to_host, from_extension) = mpsc::sync_channel(8);
         let capture = Arc::new(Mutex::new(Vec::new()));
@@ -1919,6 +2194,14 @@ mod tests {
         let (accepted, bridge) =
             NativeMessagingBridge::accept(reader, writer, config).expect("accept");
         assert_eq!(accepted, hello);
+        assert_eq!(
+            bridge
+                .bridge_status()
+                .expect("bridge status")
+                .profile_instance_id
+                .as_deref(),
+            Some("profile_test")
+        );
         bridge
             .complete_handshake(
                 &hello,
@@ -1951,17 +2234,33 @@ mod tests {
                 json!({
                     "request_id": request_id,
                     "ok": true,
-                    "result": {"pages": [], "groups": []}
+                    "result": {
+                        "pages": [{
+                            "ownership": "unmanaged",
+                            "lifecycle": "unmanaged",
+                            "binding_state": "unbound",
+                            "active": true,
+                            "tab_hint": "user_hint"
+                        }],
+                        "groups": [{
+                            "space_id": "space_one",
+                            "hint": "group_hint",
+                            "present": true,
+                            "drift": false,
+                            "member_count": 1
+                        }]
+                    }
                 }),
             )))
             .expect("response input");
-        assert!(
-            request_thread
-                .join()
-                .expect("request thread")
-                .expect("result")
-                .is_empty()
-        );
+        let observed = request_thread
+            .join()
+            .expect("request thread")
+            .expect("result");
+        assert_eq!(observed.pages.len(), 1);
+        assert_eq!(observed.pages[0]["ownership"], json!("unmanaged"));
+        assert_eq!(observed.groups.len(), 1);
+        assert_eq!(observed.groups[0]["space_id"], json!("space_one"));
 
         let fence_bridge = bridge.clone();
         let fence_thread = thread::spawn(move || {
