@@ -61,11 +61,22 @@ Run the legacy baseline directly:
 AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture
 ```
 
-Run the direct/host-backed benchmark after Phase 0 creates it:
+Run the direct benchmark in its explicit disposable-browser lane:
 
 ```bash
-python3 scripts/run_direct_benchmark.py --warmups 10 --min-samples-p95 200 --min-samples-p99 1000 --artifact-dir artifacts/release-performance
+python3 scripts/run_direct_benchmark.py \
+  --mode managed \
+  --headless \
+  --browser-executable /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --warmups 10 \
+  --samples 1000 \
+  --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame \
+  --cache-states cold,clean,dirty,resync \
+  --spaces 1,2,4,8 \
+  --artifact-dir artifacts/release-performance
 ```
+
+This measures a disposable owned browser. The `target` lane is separate and requires explicit loopback port, browser PID, action-target ID, and unrelated human-target ID; it must not be used to claim existing-user-Chrome coexistence.
 
 ## Required production test lanes
 
