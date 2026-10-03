@@ -6,6 +6,7 @@
 //! copied browser debugging endpoint.
 
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     path::PathBuf,
     str::FromStr,
@@ -17,7 +18,8 @@ use agentyc_core::{
     HelloEnvelope, PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId, SpaceId, Timestamp,
 };
 use agentyc_host::{
-    AuthorityTicket, Broker, FakeBridge, HostError, LocalSocketClient, configured_socket_path,
+    AuthorityTicket, Broker, ControlTicket, FakeBridge, HostError, LocalSocketClient,
+    configured_socket_path,
 };
 use anyhow::{Result, anyhow};
 use clap::{Args, Subcommand};
@@ -39,6 +41,8 @@ pub struct DirectOptions {
     pub state_dir: Option<String>,
     /// Logical principal suffix or complete `principal_` identity.
     pub principal: Option<String>,
+    /// Optional enrolled profile binding suffix or complete `profile_` identity.
+    pub profile_binding_id: Option<String>,
     /// Use the explicit deterministic in-process fake bridge seam.
     pub offline: bool,
     /// Emit compact JSON instead of the default pretty JSON record.
@@ -75,6 +79,8 @@ pub enum SpaceCommand {
     Renew(LeaseRenewArgs),
     /// Explicitly fence and take over a logical space.
     Takeover(LeaseArgs),
+    /// Reclaim a user-owned space with its one-time control ticket.
+    Reclaim(SpaceReclaimArgs),
     /// Return the current lease to explicit user control.
     #[command(name = "return")]
     Return(LeaseReturnArgs),
@@ -147,6 +153,23 @@ pub struct LeaseRenewArgs {
     /// Current fencing epoch.
     #[arg(long)]
     pub lease_epoch: u64,
+    /// Lease duration in the host clock domain.
+    #[arg(long, default_value_t = DEFAULT_TTL)]
+    pub ttl: u64,
+    /// Explicit host timestamp for deterministic callers.
+    #[arg(long)]
+    pub now: Option<u64>,
+}
+
+/// Arguments for `space reclaim`.
+#[derive(Debug, Clone, Args)]
+pub struct SpaceReclaimArgs {
+    /// Logical space identity.
+    #[arg(long)]
+    pub space_id: String,
+    /// Optional bounded JSON ticket envelope retained by the caller in memory.
+    #[arg(long, value_name = "JSON")]
+    pub control_ticket: Option<String>,
     /// Lease duration in the host clock domain.
     #[arg(long, default_value_t = DEFAULT_TTL)]
     pub ttl: u64,
@@ -339,6 +362,7 @@ const DEFAULT_EVENT_LIMIT: usize = 256;
 /// The host-backed direct client used by command modules.
 pub(crate) struct DirectContext {
     transport: DirectTransport,
+    control_tickets: RefCell<BTreeMap<SpaceId, ControlTicket>>,
     pub(crate) state_dir: PathBuf,
     pub(crate) offline: bool,
 }
@@ -364,7 +388,9 @@ impl DirectContext {
         let state_dir = resolve_state_dir(options.state_dir.as_deref())?;
         let offline = options.offline || explicit_fake_host_env();
         let principal = principal_id(options.principal.as_deref())?;
-        let hello = direct_hello(principal, offline)?;
+        let profile_binding_id =
+            resolve_profile_binding_id(options.profile_binding_id.as_deref(), offline)?;
+        let hello = direct_hello(principal, profile_binding_id)?;
 
         if offline {
             let broker = Broker::open(&state_dir, FakeBridge::new()).map_err(host_error)?;
@@ -375,6 +401,7 @@ impl DirectContext {
                 .clone();
             return Ok(Self {
                 transport: DirectTransport::Offline { broker, authority },
+                control_tickets: RefCell::new(BTreeMap::new()),
                 state_dir,
                 offline: true,
             });
@@ -395,6 +422,7 @@ impl DirectContext {
         };
         Ok(Self {
             transport,
+            control_tickets: RefCell::new(BTreeMap::new()),
             state_dir,
             offline: false,
         })
@@ -405,6 +433,20 @@ impl DirectContext {
             DirectTransport::Offline { broker, authority } => Some((broker, authority)),
             DirectTransport::Remote { .. } | DirectTransport::RemoteUnavailable(_) => None,
         }
+    }
+
+    pub(crate) fn remember_control_ticket(&self, ticket: ControlTicket) {
+        self.control_tickets
+            .borrow_mut()
+            .insert(ticket.space_id().clone(), ticket);
+    }
+
+    pub(crate) fn control_ticket(&self, space_id: &SpaceId) -> Option<ControlTicket> {
+        self.control_tickets.borrow().get(space_id).cloned()
+    }
+
+    pub(crate) fn take_control_ticket(&self, space_id: &SpaceId) -> Option<ControlTicket> {
+        self.control_tickets.borrow_mut().remove(space_id)
     }
 
     pub(crate) fn request(
@@ -424,17 +466,12 @@ impl DirectContext {
     }
 }
 
-fn direct_hello(principal: PrincipalId, offline: bool) -> DirectResult<HelloEnvelope> {
+fn direct_hello(
+    principal: PrincipalId,
+    profile_binding_id: Option<ProfileBindingId>,
+) -> DirectResult<HelloEnvelope> {
     let nonce = ConnectionNonce::from_suffix(format!("cli-{}", Uuid::new_v4().simple()))
         .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
-    let profile_binding_id = if offline {
-        Some(
-            ProfileBindingId::from_suffix("cli-offline")
-                .map_err(|error| CoreError::invalid_argument(error.to_string()))?,
-        )
-    } else {
-        None
-    };
     Ok(HelloEnvelope {
         protocol: PROTOCOL_VERSION,
         supported_protocols: vec![PROTOCOL_VERSION],
@@ -687,6 +724,35 @@ fn principal_id(explicit: Option<&str>) -> DirectResult<PrincipalId> {
     }
 }
 
+fn resolve_profile_binding_id(
+    explicit: Option<&str>,
+    offline: bool,
+) -> DirectResult<Option<ProfileBindingId>> {
+    let value = explicit
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| std::env::var("AGENTYC_PROFILE_BINDING").ok())
+        .filter(|value| !value.trim().is_empty());
+    let Some(value) = value else {
+        return if offline {
+            Ok(Some(ProfileBindingId::from_suffix("cli-offline").map_err(
+                |error| CoreError::invalid_argument(error.to_string()),
+            )?))
+        } else {
+            Ok(None)
+        };
+    };
+    if value.starts_with(ProfileBindingId::PREFIX) {
+        ProfileBindingId::new(value)
+            .map(Some)
+            .map_err(|error| CoreError::invalid_argument(error.to_string()))
+    } else {
+        ProfileBindingId::from_suffix(value)
+            .map(Some)
+            .map_err(|error| CoreError::invalid_argument(error.to_string()))
+    }
+}
+
 fn explicit_fake_host_env() -> bool {
     matches!(
         std::env::var("AGENTYC_FAKE_HOST").as_deref(),
@@ -714,6 +780,7 @@ mod tests {
         DirectOptions {
             state_dir: Some(path.display().to_string()),
             principal: Some("principal_test".to_owned()),
+            profile_binding_id: None,
             offline: true,
             json: false,
         }
@@ -741,6 +808,108 @@ mod tests {
         let reopened = DirectContext::open(&options(directory.path())).expect("reopen");
         let spaces = execute(&reopened, DirectCommand::Space(SpaceCommand::List)).expect("list");
         assert_eq!(spaces["spaces"].as_array().expect("spaces").len(), 1);
+    }
+
+    #[test]
+    fn direct_hello_carries_an_explicit_profile_binding() {
+        let principal = PrincipalId::from_suffix("profile-test").expect("principal");
+        let profile = resolve_profile_binding_id(Some("enrolled"), false)
+            .expect("profile binding")
+            .expect("profile binding present");
+        let hello = direct_hello(principal, Some(profile.clone())).expect("hello");
+        assert_eq!(
+            hello
+                .client_metadata
+                .expect("client metadata")
+                .profile_binding_id,
+            Some(profile)
+        );
+        assert_eq!(
+            resolve_profile_binding_id(None, true)
+                .expect("offline profile")
+                .expect("offline profile present")
+                .as_str(),
+            "profile_cli-offline"
+        );
+    }
+
+    #[test]
+    fn offline_return_control_reclaims_with_one_time_ticket() {
+        let directory = tempdir().expect("tempdir");
+        let context = DirectContext::open(&options(directory.path())).expect("context");
+        let created = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
+                label: "handoff".to_owned(),
+            })),
+        )
+        .expect("create space");
+        let space_id = created["space_id"].as_str().expect("space id").to_owned();
+        let claimed = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Claim(LeaseArgs {
+                space_id: space_id.clone(),
+                ttl: DEFAULT_TTL,
+                now: Some(1),
+            })),
+        )
+        .expect("claim space");
+        let lease_epoch = claimed["lease"]["lease_epoch"]
+            .as_u64()
+            .expect("lease epoch");
+
+        let returned = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Return(LeaseReturnArgs {
+                space_id: space_id.clone(),
+                lease_epoch,
+                now: Some(2),
+            })),
+        )
+        .expect("return control");
+        assert_eq!(returned["lifecycle"], "user_owned");
+        assert_eq!(returned["control_ticket"]["in_memory"], true);
+        let mut mismatched_ticket = returned["control_ticket"].clone();
+        mismatched_ticket["fence_epoch"] = json!(999);
+        let error = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Reclaim(SpaceReclaimArgs {
+                space_id: space_id.clone(),
+                control_ticket: Some(
+                    serde_json::to_string(&mismatched_ticket).expect("mismatched ticket json"),
+                ),
+                ttl: DEFAULT_TTL,
+                now: Some(3),
+            })),
+        )
+        .expect_err("mismatched ticket metadata must be rejected");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+
+        let ticket_json = serde_json::to_string(&returned["control_ticket"]).expect("ticket json");
+        let reclaimed = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Reclaim(SpaceReclaimArgs {
+                space_id: space_id.clone(),
+                control_ticket: Some(ticket_json),
+                ttl: DEFAULT_TTL,
+                now: Some(3),
+            })),
+        )
+        .expect("reclaim space");
+        assert_eq!(reclaimed["space_id"], space_id);
+        assert_eq!(reclaimed["lifecycle"], "agent_owned");
+
+        let error = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Reclaim(SpaceReclaimArgs {
+                space_id,
+                control_ticket: None,
+                ttl: DEFAULT_TTL,
+                now: Some(4),
+            })),
+        )
+        .expect_err("one-time ticket must be consumed");
+        assert_eq!(error.code, ErrorCode::UserControlRequired);
     }
 
     #[test]
@@ -821,6 +990,7 @@ mod tests {
         let options = DirectOptions {
             state_dir: Some(directory.path().display().to_string()),
             principal: Some("principal_remote_test".to_owned()),
+            profile_binding_id: None,
             offline: false,
             json: true,
         };
