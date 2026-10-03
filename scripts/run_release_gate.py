@@ -16,6 +16,7 @@ import math
 import re
 import sys
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,27 @@ MAX_REPETITIONS = 1_000
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 LIVE_SUCCESS = {"live_passed", "passed", "pass"}
 SKIPPED = {"skip", "skipped", "ignored", "not_run", "not-run"}
+MAX_FRESHNESS_SECONDS = 7 * 24 * 60 * 60
+MAX_FUTURE_SKEW_SECONDS = 5 * 60
+REQUIRED_EXISTING_CHROME_SCENARIOS = (
+    "user-tab-preservation",
+    "two-space-isolation",
+    "focus-stability",
+    "takeover-fence",
+    "return-control-fresh-lease",
+    "agent-page-cleanup",
+    "worker-restart-recovery",
+    "host-restart-recovery",
+    "chrome-restart-recovery",
+    "extension-update-recovery",
+)
+LIVE_BROWSER_RECEIPT_SOURCES = {"browser", "browser_current_run", "live_browser"}
+SAFETY_COUNTERS = (
+    "user_tab_closes",
+    "focus_theft",
+    "cross_space_mutations",
+    "stale_agent_mutations",
+)
 
 REQUIRED_GATE_METRICS: dict[str, tuple[str, ...]] = {
     "resource": (
@@ -208,6 +230,19 @@ def _redact_report_for_validation(report: Mapping[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def _valid_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return False
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        return False
+    age = (datetime.now(timezone.utc) - parsed).total_seconds()
+    return -MAX_FUTURE_SKEW_SECONDS <= age <= MAX_FRESHNESS_SECONDS
+
+
 def validate_artifact_envelope(report: Mapping[str, Any], *, require_phase: int | None = None) -> list[str]:
     """Return envelope errors; an offline artifact can never satisfy live evidence."""
     errors: list[str] = []
@@ -222,8 +257,11 @@ def validate_artifact_envelope(report: Mapping[str, Any], *, require_phase: int 
     for field in ("build_tuple", "environment", "result"):
         if not isinstance(report.get(field), dict):
             errors.append(f"{field} must be an object")
-    if not isinstance(report.get("timestamp"), str) or not str(report.get("timestamp")).endswith("Z"):
-        errors.append("timestamp must be a UTC string")
+    if not _valid_timestamp(report.get("timestamp")):
+        errors.append("timestamp must be a fresh UTC string")
+    provenance = report.get("provenance")
+    if not isinstance(provenance, dict) or provenance.get("timestamp") != report.get("timestamp"):
+        errors.append("provenance timestamp must match the artifact timestamp")
     command = report.get("command")
     if not isinstance(command, list) or not command or any(not isinstance(item, str) for item in command):
         errors.append("command must be a non-empty argv list")
@@ -344,6 +382,10 @@ def validate_benchmark(report: Mapping[str, Any], *, require_live: bool) -> list
         errors.append("benchmark is offline evidence")
     if require_live and report.get("status") not in LIVE_SUCCESS:
         errors.append("benchmark status is not live_passed")
+    if require_live and report.get("release_eligible") is not True:
+        errors.append("benchmark is not release eligible")
+    if not require_live and report.get("release_eligible") is True:
+        errors.append("offline benchmark cannot be release eligible")
     if require_live and report.get("smoke") is not False:
         errors.append("smoke benchmark cannot close a release gate")
     samples = report.get("samples_per_cell")
@@ -353,36 +395,149 @@ def validate_benchmark(report: Mapping[str, Any], *, require_live: bool) -> list
 
 
 def _enrolled(value: Any) -> bool:
-    return isinstance(value, dict) and value.get("enrolled") is True and value.get("status") in {"installed", "connected", "bound", "enrolled"}
+    return (
+        isinstance(value, dict)
+        and value.get("enrolled") is True
+        and value.get("observed") is True
+        and value.get("current_run") is True
+        and isinstance(value.get("source"), str)
+        and value["source"].endswith("_current_run")
+        and value.get("status") in {"installed", "connected", "bound", "enrolled"}
+    )
+
+
+def _enrollment_is_current(value: Any) -> bool:
+    return isinstance(value, dict) and all(_enrolled(value.get(component)) for component in ("profile", "host", "extension"))
+
+
+def _browser_receipts(value: Any) -> dict[str, dict[str, Any]] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    receipts: dict[str, dict[str, Any]] = {}
+    for receipt in value:
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(receipt.get("operation"), str)
+            or not receipt["operation"]
+            or receipt["operation"] in receipts
+            or not isinstance(receipt.get("source"), str)
+            or receipt.get("source") not in LIVE_BROWSER_RECEIPT_SOURCES
+            or receipt.get("current_run") is not True
+            or receipt.get("observed") is not True
+            or receipt.get("browser_observed") is not True
+        ):
+            return None
+        receipts[receipt["operation"]] = receipt
+    return receipts
+
+
+def _scenarios_are_current(value: Any, receipts: dict[str, dict[str, Any]] | None) -> bool:
+    if not isinstance(value, list) or len(value) != len(REQUIRED_EXISTING_CHROME_SCENARIOS) or receipts is None:
+        return False
+    names = [item.get("name") if isinstance(item, dict) else None for item in value]
+    if tuple(names) != REQUIRED_EXISTING_CHROME_SCENARIOS or len(set(names)) != len(REQUIRED_EXISTING_CHROME_SCENARIOS):
+        return False
+    referenced: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or item.get("status") != "live_passed":
+            return False
+        observation = item.get("observation")
+        references = observation.get("receipt_refs") if isinstance(observation, dict) else None
+        if (
+            not isinstance(observation, dict)
+            or observation.get("source") != "browser_current_run"
+            or observation.get("observed") is not True
+            or observation.get("current_run") is not True
+            or observation.get("browser_observed") is not True
+            or observation.get("operator_acknowledged") is True
+            or not isinstance(references, list)
+            or not references
+            or any(not isinstance(reference, str) or not reference or reference not in receipts for reference in references)
+            or len(references) != len(set(references))
+            or referenced.intersection(references)
+        ):
+            return False
+        referenced.update(references)
+    return True
+
+
+def _browser_policy_is_current(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("observed") is True
+        and value.get("current_run") is True
+        and value.get("attached") is True
+        and value.get("launch") is False
+        and value.get("download") is False
+        and value.get("cdp_url_used") is False
+    )
 
 
 def validate_existing_chrome(report: Mapping[str, Any], *, require_live: bool) -> list[str]:
     errors = _source_errors(report)
     if report.get("kind") != "existing-chrome-coexistence":
         errors.append("existing-Chrome kind is invalid")
+    if report.get("phase") != 0:
+        errors.append("existing-Chrome report must be a Phase 0 report")
     live = report.get("live")
     enrollment = report.get("enrollment")
     safety = report.get("safety")
     execution = report.get("execution_policy")
     if require_live:
-        if report.get("evidence_mode") != "live" or report.get("status") not in LIVE_SUCCESS:
+        if report.get("current_run") is not True:
+            errors.append("existing-Chrome report is not from the current run")
+        if report.get("release_eligible") is not True:
+            errors.append("existing-Chrome report is not release eligible")
+        if report.get("evidence_mode") != "live" or report.get("status") != "live_passed":
             errors.append("existing-Chrome report is not real live evidence")
-        if not isinstance(live, dict) or live.get("executed") is not True or live.get("status") not in LIVE_SUCCESS:
-            errors.append("existing-Chrome action evidence was not executed")
-        if not isinstance(enrollment, dict) or not _enrolled(enrollment.get("host")) or not _enrolled(enrollment.get("extension")):
-            errors.append("explicit enrolled host and extension descriptors are required")
-        if not isinstance(execution, dict) or execution.get("attached") is not True or execution.get("browser_launch") is not False or execution.get("browser_download") is not False or execution.get("cdp_url_used") is not False:
+        if (
+            not isinstance(live, dict)
+            or live.get("requested") is not True
+            or live.get("required") is not True
+            or live.get("executed") is not True
+            or live.get("current_run") is not True
+            or live.get("status") != "live_passed"
+            or live.get("evidence_status") != "live_passed"
+            or live.get("provenance") != "existing_chrome_current_run"
+            or live.get("descriptor_policy") != "descriptors_not_accepted_as_live_evidence"
+            or live.get("operator_claims_used") is not False
+            or live.get("host_probe_used") is not False
+            or live.get("browser_observed") is not True
+            or live.get("profile_scope") != "existing_user_profile"
+        ):
+            errors.append("existing-Chrome live evidence is missing current browser provenance")
+        live_enrollment = live.get("enrollment") if isinstance(live, dict) else None
+        browser = live.get("browser") if isinstance(live, dict) else None
+        receipts = _browser_receipts(live.get("receipts") if isinstance(live, dict) else None)
+        nested_enrollment_ok = not isinstance(live, dict) or "enrollment" not in live or _enrollment_is_current(live_enrollment)
+        nested_browser_ok = not isinstance(live, dict) or "browser" not in live or _browser_policy_is_current(browser)
+        if not _enrollment_is_current(enrollment):
+            errors.append("explicit current profile, host, and extension enrollment is required")
+        if not isinstance(execution, dict) or (
+            execution.get("attached") is not True
+            or execution.get("current_run") is not True
+            or execution.get("browser_launch") is not False
+            or execution.get("browser_download") is not False
+            or execution.get("cdp_url_used") is not False
+        ):
             errors.append("existing-Chrome execution policy is unsafe or absent")
-        scenarios = report.get("scenarios")
-        if not isinstance(scenarios, list) or len(scenarios) < 10:
-            errors.append("all ten existing-Chrome scenarios are required")
-        elif any(not isinstance(item, dict) or item.get("status") not in LIVE_SUCCESS for item in scenarios):
-            errors.append("existing-Chrome scenario results are incomplete")
+        if not nested_enrollment_ok:
+            errors.append("existing-Chrome live enrollment is not current")
+        if not nested_browser_ok:
+            errors.append("existing-Chrome browser observation contradicts the attached/CDP policy")
+        if not _scenarios_are_current(report.get("scenarios"), receipts):
+            errors.append("exact current browser observations for all ten scenarios are required")
+    elif report.get("release_eligible") is True:
+        errors.append("offline existing-Chrome evidence cannot be release eligible")
     if not isinstance(safety, dict):
         errors.append("existing-Chrome safety counters are missing")
-    elif require_live and any(safety.get(key) != 0 for key in ("user_tab_closes", "focus_theft", "cross_space_mutations", "stale_agent_mutations")):
-        errors.append("existing-Chrome safety counters are not zero")
-    elif not require_live and any(key not in safety for key in ("user_tab_closes", "focus_theft", "cross_space_mutations", "stale_agent_mutations")):
+    elif require_live and (
+        safety.get("measurement_status") != "measured_live"
+        or safety.get("current_run") is not True
+        or any(type(safety.get(key)) is not int or safety[key] != 0 for key in SAFETY_COUNTERS)
+    ):
+        errors.append("existing-Chrome safety counters are not fresh measured-live zeros")
+    elif not require_live and any(key not in safety for key in SAFETY_COUNTERS):
         errors.append("offline existing-Chrome safety shape is incomplete")
     return sorted(set(errors))
 
@@ -400,6 +555,10 @@ def validate_installation_record(report: Mapping[str, Any], *, require_live: boo
     errors = [*validate_artifact_envelope(report), *validate_no_skipped_live(report)]
     if require_live and report.get("evidence_mode") != "live":
         errors.append("installation record is not real live evidence")
+    if require_live and report.get("release_eligible") is not True:
+        errors.append("installation record is not release eligible")
+    if not require_live and report.get("release_eligible") is True:
+        errors.append("offline installation record cannot be release eligible")
     if require_live and report.get("status") not in {"drill_passed", "live_passed", "passed"}:
         errors.append("installation record did not pass")
     evidence = report.get("evidence")
