@@ -40,6 +40,9 @@ struct Cli {
     /// Logical principal suffix or complete `principal_` identity.
     #[arg(long, global = true, value_name = "PRINCIPAL")]
     principal: Option<String>,
+    /// Enrolled profile binding suffix or complete `profile_` identity.
+    #[arg(long, global = true, value_name = "PROFILE_BINDING_ID")]
+    profile_binding_id: Option<String>,
     /// Use the explicit deterministic fake-host seam for direct commands.
     #[arg(long, global = true)]
     offline: bool,
@@ -162,6 +165,7 @@ async fn run() -> Result<()> {
     let direct_options = DirectOptions {
         state_dir: cli.state_dir.clone(),
         principal: cli.principal.clone(),
+        profile_binding_id: cli.profile_binding_id.clone(),
         offline: cli.offline,
         json: cli.json,
     };
