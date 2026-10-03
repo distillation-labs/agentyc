@@ -135,6 +135,7 @@ pub(crate) struct ActiveConnection {
     pub(crate) principal_id: PrincipalId,
     pub(crate) connection_nonce: ConnectionNonce,
     pub(crate) profile_binding_id: Option<ProfileBindingId>,
+    pub(crate) is_extension: bool,
 }
 
 /// The complete JSON-compatible logical state owned by one broker.
@@ -196,6 +197,15 @@ pub struct LedgerState {
     /// Profile bindings retained without exposing profile handles in core records.
     #[serde(default)]
     pub profile_bindings: BTreeMap<SpaceId, agentyc_core::ProfileBindingId>,
+    /// Last Native Messaging extension profile admitted by this broker state.
+    #[serde(default)]
+    pub(crate) extension_profile_binding_id: Option<ProfileBindingId>,
+    /// Highest worker epoch admitted for the extension profile.
+    #[serde(default)]
+    pub(crate) extension_worker_instance_epoch: Option<u64>,
+    /// Highest browser session epoch admitted for the extension profile.
+    #[serde(default)]
+    pub(crate) extension_browser_session_epoch: Option<u64>,
     /// Logical space generation watermarks used in event records.
     pub space_generations: BTreeMap<SpaceId, agentyc_core::Generation>,
 }
@@ -226,6 +236,9 @@ impl LedgerState {
             pending_fences: BTreeMap::new(),
             takeover_proofs: BTreeMap::new(),
             profile_bindings: BTreeMap::new(),
+            extension_profile_binding_id: None,
+            extension_worker_instance_epoch: None,
+            extension_browser_session_epoch: None,
             space_generations: BTreeMap::new(),
         }
     }
@@ -548,6 +561,17 @@ fn validate_state_with_limits(
     {
         return Err(LedgerError::Corrupt(
             "profile binding index is inconsistent".to_owned(),
+        ));
+    }
+    if state
+        .extension_worker_instance_epoch
+        .is_some_and(|epoch| epoch == 0)
+        || state
+            .extension_browser_session_epoch
+            .is_some_and(|epoch| epoch == 0)
+    {
+        return Err(LedgerError::Corrupt(
+            "extension epoch floor is invalid".to_owned(),
         ));
     }
 
