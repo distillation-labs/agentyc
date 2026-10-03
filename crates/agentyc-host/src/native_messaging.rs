@@ -7,7 +7,7 @@
 //! ambiguous.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, Read, Write},
     sync::{
         Arc, Condvar, Mutex,
@@ -47,6 +47,7 @@ pub const DEFAULT_NATIVE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_NATIVE_DEPTH: usize = 8;
 const MAX_NATIVE_COLLECTION_ITEMS: usize = 256;
 const MAX_NATIVE_STRING_BYTES: usize = 64 * 1024;
+const MAX_NATIVE_TIMED_OUT_REQUESTS: usize = 256;
 
 /// Errors raised by the Chrome Native Messaging boundary.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -188,8 +189,10 @@ struct SessionMetadata {
 
 struct NativeShared {
     writer: Mutex<Box<dyn Write + Send>>,
+    outbound: Mutex<()>,
     session: Mutex<SessionMetadata>,
     pending: Mutex<BTreeMap<String, SyncSender<Result<Value, NativeHostError>>>>,
+    timed_out: Mutex<BTreeSet<String>>,
     events: Mutex<VecDeque<Value>>,
     closed: Mutex<Option<NativeHostError>>,
     closed_cv: Condvar,
@@ -226,6 +229,7 @@ impl NativeMessagingBridge {
         let (hello_tx, hello_rx) = mpsc::sync_channel(1);
         let shared = Arc::new(NativeShared {
             writer: Mutex::new(Box::new(writer)),
+            outbound: Mutex::new(()),
             session: Mutex::new(SessionMetadata {
                 expected_origin: config.expected_origin.clone(),
                 hello: NativeHello {
@@ -246,6 +250,7 @@ impl NativeMessagingBridge {
                 capabilities: Vec::new(),
             }),
             pending: Mutex::new(BTreeMap::new()),
+            timed_out: Mutex::new(BTreeSet::new()),
             events: Mutex::new(VecDeque::new()),
             closed: Mutex::new(None),
             closed_cv: Condvar::new(),
@@ -462,6 +467,7 @@ impl NativeMessagingBridge {
                     .lock()
                     .ok()
                     .and_then(|mut pending| pending.remove(&request_id));
+                self.remember_timed_out(&request_id);
                 return Err(CoreError::new(
                     ErrorCode::UnknownOutcome,
                     "Native Messaging response timed out after dispatch",
@@ -487,7 +493,22 @@ impl NativeMessagingBridge {
         format!("req_native_{number}")
     }
 
+    fn remember_timed_out(&self, request_id: &str) {
+        if let Ok(mut timed_out) = self.shared.timed_out.lock() {
+            if timed_out.len() >= MAX_NATIVE_TIMED_OUT_REQUESTS {
+                if let Some(oldest) = timed_out.iter().next().cloned() {
+                    timed_out.remove(&oldest);
+                }
+            }
+            timed_out.insert(request_id.to_owned());
+        }
+    }
+
     fn post(&self, kind: &str, mut fields: Map<String, Value>) -> Result<(), NativeHostError> {
+        let _outbound =
+            self.shared.outbound.lock().map_err(|_| {
+                NativeHostError::Unavailable("outbound state is poisoned".to_owned())
+            })?;
         let mut session =
             self.shared.session.lock().map_err(|_| {
                 NativeHostError::Unavailable("session state is poisoned".to_owned())
@@ -522,7 +543,7 @@ impl NativeMessagingBridge {
             .checked_add(1)
             .ok_or_else(|| NativeHostError::Protocol("outbound sequence overflow".to_owned()))?;
         drop(session);
-        write_envelope(&self.shared, &Value::Object(fields))
+        write_envelope_unlocked(&self.shared, &Value::Object(fields))
     }
 
     fn fence_request(
@@ -669,6 +690,36 @@ impl NativeMessagingBridge {
 }
 
 impl Bridge for NativeMessagingBridge {
+    fn create_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        url: Option<&str>,
+        title: Option<&str>,
+        ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        NativeMessagingBridge::create_page(
+            self,
+            space_id,
+            page_id,
+            lease_epoch,
+            url,
+            title,
+            ownership_proof,
+        )
+    }
+
+    fn present_group(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        NativeMessagingBridge::present_group(self, space_id, page_id, lease_epoch, title)
+    }
+
     fn capabilities(&self) -> Vec<Capability> {
         self.shared
             .session
@@ -978,11 +1029,22 @@ fn handle_inbound(payload: Vec<u8>, shared: &NativeShared) -> Result<(), NativeH
                 .pending
                 .lock()
                 .map_err(|_| NativeHostError::Unavailable("pending state is poisoned".to_owned()))?
+                .remove(&request_id);
+            if let Some(sender) = sender {
+                let _ = sender.send(Ok(value));
+            } else if shared
+                .timed_out
+                .lock()
+                .map_err(|_| NativeHostError::Unavailable("timeout state is poisoned".to_owned()))?
                 .remove(&request_id)
-                .ok_or_else(|| {
-                    NativeHostError::Protocol("response has no pending request".to_owned())
-                })?;
-            let _ = sender.send(Ok(value));
+            {
+                // The response arrived after a bounded timeout. Its sequence
+                // was validated above, so ignore only this tombstoned response.
+            } else {
+                return Err(NativeHostError::Protocol(
+                    "response has no pending request".to_owned(),
+                ));
+            }
         }
         "event" => enqueue_event(shared, value)?,
         "inventory" => {
@@ -1171,6 +1233,14 @@ fn action_wire(operation: agentyc_core::ActionOperation) -> (String, Map<String,
 }
 
 fn write_envelope(shared: &NativeShared, value: &Value) -> Result<(), NativeHostError> {
+    let _outbound = shared
+        .outbound
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("outbound state is poisoned".to_owned()))?;
+    write_envelope_unlocked(shared, value)
+}
+
+fn write_envelope_unlocked(shared: &NativeShared, value: &Value) -> Result<(), NativeHostError> {
     let payload = serde_json::to_vec(value).map_err(|_| {
         NativeHostError::Protocol("Native Messaging envelope is not JSON".to_owned())
     })?;
