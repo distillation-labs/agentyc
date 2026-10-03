@@ -193,7 +193,7 @@ nonzero. They must not be treated as successful installation evidence.
 
 ## Production Native Messaging registration
 
-The production MV3 extension uses `com.agentyc.host` and the executable
+The trusted unpacked-development MV3 extension uses `com.agentyc.host` and the executable
 `target/{debug,release}/agentyc-native-host`. Build the host, then install or
 check the exact user-level registration without opening Chrome:
 
@@ -227,10 +227,15 @@ carries a separate stable public signing key for the explicitly frozen unpacked
 development identity. `register_native_host.py --extension-dir extension`
 derives that ID from the manifest, so the production `com.agentyc.host`
 allowlist cannot accidentally be bound to the probe identity. The private
-signing key is not stored in this repository; Web Store or managed distribution
-requires a separately controlled release key and a new distribution record.
-This does not install the extension or close the existing-profile coexistence
-gate; that still requires the approved user enrollment path.
+The private
+signing key is not stored in this repository. Chrome's supported distribution
+rules make this pinned unpacked identity a trusted personal-development build,
+not a production distribution: ordinary users install Web Store-signed
+extensions, while self-hosting on macOS requires enterprise management. Web
+Store or managed distribution requires a separately controlled release key and
+a new distribution record. This does not install the extension or close the
+existing-profile coexistence gate; that still requires the approved user
+enrollment path.
 
 The rollback proof covers only the test Native Messaging registration written
 by the explicit drill. It does not prove extension uninstall, Chrome profile
