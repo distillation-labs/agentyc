@@ -59,6 +59,10 @@ export class GroupsRegistry {
     this.started = false;
   }
 
+  setHintSalt(hintSalt) {
+    if (typeof hintSalt === "string") this.hintSalt = hintSalt;
+  }
+
   /**
    * Associate a managed tab with the visual group for a space. The raw tab id
    * is an internal call boundary and never appears in the returned record.
