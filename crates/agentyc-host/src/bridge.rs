@@ -1,10 +1,9 @@
 //! Replaceable logical bridge boundary.
 //!
 //! No method in this module accepts or returns a Chrome target, tab, session,
-//! debugger, or process identifier. A real extension/CDP adapter can keep such
-//! values private to its implementation in a later phase. The current crate has
-//! no live browser bridge; [`NullBridge`] and [`FakeBridge`] are deterministic
-//! seams only.
+//! debugger, or process identifier. The production Native Messaging adapter
+//! keeps those values private to the extension and exposes only logical records;
+//! [`NullBridge`] and [`FakeBridge`] remain deterministic test/offline seams.
 
 use std::{
     collections::{BTreeMap, VecDeque},
