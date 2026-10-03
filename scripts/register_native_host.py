@@ -10,6 +10,9 @@ origin allowlist; the host validates the transport-supplied origin format.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
 import json
 import os
 import stat
@@ -19,14 +22,49 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST_NAME = "com.agentyc.host"
+PRODUCTION_EXTENSION_DIR = ROOT / "extension"
+EXPECTED_EXTENSION_NAME = "agentyc Existing Chrome"
 MANIFEST_MODE = 0o644
 EXTENSION_ID_LENGTH = 32
+EXTENSION_ID_ALPHABET = "abcdefghijklmnop"
 
 
 def extension_origin(extension_id: str) -> str:
     if len(extension_id) != EXTENSION_ID_LENGTH or any(char < "a" or char > "p" for char in extension_id):
         raise TypeError("extension ID must contain exactly 32 characters in a-p")
     return f"chrome-extension://{extension_id}"
+
+
+def extension_id_from_manifest(directory: Path) -> str:
+    """Derive the stable unpacked-extension ID from the public manifest key."""
+    assert_no_symlinks(directory)
+    directory = directory.expanduser().resolve()
+    if not directory.is_dir() or directory.is_symlink():
+        raise ValueError("production extension directory is missing or unsafe")
+    manifest_path = directory / "manifest.json"
+    assert_no_symlinks(manifest_path)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("production extension manifest is unreadable") from error
+    if not isinstance(manifest, dict) or manifest.get("name") != EXPECTED_EXTENSION_NAME:
+        raise ValueError("extension directory is not the production agentyc extension")
+    key = manifest.get("key")
+    if not isinstance(key, str) or not key:
+        raise ValueError("production extension manifest must carry a stable public key")
+    try:
+        public_key = base64.b64decode(key, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("production extension public key is invalid") from error
+    if not public_key:
+        raise ValueError("production extension public key is empty")
+    digest = hashlib.sha256(public_key).digest()
+    extension_id = "".join(
+        EXTENSION_ID_ALPHABET[byte >> 4] + EXTENSION_ID_ALPHABET[byte & 0x0F]
+        for byte in digest[:16]
+    )
+    extension_origin(extension_id)
+    return extension_id
 
 
 def default_host_path() -> Path:
@@ -126,13 +164,20 @@ def main(argv: list[str] | None = None) -> int:
     actions.add_argument("--install", action="store_true")
     actions.add_argument("--check", action="store_true")
     actions.add_argument("--remove", action="store_true")
-    parser.add_argument("--extension-id", required=True)
+    identity = parser.add_mutually_exclusive_group()
+    identity.add_argument("--extension-id", help="stable 32-character Chrome extension ID")
+    identity.add_argument(
+        "--extension-dir",
+        default=str(PRODUCTION_EXTENSION_DIR),
+        help="production unpacked extension directory used to derive its ID",
+    )
     parser.add_argument("--host-path")
     parser.add_argument("--replace", action="store_true")
     args = parser.parse_args(argv)
 
     try:
-        origin = extension_origin(args.extension_id)
+        extension_id = args.extension_id or extension_id_from_manifest(Path(args.extension_dir))
+        origin = extension_origin(extension_id)
         host_path = validate_host_path(args.host_path)
         destination = manifest_path()
         if args.remove:
