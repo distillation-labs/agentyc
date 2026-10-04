@@ -21,6 +21,7 @@ The direct command tree is:
 - `space finish --space-id SPACE_ID --lease-epoch EPOCH [--now MS]`
 - `space release --space-id SPACE_ID --lease-epoch EPOCH [--now MS]`
 - `page create --space-id SPACE_ID --lease-epoch EPOCH --label LABEL [--now MS]`
+- `page close --space-id SPACE_ID --page-id PAGE_ID --lease-epoch EPOCH [--now MS]`
 - `page list --space-id SPACE_ID`
 - `snapshot --space-id SPACE_ID --page-id PAGE_ID --lease-epoch EPOCH [--now MS]`
 - `action status --action-id ACTION_ID`
@@ -29,6 +30,8 @@ The direct command tree is:
 - `host status`
 
 Global direct options are `--state-dir PATH`, `--principal PRINCIPAL`, `--offline`, and `--json`. `--json` emits the same structured record in compact form; without it the record is pretty-printed. `AGENTYC_STATE_DIR`, `AGENTYC_PRINCIPAL`, and `AGENTYC_FAKE_HOST=1` are equivalent environment configuration where applicable. Stdout contains one JSON value; diagnostics go to stderr.
+
+The Phase 2 mapping source is the shared operation registry in `packages/agentyc-browser/src/operations.mjs`; the deterministic evidence index is `tests/phase-2-manifest.yaml`. The direct CLI and SDK use the same logical wire methods and error model, including the lease-authorized `page close` transition.
 
 ## Structured results
 
@@ -75,6 +78,10 @@ The default state directory is `${AGENTYC_STATE_DIR:-~/.agentyc/state}`. Pass `-
 The current CLI opens and closes a broker for each invocation. A restart fences active leases and marks agent-owned spaces orphaned. Consequently, a lease returned by one process is not silently treated as a warm lease by the next process. Use the explicit claim/takeover/reconciliation lifecycle and inspect `host status`/`events` when recovering. A long-lived local host transport is the continuity mechanism for the SDK.
 
 `finish` and `release` are host-owned lifecycle transitions. Both require the current `--lease-epoch`; `--now` can pin the host timestamp for deterministic callers. `finish` completes proven page cleanup and returns a finished space, while `release` releases a finished space without performing implicit browser cleanup.
+
+## Phase 2 evidence boundary
+
+The direct local CLI/SDK boundary is primary. MCP is compatibility-only and maps through the host adapter; it does not add a second semantic contract or become a live-browser claim. Phase 2 evidence is deterministic repository evidence only: it does not prove Chrome, extension, Native Messaging installation, headed host integration, or release readiness. See `tests/phase-2-manifest.yaml`, `artifacts/p2-contracts-review.md`, and `docs/contract-traceability-phase-2.md`.
 
 ## Compatibility paths
 
