@@ -10,9 +10,10 @@ use std::{
 use agentyc_core::{
     ActionId, ActionOperation, ActionRequest, ActionStatus, BrokerEpoch, Capability, ClientId,
     ClientMetadata, ConnectionNonce, ContentHash, CoreError, ErrorCode, EventKind, EventScope,
-    FrameId, FrameVersion, HelloEnvelope, IdempotencyKey, LeaseEpoch, MAX_ARTIFACT_CHUNK_BYTES,
-    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId,
-    RequestId, ResumeResult, RetentionPolicy, SnapshotEnvelope, SpaceId, Timestamp, UnknownReason,
+    FrameId, FrameVersion, Generation, HelloEnvelope, IdempotencyKey, LeaseEpoch,
+    MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PROTOCOL_VERSION, PageId,
+    PrincipalId, ProfileBindingId, RequestId, ResumeResult, RetentionPolicy, SnapshotEnvelope,
+    SpaceId, Timestamp, UnknownReason,
 };
 use agentyc_host::{
     AuthorityTicket, Bridge, BridgeDispatchResult, BridgeReconcileResult, Broker, EventQuery,
@@ -429,7 +430,7 @@ fn unknown_outcomes_require_reconciliation_and_never_blind_replay() {
         space.space_id.clone(),
         Some(page),
         lease.lease.lease_epoch,
-        ActionOperation::Click,
+        ActionOperation::Navigate,
     );
     let unknown = broker
         .execute_action(request, &owner_authority, Timestamp::new(2))
@@ -462,6 +463,98 @@ fn unknown_outcomes_require_reconciliation_and_never_blind_replay() {
     assert_eq!(reconciled.status, ActionStatus::Succeeded);
     assert_eq!(bridge.dispatch_count(), 1);
     assert_eq!(bridge.reconcile_count(), 1);
+}
+
+#[test]
+fn pre_dispatch_disconnect_is_retryable_but_not_unknown() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    bridge.push_dispatch_result(BridgeDispatchResult::Failed {
+        code: ErrorCode::NativeHostUnavailable,
+        retryable: true,
+    });
+    let broker = make_broker(directory.path(), bridge.clone());
+    let owner = authority(&broker, "pre-dispatch");
+    let space = broker.create_space(&owner, "pre-dispatch").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let page = managed_page(&broker, &space.space_id, &owner, lease.lease.lease_epoch);
+    let result = broker
+        .execute_action(
+            action_request(
+                "pre-dispatch",
+                space.space_id,
+                Some(page),
+                lease.lease.lease_epoch,
+                ActionOperation::Navigate,
+            ),
+            &owner,
+            Timestamp::new(2),
+        )
+        .expect("typed transient failure");
+    assert_eq!(result.receipt.status, ActionStatus::Failed);
+    assert_eq!(
+        result.receipt.error_code,
+        Some(ErrorCode::NativeHostUnavailable)
+    );
+    assert!(result.receipt.retryable);
+    assert!(!result.receipt.unknown);
+    assert_eq!(bridge.dispatch_count(), 1);
+}
+
+#[test]
+fn final_postconditions_gate_durable_success() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    let broker = make_broker(directory.path(), bridge.clone());
+    let owner = authority(&broker, "postcondition");
+    let space = broker.create_space(&owner, "postcondition").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let page = managed_page(&broker, &space.space_id, &owner, lease.lease.lease_epoch);
+
+    let mut success = action_request(
+        "postcondition-success",
+        space.space_id.clone(),
+        Some(page.clone()),
+        lease.lease.lease_epoch,
+        ActionOperation::Navigate,
+    );
+    success.postcondition = Some(agentyc_core::Postcondition::PageGeneration {
+        document_generation: Generation::new(1),
+    });
+    success.request_hash = canonical_action_hash(&success).expect("success hash");
+    assert_eq!(
+        broker
+            .execute_action(success, &owner, Timestamp::new(2))
+            .expect("success")
+            .receipt
+            .status,
+        ActionStatus::Succeeded
+    );
+
+    let mut failure = action_request(
+        "postcondition-failure",
+        space.space_id,
+        Some(page),
+        lease.lease.lease_epoch,
+        ActionOperation::Navigate,
+    );
+    failure.postcondition = Some(agentyc_core::Postcondition::PageGeneration {
+        document_generation: Generation::new(2),
+    });
+    failure.request_hash = canonical_action_hash(&failure).expect("failure hash");
+    let receipt = broker
+        .execute_action(failure, &owner, Timestamp::new(3))
+        .expect("definitive postcondition failure")
+        .receipt;
+    assert_eq!(receipt.status, ActionStatus::Failed);
+    assert_eq!(receipt.error_code, Some(ErrorCode::TargetReplaced));
+    assert!(!receipt.retryable);
+    assert_eq!(bridge.dispatch_count(), 2);
+    assert_eq!(bridge.snapshot_scan_count(), 2);
 }
 
 #[test]
@@ -607,6 +700,7 @@ fn clean_snapshot_cache_reads_have_zero_bridge_scans() {
     assert!(first.scan_performed);
     assert_eq!(first.cache_state, agentyc_core::CacheState::Fresh);
     assert_eq!(bridge.snapshot_scan_count(), 1);
+    assert_eq!(bridge.observe_count(), 1);
     let second = broker
         .read_snapshot(
             &space.space_id,
@@ -619,6 +713,7 @@ fn clean_snapshot_cache_reads_have_zero_bridge_scans() {
     assert!(!second.scan_performed);
     assert_eq!(second.cache_state, agentyc_core::CacheState::Cached);
     assert_eq!(bridge.snapshot_scan_count(), 1);
+    assert_eq!(bridge.observe_count(), 1);
     broker
         .mark_snapshot_dirty(
             &owner_authority,
@@ -1780,7 +1875,7 @@ fn action_dispatch_is_fifo_and_allows_only_one_in_flight_mutation() {
                 space.space_id.clone(),
                 Some(page.clone()),
                 lease.lease.lease_epoch,
-                ActionOperation::Click,
+                ActionOperation::Navigate,
             ),
             &owner,
             Timestamp::new(1),
@@ -1793,7 +1888,7 @@ fn action_dispatch_is_fifo_and_allows_only_one_in_flight_mutation() {
                 space.space_id.clone(),
                 Some(page),
                 lease.lease.lease_epoch,
-                ActionOperation::Click,
+                ActionOperation::Navigate,
             ),
             &owner,
             Timestamp::new(1),
@@ -2012,7 +2107,7 @@ fn ledger_rejects_multiple_running_mutations_on_recovery() {
                     space.space_id.clone(),
                     None,
                     lease.lease.lease_epoch,
-                    ActionOperation::Click,
+                    ActionOperation::Navigate,
                 ),
                 &owner,
                 Timestamp::new(1),
@@ -2025,7 +2120,7 @@ fn ledger_rejects_multiple_running_mutations_on_recovery() {
                     space.space_id.clone(),
                     None,
                     lease.lease.lease_epoch,
-                    ActionOperation::Click,
+                    ActionOperation::Navigate,
                 ),
                 &owner,
                 Timestamp::new(1),
