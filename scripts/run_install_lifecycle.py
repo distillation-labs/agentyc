@@ -11,6 +11,7 @@ operator-supplied lifecycle claim is accepted.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import platform
@@ -22,6 +23,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 # The lifecycle executor is intentionally a new surface. It reuses only the
 # existing probe's bounded, public-CDP transport primitives; it does not alter
@@ -46,14 +49,25 @@ from run_chrome_probe import (
     wait_for_chrome,
 )
 from run_install_drill import (
-    validate_lifecycle_record,  # type: ignore[import-not-found]
+    PHASE4_ARTIFACT_DIR,
+    PRODUCTION_EXTENSION_DIR,
+    lifecycle_source_hashes,
+    lifecycle_source_provenance,
+    validate_lifecycle_record,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_EXTENSION_DIR = ROOT / "extension" / "probes"
-DEFAULT_ARTIFACT_DIR = ROOT / "artifacts" / "p0-installation"
+SOURCE_EXTENSION_DIR = PRODUCTION_EXTENSION_DIR
+PROBE_EXTENSION_DIR = ROOT / "extension" / "probes"
+LIFECYCLE_FIXTURE = ROOT / "tests" / "fixtures" / "browser-task-spaces" / "small-form.html"
+DEFAULT_ARTIFACT_DIR = PHASE4_ARTIFACT_DIR
+LEGACY_ARTIFACT_DIR = ROOT / "artifacts" / "p0-installation"
 RECORD_NAME = "lifecycle-record.json"
 SCHEMA_VERSION = 1
+LIFECYCLE_PROVENANCE_SCHEMA_VERSION = 1
+MAX_SOURCE_HASH_FILES = 256
+MAX_SOURCE_HASH_BYTES = 16 * 1024 * 1024
+MAX_SOURCE_FILE_BYTES = 4 * 1024 * 1024
 MAX_INVENTORY = 64
 INVENTORY_TIMEOUT = 4.0
 INVENTORY_INTERVAL = 0.1
@@ -77,14 +91,16 @@ def _safe_components(path: Path) -> None:
 
 
 def safe_artifact_dir(value: str) -> Path:
-    requested = Path(value)
+    requested = Path(value).expanduser()
     if not requested.is_absolute():
         requested = ROOT / requested
     _safe_components(requested)
     resolved = requested.resolve(strict=False)
-    allowed = DEFAULT_ARTIFACT_DIR.resolve()
-    if resolved != allowed and allowed not in resolved.parents:
-        raise ValueError("artifact directory must be inside artifacts/p0-installation")
+    allowed_roots = (DEFAULT_ARTIFACT_DIR.resolve(), LEGACY_ARTIFACT_DIR.resolve())
+    if not any(resolved == allowed or allowed in resolved.parents for allowed in allowed_roots):
+        raise ValueError("artifact directory must be inside artifacts/p4-install-lifecycle or artifacts/p0-installation")
+    if resolved.exists() and not resolved.is_dir():
+        raise ValueError("artifact directory exists but is not a directory")
     return resolved
 
 
@@ -93,14 +109,95 @@ def safe_extension_dir(value: str | None) -> Path:
     if not requested.is_absolute():
         requested = ROOT / requested
     _safe_components(requested)
-    resolved = requested.resolve(strict=True)
-    resolved.relative_to(ROOT)
+    try:
+        resolved = requested.resolve(strict=True)
+        resolved.relative_to(ROOT)
+    except (OSError, ValueError) as error:
+        raise ValueError("extension directory must be a real repository directory") from error
     if not resolved.is_dir() or resolved.is_symlink():
         raise ValueError("extension directory must be a real repository directory")
     manifest_path = resolved / "manifest.json"
     if not manifest_path.is_file() or manifest_path.is_symlink():
         raise ValueError("extension directory must contain a manifest.json file")
     return resolved
+
+
+def _fixture_file_from_url(value: str, source: Path) -> Path | None:
+    parsed = urlsplit(value)
+    if parsed.scheme != "file":
+        return None
+    if parsed.netloc not in {"", "localhost"} or parsed.query or parsed.fragment:
+        raise ValueError("fixture file URL must not contain a host, query, or fragment")
+    try:
+        candidate = Path(url2pathname(unquote(parsed.path)))
+        _safe_components(candidate)
+        resolved = candidate.resolve(strict=True)
+        allowed_roots = (ROOT / "tests" / "fixtures", source)
+        if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+            raise ValueError("fixture URL must point inside a checked-in fixture tree")
+        if not resolved.is_file() or resolved.is_symlink():
+            raise ValueError("fixture URL must point to a regular file")
+        return resolved
+    except (OSError, ValueError) as error:
+        raise ValueError("fixture URL must point to a safe local fixture") from error
+
+
+def safe_fixture_url(value: str | None, source: Path) -> str:
+    """Select a deterministic local fixture or validate an explicit URL."""
+    if value is None:
+        source_fixture = source / "fixture.html"
+        if source != SOURCE_EXTENSION_DIR and source_fixture.is_file() and not source_fixture.is_symlink():
+            return source_fixture.resolve(strict=True).as_uri()
+        _safe_components(LIFECYCLE_FIXTURE)
+        if not LIFECYCLE_FIXTURE.is_file() or LIFECYCLE_FIXTURE.is_symlink():
+            raise ValueError("checked-in lifecycle fixture is missing or unsafe")
+        return LIFECYCLE_FIXTURE.resolve(strict=True).as_uri()
+    if not isinstance(value, str) or not value or len(value) > 2048 or any(ord(char) < 0x20 for char in value):
+        raise ValueError("fixture URL is invalid or exceeds the bounded limit")
+    parsed = urlsplit(value)
+    if parsed.scheme == "file":
+        fixture = _fixture_file_from_url(value, source)
+        assert fixture is not None
+        return fixture.as_uri()
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("fixture URL must be a local file URL or an explicit HTTP(S) URL without credentials")
+    if not parsed.hostname:
+        raise ValueError("fixture URL host is missing")
+    try:
+        if parsed.port is not None and not 1 <= parsed.port <= 65535:
+            raise ValueError("fixture URL port is invalid")
+    except ValueError as error:
+        raise ValueError("fixture URL port is invalid") from error
+    return value
+
+
+def _fixture_provenance(fixture_url: str, source: Path) -> dict[str, Any]:
+    rendered = fixture_url.encode("utf-8")
+    result: dict[str, Any] = {
+        "schema_version": LIFECYCLE_PROVENANCE_SCHEMA_VERSION,
+        "url_sha256": hashlib.sha256(rendered).hexdigest(),
+    }
+    fixture = _fixture_file_from_url(fixture_url, source)
+    if fixture is None:
+        result["kind"] = "explicit_url"
+        return result
+    data = fixture.read_bytes()
+    if len(data) > MAX_SOURCE_FILE_BYTES:
+        raise ValueError("lifecycle fixture exceeds the bounded hash limit")
+    result.update(
+        {
+            "kind": "repository_file",
+            "relative_file": fixture.relative_to(ROOT).as_posix(),
+            "content_sha256": hashlib.sha256(data).hexdigest(),
+        }
+    )
+    return result
+
+
+def build_lifecycle_provenance(source: Path, fixture_url: str) -> dict[str, Any]:
+    provenance = lifecycle_source_provenance(source)
+    provenance["fixture"] = _fixture_provenance(fixture_url, source)
+    return provenance
 
 
 def _version(value: str) -> tuple[int, ...]:
@@ -158,7 +255,14 @@ def _manifest(path: Path) -> dict[str, Any]:
     return value
 
 
-def _stage_extension(source: Path, profile: Path, version: str) -> tuple[Path, dict[str, Any]]:
+def _stage_extension(
+    source: Path,
+    profile: Path,
+    version: str,
+    expected_source_hashes: dict[str, str] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    if expected_source_hashes is not None and lifecycle_source_hashes(source) != expected_source_hashes:
+        raise LifecycleFailure("extension source changed while the lifecycle was being prepared")
     staged = profile / "extension" / "probes"
     shutil.copytree(source, staged, symlinks=False)
     for path in staged.rglob("*"):
@@ -378,8 +482,13 @@ def _live_record_base() -> dict[str, Any]:
     }
 
 
-def _offline_record() -> dict[str, Any]:
+def _offline_record(source: Path | None = None, fixture_url: str | None = None) -> dict[str, Any]:
     record = _live_record_base()
+    if source is not None:
+        selected_fixture_url = safe_fixture_url(fixture_url, source)
+        record["phase"] = 4 if source == SOURCE_EXTENSION_DIR else 0
+        record["lifecycle_lane"] = "phase4-production" if source == SOURCE_EXTENSION_DIR else "legacy-test"
+        record["lifecycle_provenance"] = build_lifecycle_provenance(source, selected_fixture_url)
     record["evidence_mode"] = "offline"
     record["lifecycle"].update(
         {
@@ -409,6 +518,7 @@ def execute_lifecycle(
     profile_dir: Path | None = None,
     chrome_path: str | None = None,
     source_extension_dir: Path = SOURCE_EXTENSION_DIR,
+    fixture_url: str | None = None,
     debug_port: int | None = None,
     timeout: float = 8.0,
 ) -> dict[str, Any]:
@@ -420,7 +530,8 @@ def execute_lifecycle(
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be positive and finite")
 
-    source_manifest = _manifest(source_extension_dir / "manifest.json")
+    source = safe_extension_dir(str(source_extension_dir))
+    source_manifest = _manifest(source / "manifest.json")
     base_version = source_manifest["version"]
     update_version = _next_version(base_version)
     older_version = _default_older_version(base_version)
@@ -428,15 +539,21 @@ def execute_lifecycle(
     assert isinstance(extension_id, str)
     if not (_version(older_version) < _version(base_version) < _version(update_version)):
         raise ValueError("lifecycle versions must be strictly ordered")
+    selected_fixture_url = safe_fixture_url(fixture_url, source)
+    source_provenance = build_lifecycle_provenance(source, selected_fixture_url)
+    record["phase"] = 4 if source == SOURCE_EXTENSION_DIR else 0
+    record["lifecycle_lane"] = "phase4-production" if source == SOURCE_EXTENSION_DIR else "legacy-test"
+    record["lifecycle_provenance"] = source_provenance
+    expected_source_hashes = source_provenance["source_hashes"]
+    active_fixture_url = selected_fixture_url
 
-    owned_profile = profile_dir or Path(tempfile.mkdtemp(prefix="agentyc-p0-t7-"))
+    owned_profile = profile_dir or Path(tempfile.mkdtemp(prefix="agentyc-p4-lifecycle-"))
     remove_profile = True
     process: subprocess.Popen[bytes] | None = None
     stderr_handle: Any | None = None
     client: DevToolsSocket | None = None
     session_id: str | None = None
     staged: Path | None = None
-    fixture_url: str | None = None
     baseline_pages: int | None = None
     phase_error: str | None = None
     cleanup_uninstall: dict[str, Any] | None = None
@@ -446,11 +563,7 @@ def execute_lifecycle(
     try:
         safe_profile_dir(str(owned_profile))
         claim_disposable_profile(owned_profile)
-        staged, manifest = _stage_extension(source_extension_dir, owned_profile, base_version)
-        fixture = staged / "fixture.html"
-        if not fixture.is_file() or fixture.is_symlink():
-            raise LifecycleFailure("extension fixture page is missing")
-        fixture_url = fixture.resolve(strict=True).as_uri()
+        staged, manifest = _stage_extension(source, owned_profile, base_version, expected_source_hashes)
         port = debug_port or _free_port()
         if not 1 <= port <= 65535:
             raise ValueError("debug port must be between 1 and 65535")
@@ -469,7 +582,7 @@ def execute_lifecycle(
             owned_profile,
             port,
             extension_dir=None,
-            fixture_url=fixture_url,
+            fixture_url=active_fixture_url,
             operator_assisted=False,
         )
         process = subprocess.Popen(
@@ -481,7 +594,7 @@ def execute_lifecycle(
         version = wait_for_chrome(port, timeout=timeout)
         if version is None or process.poll() is not None or not _endpoint_belongs_to_process(port, process):
             raise LifecycleFailure("owned Chrome did not expose a verified endpoint")
-        baseline_pages = _fixture_pages(port, process, fixture_url)
+        baseline_pages = _fixture_pages(port, process, active_fixture_url)
         if baseline_pages != 1:
             raise LifecycleFailure("disposable profile did not expose exactly one owned fixture page")
         websocket_url = _browser_websocket_url(version, port)
@@ -528,7 +641,7 @@ def execute_lifecycle(
         record["phases"]["uninstall"] = phase
         record["lifecycle"]["uninstall"] = "passed"
 
-        final_pages = _fixture_pages(port, process, fixture_url)
+        final_pages = _fixture_pages(port, process, active_fixture_url)
         process_alive = process.poll() is None
         record["rollback_safety"].update(
             {
@@ -614,7 +727,12 @@ def execute_lifecycle(
 
 def write_record(artifact_dir: Path, record: dict[str, Any]) -> Path:
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    rendered = add_envelope(record, kind="install-lifecycle")
+    phase = 4 if record.get("lifecycle_lane") == "phase4-production" else 0
+    rendered = add_envelope(
+        record,
+        kind="install-lifecycle",
+        build_tuple={"phase": phase, "lifecycle_lane": record.get("lifecycle_lane", "legacy-test")},
+    )
     rendered = redact_for_persistence(rendered)
     path = artifact_dir / RECORD_NAME
     write_json_atomic(path, rendered)
@@ -628,7 +746,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-dir", default=DEFAULT_ARTIFACT_DIR.relative_to(ROOT).as_posix())
     parser.add_argument("--profile-dir", help="absolute empty disposable profile path inside the system temporary directory")
     parser.add_argument("--chrome-binary", help="explicit already-installed Chrome executable")
-    parser.add_argument("--extension-dir", help="repository-relative MV3 fixture directory; defaults to extension/probes")
+    parser.add_argument("--extension-dir", help="repository-relative MV3 source directory; defaults to production extension/")
+    parser.add_argument(
+        "--fixture-url",
+        help="explicit local fixture URL or HTTP(S) URL; production defaults to tests/fixtures/browser-task-spaces/small-form.html",
+    )
     parser.add_argument("--debug-port", type=int, help="unused local debug port; defaults to an OS-selected free port")
     parser.add_argument("--timeout", type=float, default=8.0)
     return parser
@@ -646,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         artifact_dir = safe_artifact_dir(args.artifact_dir)
         source = safe_extension_dir(args.extension_dir)
+        selected_fixture_url = safe_fixture_url(args.fixture_url, source)
         profile = safe_profile_dir(args.profile_dir) if args.profile_dir else None
     except (OSError, ValueError) as error:
         print(json.dumps({"status": "invalid_arguments", "detail": str(error)}, sort_keys=True), file=sys.stderr)
@@ -656,13 +779,20 @@ def main(argv: list[str] | None = None) -> int:
             profile_dir=profile,
             chrome_path=args.chrome_binary,
             source_extension_dir=source,
+            fixture_url=args.fixture_url,
             debug_port=args.debug_port,
             timeout=args.timeout,
         )
     else:
-        record = _offline_record()
+        record = _offline_record(source, selected_fixture_url)
     try:
-        errors = validate_lifecycle_record(record, require_live=record.get("evidence_mode") == "live" and record.get("status") == "live_passed")
+        live_passed = record.get("evidence_mode") == "live" and record.get("status") == "live_passed"
+        errors = validate_lifecycle_record(
+            record,
+            require_live=live_passed,
+            require_provenance=live_passed,
+            require_production_provenance=record.get("lifecycle_lane") == "phase4-production",
+        )
         if errors:
             record["record_validation"] = {"status": "blocked", "errors": errors}
         else:
