@@ -14,6 +14,7 @@ export const PAGE_OPERATIONS = Object.freeze(
     "document.text",
     "aria.summary",
     "element.attributes",
+    "element.actionability",
   ]),
 );
 
@@ -176,6 +177,80 @@ function resolveElement(documentLike, payload = {}) {
   }
 }
 
+function elementActionability(documentLike, payload = {}) {
+  const element = resolveElement(documentLike, payload);
+  const connected = element.isConnected !== false;
+  const rect = element.getBoundingClientRect?.();
+  const style = documentLike?.defaultView?.getComputedStyle?.(element);
+  const width = Number.isFinite(rect?.width) ? rect.width : 0;
+  const height = Number.isFinite(rect?.height) ? rect.height : 0;
+  const visible =
+    connected &&
+    width > 0 &&
+    height > 0 &&
+    style?.display !== "none" &&
+    style?.visibility !== "hidden" &&
+    style?.visibility !== "collapse" &&
+    style?.opacity !== "0";
+  const viewportWidth =
+    documentLike?.defaultView?.innerWidth ??
+    documentLike?.documentElement?.clientWidth ??
+    0;
+  const viewportHeight =
+    documentLike?.defaultView?.innerHeight ??
+    documentLike?.documentElement?.clientHeight ??
+    0;
+  const offscreen =
+    !rect ||
+    viewportWidth <= 0 ||
+    viewportHeight <= 0 ||
+    rect.right <= 0 ||
+    rect.bottom <= 0 ||
+    rect.left >= viewportWidth ||
+    rect.top >= viewportHeight;
+  const secondRect = element.getBoundingClientRect?.();
+  const moving =
+    Boolean(rect && secondRect) &&
+    ["left", "top", "right", "bottom", "width", "height"].some(
+      (key) => rect[key] !== secondRect[key],
+    );
+  const point = rect
+    ? {
+        x: Math.min(Math.max(rect.left + rect.width / 2, 0), viewportWidth),
+        y: Math.min(Math.max(rect.top + rect.height / 2, 0), viewportHeight),
+      }
+    : undefined;
+  const hit =
+    point && typeof documentLike?.elementFromPoint === "function"
+      ? documentLike.elementFromPoint(point.x, point.y)
+      : undefined;
+  const hitTarget =
+    hit === undefined
+      ? false
+      : hit === null
+        ? false
+        : hit === element || Boolean(element.contains?.(hit));
+  const covered = !hitTarget;
+  return {
+    connected,
+    visible,
+    disabled: Boolean(
+      element.disabled || element.getAttribute?.("aria-disabled") === "true",
+    ),
+    readonly: Boolean(
+      element.readOnly || element.getAttribute?.("aria-readonly") === "true",
+    ),
+    covered,
+    overlay_present: covered,
+    hit_target: hitTarget,
+    moving,
+    offscreen,
+    // User ownership is established by the service worker/TabsRegistry. A page
+    // probe never grants agent control, so this is only a fail-closed default.
+    user_control: false,
+  };
+}
+
 function ariaSummary(documentLike) {
   const root = documentLike?.body ?? documentLike?.documentElement;
   if (!root?.querySelectorAll) return [];
@@ -228,6 +303,8 @@ export function performPageOperation({
       }
       return { attributes };
     }
+    case "element.actionability":
+      return elementActionability(documentLike, payload);
     default:
       throw new ProtocolError(
         "capability_unavailable",
