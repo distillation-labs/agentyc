@@ -22,4 +22,4 @@ Audit date: 2026-10-04. This audit uses the current Chrome Developer Documentati
 
 ## Remaining evidence gates
 
-Headed Chrome 125+ nested-frame/OOPIF behavior, worker/host/browser restart drills, side-panel accessibility and focus workflow, enterprise policy denial, installation/update/uninstall/rollback, and existing-profile coexistence remain required live evidence before Phase 4 can be marked complete. No current artifact claims those results.
+Headed Chrome 125+ nested-frame/OOPIF behavior, worker/host/browser restart drills, side-panel accessibility and focus workflow, enterprise policy denial, installation/update/uninstall, and existing-profile coexistence remain required live evidence before Phase 4 can be marked complete. No current artifact claims those results.
