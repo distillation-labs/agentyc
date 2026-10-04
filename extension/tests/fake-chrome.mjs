@@ -96,18 +96,17 @@ export class FakeChrome {
       },
       lastError: undefined,
     };
+    const storageArea = (data) => ({
+      get: async (keys) =>
+        Object.fromEntries(
+          (Array.isArray(keys) ? keys : [keys]).map((key) => [key, data[key]]),
+        ),
+      set: async (value) => Object.assign(data, structuredClone(value)),
+    });
+    this.sessionStorageData = {};
     this.storage = {
-      local: {
-        get: async (keys) =>
-          Object.fromEntries(
-            (Array.isArray(keys) ? keys : [keys]).map((key) => [
-              key,
-              this.storageData[key],
-            ]),
-          ),
-        set: async (value) =>
-          Object.assign(this.storageData, structuredClone(value)),
-      },
+      local: storageArea(this.storageData),
+      session: storageArea(this.sessionStorageData),
     };
     this.tabs = {
       onCreated: new FakeEvent(),
