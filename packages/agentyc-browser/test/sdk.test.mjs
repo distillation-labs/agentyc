@@ -80,7 +80,7 @@ test("logical space and lazy page handles never expose browser identities", asyn
   const page = space.page("main");
   assert.equal(space.id, "space_alpha");
   assert.equal(page.id, undefined);
-  await page.create();
+  await page.create({ leaseEpoch: 1 });
   assert.equal(page.id, "page_main");
   assert.equal(Object.hasOwn(page, "targetId"), false);
   assert.equal(Object.hasOwn(space, "browserId"), false);
