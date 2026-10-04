@@ -100,6 +100,8 @@ pub enum PageCommand {
     /// Create and bind an inactive managed page through the extension bridge.
     #[command(name = "create-managed")]
     CreateManaged(PageCreateManagedArgs),
+    /// Close one logically owned page through the host lifecycle transition.
+    Close(PageCloseArgs),
     /// List logical pages in one space.
     List(PageListArgs),
     /// Return the bounded logical page inventory for one space.
@@ -130,6 +132,9 @@ pub struct SpaceCreateArgs {
     /// User-facing logical label.
     #[arg(long)]
     pub label: String,
+    /// Explicitly acknowledge that existing-profile state is shared and is not isolation.
+    #[arg(long)]
+    pub accept_shared_profile_disclosure: bool,
 }
 
 /// Arguments for bounded released-space pruning.
@@ -251,6 +256,23 @@ pub struct PageCreateManagedArgs {
     /// Optional logical page title.
     #[arg(long)]
     pub title: Option<String>,
+    /// Explicit host timestamp for deterministic callers.
+    #[arg(long)]
+    pub now: Option<u64>,
+}
+
+/// Arguments for `page close`.
+#[derive(Debug, Clone, Args)]
+pub struct PageCloseArgs {
+    /// Logical owning space identity.
+    #[arg(long)]
+    pub space_id: String,
+    /// Logical page identity.
+    #[arg(long)]
+    pub page_id: String,
+    /// Current space lease epoch.
+    #[arg(long)]
+    pub lease_epoch: u64,
     /// Explicit host timestamp for deterministic callers.
     #[arg(long)]
     pub now: Option<u64>,
@@ -665,12 +687,24 @@ pub(crate) fn remote_field(
             format!("remote response is missing result field {field}"),
         )
     })?;
-    serde_json::from_str(encoded).map_err(|error| {
-        CoreError::new(
+    match serde_json::from_str(encoded) {
+        Ok(value) => Ok(value),
+        Err(_error)
+            if !matches!(
+                encoded.trim_start().chars().next(),
+                Some('{') | Some('[') | Some('"')
+            ) =>
+        {
+            // The legacy string-map adapter may return a scalar string without
+            // JSON quotes. Structured-looking values remain strict so malformed
+            // objects and arrays cannot silently change result shape.
+            Ok(Value::String(encoded.clone()))
+        }
+        Err(error) => Err(CoreError::new(
             ErrorCode::InvalidJson,
             format!("remote result field {field} is not valid JSON: {error}"),
-        )
-    })
+        )),
+    }
 }
 
 pub(crate) fn remote_string(
@@ -804,6 +838,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "test space".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("create");
@@ -851,6 +886,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "handoff".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("create space");
@@ -930,6 +966,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "action space".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("create space");
@@ -1010,6 +1047,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "remote space".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("remote create");
@@ -1132,6 +1170,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "retained".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("create");
@@ -1185,6 +1224,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "stale".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("create");
@@ -1248,6 +1288,46 @@ mod tests {
         assert_eq!(exit_code_for(ErrorCode::Timeout), 6);
         assert_eq!(exit_code_for(ErrorCode::UnknownOutcome), 7);
         assert_eq!(exit_code_for_name("not_yet_known"), 5);
+    }
+
+    #[test]
+    fn remote_string_map_decoding_accepts_json_scalars_and_legacy_raw_strings() {
+        let response = BTreeMap::from([
+            ("object".to_owned(), r#"{"ok":true}"#.to_owned()),
+            ("array".to_owned(), "[1,2]".to_owned()),
+            ("quoted".to_owned(), r#""quoted""#.to_owned()),
+            ("number".to_owned(), "7".to_owned()),
+            ("boolean".to_owned(), "true".to_owned()),
+            ("null".to_owned(), "null".to_owned()),
+            ("raw".to_owned(), "space_raw".to_owned()),
+        ]);
+
+        assert_eq!(
+            remote_field(&response, "object").expect("object"),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            remote_field(&response, "array").expect("array"),
+            json!([1, 2])
+        );
+        assert_eq!(
+            remote_string(&response, "quoted").expect("quoted"),
+            "quoted"
+        );
+        assert_eq!(remote_field(&response, "number").expect("number"), json!(7));
+        assert_eq!(
+            remote_field(&response, "boolean").expect("boolean"),
+            json!(true)
+        );
+        assert_eq!(remote_field(&response, "null").expect("null"), Value::Null);
+        assert_eq!(remote_string(&response, "raw").expect("raw"), "space_raw");
+    }
+
+    #[test]
+    fn remote_string_map_decoding_keeps_malformed_structured_values_strict() {
+        let response = BTreeMap::from([("object".to_owned(), "{not-json".to_owned())]);
+        let error = remote_field(&response, "object").expect_err("malformed object");
+        assert_eq!(error.code, ErrorCode::InvalidJson);
     }
 
     #[test]
