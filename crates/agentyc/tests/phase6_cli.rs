@@ -54,6 +54,23 @@ fn direct_failure_emits_structured_stdout_and_diagnostic_stderr() {
 }
 
 #[test]
+fn malformed_cli_input_emits_one_json_error_when_json_was_requested() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agentyc"))
+        .args(["--json", "space", "create", "--label"])
+        .output()
+        .expect("agentyc process");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    assert_eq!(stdout.lines().count(), 1);
+    let value: Value = serde_json::from_str(&stdout).expect("stdout JSON error");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "invalid_argument");
+    assert_eq!(value["error"]["retryable"], false);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("usage:"));
+}
+
+#[test]
 fn extension_status_is_observation_only() {
     let directory = tempdir().expect("state directory");
     let output = run_cli(directory.path(), &["extension", "status"]);
