@@ -5,20 +5,22 @@
 
 use std::{
     collections::BTreeMap,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use agentyc_core::{
     ActionId, ActionOperation, ActionRequest, ArtifactBeginEnvelope, ArtifactChunkEnvelope,
-    ArtifactEndEnvelope, ArtifactEnvelope, ArtifactTransferBudget, BrokerEpoch, ContentHash,
-    DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventKind, EventScope, EventSequence,
-    FrameDecoder, FrameId, GenerationWatermark, HelloEnvelope, IdempotencyKey, LeaseEpoch,
-    MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition,
+    ArtifactEndEnvelope, ArtifactEnvelope, ArtifactId, ArtifactTransferBudget, BrokerEpoch,
+    ContentHash, DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventKind, EventScope,
+    EventSequence, FrameDecoder, FrameId, GenerationWatermark, HelloEnvelope, IdempotencyKey,
+    LeaseEpoch, MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition,
     ProfileDisclosure, ReconcileToken, RequestEnvelope, RequestId, ResponseEnvelope,
     ResumeEnvelope, SpaceId, Timestamp, TokenBudget, decode_frame, decode_utf8, encode_frame,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -36,6 +38,7 @@ pub struct ProtocolServer {
     max_artifact_chunk_bytes: usize,
     connection: Option<Connection>,
     request_states: BTreeMap<RequestId, RequestRecord>,
+    cancellation_tokens: Arc<Mutex<BTreeMap<RequestId, crate::CancellationToken>>>,
     artifact_transfers: BTreeMap<String, LocalArtifactTransfer>,
     artifact_budget: ArtifactTransferBudget,
 }
@@ -77,6 +80,7 @@ impl ProtocolServer {
             max_artifact_chunk_bytes,
             connection: None,
             request_states: BTreeMap::new(),
+            cancellation_tokens: Arc::new(Mutex::new(BTreeMap::new())),
             artifact_transfers: BTreeMap::new(),
             artifact_budget: ArtifactTransferBudget::default(),
         })
@@ -90,6 +94,21 @@ impl ProtocolServer {
     /// Return the host-assigned connection after a successful hello.
     pub fn connection(&self) -> Option<&Connection> {
         self.connection.as_ref()
+    }
+
+    /// Fork a request worker that shares broker authority and cancellation state.
+    ///
+    /// Request deduplication state remains local to the worker; the local IPC
+    /// transport routes only one long-running wait request to each fork.
+    pub(crate) fn fork_for_connection(&self) -> Result<Self, HostError> {
+        let mut worker = Self::with_limits(
+            self.broker.clone(),
+            self.max_payload_bytes,
+            self.max_artifact_chunk_bytes,
+        )?;
+        worker.connection = self.connection.clone();
+        worker.cancellation_tokens = Arc::clone(&self.cancellation_tokens);
+        Ok(worker)
     }
 
     /// Dispatch one decoded core envelope.
@@ -222,18 +241,25 @@ impl ProtocolServer {
                 fingerprint,
             },
         );
+        let cancellation = self.cancellation_token(&request_id);
         let started = Instant::now();
         let deadline = request
             .deadline_ms
             .and_then(|milliseconds| started.checked_add(Duration::from_millis(milliseconds)));
-        let result = if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        let result = if cancellation.is_cancelled() {
+            Err(HostError::Core(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::Cancelled,
+                "request was cancelled before dispatch",
+            )))
+        } else if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             Err(HostError::Core(agentyc_core::CoreError::new(
                 agentyc_core::ErrorCode::Timeout,
                 "request deadline elapsed before dispatch",
             )))
         } else {
-            self.execute_request(request, deadline)
+            self.execute_request(request, deadline, cancellation.clone())
         };
+        self.clear_cancellation(&request_id);
         if let Some(record) = self.request_states.get_mut(&request_id) {
             record.state = RequestState::Completed;
         }
@@ -245,8 +271,42 @@ impl ProtocolServer {
         }
     }
 
+    fn cancellation_token(&self, request_id: &RequestId) -> crate::CancellationToken {
+        let mut tokens = self
+            .cancellation_tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tokens.entry(request_id.clone()).or_default().clone()
+    }
+
+    pub(crate) fn cancel_all(&self) {
+        if let Ok(tokens) = self.cancellation_tokens.lock() {
+            for token in tokens.values() {
+                token.cancel();
+            }
+        }
+    }
+
+    fn clear_cancellation(&self, request_id: &RequestId) {
+        if let Ok(mut tokens) = self.cancellation_tokens.lock() {
+            tokens.remove(request_id);
+        }
+    }
+
     fn handle_cancel(&mut self, cancel: agentyc_core::CancelEnvelope) -> Envelope {
         let request_id = cancel.request_id;
+        if let Some(token) = self
+            .cancellation_tokens
+            .lock()
+            .ok()
+            .and_then(|tokens| tokens.get(&request_id).cloned())
+        {
+            token.cancel();
+            return Envelope::Response(ResponseEnvelope::success(
+                request_id,
+                BTreeMap::from([("cancelled".to_owned(), "true".to_owned())]),
+            ));
+        }
         let result = match self.request_states.get(&request_id) {
             Some(record) if record.state == RequestState::CancelledQueued => Ok("true"),
             Some(record) if record.state == RequestState::Dispatched => {
@@ -262,6 +322,8 @@ impl ProtocolServer {
                 ))
             }
             None if self.request_states.len() < MAX_TRACKED_REQUESTS => {
+                let token = self.cancellation_token(&request_id);
+                token.cancel();
                 let fingerprint = cancelled_request_fingerprint(&request_id);
                 self.request_states.insert(
                     request_id.clone(),
@@ -387,6 +449,7 @@ impl ProtocolServer {
         &self,
         request: RequestEnvelope,
         deadline: Option<Instant>,
+        cancellation: crate::CancellationToken,
     ) -> Result<BTreeMap<String, String>, HostError> {
         if !request.has_valid_method() {
             return Err(agentyc_core::CoreError::invalid_argument("invalid request method").into());
@@ -619,6 +682,26 @@ impl ProtocolServer {
                 let action = self.broker.execute_action(action_request, authority, now)?;
                 put_json(&mut result, "action_id", &action.receipt.action_id)?;
                 put_json(&mut result, "receipt", &action.receipt)?;
+                if let Some(artifact) = action.artifact {
+                    put_json(&mut result, "artifact", &artifact)?;
+                }
+            }
+            "artifact.take" => {
+                let action_id = parse_action(required(&request.params, "action_id")?)?;
+                let artifact_id = required(&request.params, "artifact_id")?
+                    .parse::<ArtifactId>()
+                    .map_err(|error| {
+                        agentyc_core::CoreError::invalid_argument(error.to_string())
+                    })?;
+                let (handle, bytes) =
+                    self.broker
+                        .take_artifact(authority, &action_id, &artifact_id)?;
+                put_json(&mut result, "artifact", &handle)?;
+                put_json(
+                    &mut result,
+                    "bytes_base64",
+                    &base64::engine::general_purpose::STANDARD.encode(bytes),
+                )?;
             }
             "refs.issue" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
@@ -760,7 +843,7 @@ impl ProtocolServer {
                     condition,
                     scope.clone(),
                     Timestamp::new(effective_timeout_ms.min(timeout_ms)),
-                    crate::CancellationToken::new(),
+                    cancellation.clone(),
                 );
                 loop {
                     let notification_generation = self.broker.event_notification_generation();
@@ -780,8 +863,20 @@ impl ProtocolServer {
                             break;
                         }
                         crate::WaitOutcome::Pending { .. } => {
-                            self.broker
-                                .wait_for_event_change_until(notification_generation, deadline);
+                            let cancellation_probe = Instant::now()
+                                .checked_add(Duration::from_millis(50))
+                                .map_or(deadline, |probe| probe.min(deadline));
+                            self.broker.wait_for_event_change_until(
+                                notification_generation,
+                                cancellation_probe,
+                            );
+                            if cancellation.is_cancelled() {
+                                return Err(agentyc_core::CoreError::new(
+                                    agentyc_core::ErrorCode::Cancelled,
+                                    "wait was cancelled",
+                                )
+                                .into());
+                            }
                         }
                         outcome => {
                             return Err(crate::WaitEngine::<ProtocolClock>::outcome_error(
@@ -792,6 +887,48 @@ impl ProtocolServer {
                         }
                     }
                 }
+            }
+            "observability.logs" | "observability.network" | "observability.traces" => {
+                let event_scope = request_scope(&request.params)?.ok_or_else(|| {
+                    agentyc_core::CoreError::invalid_argument(
+                        "observability reads require a logical space scope",
+                    )
+                })?;
+                let space_id = event_scope.space_id.ok_or_else(|| {
+                    agentyc_core::CoreError::invalid_argument(
+                        "observability reads require a logical space scope",
+                    )
+                })?;
+                let scope = match event_scope.page_id {
+                    Some(page_id) => crate::ObservationScope::page(space_id, page_id),
+                    None => crate::ObservationScope::space(space_id),
+                };
+                match request.method.as_str() {
+                    "observability.logs" => {
+                        put_json(
+                            &mut result,
+                            "records",
+                            &self.broker.observability_logs(authority, &scope)?,
+                        )?;
+                    }
+                    "observability.network" => {
+                        put_json(
+                            &mut result,
+                            "records",
+                            &self.broker.observability_network(authority, &scope)?,
+                        )?;
+                    }
+                    "observability.traces" => {
+                        put_json(
+                            &mut result,
+                            "records",
+                            &self.broker.observability_traces(authority, &scope)?,
+                        )?;
+                    }
+                    _ => unreachable!("matched observability method"),
+                }
+                put_json(&mut result, "space_id", &scope.space_id)?;
+                put_optional_json(&mut result, "page_id", scope.page_id.as_ref())?;
             }
             "host.status" => {
                 let lifecycle = self.broker.lifecycle()?;
@@ -2317,6 +2454,192 @@ fn parse_action(value: &str) -> Result<ActionId, HostError> {
         .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()).into())
 }
 
+const MAX_CONTEXT_FOCUS_BYTES: usize = 512;
+
+fn parse_context_focus(
+    params: &BTreeMap<String, String>,
+) -> Result<crate::ContextFocus, HostError> {
+    let mut focus = crate::ContextFocus::default();
+    if let Some(value) = params.get("focus") {
+        merge_context_focus(
+            &mut focus,
+            parse_context_focus_value(value, "focus")?,
+            "focus",
+        )?;
+    }
+    if let Some(value) = params.get("focus_ref") {
+        merge_context_focus(
+            &mut focus,
+            parse_context_focus_alias(value, "focus_ref")?,
+            "focus_ref",
+        )?;
+    }
+    if let Some(value) = params.get("focus_element") {
+        merge_context_focus(
+            &mut focus,
+            parse_context_focus_alias(value, "focus_element")?,
+            "focus_element",
+        )?;
+    }
+    for key in ["frame_id", "focus_frame_id"] {
+        if let Some(value) = params.get(key) {
+            let frame_id = value.parse::<FrameId>().map_err(|error| {
+                agentyc_core::CoreError::invalid_argument(format!("invalid {key}: {error}"))
+            })?;
+            merge_context_focus(
+                &mut focus,
+                crate::ContextFocus {
+                    frame_id: Some(frame_id),
+                    element_key: None,
+                },
+                key,
+            )?;
+        }
+    }
+    if let Some(value) = params.get("element_key") {
+        let element_key = value.parse::<agentyc_core::ElementKey>().map_err(|error| {
+            agentyc_core::CoreError::invalid_argument(format!("invalid element_key: {error}"))
+        })?;
+        merge_context_focus(
+            &mut focus,
+            crate::ContextFocus {
+                frame_id: None,
+                element_key: Some(element_key),
+            },
+            "element_key",
+        )?;
+    }
+    Ok(focus)
+}
+
+fn parse_context_focus_alias(value: &str, field: &str) -> Result<crate::ContextFocus, HostError> {
+    if value.trim_start().starts_with('{') || value.trim_start().starts_with('"') {
+        parse_context_focus_value(value, field)
+    } else {
+        let element_key = value.parse::<agentyc_core::ElementKey>().map_err(|error| {
+            agentyc_core::CoreError::invalid_argument(format!("invalid {field}: {error}"))
+        })?;
+        Ok(crate::ContextFocus {
+            frame_id: None,
+            element_key: Some(element_key),
+        })
+    }
+}
+
+fn parse_context_focus_value(encoded: &str, field: &str) -> Result<crate::ContextFocus, HostError> {
+    if encoded.len() > MAX_CONTEXT_FOCUS_BYTES {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::MessageTooLarge,
+            format!("{field} exceeds its bounded logical target size"),
+        )
+        .into());
+    }
+    let value: Value = serde_json::from_str(encoded).map_err(|error| {
+        agentyc_core::CoreError::invalid_argument(format!("invalid {field}: {error}"))
+    })?;
+    let Some(object) = value.as_object() else {
+        let Some(element_key) = value.as_str() else {
+            return Err(agentyc_core::CoreError::invalid_argument(format!(
+                "{field} must be a JSON object or logical element key"
+            ))
+            .into());
+        };
+        let element_key = element_key
+            .parse::<agentyc_core::ElementKey>()
+            .map_err(|error| {
+                agentyc_core::CoreError::invalid_argument(format!(
+                    "invalid {field} element_key: {error}"
+                ))
+            })?;
+        return Ok(crate::ContextFocus {
+            frame_id: None,
+            element_key: Some(element_key),
+        });
+    };
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "frame_id" | "element_key"))
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "{field} contains an unknown field"
+        ))
+        .into());
+    }
+    let frame_id = object
+        .get("frame_id")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| {
+                    agentyc_core::CoreError::invalid_argument(format!(
+                        "{field}.frame_id must be a string"
+                    ))
+                })?
+                .parse::<FrameId>()
+                .map_err(|error| {
+                    agentyc_core::CoreError::invalid_argument(format!(
+                        "invalid {field}.frame_id: {error}"
+                    ))
+                })
+        })
+        .transpose()?;
+    let element_key = object
+        .get("element_key")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| {
+                    agentyc_core::CoreError::invalid_argument(format!(
+                        "{field}.element_key must be a string"
+                    ))
+                })?
+                .parse::<agentyc_core::ElementKey>()
+                .map_err(|error| {
+                    agentyc_core::CoreError::invalid_argument(format!(
+                        "invalid {field}.element_key: {error}"
+                    ))
+                })
+        })
+        .transpose()?;
+    let focus = crate::ContextFocus {
+        frame_id,
+        element_key,
+    };
+    if focus.is_empty() {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "{field} must contain frame_id or element_key"
+        ))
+        .into());
+    }
+    Ok(focus)
+}
+
+fn merge_context_focus(
+    target: &mut crate::ContextFocus,
+    incoming: crate::ContextFocus,
+    field: &str,
+) -> Result<(), HostError> {
+    if incoming.frame_id.is_some() {
+        if target.frame_id.is_some() {
+            return Err(agentyc_core::CoreError::invalid_argument(format!(
+                "focus frame is specified more than once ({field})"
+            ))
+            .into());
+        }
+        target.frame_id = incoming.frame_id;
+    }
+    if incoming.element_key.is_some() {
+        if target.element_key.is_some() {
+            return Err(agentyc_core::CoreError::invalid_argument(format!(
+                "focus element is specified more than once ({field})"
+            ))
+            .into());
+        }
+        target.element_key = incoming.element_key;
+    }
+    Ok(())
+}
+
 fn context_request_from_params(
     params: &BTreeMap<String, String>,
     current: &agentyc_core::SnapshotEnvelope,
@@ -2324,7 +2647,8 @@ fn context_request_from_params(
     let mode = match params.get("mode").map(String::as_str).unwrap_or("auto") {
         "auto" => crate::ContextMode::Auto,
         "full" => crate::ContextMode::Full,
-        "compact" | "min" | "focus" => crate::ContextMode::Compact,
+        "compact" | "min" => crate::ContextMode::Compact,
+        "focus" => crate::ContextMode::Focus,
         "delta" => crate::ContextMode::Delta,
         _ => {
             return Err(agentyc_core::CoreError::invalid_argument(
@@ -2335,8 +2659,15 @@ fn context_request_from_params(
     };
     let mut request = crate::ContextRequest {
         mode,
+        focus: parse_context_focus(params)?,
         ..crate::ContextRequest::auto()
     };
+    if request.mode == crate::ContextMode::Focus && request.focus.is_empty() {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "focus mode requires a focus or focus_ref target",
+        )
+        .into());
+    }
     if let Some(value) = params.get("max_serialized_bytes") {
         let limit = value.parse::<usize>().map_err(|error| {
             agentyc_core::CoreError::invalid_argument(format!(
@@ -2573,6 +2904,69 @@ mod tests {
             deadline_ms: None,
             idempotency_key: None,
         })
+    }
+
+    #[test]
+    fn focus_mode_wire_input_is_typed_and_bounded() {
+        let current = crate::snapshots::empty_snapshot(
+            agentyc_core::SpaceId::from_suffix("space").expect("space"),
+            agentyc_core::PageId::from_suffix("page").expect("page"),
+        );
+        let request = context_request_from_params(
+            &BTreeMap::from([
+                ("mode".to_owned(), "focus".to_owned()),
+                (
+                    "focus".to_owned(),
+                    r#"{"frame_id":"frame_main","element_key":"element_target"}"#.to_owned(),
+                ),
+            ]),
+            &current,
+        )
+        .expect("focus request");
+        assert_eq!(request.mode, crate::ContextMode::Focus);
+        assert_eq!(
+            request.focus,
+            crate::ContextFocus {
+                frame_id: Some(FrameId::from_suffix("main").expect("frame")),
+                element_key: Some(agentyc_core::ElementKey::from_suffix("target").expect("key")),
+            }
+        );
+
+        let alias = context_request_from_params(
+            &BTreeMap::from([
+                ("mode".to_owned(), "focus".to_owned()),
+                ("focus_ref".to_owned(), "element_target".to_owned()),
+            ]),
+            &current,
+        )
+        .expect("focus alias");
+        assert_eq!(
+            alias.focus.element_key.as_ref().map(|key| key.as_str()),
+            Some("element_target")
+        );
+
+        let missing = context_request_from_params(
+            &BTreeMap::from([("mode".to_owned(), "focus".to_owned())]),
+            &current,
+        )
+        .expect_err("missing focus target");
+        assert_eq!(
+            missing.as_core_error().code,
+            agentyc_core::ErrorCode::InvalidArgument
+        );
+
+        let malformed = context_request_from_params(
+            &BTreeMap::from([
+                ("mode".to_owned(), "focus".to_owned()),
+                ("focus".to_owned(), r#"{"unknown":"value"}"#.to_owned()),
+            ]),
+            &current,
+        )
+        .expect_err("malformed focus target");
+        assert_eq!(
+            malformed.as_core_error().code,
+            agentyc_core::ErrorCode::InvalidArgument
+        );
     }
 
     #[test]
