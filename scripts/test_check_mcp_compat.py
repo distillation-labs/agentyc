@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).with_name("check_mcp_compat.py")
 SPEC = importlib.util.spec_from_file_location("check_mcp_compat", SCRIPT)
 checker = importlib.util.module_from_spec(SPEC)
@@ -23,12 +22,48 @@ class McpCompatibilityCheckerTests(unittest.TestCase):
         self.assertEqual(report["live_chrome"], {"status": "not_run", "claim": False})
         self.assertEqual(report["status"], "fail")
         failures = {item["id"] for item in report["checks"] if item["status"] == "fail"}
-        self.assertTrue({
-            "architecture.no_direct_browser_dependencies",
-            "architecture.no_direct_cdp_bypass",
-            "policy.raw_ids_adapter_only",
-            "errors.canonical_iserror_metadata",
-        }.issubset(failures))
+        self.assertEqual(
+            failures,
+            {
+                "architecture.no_direct_browser_dependencies",
+                "architecture.no_direct_cdp_bypass",
+                "policy.raw_ids_adapter_only",
+                "errors.canonical_iserror_metadata",
+                "manifest.required_tool_evidence",
+            },
+        )
+
+        envelope_fields = {
+            "schema_version",
+            "build_tuple",
+            "environment",
+            "timestamp",
+            "command",
+            "result",
+            "redaction_status",
+        }
+        self.assertTrue(envelope_fields.issubset(manifest))
+        self.assertTrue(envelope_fields.issubset(report))
+        self.assertEqual(manifest["timestamp"], report["timestamp"])
+        self.assertEqual(manifest["nonce"], report["nonce"])
+        self.assertEqual(
+            [item["id"] for item in report["checks"]],
+            [
+                "evidence.required_files",
+                "architecture.no_direct_browser_dependencies",
+                "architecture.no_direct_cdp_bypass",
+                "policy.raw_ids_adapter_only",
+                "catalog.valid",
+                "profiles.exact_counts",
+                "profiles.catalog_matches_declarations",
+                "profiles.documented_baseline",
+                "errors.canonical_iserror_metadata",
+                "manifest.required_tool_evidence",
+            ],
+        )
+        self.assertNotIn("<redacted id>", json.dumps(report))
+        self.assertIn("browser_navigate", manifest["profiles"]["default"])
+        self.assertIn("browser_navigate", {item["name"] for item in manifest["tools"]})
 
     def test_rust_comment_mentions_do_not_count_as_production_bypasses(self) -> None:
         source = """// CdpClient and target_id in a comment are not executable.
