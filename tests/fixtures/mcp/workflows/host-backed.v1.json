@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "mcp-workflow",
+  "name": "sanitized-host-backed-logical-boundary",
+  "transport": "host-backed",
+  "status": "contract-only",
+  "sanitized": true,
+  "live_claims": false,
+  "steps": [
+    {"direction": "adapter_to_local IPC", "method": "hello", "params": {"protocol": 1, "principal_id": "principal_fixture", "profile_instance_id": "profile_fixture"}},
+    {"direction": "local IPC_to_host", "method": "hello_ok", "result": {"broker_epoch": "epoch_fixture", "connection_epoch": "connection_fixture"}},
+    {"direction": "adapter_to_local IPC", "method": "space.create", "params": {"label": "fixture-space"}},
+    {"direction": "host_to_adapter", "method": "host_space_create", "result": {"space_id": "space_fixture", "lifecycle": "created"}},
+    {"direction": "adapter_to_local IPC", "method": "space.claim", "params": {"space_id": "space_fixture", "lease_epoch": 1}},
+    {"direction": "host_to_adapter", "method": "error", "result": {"code": "extension_not_connected", "retryable": true, "guidance": "retry"}}
+  ],
+  "nonclaims": [
+    "Logical space_id and lease fields are contract placeholders; no browser target, tab, session, or page body is present.",
+    "A host-backed route declaration does not prove the extension or Chrome is connected."
+  ]
+}
