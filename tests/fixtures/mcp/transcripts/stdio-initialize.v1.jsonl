@@ -1,0 +1,5 @@
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"initialize","params":{"protocolVersion":"2024-11-05","clientInfo":{"name":"contract-fixture","version":"1"}}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"server_to_client","method":"initialize_result","result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"agentyc-compatibility-fixture","version":"1"}}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"notifications/initialized","params":{}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"tools/list","params":{}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"server_to_client","method":"tools/list_result","result":{"profile":"default","tool_count":61}}
