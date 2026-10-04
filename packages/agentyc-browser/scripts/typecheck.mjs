@@ -1,46 +1,36 @@
-import { readFile } from "node:fs/promises";
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const declarations = await readFile(
-  new URL("../src/index.d.ts", import.meta.url),
-  "utf8",
-);
-for (const source of [
-  "client.ts",
-  "space.ts",
-  "page.ts",
-  "actions.ts",
-  "waits.ts",
-  "events.ts",
-  "errors.ts",
-  "transport.ts",
-]) {
-  const sourceText = await readFile(
-    new URL(`../src/${source}`, import.meta.url),
-    "utf8",
+const require = createRequire(new URL("../package.json", import.meta.url));
+let compiler;
+try {
+  const packageRoot = dirname(dirname(require.resolve("typescript")));
+  compiler = join(packageRoot, "bin", "tsc");
+} catch (error) {
+  if (error.code !== "MODULE_NOT_FOUND") throw error;
+  console.error(
+    "TypeScript typecheck unavailable: install TypeScript in this package or an ancestor workspace.",
   );
-  assert.match(
-    sourceText,
-    /export type/,
-    `missing typed source facade: ${source}`,
-  );
-  assert.doesNotMatch(sourceText, /\b(?:tab|target|session|chrome|cdp)_id\b/i);
+  process.exitCode = 1;
 }
-for (const symbol of [
-  "TaskSpace",
-  "Page",
-  "BrowserClient",
-  "LocalTransport",
-  "UnknownOutcomeError",
-  "ReconciliationRequiredError",
-]) {
-  assert.match(
-    declarations,
-    new RegExp(`\\b${symbol}\\b`),
-    `missing declaration: ${symbol}`,
+
+if (compiler) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      compiler,
+      "--project",
+      fileURLToPath(new URL("../tsconfig.json", import.meta.url)),
+    ],
+    { stdio: "inherit" },
+  );
+  if (result.error) throw result.error;
+  assert.equal(
+    result.status,
+    0,
+    `TypeScript declaration check failed with exit status ${result.status}`,
   );
 }
-assert.doesNotMatch(declarations, /\b(?:tab|target|session|chrome|cdp)_id\b/i);
-assert.match(declarations, /batch\s*<|batch\s*\(/, "batch API is missing");
-assert.match(declarations, /reconnect\s*\(/, "reconnect API is missing");
-console.log("type declarations passed");
