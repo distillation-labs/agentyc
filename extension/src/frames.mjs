@@ -9,6 +9,70 @@ function sessionKey(tabId, sessionId) {
   return `${tabId}:${sessionId ?? "root"}`;
 }
 
+export const DEBUGGER_EVENT_ALLOWLIST = Object.freeze({
+  Accessibility: Object.freeze(["loadComplete", "nodesUpdated"]),
+  DOM: Object.freeze([
+    "attributeModified",
+    "attributeRemoved",
+    "characterDataModified",
+    "childNodeCountUpdated",
+    "childNodeInserted",
+    "childNodeRemoved",
+    "documentUpdated",
+    "setChildNodes",
+    "shadowRootPopped",
+    "shadowRootPushed",
+  ]),
+  Log: Object.freeze(["entryAdded"]),
+  Network: Object.freeze([
+    "loadingFailed",
+    "loadingFinished",
+    "requestServedFromCache",
+    "requestWillBeSent",
+    "responseReceived",
+    "webSocketClosed",
+    "webSocketCreated",
+    "webSocketFrameError",
+    "webSocketFrameReceived",
+    "webSocketFrameSent",
+    "webSocketHandshakeResponseReceived",
+    "webSocketWillSendHandshakeRequest",
+  ]),
+  Page: Object.freeze([
+    "domContentEventFired",
+    "frameAttached",
+    "frameDetached",
+    "frameNavigated",
+    "frameStartedLoading",
+    "frameStoppedLoading",
+    "javascriptDialogClosed",
+    "javascriptDialogOpening",
+    "lifecycleEvent",
+    "loadEventFired",
+    "navigatedWithinDocument",
+  ]),
+  Runtime: Object.freeze([
+    "consoleAPICalled",
+    "exceptionRevoked",
+    "exceptionThrown",
+    "executionContextCreated",
+    "executionContextDestroyed",
+    "executionContextsCleared",
+  ]),
+});
+
+export function isAllowedDebuggerEvent(method) {
+  if (typeof method !== "string") return false;
+  const separator = method.indexOf(".");
+  if (separator < 1 || separator === method.length - 1) return false;
+  const domain = method.slice(0, separator);
+  const event = method.slice(separator + 1);
+  return (
+    Object.prototype.hasOwnProperty.call(DEBUGGER_EVENT_ALLOWLIST, domain) &&
+    DEBUGGER_EVENT_ALLOWLIST[domain].includes(event)
+  );
+}
+
 /**
  * Maps debugger-only target/session/frame handles to logical page scope. A
  * missing mapping is a hard routing miss; there is no active-tab fallback.
@@ -32,6 +96,7 @@ export class FramesRegistry {
     tabId,
     spaceId,
     pageId,
+    origin,
     targetGeneration = 1,
     documentGeneration = 1,
     navigationGeneration = 1,
@@ -46,6 +111,7 @@ export class FramesRegistry {
       rawTabId: tabId,
       spaceId,
       pageId,
+      origin: typeof origin === "string" ? origin : undefined,
       targetGeneration,
       documentGeneration,
       navigationGeneration,
@@ -62,6 +128,7 @@ export class FramesRegistry {
     sessionId,
     spaceId,
     pageId,
+    origin,
     targetGeneration = 1,
     documentGeneration = 1,
     navigationGeneration = 1,
@@ -88,6 +155,7 @@ export class FramesRegistry {
       rawTabId: tabId,
       spaceId,
       pageId,
+      origin: typeof origin === "string" ? origin : undefined,
       targetGeneration,
       documentGeneration,
       navigationGeneration,
@@ -105,6 +173,7 @@ export class FramesRegistry {
     sessionId,
     frameId,
     logicalFrameId,
+    origin,
     documentGeneration,
     navigationGeneration,
   } = {}) {
@@ -130,6 +199,7 @@ export class FramesRegistry {
       rawFrameId: frameId,
       spaceId: binding.spaceId,
       pageId: binding.pageId,
+      origin: typeof origin === "string" ? origin : binding.origin,
       logicalFrameId:
         typeof logicalFrameId === "string" ? logicalFrameId : undefined,
       documentGeneration: documentGeneration ?? binding.documentGeneration,
@@ -166,6 +236,7 @@ export class FramesRegistry {
   }
 
   observeDebuggerEvent({ tabId, sessionId, method, params = {} } = {}) {
+    if (!isAllowedDebuggerEvent(method)) return;
     const binding = this.sessions.get(sessionKey(tabId, sessionId));
     if (!binding) return;
     if (
@@ -198,6 +269,7 @@ export class FramesRegistry {
   }
 
   routeDebuggerEvent({ tabId, sessionId, method, params = {} } = {}) {
+    if (!isAllowedDebuggerEvent(method)) return null;
     const binding = this.sessions.get(sessionKey(tabId, sessionId));
     if (!binding || typeof method !== "string") return null;
     this.observeDebuggerEvent({ tabId, sessionId, method, params });
@@ -273,6 +345,61 @@ export class FramesRegistry {
 
   getInternalBinding(tabId, sessionId) {
     return this.sessions.get(sessionKey(tabId, sessionId));
+  }
+
+  resolveFrameScope({ tabId, frameScope = "main" } = {}) {
+    const rootBinding = this.sessions.get(sessionKey(tabId));
+    if (!rootBinding)
+      throw new ProtocolError(
+        "page_not_found",
+        "frame scope has no logical page binding",
+      );
+    if (frameScope === "main")
+      return {
+        frameScope,
+        origin: rootBinding.origin,
+        sessionId: undefined,
+        binding: rootBinding,
+      };
+    if (typeof frameScope !== "string" || frameScope.length === 0)
+      throw new ProtocolError(
+        "permission_denied",
+        "frame scope is not allowlisted",
+      );
+    const frame = [...this.frames.values()].find(
+      (candidate) =>
+        candidate.rawTabId === tabId && candidate.logicalFrameId === frameScope,
+    );
+    if (!frame)
+      throw new ProtocolError(
+        "stale_generation",
+        "requested logical frame scope is not current",
+      );
+    const binding = this.sessions.get(sessionKey(tabId, frame.rawSessionId));
+    if (!binding)
+      throw new ProtocolError(
+        "stale_generation",
+        "frame session binding is not current",
+      );
+    return {
+      frameScope,
+      origin: frame.origin,
+      sessionId: frame.rawSessionId,
+      binding,
+    };
+  }
+
+  assertFrameScope({ tabId, sessionId, frameScope = "main" } = {}) {
+    if (sessionId !== undefined) {
+      const binding = this.sessions.get(sessionKey(tabId, sessionId));
+      if (!binding)
+        throw new ProtocolError(
+          "page_not_found",
+          "frame session has no logical page binding",
+        );
+    }
+    const resolved = this.resolveFrameScope({ tabId, frameScope });
+    return { frameScope: resolved.frameScope, origin: resolved.origin };
   }
 
   invalidateDocument(
