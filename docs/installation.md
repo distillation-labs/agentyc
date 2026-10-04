@@ -243,3 +243,7 @@ rollback, tab restoration, or production downgrade safety. Those claims
 require a real headed macOS run with a disposable profile, explicit user
 approval, redacted logs, and evidence that unrelated tabs and the user's Chrome
 process were unchanged.
+
+## Side-panel user action boundary
+
+The Side Panel API is user-action gated. `chrome.sidePanel.open()` may only be called in response to a toolbar action, keyboard shortcut, context-menu action, or an extension-page/content-script gesture. The host, CLI, SDK, and Native Messaging request path must never open the panel or activate a tab. See [`docs/user-control.md`](user-control.md).
