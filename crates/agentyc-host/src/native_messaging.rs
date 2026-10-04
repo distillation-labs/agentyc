@@ -55,6 +55,10 @@ const MAX_NATIVE_STRING_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_TIMED_OUT_REQUESTS: usize = 256;
 const MAX_NATIVE_UNKNOWN_ACTIONS: usize = 128;
 
+// Derived from the pinned public key in extension/manifest.json. Do not derive
+// the trusted origin from Native Messaging argv: argv is not attestable here.
+const ALLOWED_EXTENSION_ORIGINS: &[&str] = &["chrome-extension://jgbllikljnllangilfgkhncepiockppj"];
+
 /// Errors raised by the Chrome Native Messaging boundary.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum NativeHostError {
@@ -108,7 +112,7 @@ pub struct NativeMessagingConfig {
 impl NativeMessagingConfig {
     /// Construct configuration after validating the exact stable extension origin.
     pub fn new(expected_origin: impl Into<String>) -> Result<Self, NativeHostError> {
-        let expected_origin = normalize_extension_origin(&expected_origin.into())?;
+        let expected_origin = validate_configured_origin(&expected_origin.into())?;
         Ok(Self {
             expected_origin,
             handshake_timeout: DEFAULT_NATIVE_HANDSHAKE_TIMEOUT,
@@ -257,12 +261,15 @@ impl NativeMessagingBridge {
         R: Read + Send + 'static,
         W: Write + Send + 'static,
     {
+        // The public fields remain for API compatibility, so revalidate them
+        // at the trust boundary before starting a reader thread.
+        let expected_origin = validate_configured_origin(&config.expected_origin)?;
         let (hello_tx, hello_rx) = mpsc::sync_channel(1);
         let shared = Arc::new(NativeShared {
             writer: Mutex::new(Box::new(writer)),
             outbound: Mutex::new(()),
             session: Mutex::new(SessionMetadata {
-                expected_origin: config.expected_origin.clone(),
+                expected_origin,
                 hello: NativeHello {
                     protocol: 0,
                     nonce: String::new(),
@@ -1249,7 +1256,7 @@ fn parse_hello(payload: &[u8], shared: &NativeShared) -> Result<NativeHello, Nat
         .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?
         .expected_origin
         .clone();
-    if !is_valid_extension_origin(&expected_origin) {
+    if !is_allowed_extension_origin(&expected_origin) {
         return Err(NativeHostError::OriginInvalid);
     }
     let protocol = required_u64(object, "protocol")?;
@@ -1968,6 +1975,18 @@ pub fn normalize_extension_origin(value: &str) -> Result<String, NativeHostError
     Ok(normalized.to_owned())
 }
 
+fn validate_configured_origin(value: &str) -> Result<String, NativeHostError> {
+    let normalized = normalize_extension_origin(value)?;
+    if !is_allowed_extension_origin(&normalized) {
+        return Err(NativeHostError::OriginInvalid);
+    }
+    Ok(normalized)
+}
+
+fn is_allowed_extension_origin(value: &str) -> bool {
+    ALLOWED_EXTENSION_ORIGINS.contains(&value)
+}
+
 fn is_valid_extension_origin(value: &str) -> bool {
     let Some(id) = value.strip_prefix("chrome-extension://") else {
         return false;
@@ -1991,16 +2010,79 @@ mod tests {
 
     #[test]
     fn chrome_origin_requires_exact_extension_id_and_normalizes_only_trailing_slash() {
-        let origin = format!("chrome-extension://{}/", "a".repeat(32));
+        let origin = format!("{}/", ALLOWED_EXTENSION_ORIGINS[0]);
         assert_eq!(
             normalize_extension_origin(&origin).expect("origin"),
             origin.trim_end_matches('/')
+        );
+        assert_eq!(
+            NativeMessagingConfig::new(&origin)
+                .expect("allowlisted origin")
+                .expected_origin,
+            ALLOWED_EXTENSION_ORIGINS[0]
         );
         assert!(normalize_extension_origin("chrome-extension://*").is_err());
         assert!(
             normalize_extension_origin("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz")
                 .is_err()
         );
+        assert!(
+            NativeMessagingConfig::new("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .is_err()
+        );
+        for unsafe_origin in [
+            "chrome-extension://jgbllikljnllangilfgkhncepiockppj.evil",
+            "chrome-extension://jgbllikljnllangilfgkhncepiockppj/path",
+            "chrome-extension://jgbllikljnllangilfgkhncepiockppj?origin=evil",
+            "chrome-extension://JGBLLIKLJNICALLANGILFGKHNCEPIOCKPPJ",
+        ] {
+            assert!(
+                NativeMessagingConfig::new(unsafe_origin).is_err(),
+                "{unsafe_origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_rejects_mutated_or_non_allowlisted_configuration_before_reading() {
+        let mut config =
+            NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0]).expect("allowlisted origin");
+        config.expected_origin = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
+        let result = NativeMessagingBridge::accept(io::empty(), io::sink(), config);
+        assert!(matches!(result, Err(NativeHostError::OriginInvalid)));
+    }
+
+    #[test]
+    fn hello_rejects_forged_json_origin_even_when_it_matches_allowlist() {
+        let (to_host, from_extension) = mpsc::sync_channel(1);
+        let hello = json!({
+            "protocol": PROTOCOL_VERSION,
+            "kind": "hello",
+            "nonce": "nonce_forged_origin",
+            "sequence": 1,
+            "worker_instance_epoch": 2,
+            "browser_session_epoch": 3,
+            "profile_instance_id": "profile_forged_origin",
+            "extension_version": "0.1.0",
+            "capabilities": [],
+            "origin": ALLOWED_EXTENSION_ORIGINS[0],
+        });
+        to_host.send(frame_json(hello)).expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        let result = NativeMessagingBridge::accept(
+            reader,
+            io::sink(),
+            NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+                .expect("allowlisted origin")
+                .with_handshake_timeout(Duration::from_secs(1)),
+        );
+        assert!(matches!(
+            result,
+            Err(NativeHostError::Protocol(message)) if message.contains("origin is transport metadata")
+        ));
     }
 
     #[test]
@@ -2187,10 +2269,9 @@ mod tests {
             buffer: VecDeque::new(),
         };
         let writer = CaptureWriter(Arc::clone(&capture));
-        let config =
-            NativeMessagingConfig::new("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .expect("origin")
-                .with_handshake_timeout(Duration::from_secs(1));
+        let config = NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+            .expect("origin")
+            .with_handshake_timeout(Duration::from_secs(1));
         let (accepted, bridge) =
             NativeMessagingBridge::accept(reader, writer, config).expect("accept");
         assert_eq!(accepted, hello);
@@ -2296,11 +2377,10 @@ mod tests {
             buffer: VecDeque::new(),
         };
         let writer = CaptureWriter(Arc::clone(&capture));
-        let config =
-            NativeMessagingConfig::new("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-                .expect("origin")
-                .with_handshake_timeout(Duration::from_secs(1))
-                .with_request_timeout(Duration::from_secs(1));
+        let config = NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+            .expect("origin")
+            .with_handshake_timeout(Duration::from_secs(1))
+            .with_request_timeout(Duration::from_secs(1));
         let (accepted, bridge) =
             NativeMessagingBridge::accept(reader, writer, config).expect("accept");
         assert_eq!(accepted, hello);
