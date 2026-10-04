@@ -10,8 +10,20 @@ export const PANEL_ACTIONS = Object.freeze([
   "release",
 ]);
 
+const ACTION_LABELS = Object.freeze({
+  create: "Create",
+  pause: "Pause",
+  stop: "Stop",
+  takeover: "Take over",
+  return_control: "Return control",
+  handoff: "Hand off",
+  finish: "Finish",
+  retain: "Retain",
+  release: "Release",
+});
+
 export function actionLabel(action) {
-  return action.replaceAll("_", " ");
+  return ACTION_LABELS[action] || action.replaceAll("_", " ");
 }
 
 export async function sendPanelAction({
