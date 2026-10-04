@@ -1,6 +1,7 @@
 import copy
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 from scripts import artifact_envelope
 from scripts import check_phase_4_extension as checker
@@ -37,7 +38,20 @@ class Phase4CheckerTests(unittest.TestCase):
         artifact = copy.deepcopy(checker.artifact(checker.ROOT))
         timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         named = [{"name": "phase4-extension-review", "path": checker.ARTIFACT.as_posix()}]
+        current_hashes = checker.phase4_source_hashes(checker.ROOT)
+        producer_hash = checker._sha256(
+            checker.ROOT, Path("scripts/check_phase_4_extension.py")
+        )
         for record in (manifest, artifact):
+            record["source_hashes"] = copy.deepcopy(current_hashes)
+            record["provenance"]["source_hashes"] = copy.deepcopy(current_hashes)
+            record["build_tuple"] = {
+                "phase": 4,
+                "artifact_kind": "phase-4-extension-review",
+                "producer": "scripts/check_phase_4_extension.py",
+                "producer_sha256": producer_hash,
+            }
+            record["provenance"]["build_tuple"] = copy.deepcopy(record["build_tuple"])
             record["status"] = "complete"
             record["evidence_mode"] = "headed_existing_profile"
             record["timestamp"] = timestamp
