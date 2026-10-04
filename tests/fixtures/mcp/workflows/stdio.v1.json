@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "mcp-workflow",
+  "name": "sanitized-stdio-compatibility",
+  "transport": "stdio",
+  "status": "contract-only",
+  "sanitized": true,
+  "live_claims": false,
+  "steps": [
+    {"direction": "client_to_server", "method": "initialize", "params": {"protocolVersion": "2024-11-05", "clientInfo": {"name": "contract-fixture", "version": "1"}}},
+    {"direction": "server_to_client", "method": "initialize_result", "result": {"protocolVersion": "2024-11-05", "serverInfo": {"name": "agentyc-compatibility-fixture", "version": "1"}}},
+    {"direction": "client_to_server", "method": "notifications/initialized", "params": {}},
+    {"direction": "client_to_server", "method": "tools/list", "params": {}},
+    {"direction": "server_to_client", "method": "tools/list_result", "result": {"profile": "default", "tool_count": 61}},
+    {"direction": "client_to_server", "method": "tools/call", "params": {"name": "host_space_create", "arguments": {"label": "fixture-space"}}},
+    {"direction": "server_to_client", "method": "tools/call_result", "result": {"isError": false, "structuredContent": {"ok": true, "space_id": "space_fixture"}}}
+  ],
+  "nonclaims": [
+    "This is a sanitized stdio shape, not a launched MCP process or live browser interaction.",
+    "The fixture records the accepted initialize era only; it does not claim newer protocol versions."
+  ]
+}
