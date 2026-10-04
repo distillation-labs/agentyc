@@ -15,7 +15,7 @@ Turn the Phase 0 evidence into normative component boundaries, state machines, c
 
 ## Handoff in
 
-- **Inputs:** Phase 0 baseline/capability matrix; D-09–D-18; S-018–S-025; current crate map.
+- **Inputs:** Phase 0 baseline/capability matrix; D-09–D-17; S-018–S-025; current crate map.
 - **Must already be true:** real-Chrome feasibility either passes or has explicit bounded support gaps and owners.
 - **Do not reopen:** extension/native host is the default browser boundary; host broker is canonical; local CLI/SDK is primary; MCP is adapter-only; profile sharing is disclosed; no `[id] name`.
 
@@ -185,7 +185,7 @@ The host may accept an extension connection only after exact extension ID, profi
 4. Page content, labels, URLs, network bodies, cookies, and screenshots are data, not instructions; prompt-injection defenses are documented in the client skill.
 5. `browser_evaluate`, cookies, storage writes, downloads, and uploads are mutation-capable and require policy/lease checks.
 6. No command can target a raw tab/target ID from the public protocol.
-7. No close/release path acts on a page without a broker ownership proof, a fresh live-tab/generation proof, and the required single-use user-intent ticket. Host stop, crash, rollback, update, uninstall, and ambiguous rebind retain pages and mark them paused/orphaned/release-eligible; they never perform cleanup implicitly.
+7. No close/release path acts on a page without a broker ownership proof, a fresh live-tab/generation proof, and the required single-use user-intent ticket. Host stop, crash, update, uninstall, and ambiguous rebind retain pages and mark them paused/orphaned/release-eligible; they never perform cleanup implicitly.
 8. User takeover fences old epochs before returning control; a stale client cannot renew or dispatch.
 9. Ledgers contain no secrets or full page contents; action journal entries are minimal and redacted.
 10. Host/browser/extension version mismatch fails before mutation authority is granted.
@@ -254,14 +254,14 @@ agentyc-browser
 
 - [x] P1-T6 — Freeze persistence/reconciliation and migration policy.
   - **Files:** planned `crates/agentyc-host/src/ledger.rs`, state-directory schema, `docs/configuration.md`, `scripts/check_recovery_matrix.py`.
-  - **Done when:** logical records/action status survive client reconnect; browser/extension restart invalidates authority as needed; target hints are non-authoritative; corrupt/incompatible ledgers quarantine/fail closed; stop/crash/update/uninstall/rollback retain pages rather than implicitly closing them; the checker is deterministic and owned by this task.
-  - **Validation:** `python3 scripts/check_recovery_matrix.py --artifact artifacts/p1-recovery.md`; recovery matrix covers partial writes, host crash, Chrome restart, profile mismatch, extension update, old binary, rollback, two-phase create/claim crash, and cleanup confirmation.
+  - **Done when:** logical records/action status survive client reconnect; browser/extension restart invalidates authority as needed; target hints are non-authoritative; corrupt/incompatible ledgers quarantine/fail closed; stop/crash/update/uninstall retain pages rather than implicitly closing them; the checker is deterministic and owned by this task.
+  - **Validation:** `python3 scripts/check_recovery_matrix.py --artifact artifacts/p1-recovery.md`; recovery matrix covers partial writes, host crash, Chrome restart, profile mismatch, extension update, old binary, two-phase create/claim crash, and cleanup confirmation.
   - **Owner:** Japneet Kalkat.
 
 - [x] P1-T7 — Freeze performance/context/reliability gates.
   - **Files:** README metrics, `docs/release-gate.md`, Phase 0 baseline addendum, `scripts/check_release_gate.py`.
   - **Done when:** end-to-end first action, batch round trips, snapshot scans/tokens, event lag, action deadlines, host/Chrome RSS, and user responsiveness have exact measurement methods and owners; the checker is deterministic and owned by this task.
-  - **Validation:** `python3 scripts/check_release_gate.py --phase 0`; sign thresholds or explicitly carry a provisional threshold to Phase 7 direct rollout.
+  - **Validation:** `python3 scripts/check_release_gate.py --phase 0`; sign thresholds or explicitly carry a provisional threshold to Phase 7 direct-launch validation.
   - **Owner:** Japneet Kalkat.
 
 ## Quality checklist
@@ -272,7 +272,7 @@ agentyc-browser
 - [x] Every mutation has a lease/epoch and policy check.
 - [x] Extension worker restart and Native Messaging reconnect are state-machine paths with distinct worker, browser, connection, and broker epochs.
 - [x] Takeover cannot complete without a durable fence acknowledgement; missing acknowledgement fails closed.
-- [x] Security, privacy, distribution, and rollback are architecture constraints, not follow-up notes.
+- [x] Security, privacy, and distribution are architecture constraints, not follow-up notes.
 
 ## Handoff out
 
