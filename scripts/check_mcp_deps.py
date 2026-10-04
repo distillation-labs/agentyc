@@ -24,7 +24,7 @@ FORBIDDEN_SYMBOLS = (
     ("Target.*", re.compile(r"\bTarget\s*\.")),
     ("Runtime.evaluate", re.compile(r"\bRuntime\s*\.\s*evaluate\b")),
 )
-LEGACY_SOURCE_PREFIXES = (Path("lib.rs"), Path("state.rs"), Path("tools"))
+LEGACY_SOURCE_PREFIXES = (Path("legacy.rs"), Path("state.rs"), Path("tools"))
 TEST_ONLY_SOURCE = Path("host_adapter_audit.rs")
 
 
@@ -105,7 +105,7 @@ def _legacy_compatibility_is_documented(root: Path) -> bool:
         return False
     return (
         "legacy direct-cdp" in text
-        and "crates/agentyc-mcp/src/lib.rs" in text
+        and "crates/agentyc-mcp/src/legacy.rs" in text
         and "src/tools/mod.rs" in text
     )
 
