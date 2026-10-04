@@ -1,6 +1,6 @@
 export async function readEvents(client, options = {}) {
   return client.request(
-    "events.read",
+    "events.resume",
     {
       after_epoch: options.afterEpoch,
       after_sequence: options.afterSequence ?? 0,
