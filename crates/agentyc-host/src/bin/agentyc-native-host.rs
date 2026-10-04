@@ -174,6 +174,12 @@ fn supervise_native_requests(
     tickets: &mut SidePanelTicketRegistry,
 ) -> Result<(), String> {
     loop {
+        for event in bridge.drain_events() {
+            // Lifecycle events are advisory browser observations. Reduce the
+            // bounded queue into the broker before accepting more requests;
+            // never replay browser commands from an event.
+            let _ = broker.apply_bridge_event(authority, &event, Timestamp::new(current_millis()));
+        }
         for request in bridge.drain_requests() {
             if bridge.is_closed() {
                 return Ok(());
