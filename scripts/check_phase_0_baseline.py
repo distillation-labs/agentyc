@@ -681,12 +681,33 @@ def _current_browser_receipts(value: Any) -> dict[str, dict[str, Any]] | None:
     return receipts
 
 
-def _scenario_receipts_are_current(scenarios: Any, receipts: dict[str, dict[str, Any]] | None) -> bool:
+def _scenario_receipts_are_current(
+    scenarios: Any,
+    receipts: dict[str, dict[str, Any]] | None,
+    transport_receipts: Any = None,
+) -> bool:
     if not isinstance(scenarios, list) or len(scenarios) != len(REQUIRED_COEXISTENCE_SCENARIOS_ORDERED) or receipts is None:
         return False
     names = [item.get("name") if isinstance(item, dict) else None for item in scenarios]
     if tuple(names) != REQUIRED_COEXISTENCE_SCENARIOS_ORDERED or len(set(names)) != len(REQUIRED_COEXISTENCE_SCENARIOS_ORDERED):
         return False
+    transport = {
+        item.get("operation"): item
+        for item in (transport_receipts if isinstance(transport_receipts, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("operation"), str)
+    }
+    required_prefixes = {
+        "user-tab-preservation": ("browser.inventory.initial.",),
+        "two-space-isolation": ("browser.inventory.isolation.",),
+        "focus-stability": ("browser.inventory.post-action.",),
+        "takeover-fence": ("browser.inventory.takeover.",),
+        "return-control-fresh-lease": ("browser.inventory.return-control.",),
+        "agent-page-cleanup": ("browser.inventory.cleanup.",),
+        "worker-restart-recovery": ("browser.inventory.checkpoint-worker-restart-recovery.",),
+        "host-restart-recovery": ("browser.inventory.checkpoint-host-restart-recovery.",),
+        "chrome-restart-recovery": ("browser.inventory.checkpoint-chrome-restart-recovery.",),
+        "extension-update-recovery": ("browser.inventory.checkpoint-extension-update-recovery.",),
+    }
     referenced: set[str] = set()
     for item in scenarios:
         if (
@@ -711,6 +732,27 @@ def _scenario_receipts_are_current(scenarios: Any, receipts: dict[str, dict[str,
         ):
             return False
         referenced.update(references)
+        required = required_prefixes[item["name"]]
+        if not any(
+            any(operation.startswith(prefix) for prefix in required)
+            for operation in receipts
+        ):
+            return False
+    required_transport = {
+        "action.execute.cross_space_rejection": "space_forbidden",
+        "action.execute.stale_lease_rejection": "stale_lease",
+    }
+    for operation, code in required_transport.items():
+        receipt = transport.get(operation)
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("current_run") is not True
+            or receipt.get("observed") is not True
+            or receipt.get("ok") is not False
+            or receipt.get("expected_rejection") is not True
+            or receipt.get("failure_code") != code
+        ):
+            return False
     return True
 
 
@@ -783,7 +825,11 @@ def validate_coexistence_gate(checker: Checker) -> str:
             and live_ok
             and _current_enrollment(enrollment)
             and nested_enrollment_ok
-            and _scenario_receipts_are_current(data.get("scenarios"), receipts)
+            and _scenario_receipts_are_current(
+                data.get("scenarios"),
+                receipts,
+                live.get("transport_receipts") if isinstance(live, dict) else None,
+            )
             and execution_ok
             and nested_browser_ok
             and isinstance(spaces, int)
