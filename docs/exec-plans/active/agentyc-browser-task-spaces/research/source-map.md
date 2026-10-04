@@ -1,7 +1,7 @@
 # Source map — agentyc Browser Task Spaces
 
 **Research date:** 2026-10-01  
-**Decision scope:** task-space/group isolation, target identity, reliability, context/token efficiency, automation speed, MCP transport compatibility, and rollout safety for the current agentyc workspace at commit `0c97698`.
+**Decision scope:** task-space/group isolation, target identity, reliability, context/token efficiency, automation speed, MCP transport compatibility, and direct-launch readiness for the current agentyc workspace at commit `0c97698`.
 
 ## Q-01 — How should groups isolate concurrent agents?
 
@@ -53,7 +53,7 @@
   - failure mode: `broadcast receiver lagged browser automation event loss`
   - operational: `browser automation actionability overlay postcondition retry unknown outcome`
 - **Artifacts:** event router, wait coordinator, actionability primitive, typed outcomes, fake-CDP tests.
-- **Status:** bounded and closed; Chrome milestone variance is tested in Phase 7 direct rollout.
+- **Status:** bounded and closed; Chrome milestone variance is tested in Phase 7 direct-launch validation.
 
 ## Q-05 — Which MCP transport semantics should the refactor preserve?
 
@@ -89,8 +89,8 @@
 
 ## Final discovery passes
 
-- **Pass A — mechanism expansion:** official MCP legacy/modern transport pages, rmcp 1.7 source, and CDP `Target.pdl` were read; this added the legacy/modern transport split, context creation, target/session lifecycle, and event-scoping requirements.
-- **Pass B — failure/implementation expansion:** ego-lite ledger/runtime source and four independent repository reviews were read; this added atomic ledger writes, unmanaged-tab boundaries, OOPIF target graphs, event queue caps, unknown outcomes, and actionability/postcondition validation.
+- **Pass A — mechanism analysis:** official MCP legacy/modern transport pages, rmcp 1.7 source, and CDP `Target.pdl` were read; this added the legacy/modern transport split, context creation, target/session lifecycle, and event-scoping requirements.
+- **Pass B — failure/implementation analysis:** ego-lite ledger/runtime source and four independent repository reviews were read; this added atomic ledger writes, unmanaged-tab boundaries, OOPIF target graphs, event queue caps, unknown outcomes, and actionability/postcondition validation.
 - **New decision-relevant facts in final two passes:** no additional architecture branch beyond the items captured in `research/decision-closure.md`.
 - **Research status:** bounded with explicit ceiling; live browser/resource data and Firecrawl search results are carried into Phase 0 rather than hidden.
 
@@ -134,7 +134,7 @@ The original Q-01–Q-06 map remains the evidence archive for reusable broker, i
 
 - **Official Chrome extension documentation:** debugger, Native Messaging, service-worker lifecycle, content scripts, scripting, tabs, tabGroups, storage, sidePanel, and distribution.
 - **Local feasibility:** a real user-approved Chrome run with the installed extension and host, not only fake CDP or a temporary profile.
-- **Operational evidence:** host/extension crash, reconnect, Chrome restart, service-worker restart, permissions, and installation/rollback tests.
+- **Operational evidence:** host/extension crash, reconnect, Chrome restart, service-worker restart, permissions, and installation/update/uninstall tests.
 - **Comparable product:** ego-lite remains a mechanism source only; its proprietary browser host is not treated as an available dependency.
 
 ## Saturation limit for the superseding decision
