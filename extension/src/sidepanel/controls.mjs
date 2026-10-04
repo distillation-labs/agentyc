@@ -22,9 +22,12 @@ export async function sendPanelAction({
 } = {}) {
   if (!PANEL_ACTIONS.includes(action))
     throw new Error("unsupported side-panel action");
+  if (action !== "create" && !intentTicket)
+    throw new Error("side-panel action requires a host intent ticket");
   const safeParams = {};
   for (const [key, value] of Object.entries(params)) {
     if (
+      key === "intent_ticket" ||
       key === "tabId" ||
       key === "targetId" ||
       key === "sessionId" ||
