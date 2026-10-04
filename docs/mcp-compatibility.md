@@ -1,6 +1,6 @@
 # MCP Compatibility Boundary
 
-**Status:** repository evidence and Phase 2/8 contract notes; not a Phase 8 release certificate. "Current" describes checked-in source/tests at this revision. "Target" describes the pending Phase 2/8 plan and must not be read as implemented behavior.
+**Status:** Phase 2 deterministic repository evidence plus Phase 8 contract notes; not a Phase 8 release certificate. The versioned Phase 2 fixtures freeze measured repository profiles and adapter mappings without claiming live host/extension/Chrome integration. "Current" describes checked-in source/tests at this revision. "Target" describes later Phase 8 release requirements and must not be read as implemented behavior.
 
 ## Current MCP surfaces
 
@@ -23,7 +23,7 @@ The legacy router measures **61 default tools** and **76 tools with the extended
 | Downloads | `browser_get_downloads`, `browser_wait_for_download` |
 | Trace/debug | `browser_start_trace`, `browser_stop_trace`, `browser_export_debug_bundle` |
 
-The source still returns the static server instruction "61 tools" for either legacy profile. `Cargo.toml` also has stale "61-tool" description metadata. Therefore the **route counts are measured**, but metadata/profile advertisement is inconsistent; Phase 8 requires it to reflect the active profile. Treat `tool_catalog.json` status values as a capability inventory, not a wire-level MCP support guarantee or a versioned schema manifest.
+The source still returns the static server instruction "61 tools" for either legacy profile. `Cargo.toml` also has stale "61-tool" description metadata. Therefore the **route counts are measured**, but metadata/profile advertisement is inconsistent; Phase 8 requires it to reflect the active profile. Treat `tool_catalog.json` status values as a capability inventory, not a wire-level MCP support guarantee. The Phase 2 versioned contract manifests are `tests/fixtures/mcp/manifests/default.v1.json` and `tests/fixtures/mcp/manifests/extended.v1.json`, indexed by `tests/fixtures/mcp/index.v1.json`; they record exact 61/76 names and remain sanitized contract evidence.
 
 ## Host-backed routes and unsupported protocol methods
 
@@ -76,6 +76,10 @@ The host adapter serializes operation failures as an MCP tool result (`isError=t
 ```
 
 Optional `details` carry context; action results may also add `action_id`, `reconcile_token`, and `next_action`. The remote host adapter preserves structured host errors and reports unsupported methods as `capability_unavailable`. The legacy direct-CDP adapter does not yet meet this canonical stable-code contract: it has legacy text and substring-based prefixes. Phase 2 lists canonical error codes including `extension_not_connected`, `space_required`, `space_not_found`, `space_forbidden`, `user_control_required`, `lease_expired`, `stale_lease`, `page_not_found`, `page_not_owned`, `unmanaged_page`, `stale_ref`, `target_replaced`, `event_lagged`, `unknown_outcome`, `reconciliation_required`, `capability_unavailable`, `permission_denied`, `native_host_unavailable`, `protocol_mismatch`, `message_too_large`, `invalid_argument`, `timeout`, `cancelled`, `host_draining`, and `ledger_incompatible`. MCP compatibility must preserve canonical codes rather than infer them from prose.
+
+## Phase 2 evidence boundary
+
+`tests/phase-2-manifest.yaml`, `artifacts/p2-contracts-review.md`, and `docs/contract-traceability-phase-2.md` are the deterministic Phase 2 evidence boundary. The fixtures cover versioned default/extended manifests, bounded schemas, canonical error/guidance mappings, stdio/HTTP/host-backed workflow shapes, and sanitized transcripts. They do not prove a live MCP process, Native Messaging installation, extension connection, headed Chrome behavior, or release conformance. The direct CLI/SDK registry is the primary mapping source; MCP remains a compatibility adapter. `page.close` and several direct-only operations are recorded as explicit integration gaps where current route parity is incomplete.
 
 ## Explicit non-goals
 
