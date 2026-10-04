@@ -6,11 +6,13 @@
 )]
 //! wait_for_element, get_focused_element, get_attribute, evaluate.
 
+use agentyc_host::ElementState;
+use agentyc_runtime::WaitOptions;
 use anyhow::{Result, anyhow};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 
-use crate::tools::{SharedState, ok_json, ok_text, page_send, parse_ref};
+use crate::tools::{SharedState, ok_json, ok_text, page_send, parse_ref, runtime_handle};
 
 async fn cdp(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     page_send(state, method, params).await
@@ -147,57 +149,35 @@ pub async fn browser_wait_for_element(
 ) -> Result<CallToolResult> {
     let timeout = std::time::Duration::from_secs_f64(timeout_seconds.unwrap_or(10.0));
     let should_appear = appear.unwrap_or(true);
-    let deadline = tokio::time::Instant::now() + timeout;
-
-    loop {
-        let found = if let Some(t) = &text {
-            let js = format!(
-                "document.body.innerText.toLowerCase().includes({:?}.toLowerCase())",
-                t
-            );
-            let resp = cdp(
-                state,
-                "Runtime.evaluate",
-                json!({"expression": js, "returnByValue": true}),
-            )
-            .await
-            .ok();
-            resp.and_then(|v| v["result"]["value"].as_bool())
-                .unwrap_or(false)
-        } else if let Some(r) = &r#ref {
-            let id = parse_ref(r).unwrap_or(0);
-            let js = format!("document.querySelector('[data-backend-node-id=\"{id}\"]') !== null");
-            let resp = cdp(
-                state,
-                "Runtime.evaluate",
-                json!({"expression": js, "returnByValue": true}),
-            )
-            .await
-            .ok();
-            resp.and_then(|v| v["result"]["value"].as_bool())
-                .unwrap_or(false)
+    let (selector, text) = if let Some(text) = text {
+        (None, Some(text))
+    } else if let Some(r#ref) = r#ref {
+        let id = parse_ref(&r#ref)?;
+        (Some(format!("[data-backend-node-id=\"{id}\"]")), None)
+    } else {
+        (None, None)
+    };
+    runtime_handle(state)
+        .await?
+        .wait_for_element(
+            selector.as_deref(),
+            text.as_deref(),
+            if should_appear {
+                ElementState::Present
+            } else {
+                ElementState::Absent
+            },
+            WaitOptions::with_timeout(timeout),
+        )
+        .await?;
+    Ok(ok_text(format!(
+        "Element {}",
+        if should_appear {
+            "appeared"
         } else {
-            false
-        };
-
-        if found == should_appear {
-            return Ok(ok_text(format!(
-                "Element {}",
-                if should_appear {
-                    "appeared"
-                } else {
-                    "disappeared"
-                }
-            )));
+            "disappeared"
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow!(
-                "Timeout waiting for element to {}",
-                if should_appear { "appear" } else { "disappear" }
-            ));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    )))
 }
 
 pub async fn browser_get_focused_element(state: &SharedState) -> Result<CallToolResult> {
