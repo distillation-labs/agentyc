@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "kind": "mcp-fixture-index",
+  "status": "contract-only",
+  "sanitized": true,
+  "live_claims": false,
+  "profiles": {
+    "default": "tests/fixtures/mcp/manifests/default.v1.json",
+    "extended": "tests/fixtures/mcp/manifests/extended.v1.json"
+  },
+  "schemas": [
+    "tests/fixtures/mcp/schemas/tools.v1.json"
+  ],
+  "errors": "tests/fixtures/mcp/errors/v1.json",
+  "workflows": [
+    "tests/fixtures/mcp/workflows/stdio.v1.json",
+    "tests/fixtures/mcp/workflows/http.v1.json",
+    "tests/fixtures/mcp/workflows/host-backed.v1.json"
+  ],
+  "transcripts": [
+    "tests/fixtures/mcp/transcripts/stdio-initialize.v1.jsonl",
+    "tests/fixtures/mcp/transcripts/tool-error.v1.jsonl",
+    "tests/fixtures/mcp/transcripts/http-session.v1.jsonl"
+  ],
+  "nonclaims": [
+    "Fixtures are sanitized contract records, not captures from a live browser or external MCP service.",
+    "The manifests record repository-measured rmcp 1.7 profiles and do not claim modern protocol-era support.",
+    "A declared tool, workflow, or transcript does not prove host, extension, Chrome, or release integration."
+  ]
+}
