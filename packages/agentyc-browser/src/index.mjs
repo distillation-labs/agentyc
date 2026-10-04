@@ -30,3 +30,16 @@ export {
   withRequestIdentity,
 } from "./errors.mjs";
 export { methodMayHaveSideEffects } from "./client.mjs";
+export {
+  OPERATION_REGISTRY,
+  actionOperationNames,
+  operationForAction,
+  operationForMethod,
+} from "./operations.mjs";
+export {
+  DEFAULT_LEASE_TTL_MS,
+  DEFAULT_WAIT_TIMEOUT_MS,
+  MAX_WAIT_TIMEOUT_MS,
+  MAX_REQUEST_DEADLINE_MS,
+  PROFILE_DISCLOSURE,
+} from "./constants.mjs";
