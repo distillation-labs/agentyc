@@ -29,7 +29,7 @@ const SKILL_MD: &str = include_str!("../../../SKILL.md");
 #[derive(Parser)]
 #[command(
     name = "agentyc",
-    about = "Deterministic browser automation MCP server",
+    about = "Host-backed browser task spaces for coding agents"
     version
 )]
 struct Cli {
@@ -169,7 +169,38 @@ async fn run() -> Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) {
+                error.print()?;
+                return Ok(());
+            }
+            let json_requested = std::env::args_os().any(|argument| argument == "--json");
+            if json_requested {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "ok": false,
+                        "error": {
+                            "code": "invalid_argument",
+                            "message": error.to_string(),
+                            "retryable": false,
+                            "guidance": "none"
+                        }
+                    }))?
+                );
+                return Err(anyhow::Error::new(DirectCommandError::new(
+                    "invalid_argument",
+                    2,
+                )));
+            }
+            return Err(error.into());
+        }
+    };
     let direct_options = DirectOptions {
         state_dir: cli.state_dir.clone(),
         principal: cli.principal.clone(),
