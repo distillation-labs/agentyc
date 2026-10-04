@@ -17,7 +17,7 @@ class CheckMcpDepsTests(unittest.TestCase):
         (self.root / "crates/agentyc-mcp/src").mkdir(parents=True)
         (self.root / "docs").mkdir()
         (self.root / "docs/mcp-compatibility.md").write_text(
-            "Legacy direct-CDP surface: `crates/agentyc-mcp/src/lib.rs` and `src/tools/mod.rs`.\n",
+            "Legacy direct-CDP surface: `crates/agentyc-mcp/src/legacy.rs` and `src/tools/mod.rs`.\n",
             encoding="utf-8",
         )
 
@@ -62,7 +62,7 @@ agentyc_runtime = { workspace = true }
 
     def test_allows_only_documented_legacy_source_references(self) -> None:
         self.write_manifest("[dependencies]\nserde = { workspace = true }\n")
-        self.write_source("lib.rs", "use agentyc_runtime::BrowserRuntime;\n")
+        self.write_source("legacy.rs", "use agentyc_runtime::BrowserRuntime;\n")
         self.write_source("host_server.rs", "fn bypass() { close_all(); }\n")
         self.assertEqual(
             check_mcp_deps.check(self.root),
@@ -72,12 +72,12 @@ agentyc_runtime = { workspace = true }
     def test_legacy_references_are_not_exempt_without_compatibility_documentation(self) -> None:
         self.write_manifest("[dependencies]\nserde = { workspace = true }\n")
         (self.root / "docs/mcp-compatibility.md").write_text("No legacy inventory.\n", encoding="utf-8")
-        self.write_source("lib.rs", "use agentyc_runtime::BrowserRuntime;\n")
+        self.write_source("legacy.rs", "use agentyc_runtime::BrowserRuntime;\n")
         self.assertEqual(
             check_mcp_deps.check(self.root),
             [
-                "crates/agentyc-mcp/src/lib.rs:1: forbidden bypass symbol BrowserRuntime",
-                "crates/agentyc-mcp/src/lib.rs:1: forbidden bypass symbol agentyc_runtime",
+                "crates/agentyc-mcp/src/legacy.rs:1: forbidden bypass symbol BrowserRuntime",
+                "crates/agentyc-mcp/src/legacy.rs:1: forbidden bypass symbol agentyc_runtime",
             ],
         )
 
