@@ -1,7 +1,7 @@
 {
   "name": "agentyc-browser-automation",
   "version": "2.0.0",
-  "description": "Deterministic browser automation superpower for coding agents via Agentyc MCP.",
+  "description": "Deterministic browser task-space automation for coding agents via direct CLI and SDK, with MCP compatibility adapter.",
   "license": "MIT",
   "mcp": {
     "name": "agentyc",
@@ -12,9 +12,7 @@
       "AGENTYC_HEADLESS": "1"
     }
   },
-  "skills": [
-    ".agents/skills/agentyc-browser-automation/SKILL.md"
-  ],
+  "skills": [".agents/skills/agentyc-browser-automation/SKILL.md"],
   "install": {
     "binary": "cargo install --git https://github.com/distillation-labs/agentyc agentyc",
     "verify": "agentyc --version"
