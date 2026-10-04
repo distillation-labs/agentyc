@@ -569,6 +569,12 @@ impl Broker {
                     .and_then(Value::as_u64);
                 if let Some(space) = state.spaces.get_mut(&space_id) {
                     if let Some(page) = space.page_mut(&page_id) {
+                        // Cleanup proofs are host-side compare-and-set values.
+                        // A late ordinary page.changed event must not advance
+                        // a page generation while it is Closing.
+                        if page.lifecycle == PageLifecycle::Closing && !target_lost {
+                            return Ok(());
+                        }
                         if let Some(value) =
                             target.filter(|value| *value > page.target_generation.get())
                         {
@@ -2212,21 +2218,17 @@ impl Broker {
                     let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
                         CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
                     })?;
-                    if descriptor
-                        .pages
-                        .iter()
-                        .any(|page| page.lifecycle == PageLifecycle::Closing)
-                    {
-                        return Err(CoreError::new(
-                            ErrorCode::PermissionDenied,
-                            "space already has page cleanup in progress",
-                        )
-                        .into());
-                    }
+                    // A prior finish can stop after marking a page Closing.
+                    // Re-entering finish with the current lease is the bounded
+                    // recovery path; it never blindly replays a browser close
+                    // because each attempt obtains a fresh bridge proof.
                     let cleanup = descriptor
                         .pages
                         .iter_mut()
-                        .filter(|page| page.admits_agent_mutations())
+                        .filter(|page| {
+                            page.admits_agent_mutations()
+                                || (allow_draining && page.lifecycle == PageLifecycle::Closing)
+                        })
                         .map(|page| {
                             page.lifecycle = PageLifecycle::Closing;
                             CleanupProof {
@@ -2274,6 +2276,29 @@ impl Broker {
                     self.finish_page_cleanup(space_id, &proof, authority, lease_epoch, now)?
                 }
                 Err(error) => {
+                    // A prior cleanup may have closed the tab before its
+                    // response was lost. A fresh bridge inventory is the only
+                    // accepted proof for completing that already-Closing page;
+                    // never infer absence from the error alone.
+                    if error.code == ErrorCode::PageNotFound {
+                        let observation = bridge.observe().map_err(HostError::Bridge)?;
+                        let still_present = observation.pages.iter().any(|record| {
+                            record.get("space_id").and_then(Value::as_str)
+                                == Some(space_id.as_str())
+                                && record.get("page_id").and_then(Value::as_str)
+                                    == Some(proof.page_id.as_str())
+                        });
+                        if !still_present {
+                            self.finish_page_cleanup(
+                                space_id,
+                                &proof,
+                                authority,
+                                lease_epoch,
+                                now,
+                            )?;
+                            continue;
+                        }
+                    }
                     self.record_cleanup_failure(
                         space_id,
                         &proof,
