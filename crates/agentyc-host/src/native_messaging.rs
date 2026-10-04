@@ -559,6 +559,15 @@ struct NativeArtifactTransfer {
     bytes: Vec<u8>,
 }
 
+/// One fully validated inbound artifact retained until its owner consumes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeArtifact {
+    /// Validated transfer declaration.
+    pub begin: ArtifactBeginEnvelope,
+    /// Exact assembled bytes after digest and ordering validation.
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug)]
 struct SessionMetadata {
     expected_origin: String,
@@ -575,6 +584,7 @@ struct SessionMetadata {
     negotiated_limits: NativeNegotiatedLimits,
     profile_state: ProfileBindingState,
     artifact_transfers: BTreeMap<String, NativeArtifactTransfer>,
+    completed_artifacts: BTreeMap<String, NativeArtifact>,
     artifact_budget: ArtifactTransferBudget,
     outbound_artifact_transfers: BTreeMap<String, NativeArtifactTransfer>,
     outbound_artifact_budget: ArtifactTransferBudget,
@@ -683,6 +693,7 @@ impl NativeMessagingBridge {
                 negotiated_limits: NativeNegotiatedLimits::host_defaults(),
                 profile_state: ProfileBindingState::Unbound,
                 artifact_transfers: BTreeMap::new(),
+                completed_artifacts: BTreeMap::new(),
                 artifact_budget: ArtifactTransferBudget::default(),
                 outbound_artifact_transfers: BTreeMap::new(),
                 outbound_artifact_budget: ArtifactTransferBudget::default(),
@@ -780,12 +791,12 @@ impl NativeMessagingBridge {
                 NativeHostError::Protocol("artifact_begin is not an object".to_owned())
             })?;
         let result = self.post("artifact_begin", std::mem::take(&mut fields));
-        if result.is_err() {
-            if let Ok(mut session) = self.shared.session.lock() {
-                session
-                    .outbound_artifact_transfers
-                    .remove(&begin.artifact_id.to_string());
-            }
+        if result.is_err()
+            && let Ok(mut session) = self.shared.session.lock()
+        {
+            session
+                .outbound_artifact_transfers
+                .remove(&begin.artifact_id.to_string());
         }
         result
     }
@@ -1016,6 +1027,18 @@ impl NativeMessagingBridge {
         events.drain(..).collect()
     }
 
+    /// Take one fully validated inbound artifact by its logical transfer handle.
+    pub fn take_completed_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<Option<NativeArtifact>, NativeHostError> {
+        let mut session =
+            self.shared.session.lock().map_err(|_| {
+                NativeHostError::Unavailable("session state is poisoned".to_owned())
+            })?;
+        Ok(session.completed_artifacts.remove(artifact_id))
+    }
+
     /// Return the latest logical inventory records observed from the extension.
     pub fn inventory(&self) -> Vec<Value> {
         self.inventory_snapshot().pages
@@ -1101,6 +1124,18 @@ impl NativeMessagingBridge {
             .unwrap_or_default()
     }
 
+    /// Acknowledge host processing of extension-reported unknown action IDs.
+    pub fn acknowledge_inventory_unknown_actions(&self, action_ids: &[String], overflow: bool) {
+        if let Ok(mut inventory) = self.shared.inventory.lock() {
+            for action_id in action_ids {
+                inventory.unknown_action_ids.remove(action_id);
+            }
+            if overflow {
+                inventory.unknown_actions_overflow = false;
+            }
+        }
+    }
+
     /// Ask the extension to create one inactive agent page.
     ///
     /// This is an explicit host helper used by the coexistence executor. The
@@ -1131,6 +1166,7 @@ impl NativeMessagingBridge {
 
     /// Ask the extension to present a page in its logical space's visual group.
     /// Rebind one retained page after an acknowledged lease fence.
+    #[allow(clippy::too_many_arguments)]
     pub fn rebind_page(
         &self,
         space_id: &SpaceId,
@@ -1295,10 +1331,10 @@ impl NativeMessagingBridge {
 
     fn remember_timed_out(&self, request_id: &str) {
         if let Ok(mut timed_out) = self.shared.timed_out.lock() {
-            if timed_out.len() >= MAX_NATIVE_TIMED_OUT_REQUESTS {
-                if let Some(oldest) = timed_out.iter().next().cloned() {
-                    timed_out.remove(&oldest);
-                }
+            if timed_out.len() >= MAX_NATIVE_TIMED_OUT_REQUESTS
+                && let Some(oldest) = timed_out.iter().next().cloned()
+            {
+                timed_out.remove(&oldest);
             }
             timed_out.insert(request_id.to_owned());
         }
@@ -1702,23 +1738,15 @@ impl Bridge for NativeMessagingBridge {
             }
         }
         match self.request_value(&method, params, Some(request.action_id.as_str())) {
-            Ok(_) => Ok(BridgeDispatchResult::Succeeded),
-            Err(error)
-                if matches!(
-                    error.code,
-                    ErrorCode::UnknownOutcome
-                        | ErrorCode::NativeHostUnavailable
-                        | ErrorCode::Timeout
-                ) =>
-            {
+            Ok(result) => Ok(native_action_result(request.operation, result)),
+            Err(error) if error.code == ErrorCode::UnknownOutcome => {
                 Ok(BridgeDispatchResult::Unknown {
-                    reason: if error.code == ErrorCode::Timeout {
-                        UnknownReason::TimeoutAfterDispatch
-                    } else {
-                        UnknownReason::BridgeLost
-                    },
+                    reason: UnknownReason::BridgeLost,
                 })
             }
+            // A write failure while posting the request is before the extension
+            // dispatch boundary. It is safe to retry only after the caller has
+            // refreshed the live page/ref/generation context.
             Err(error) => Ok(BridgeDispatchResult::Failed {
                 code: error.code,
                 retryable: error.retryable,
@@ -1734,12 +1762,31 @@ impl Bridge for NativeMessagingBridge {
             params.insert("page_id".to_owned(), json!(page_id.to_string()));
         }
         params.insert("lease_epoch".to_owned(), json!(receipt.lease_epoch.get()));
+        params.insert("operation".to_owned(), json!(receipt.operation));
+        if let Some(token) = &receipt.reconcile_token {
+            params.insert("reconcile_token".to_owned(), json!(token.to_string()));
+        }
+        if let Some(postcondition) = &receipt.postcondition {
+            params.insert(
+                "postcondition".to_owned(),
+                serde_json::to_value(postcondition).map_err(|_| {
+                    CoreError::new(ErrorCode::InvalidJson, "action postcondition is not JSON")
+                })?,
+            );
+        }
         match self.request_value("action.reconcile", params, None) {
             Ok(result) => match result.get("outcome").and_then(Value::as_str) {
                 Some("succeeded") => Ok(BridgeReconcileResult::Succeeded),
                 Some("failed") => Ok(BridgeReconcileResult::Failed {
-                    code: ErrorCode::InvalidArgument,
-                    requires_confirmation: false,
+                    code: result
+                        .get("code")
+                        .and_then(Value::as_str)
+                        .map(parse_error_code)
+                        .unwrap_or(ErrorCode::InvalidArgument),
+                    requires_confirmation: result
+                        .get("requires_confirmation")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 }),
                 _ => Ok(BridgeReconcileResult::StillUnknown),
             },
@@ -2178,12 +2225,12 @@ fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostErro
         require_text(object, "profile_instance_id", 128)?;
         require_text(object, "extension_version", 128)?;
         require_string_array(object, "capabilities", MAX_NATIVE_CAPABILITIES)?;
-        if let Some(profile_state) = object.get("profile_state") {
-            if profile_state.as_str() != Some("bound") {
-                return Err(NativeHostError::Protocol(
-                    "hello profile_state must be bound".to_owned(),
-                ));
-            }
+        if let Some(profile_state) = object.get("profile_state")
+            && profile_state.as_str() != Some("bound")
+        {
+            return Err(NativeHostError::Protocol(
+                "hello profile_state must be bound".to_owned(),
+            ));
         }
         if object.contains_key("limits") {
             let _ = parse_limits(object.get("limits"))?;
@@ -2626,7 +2673,18 @@ fn handle_native_artifact_end(shared: &NativeShared, value: Value) -> Result<(),
     let release = session.artifact_budget.release(byte_count);
     result
         .and(release)
-        .map_err(|error| NativeHostError::Protocol(error.to_string()))
+        .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+    if session.completed_artifacts.len() >= MAX_NATIVE_ARTIFACT_TRANSFERS {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    session.completed_artifacts.insert(
+        key,
+        NativeArtifact {
+            begin: transfer.begin,
+            bytes: transfer.bytes,
+        },
+    );
+    Ok(())
 }
 
 fn validate_common(
@@ -2732,10 +2790,10 @@ fn enqueue_request(shared: &NativeShared, value: Value) -> Result<(), NativeHost
             )
         });
     }
-    if fingerprints.len() >= MAX_NATIVE_PENDING_REQUESTS * 16 {
-        if let Some(oldest) = fingerprints.keys().next().cloned() {
-            fingerprints.remove(&oldest);
-        }
+    if fingerprints.len() >= MAX_NATIVE_PENDING_REQUESTS * 16
+        && let Some(oldest) = fingerprints.keys().next().cloned()
+    {
+        fingerprints.remove(&oldest);
     }
     fingerprints.insert(request_id.clone(), fingerprint);
     drop(fingerprints);
@@ -2762,7 +2820,28 @@ fn enqueue_event(shared: &NativeShared, value: Value) -> Result<(), NativeHostEr
         .lock()
         .map_err(|_| NativeHostError::Unavailable("event state is poisoned".to_owned()))?;
     if events.len() >= MAX_NATIVE_EVENT_QUEUE {
-        return Err(NativeHostError::MessageTooLarge);
+        // Preserve an explicit broker-visible loss marker instead of tearing
+        // down Native Messaging. The host must invalidate affected state and
+        // require a fresh inventory/snapshot after this bounded overflow.
+        events.clear();
+        let mut marker = value;
+        if let Some(object) = marker.as_object_mut() {
+            object.insert(
+                "event".to_owned(),
+                Value::String("browser.event_gap".to_owned()),
+            );
+            object.remove("space_id");
+            object.remove("page_id");
+            object.insert(
+                "payload".to_owned(),
+                serde_json::json!({
+                    "reason": "native_event_queue_overflow",
+                    "resync_required": true,
+                }),
+            );
+        }
+        events.push_back(marker);
+        return Ok(());
     }
     events.push_back(value);
     Ok(())
@@ -2896,6 +2975,81 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
     Ok(())
 }
 
+fn native_action_result(
+    _operation: agentyc_core::ActionOperation,
+    result: Value,
+) -> BridgeDispatchResult {
+    let receipt = result.get("receipt").and_then(Value::as_object);
+    let proof = result.get("action_proof").and_then(Value::as_object);
+    if proof
+        .and_then(|proof| proof.get("outcome"))
+        .and_then(Value::as_str)
+        == Some("unknown")
+    {
+        return BridgeDispatchResult::Unknown {
+            reason: UnknownReason::BridgeLost,
+        };
+    }
+    if proof
+        .and_then(|proof| proof.get("outcome"))
+        .and_then(Value::as_str)
+        == Some("confirmation_required")
+    {
+        return BridgeDispatchResult::Failed {
+            code: ErrorCode::PermissionDenied,
+            retryable: false,
+        };
+    }
+    if proof
+        .and_then(|proof| proof.get("outcome"))
+        .and_then(Value::as_str)
+        == Some("failed")
+    {
+        return BridgeDispatchResult::Failed {
+            code: proof
+                .and_then(|proof| proof.get("code"))
+                .and_then(Value::as_str)
+                .map(parse_error_code)
+                .unwrap_or(ErrorCode::InvalidArgument),
+            retryable: false,
+        };
+    }
+    if receipt
+        .and_then(|receipt| receipt.get("outcome"))
+        .and_then(Value::as_str)
+        == Some("unknown")
+    {
+        return BridgeDispatchResult::Unknown {
+            reason: UnknownReason::BridgeLost,
+        };
+    }
+    if receipt
+        .and_then(|receipt| receipt.get("postcondition_satisfied"))
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return BridgeDispatchResult::Failed {
+            code: ErrorCode::TargetReplaced,
+            retryable: false,
+        };
+    }
+    if receipt
+        .and_then(|receipt| receipt.get("outcome"))
+        .and_then(Value::as_str)
+        == Some("failed")
+    {
+        return BridgeDispatchResult::Failed {
+            code: receipt
+                .and_then(|receipt| receipt.get("code"))
+                .and_then(Value::as_str)
+                .map(parse_error_code)
+                .unwrap_or(ErrorCode::InvalidArgument),
+            retryable: false,
+        };
+    }
+    BridgeDispatchResult::Succeeded
+}
+
 fn response_result(value: Value) -> Result<Value, CoreError> {
     let object = value.as_object().ok_or_else(|| {
         CoreError::new(
@@ -2921,11 +3075,16 @@ fn response_result(value: Value) -> Result<Value, CoreError> {
 
 fn parse_error_code(value: &str) -> ErrorCode {
     match value {
-        "permission_denied" => ErrorCode::PermissionDenied,
+        "permission_denied" | "evaluate_denied" | "user_confirmation_required" => {
+            ErrorCode::PermissionDenied
+        }
         "user_control_required" => ErrorCode::UserControlRequired,
+        "stale_ref" => ErrorCode::StaleRef,
+        "target_replaced" => ErrorCode::TargetReplaced,
         "stale_lease" => ErrorCode::StaleLease,
         "page_not_found" => ErrorCode::PageNotFound,
-        "capability_unavailable" => ErrorCode::CapabilityUnavailable,
+        "element_not_found" => ErrorCode::StaleRef,
+        "capability_unavailable" | "upload_denied" => ErrorCode::CapabilityUnavailable,
         "native_host_unavailable" => ErrorCode::NativeHostUnavailable,
         "message_too_large" => ErrorCode::MessageTooLarge,
         "timeout" => ErrorCode::Timeout,
