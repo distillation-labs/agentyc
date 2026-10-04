@@ -78,6 +78,39 @@ Launch Chrome with agentyc browser.
         )
         self.assertEqual(checker.check(self.root), [])
 
+    def test_scans_bold_legacy_prefix_in_primary_section(self) -> None:
+        self.write(
+            "docs/overview.md",
+            """# Direct CLI and SDK
+The direct CLI/SDK is the primary interface. MCP is compatibility-only.
+**Legacy:** Use raw tab_id to switch tabs.
+""",
+        )
+        findings = checker.check(self.root)
+        self.assertTrue(
+            any("raw_tab_or_target_id_recommendation" in finding for finding in findings)
+        )
+
+    def test_allows_explicit_bold_compatibility_prefix(self) -> None:
+        self.write(
+            "docs/overview.md",
+            """# Direct CLI and SDK
+The direct CLI/SDK is the primary interface. MCP is compatibility-only.
+**Legacy compatibility only:** Use raw tab_id to switch tabs.
+""",
+        )
+        self.assertEqual(checker.check(self.root), [])
+
+    def test_neutral_target_bridge_text_is_not_a_raw_id_recommendation(self) -> None:
+        self.write(
+            "docs/overview.md",
+            """# Direct CLI and SDK
+The direct CLI/SDK is the primary interface. MCP is compatibility-only.
+The target bridge routes logical pages through the host.
+""",
+        )
+        self.assertEqual(checker.check(self.root), [])
+
     def test_fails_when_primary_policy_statements_are_missing(self) -> None:
         self.write("docs/cli.md", "# Commands\nUse the CLI.\n")
         with tempfile.TemporaryDirectory() as directory:
@@ -110,12 +143,9 @@ Launch Chrome with agentyc browser.
         with self.assertRaisesRegex(checker.DocsAuditError, "exceeds"):
             checker.check(self.root)
 
-    def test_repository_reports_existing_migration_findings(self) -> None:
+    def test_repository_has_no_primary_migration_findings(self) -> None:
         findings = checker.check(checker.ROOT)
-        categories = {finding.split(": ", 1)[1].split(":", 1)[0] for finding in findings}
-        self.assertIn("mcp_as_default_or_primary", categories)
-        self.assertIn("raw_tab_or_target_id_recommendation", categories)
-        self.assertIn("browser_launch_or_download_recommendation", categories)
+        self.assertEqual(findings, [])
 
 
 if __name__ == "__main__":
