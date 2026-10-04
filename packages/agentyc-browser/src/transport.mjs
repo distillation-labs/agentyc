@@ -167,6 +167,41 @@ function frameFor(envelope, maxPayloadBytes) {
   return frame;
 }
 
+const MAX_IGNORED_REQUEST_IDS = 10_000;
+
+/**
+ * Encode every request frame before the first socket write so one invalid or
+ * oversized batch member can never leave an earlier member already dispatched.
+ */
+function encodeRequestFrames(requests, maxPayloadBytes) {
+  return requests.map((request) => {
+    let params;
+    try {
+      params = coreParams(request.params);
+    } catch (error) {
+      throw new AgentycError({
+        code: "invalid_argument",
+        message: `request ${request.request_id} parameters cannot be encoded: ${error.message}`,
+        retryable: false,
+        guidance: "none",
+        details: { request_id: request.request_id },
+      });
+    }
+    return frameFor(
+      {
+        kind: "request",
+        protocol: PROTOCOL_VERSION,
+        request_id: request.request_id,
+        method: request.method,
+        params,
+        deadline_ms: request.deadline_ms,
+        idempotency_key: request.idempotency_key,
+      },
+      maxPayloadBytes,
+    );
+  });
+}
+
 function responseRequestId(envelope) {
   return typeof envelope?.request_id === "string"
     ? envelope.request_id
@@ -263,35 +298,62 @@ export class LocalProtocolTransport {
     }
     if (signal?.aborted) throw cancelledTransportError();
 
+    const frames = encodeRequestFrames(requests, this.maxPayloadBytes);
+
     await this._ensureConnected();
     if (signal?.aborted) throw cancelledTransportError();
 
+    // A cancelled ID stays reserved until the host answers it, and an ID that
+    // is still pending cannot be reused: a late or duplicate response would
+    // otherwise be attributed to the wrong request.
+    const reused = requestIds.filter(
+      (requestId) =>
+        this.ignoredRequestIds.has(requestId) || this.pending.has(requestId),
+    );
+    if (reused.length > 0) {
+      throw new AgentycError({
+        code: "invalid_argument",
+        message:
+          "request IDs that are pending or were cancelled on this connection cannot be reused",
+        retryable: false,
+        guidance: "none",
+        details: { request_ids: reused },
+      });
+    }
+
     let abort;
-    let dispatched = false;
     const result = new Promise((resolve, reject) => {
-      const batch = { requestIds, responses: new Map(), resolve, reject };
+      const batch = {
+        requestIds,
+        responses: new Map(),
+        dispatched: false,
+        resolve,
+        reject,
+      };
       for (const requestId of requestIds) this.pending.set(requestId, batch);
       abort = () => {
         void this.cancel(requestIds, signal.reason?.message);
       };
       signal?.addEventListener("abort", abort, { once: true });
+      let written = 0;
       try {
-        for (const request of requests) {
-          if (!dispatched) {
-            dispatched = true;
-            onDispatch?.();
+        for (const frame of frames) {
+          this._writeFrame(frame);
+          written += 1;
+          if (written === 1) {
+            batch.dispatched = true;
+            try {
+              onDispatch?.();
+            } catch {
+              // A dispatch observer cannot fail an already-written request.
+            }
           }
-          this._writeEnvelope({
-            kind: "request",
-            protocol: PROTOCOL_VERSION,
-            request_id: request.request_id,
-            method: request.method,
-            params: coreParams(request.params),
-            deadline_ms: request.deadline_ms,
-            idempotency_key: request.idempotency_key,
-          });
         }
       } catch (error) {
+        // Members already written may still be answered by the host.
+        for (const requestId of requestIds.slice(0, written)) {
+          this._ignoreRequestId(requestId);
+        }
         this._removeBatch(batch, error);
       }
     });
@@ -307,18 +369,19 @@ export class LocalProtocolTransport {
       const batch = this.pending.get(requestId);
       if (batch) batches.add(batch);
     }
+    const cancelIds = new Set();
     for (const batch of batches) {
       for (const requestId of batch.requestIds) {
         this.pending.delete(requestId);
-        this.ignoredRequestIds.add(requestId);
+        // Only unanswered IDs can still receive a late response.
+        if (!batch.responses.has(requestId)) {
+          this._ignoreRequestId(requestId);
+          cancelIds.add(requestId);
+        }
       }
-      batch.reject(cancelledTransportError(reason, true));
+      batch.reject(cancelledTransportError(reason, batch.dispatched));
     }
-    if (!this.connected || batches.size === 0) return;
-    const cancelIds = new Set();
-    for (const batch of batches) {
-      for (const requestId of batch.requestIds) cancelIds.add(requestId);
-    }
+    if (!this.connected || cancelIds.size === 0) return;
     for (const requestId of cancelIds) {
       try {
         this._writeEnvelope({
@@ -471,7 +534,7 @@ export class LocalProtocolTransport {
     if (this.connectPromise) return this.connectPromise;
     this.readBuffer = Buffer.alloc(0);
 
-    this.connectPromise = new Promise((resolve, reject) => {
+    const connecting = new Promise((resolve, reject) => {
       const socket = net.createConnection({ path: this.socketPath });
       this.socket = socket;
       let settled = false;
@@ -490,8 +553,14 @@ export class LocalProtocolTransport {
         this._failConnection(mapped, socket);
       };
 
-      socket.on("data", (chunk) => this._feed(chunk));
+      // Events from a socket that is no longer the active connection (closed,
+      // replaced by reconnect, or failed) must never touch current state.
+      socket.on("data", (chunk) => this._feed(chunk, socket));
       socket.once("connect", () => {
+        if (this.socket !== socket) {
+          if (!socket.destroyed) socket.destroy();
+          return;
+        }
         connectionSequence = (connectionSequence + 1) % 1_000_000_000;
         this.connectionNonce = `nonce_sdk_${Date.now().toString(36)}_${connectionSequence.toString(36)}`;
         this.helloPromise = new Promise((resolveHello, rejectHello) => {
@@ -517,6 +586,7 @@ export class LocalProtocolTransport {
           };
           this._writeEnvelope(hello);
           this.helloPromise.then(() => {
+            if (this.socket !== socket) return;
             this.connected = true;
             if (!settled) {
               settled = true;
@@ -527,7 +597,7 @@ export class LocalProtocolTransport {
           fail(error);
         }
       });
-      socket.once("error", fail);
+      socket.on("error", fail);
       socket.once("close", () => {
         if (!settled) {
           fail(
@@ -547,11 +617,13 @@ export class LocalProtocolTransport {
         }
       });
     });
+    this.connectPromise = connecting;
 
     try {
-      await this.connectPromise;
+      await connecting;
     } finally {
-      this.connectPromise = undefined;
+      // close()/reconnect() may already have started a newer attempt.
+      if (this.connectPromise === connecting) this.connectPromise = undefined;
     }
   }
 
@@ -565,10 +637,33 @@ export class LocalProtocolTransport {
     this.socket.write(frameFor(envelope, this.maxPayloadBytes));
   }
 
-  _feed(chunk) {
+  /** Write one already-encoded frame to the active socket. */
+  _writeFrame(frame) {
+    if (!this.socket || this.socket.destroyed || !this.socket.writable) {
+      throw transportError(
+        "native_host_unavailable",
+        "local host socket is not connected",
+      );
+    }
+    this.socket.write(frame);
+  }
+
+  _ignoreRequestId(requestId) {
+    this.ignoredRequestIds.add(requestId);
+    if (this.ignoredRequestIds.size > MAX_IGNORED_REQUEST_IDS) {
+      this.ignoredRequestIds.delete(
+        this.ignoredRequestIds.values().next().value,
+      );
+    }
+  }
+
+  _feed(chunk, socket) {
+    if (socket !== this.socket) return;
     if (!Buffer.isBuffer(chunk)) chunk = Buffer.from(chunk);
     this.readBuffer = Buffer.concat([this.readBuffer, chunk]);
     while (this.readBuffer.length >= 4) {
+      // A previous frame in this chunk may have failed the connection.
+      if (socket !== this.socket) return;
       const length = this.readBuffer.readUInt32BE(0);
       if (length > this.maxPayloadBytes) {
         this._failConnection(
@@ -576,7 +671,7 @@ export class LocalProtocolTransport {
             "message_too_large",
             "local host frame exceeds the configured payload bound",
           ),
-          this.socket,
+          socket,
         );
         return;
       }
@@ -592,7 +687,7 @@ export class LocalProtocolTransport {
       } catch (error) {
         this._failConnection(
           protocolError(`invalid local host frame: ${error.message}`),
-          this.socket,
+          socket,
         );
         return;
       }
@@ -705,6 +800,9 @@ export class LocalProtocolTransport {
           }
           return;
         }
+        // A late answer to a cancelled request is dropped before any resume
+        // matching so it cannot be mistaken for an invalid resume response.
+        if (this.ignoredRequestIds.delete(requestId)) return;
         if (this.resumeWaiter) {
           const response = responseFromEnvelope(envelope);
           if (!resumeResponseMatches(requestId, response)) {
@@ -721,7 +819,6 @@ export class LocalProtocolTransport {
           if (!waiter.cancelled) waiter.resolve(response);
           return;
         }
-        if (this.ignoredRequestIds.delete(requestId)) return;
         this._failConnection(
           protocolError(
             "local host returned a response for an unknown request",
@@ -786,8 +883,15 @@ export class LocalProtocolTransport {
   }
 
   _failConnection(error, socket) {
+    if (socket && this.socket !== socket) {
+      // Stale socket: tear it down without disturbing the active connection.
+      if (!socket.destroyed) socket.destroy();
+      return;
+    }
     this.connected = false;
-    if (this.socket === socket) this.socket = undefined;
+    this.socket = undefined;
+    this.readBuffer = Buffer.alloc(0);
+    this.ignoredRequestIds.clear();
     if (typeof this._helloReject === "function") this._helloReject(error);
     this._helloResolve = undefined;
     this._helloReject = undefined;
