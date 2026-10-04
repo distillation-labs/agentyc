@@ -1582,7 +1582,7 @@ fn finished_and_released_lifecycles_recover_durably() {
 }
 
 #[test]
-fn sensitive_actions_require_explicit_approval_intent_and_capabilities() {
+fn sensitive_actions_require_host_intent_ticket_and_capabilities() {
     let directory = tempdir().expect("tempdir");
     let bridge = Arc::new(FakeBridge::new());
     let broker = make_broker(directory.path(), bridge.clone());
@@ -1611,21 +1611,15 @@ fn sensitive_actions_require_explicit_approval_intent_and_capabilities() {
         assert!(matches!(
             broker.enqueue_action(request, &owner, Timestamp::new(1)),
             Err(HostError::Core(agentyc_core::CoreError {
-                code: ErrorCode::InvalidArgument,
+                code: ErrorCode::PermissionDenied,
                 ..
             }))
         ));
     }
 
-    bridge.set_capabilities(vec![
-        Capability::Snapshot,
-        Capability::Action,
-        Capability::Wait,
-        Capability::Reconcile,
-    ]);
-    let valid_evaluate = action_request_with_payload(
+    let evaluate = action_request_with_payload(
         "evaluate-capability",
-        space.space_id,
+        space.space_id.clone(),
         None,
         lease.lease.lease_epoch,
         ActionOperation::Evaluate,
@@ -1638,9 +1632,9 @@ fn sensitive_actions_require_explicit_approval_intent_and_capabilities() {
         ]),
     );
     assert!(matches!(
-        broker.enqueue_action(valid_evaluate, &owner, Timestamp::new(1)),
+        broker.enqueue_action(evaluate, &owner, Timestamp::new(1)),
         Err(HostError::Core(agentyc_core::CoreError {
-            code: ErrorCode::CapabilityUnavailable,
+            code: ErrorCode::PermissionDenied,
             ..
         }))
     ));
