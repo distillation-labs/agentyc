@@ -264,6 +264,42 @@ test("action routing maps the Rust debugger wire, emits a logical receipt, and r
   worker.stop();
 });
 
+test("snapshot-hash postconditions include observed hash and honest outcome", async () => {
+  const chrome = new FakeChrome();
+  const { worker } = await boot(chrome);
+  const context = {
+    action_id: "action_snapshot_check",
+    request_id: "req_snapshot_check",
+    space_id: "space_snapshot_check",
+    page_id: "page_snapshot_check",
+    lease_epoch: 1,
+    postcondition: {
+      kind: "snapshot_hash",
+      snapshot_hash: "fnv1a64:1111111111111111",
+    },
+  };
+  const observedHash = "fnv1a64:2222222222222222";
+  worker.observedPageGeneration = () => ({
+    target_generation: 1,
+    navigation_generation: 1,
+    document_generation: 1,
+    browser_session_epoch: worker.metadata.browserSessionEpoch,
+  });
+  worker.readSnapshot = async () => ({ snapshot_hash: observedHash });
+
+  const evaluation = await worker.evaluateActionPostcondition(context, context.request_id);
+  worker.rememberActionReceipt(context, evaluation.outcome, {
+    code: evaluation.code,
+    message: evaluation.code,
+  });
+  const receipt = worker.actionReceiptFor(context.action_id);
+  assert.equal(evaluation.outcome, "failed");
+  assert.equal(receipt.outcome, "failed");
+  assert.equal(receipt.postcondition_satisfied, false);
+  assert.equal(receipt.postcondition_observed.snapshot_hash, observedHash);
+  worker.stop();
+});
+
 test("action.reconcile is read-only and reports a bounded unknown receipt", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://user.test/" }],
