@@ -15,7 +15,7 @@ Preserve useful existing MCP clients while making the direct local host/CLI/SDK 
 
 ## Handoff in
 
-- **Inputs:** direct rollout evidence; host/core contracts; direct CLI/SDK; extension capability matrix; existing `rmcp 1.7` tests and docs.
+- **Inputs:** direct launch validation evidence; host/core contracts; direct CLI/SDK; extension capability matrix; existing `rmcp 1.7` tests and docs.
 - **Target boundary for this phase:** after P8-T1, the MCP adapter calls host operations through a client and cannot access `BrowserRuntime`, `CdpClient`, active-page state, or extension internals directly. The current direct ownership is a known pre-phase condition and is removed by the scoped migration tasks below.
 - **Do not reopen:** MCP is compatibility-only; local protocol/core are canonical; no automatic launch/download; no global close; raw IDs adapter-only.
 
@@ -30,7 +30,7 @@ Preserve useful existing MCP clients while making the direct local host/CLI/SDK 
 
 - `agentyc mcp` uses a local host client; if no host/extension exists it returns `extension_not_connected` rather than launching Chrome.
 - `agentyc serve` shares one authenticated host client/broker outside the MCP session factory; each MCP transport connection gets a host-assigned principal and connection context. stdio gets a process-connection principal; HTTP obtains its context only after exact loopback/Origin/Host/auth admission. `Mcp-Session-Id` is not authentication.
-- Legacy tool schemas remain stable where required; new space/page features are additive or exposed only through an opt-in adapter profile.
+- Legacy tool schemas remain stable where required; new space/page features are additive or exposed through the compatibility adapter profile.
 - A compatibility selected/default space is a convenience, not a process-global browser selection or authorization.
 
 ## Unresolved questions
@@ -121,7 +121,7 @@ Preserve useful existing MCP clients while making the direct local host/CLI/SDK 
 
 - [ ] P8-T9 — Integrate MCP quality gates into CI and define the independent MCP release lane.
   - **Files:** planned `.github/test-policy.yaml` and existing `.github/workflows/test.yaml`/`.github/workflows/workflow.yml` only after Phase 7 creates them (add only MCP lane sections), `tests/test-manifest.yaml` (existing manifest from Phase 0; add MCP entries only), MCP section of `docs/release-gate.md`, and planned `scripts/run_mcp_benchmark.py`, `scripts/run_mcp_load_test.py`, `scripts/run_mcp_soak_test.py`, `scripts/run_mcp_chaos_test.py`, `scripts/run_mcp_release_drill.py`.
-  - **Done when:** required PR lanes cover pure/component/process/MCP contract/lifecycle/concurrency/fault/redaction suites; nightly covers MCP headed-Chrome workflows, context/token benchmarks, load/saturation, soak/leak, chaos/fault matrix, fuzz corpus, and install/update; an explicit `mcp-compatibility-gate` job emits a versioned report/artifact and is required by MCP compatibility publication, while `publish-binaries` remains dependent on the independent Phase 7 direct-product gate. The MCP gate covers supported OS/Chrome matrix, rollback, and every supported tool's real-browser evidence. Pinned Rust/rmcp/Node/npm/Chrome versions, isolated state/ports, bounded timeouts, descendant cleanup, sample accounting, and sanitized failure artifacts are enforced. No required MCP test is ignored or silently skipped; the frozen legacy MCP baseline runs through Phases 0–7.
+  - **Done when:** required PR lanes cover pure/component/process/MCP contract/lifecycle/concurrency/fault/redaction suites; nightly covers MCP headed-Chrome workflows, context/token benchmarks, load/saturation, soak/leak, chaos/fault matrix, fuzz corpus, and install/update; an explicit `mcp-compatibility-gate` job emits a versioned report/artifact and is required by MCP compatibility publication, while `publish-binaries` remains dependent on the independent Phase 7 direct-product gate. The MCP gate covers supported OS/Chrome matrix and every supported tool's real-browser evidence. Pinned Rust/rmcp/Node/npm/Chrome versions, isolated state/ports, bounded timeouts, descendant cleanup, sample accounting, and sanitized failure artifacts are enforced. No required MCP test is ignored or silently skipped; the frozen legacy MCP baseline runs through Phases 0–7.
   - **Validation:** `python3 scripts/check_test_manifest.py tests/test-manifest.yaml`; `python3 scripts/run_mcp_benchmark.py --min-samples-p95 200 --min-samples-p99 1000 --artifact-dir artifacts/p8-mcp-performance/`; `python3 scripts/run_mcp_load_test.py --artifact-dir artifacts/p8-mcp-load/`; `python3 scripts/run_mcp_soak_test.py --artifact-dir artifacts/p8-mcp-soak/`; `python3 scripts/run_mcp_chaos_test.py --manifest tests/test-manifest.yaml --artifact-dir artifacts/p8-mcp-chaos/`; `python3 scripts/run_mcp_release_drill.py --artifact-dir artifacts/p8-mcp-release/`; CI dry-run proves every required entry executed and every attempted sample/fault is accounted for; failures upload logs, wire transcripts, redacted traces, environment manifests, seeds, replay commands, and the separate direct/MCP gate reports.
   - **Owner:** Japneet Kalkat.
 
