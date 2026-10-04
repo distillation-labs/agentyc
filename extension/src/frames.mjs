@@ -86,6 +86,12 @@ export class FramesRegistry {
     this.sessions = new Map();
     this.frames = new Map();
     this.contexts = new Map();
+    this.nextLogicalFrameNumber = 1;
+  }
+
+  allocateLogicalFrameId() {
+    const value = this.nextLogicalFrameNumber++;
+    return `frame-${value.toString(36)}`;
   }
 
   setHintSalt(hintSalt) {
@@ -193,21 +199,33 @@ export class FramesRegistry {
         "page_not_found",
         "frame has no logical page binding",
       );
+    const key = `${sessionKey(tabId, sessionId)}:${frameId}`;
+    const previous = this.frames.get(key);
     const frame = {
       rawTabId: tabId,
       rawSessionId: sessionId,
       rawFrameId: frameId,
       spaceId: binding.spaceId,
       pageId: binding.pageId,
-      origin: typeof origin === "string" ? origin : binding.origin,
+      origin:
+        typeof origin === "string"
+          ? origin
+          : (previous?.origin ?? binding.origin),
       logicalFrameId:
-        typeof logicalFrameId === "string" ? logicalFrameId : undefined,
-      documentGeneration: documentGeneration ?? binding.documentGeneration,
+        typeof logicalFrameId === "string"
+          ? logicalFrameId
+          : (previous?.logicalFrameId ?? this.allocateLogicalFrameId()),
+      documentGeneration:
+        documentGeneration ??
+        previous?.documentGeneration ??
+        binding.documentGeneration,
       navigationGeneration:
-        navigationGeneration ?? binding.navigationGeneration,
-      frameVersion: 1,
+        navigationGeneration ??
+        previous?.navigationGeneration ??
+        binding.navigationGeneration,
+      frameVersion: previous?.frameVersion ?? 1,
     };
-    this.frames.set(`${sessionKey(tabId, sessionId)}:${frameId}`, frame);
+    this.frames.set(key, frame);
     return this.publicFrame(frame);
   }
 
@@ -216,6 +234,15 @@ export class FramesRegistry {
       throw new ProtocolError(
         "schema_invalid",
         "execution context binding is invalid",
+      );
+    }
+    if (
+      frameId !== undefined &&
+      (typeof frameId !== "string" || frameId.length === 0)
+    ) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "execution context frame handle is invalid",
       );
     }
     const session = this.sessions.get(sessionKey(tabId, sessionId));
@@ -235,6 +262,40 @@ export class FramesRegistry {
     });
   }
 
+  frameFor(tabId, sessionId, frameId) {
+    if (typeof frameId !== "string" || frameId.length === 0) return undefined;
+    return this.frames.get(`${sessionKey(tabId, sessionId)}:${frameId}`);
+  }
+
+  rawFrameIdForEvent(tabId, sessionId, method, params = {}) {
+    if (typeof params.frameId === "string") return params.frameId;
+    if (typeof params.frame?.id === "string") return params.frame.id;
+    if (
+      method === "Runtime.executionContextCreated" &&
+      typeof params.context?.auxData?.frameId === "string"
+    )
+      return params.context.auxData.frameId;
+    if (Number.isSafeInteger(params.executionContextId)) {
+      return this.contexts.get(
+        `${sessionKey(tabId, sessionId)}:${params.executionContextId}`,
+      )?.rawFrameId;
+    }
+    return undefined;
+  }
+
+  clearTab(tabId) {
+    this.tabs.delete(tabId);
+    for (const key of [...this.sessions.keys()]) {
+      if (key.startsWith(`${tabId}:`)) this.sessions.delete(key);
+    }
+    for (const [key, frame] of this.frames) {
+      if (frame.rawTabId === tabId) this.frames.delete(key);
+    }
+    for (const [key, context] of this.contexts) {
+      if (context.rawTabId === tabId) this.contexts.delete(key);
+    }
+  }
+
   observeDebuggerEvent({ tabId, sessionId, method, params = {} } = {}) {
     if (!isAllowedDebuggerEvent(method)) return;
     const binding = this.sessions.get(sessionKey(tabId, sessionId));
@@ -243,28 +304,103 @@ export class FramesRegistry {
       method === "Page.frameNavigated" &&
       typeof params.frame?.id === "string"
     ) {
-      const frame = this.frames.get(
-        `${sessionKey(tabId, sessionId)}:${params.frame.id}`,
-      );
+      const frameId = params.frame.id;
+      const isRoot = typeof params.frame.parentId !== "string";
+      let frame = this.frameFor(tabId, sessionId, frameId);
+      if (!isRoot && !frame) {
+        try {
+          this.bindFrame({
+            tabId,
+            sessionId,
+            frameId,
+            origin: params.frame.url,
+          });
+          frame = this.frameFor(tabId, sessionId, frameId);
+        } catch {
+          // Attribution remains conservative until the session is bound.
+        }
+      }
       if (frame) {
         frame.documentGeneration += 1;
         frame.navigationGeneration += 1;
         frame.frameVersion += 1;
+        if (typeof params.frame.url === "string")
+          frame.origin = params.frame.url;
       }
-      binding.documentGeneration += 1;
-      binding.navigationGeneration += 1;
+      if (isRoot) {
+        binding.documentGeneration += 1;
+        binding.navigationGeneration += 1;
+      }
     }
     if (method === "Page.frameAttached" && typeof params.frameId === "string") {
       try {
-        this.bindFrame({ tabId, sessionId, frameId: params.frameId });
+        this.bindFrame({
+          tabId,
+          sessionId,
+          frameId: params.frameId,
+          origin: params.url,
+        });
       } catch {
         // Attribution remains conservative until a logical frame binding exists.
       }
       binding.frameTopologyVersion += 1;
     }
     if (method === "Page.frameDetached" && typeof params.frameId === "string") {
-      this.frames.delete(`${sessionKey(tabId, sessionId)}:${params.frameId}`);
+      const key = `${sessionKey(tabId, sessionId)}:${params.frameId}`;
+      this.frames.delete(key);
+      for (const [contextKey, context] of this.contexts) {
+        if (
+          context.rawTabId === tabId &&
+          context.rawSessionId === sessionId &&
+          context.rawFrameId === params.frameId
+        )
+          this.contexts.delete(contextKey);
+      }
       binding.frameTopologyVersion += 1;
+    }
+    if (method === "Runtime.executionContextCreated") {
+      const executionContextId = params.context?.id;
+      const frameId = params.context?.auxData?.frameId;
+      if (Number.isSafeInteger(executionContextId)) {
+        try {
+          if (typeof frameId === "string" && frameId.length > 0) {
+            const exactKey = `${sessionKey(tabId, sessionId)}:${frameId}`;
+            const previous = this.frameFor(tabId, sessionId, frameId);
+            if (!this.frames.has(exactKey)) {
+              this.bindFrame({
+                tabId,
+                sessionId,
+                frameId,
+                logicalFrameId: previous?.logicalFrameId,
+                origin: previous?.origin,
+                documentGeneration: previous?.documentGeneration,
+                navigationGeneration: previous?.navigationGeneration,
+              });
+            }
+          }
+          this.bindExecutionContext({
+            tabId,
+            sessionId,
+            executionContextId,
+            frameId,
+          });
+        } catch {
+          // Ignore contexts that cannot be attributed to a live logical page.
+        }
+      }
+    }
+    if (method === "Runtime.executionContextDestroyed") {
+      if (Number.isSafeInteger(params.executionContextId)) {
+        this.contexts.delete(
+          `${sessionKey(tabId, sessionId)}:${params.executionContextId}`,
+        );
+      }
+    }
+    if (method === "Runtime.executionContextsCleared") {
+      const prefix = `${sessionKey(tabId, sessionId)}:`;
+      for (const key of [...this.contexts.keys()]) {
+        if (key.startsWith(prefix)) this.contexts.delete(key);
+      }
     }
   }
 
@@ -272,12 +408,18 @@ export class FramesRegistry {
     if (!isAllowedDebuggerEvent(method)) return null;
     const binding = this.sessions.get(sessionKey(tabId, sessionId));
     if (!binding || typeof method !== "string") return null;
+    const beforeFrameId = this.rawFrameIdForEvent(
+      tabId,
+      sessionId,
+      method,
+      params,
+    );
+    const beforeFrame = this.frameFor(tabId, sessionId, beforeFrameId);
     this.observeDebuggerEvent({ tabId, sessionId, method, params });
     const frameId =
-      typeof params.frameId === "string" ? params.frameId : params.frame?.id;
-    const frame = frameId
-      ? this.frames.get(`${sessionKey(tabId, sessionId)}:${frameId}`)
-      : undefined;
+      this.rawFrameIdForEvent(tabId, sessionId, method, params) ??
+      beforeFrameId;
+    const frame = this.frameFor(tabId, sessionId, frameId) ?? beforeFrame;
     const routed = {
       event: "debugger.event",
       method,
@@ -299,16 +441,7 @@ export class FramesRegistry {
   invalidateTab(tabId, reason = "target_lost") {
     const binding = this.tabs.get(tabId);
     if (!binding) return null;
-    this.tabs.delete(tabId);
-    for (const key of [...this.sessions.keys()]) {
-      if (key.startsWith(`${tabId}:`)) this.sessions.delete(key);
-    }
-    for (const [key, frame] of this.frames) {
-      if (frame.rawTabId === tabId) this.frames.delete(key);
-    }
-    for (const [key, context] of this.contexts) {
-      if (context.rawTabId === tabId) this.contexts.delete(key);
-    }
+    this.clearTab(tabId);
     const event = {
       event: "debugger.target_lost",
       reason,
