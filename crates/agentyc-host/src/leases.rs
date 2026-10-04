@@ -1,8 +1,8 @@
 //! Lease, authority, and ownership transition result types.
 
 use agentyc_core::{
-    BrokerEpoch, ConnectionEpoch, ConnectionNonce, ContentHash, Lease, LeaseEpoch,
-    ProfileBindingId, ReconcileToken, SpaceId, SpaceLifecycle, Timestamp,
+    BrokerEpoch, ConnectionEpoch, ConnectionNonce, ContentHash, Generation, Lease, LeaseEpoch,
+    PageId, ProfileBindingId, ReconcileToken, SpaceId, SpaceLifecycle, Timestamp,
 };
 
 /// A host-issued authority proof bound to the current broker connection.
@@ -118,8 +118,13 @@ pub struct UserIntentTicket {
     // Opaque bearer token; keep it out of Debug output.
     token: ReconcileToken,
     space_id: SpaceId,
+    page_id: Option<PageId>,
+    document_generation: Option<Generation>,
     lease_epoch: LeaseEpoch,
     action_hash: ContentHash,
+    profile_binding_id: Option<ProfileBindingId>,
+    connection_epoch: ConnectionEpoch,
+    connection_nonce: ConnectionNonce,
     expires_at: Timestamp,
 }
 
@@ -129,6 +134,8 @@ impl std::fmt::Debug for UserIntentTicket {
             .debug_struct("UserIntentTicket")
             .field("token", &"[redacted]")
             .field("space_id", &self.space_id)
+            .field("page_id", &self.page_id)
+            .field("document_generation", &self.document_generation)
             .field("lease_epoch", &self.lease_epoch)
             .field("action_hash", &self.action_hash)
             .field("expires_at", &self.expires_at)
@@ -137,18 +144,29 @@ impl std::fmt::Debug for UserIntentTicket {
 }
 
 impl UserIntentTicket {
+    #[allow(dead_code, clippy::too_many_arguments)]
     pub(crate) fn host_issued(
         token: ReconcileToken,
         space_id: SpaceId,
+        page_id: Option<PageId>,
+        document_generation: Option<Generation>,
         lease_epoch: LeaseEpoch,
         action_hash: ContentHash,
+        profile_binding_id: Option<ProfileBindingId>,
+        connection_epoch: ConnectionEpoch,
+        connection_nonce: ConnectionNonce,
         expires_at: Timestamp,
     ) -> Self {
         Self {
             token,
             space_id,
+            page_id,
+            document_generation,
             lease_epoch,
             action_hash,
+            profile_binding_id,
+            connection_epoch,
+            connection_nonce,
             expires_at,
         }
     }
@@ -156,6 +174,31 @@ impl UserIntentTicket {
     /// Logical space covered by this confirmation.
     pub fn space_id(&self) -> &SpaceId {
         &self.space_id
+    }
+
+    /// Logical page covered by this confirmation.
+    pub fn page_id(&self) -> Option<&PageId> {
+        self.page_id.as_ref()
+    }
+
+    /// Document generation covered by this confirmation.
+    pub const fn document_generation(&self) -> Option<Generation> {
+        self.document_generation
+    }
+
+    /// Profile binding covered by this confirmation.
+    pub fn profile_binding_id(&self) -> Option<&ProfileBindingId> {
+        self.profile_binding_id.as_ref()
+    }
+
+    /// Connection epoch covered by this confirmation.
+    pub const fn connection_epoch(&self) -> ConnectionEpoch {
+        self.connection_epoch
+    }
+
+    /// Connection nonce covered by this confirmation.
+    pub fn connection_nonce(&self) -> &ConnectionNonce {
+        &self.connection_nonce
     }
 
     /// Lease epoch covered by this confirmation.
