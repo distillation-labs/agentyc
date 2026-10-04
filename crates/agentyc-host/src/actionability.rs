@@ -4,9 +4,11 @@
 //! explicitly proven. Unknown connectedness, visibility, overlay, movement, or
 //! ownership evidence is never treated as safe.
 
+use std::collections::BTreeMap;
+
 use agentyc_core::{
-    ActionOperation, ActionReceipt, ContentHash, CoreError, ElementRef, ErrorCode, FrameId,
-    Generation, Postcondition, SnapshotProvenance,
+    ActionOperation, ActionReceipt, ActionRequest, ContentHash, CoreError, ElementRef, ErrorCode,
+    FrameId, Generation, PageDescriptor, Postcondition, SnapshotProvenance,
 };
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +34,18 @@ pub enum ActionKind {
     Evaluate,
     /// Close a logical page.
     Close,
+}
+
+/// Return whether an operation necessarily targets a logical element.
+///
+/// Page-level operations remain valid without an element proof. Element
+/// mutations must carry a complete ref/provenance/actionability envelope so
+/// the host can revalidate the exact target immediately before dispatch.
+pub const fn requires_element_actionability(operation: ActionOperation) -> bool {
+    matches!(
+        operation,
+        ActionOperation::Click | ActionOperation::Input | ActionOperation::Upload
+    )
 }
 
 impl From<ActionOperation> for ActionKind {
@@ -205,6 +219,182 @@ impl ActionabilityEvidence {
         self.snapshot_hash = snapshot_hash;
         self
     }
+}
+
+/// Payload keys that carry the host-validated, typed actionability boundary.
+///
+/// Action requests currently use a bounded string map for transport compatibility.
+/// These values are therefore JSON objects encoded as strings and are parsed once
+/// at the host boundary; they are included in the canonical request hash.
+pub const ELEMENT_REF_PAYLOAD_KEY: &str = "element_ref";
+/// Alias accepted for callers that use the shorter ref spelling.
+pub const REF_PAYLOAD_KEY: &str = "ref";
+/// Snapshot provenance payload key.
+pub const PROVENANCE_PAYLOAD_KEY: &str = "provenance";
+/// Actionability evidence payload key.
+pub const ACTIONABILITY_PAYLOAD_KEY: &str = "actionability_evidence";
+/// Alias accepted for concise action payloads.
+pub const EVIDENCE_PAYLOAD_KEY: &str = "evidence";
+/// Logical frame scope payload key.
+pub const FRAME_SCOPE_PAYLOAD_KEY: &str = "frame_scope";
+
+/// Typed actionability input decoded from a bounded action payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionabilityInput {
+    /// The exact ref issued from a complete snapshot.
+    pub element_ref: ElementRef,
+    /// The complete snapshot provenance used to issue the ref.
+    pub provenance: SnapshotProvenance,
+    /// The logical frame selected for dispatch.
+    pub frame_id: FrameId,
+    /// DOM/layout/ownership facts observed for this exact target.
+    pub evidence: ActionabilityEvidence,
+}
+
+impl ActionabilityInput {
+    /// Decode an optional typed actionability envelope from the string payload.
+    ///
+    /// An absent envelope preserves support for page-level actions and for legacy
+    /// coordinate actions. Once any actionability field is supplied, all fields
+    /// become mandatory and are validated fail-closed.
+    pub fn from_payload(payload: &BTreeMap<String, String>) -> Result<Option<Self>, CoreError> {
+        let has_input = [
+            ELEMENT_REF_PAYLOAD_KEY,
+            REF_PAYLOAD_KEY,
+            PROVENANCE_PAYLOAD_KEY,
+            ACTIONABILITY_PAYLOAD_KEY,
+            EVIDENCE_PAYLOAD_KEY,
+            FRAME_SCOPE_PAYLOAD_KEY,
+        ]
+        .into_iter()
+        .any(|key| payload.contains_key(key));
+        if !has_input {
+            return Ok(None);
+        }
+
+        let element_ref = parse_payload_json::<ElementRef>(payload, ELEMENT_REF_PAYLOAD_KEY)
+            .or_else(|_| parse_payload_json::<ElementRef>(payload, REF_PAYLOAD_KEY))?;
+        let provenance = parse_payload_json::<SnapshotProvenance>(payload, PROVENANCE_PAYLOAD_KEY)?;
+        let evidence =
+            parse_payload_json::<ActionabilityEvidence>(payload, ACTIONABILITY_PAYLOAD_KEY)
+                .or_else(|_| {
+                    parse_payload_json::<ActionabilityEvidence>(payload, EVIDENCE_PAYLOAD_KEY)
+                })?;
+        let frame_id = payload
+            .get(FRAME_SCOPE_PAYLOAD_KEY)
+            .map(|value| value.parse::<FrameId>())
+            .transpose()
+            .map_err(|error| CoreError::stale_ref(format!("invalid logical frame scope: {error}")))?
+            .unwrap_or_else(|| element_ref.frame_id.clone());
+        if element_ref.frame_id != frame_id {
+            return Err(CoreError::stale_ref(
+                "action ref frame does not match the requested logical frame scope",
+            ));
+        }
+        Ok(Some(Self {
+            element_ref,
+            provenance,
+            frame_id,
+            evidence,
+        }))
+    }
+
+    /// Validate the typed envelope against the current durable page state.
+    pub fn validate_for_page(
+        &self,
+        operation: ActionOperation,
+        page: &PageDescriptor,
+        current_snapshot_hash: Option<&ContentHash>,
+    ) -> Result<ActionabilityProof, CoreError> {
+        if self.element_ref.space_id != page.space_id || self.provenance.space_id != page.space_id {
+            return Err(CoreError::stale_ref(
+                "action ref provenance does not match the current logical space",
+            ));
+        }
+        if self.element_ref.page_id != page.page_id || self.provenance.page_id != page.page_id {
+            return Err(CoreError::stale_ref(
+                "action ref provenance does not match the current logical page",
+            ));
+        }
+        if self.provenance.navigation_generation != page.navigation_generation
+            || self.provenance.document_generation != page.document_generation
+            || self.element_ref.navigation_generation != page.navigation_generation
+            || self.element_ref.document_generation != page.document_generation
+        {
+            return Err(CoreError::new(
+                ErrorCode::TargetReplaced,
+                "action ref is bound to an older page generation",
+            ));
+        }
+        let Some(current_snapshot_hash) = current_snapshot_hash else {
+            return Err(CoreError::stale_ref(
+                "current snapshot provenance is unavailable for action dispatch",
+            ));
+        };
+        if current_snapshot_hash != &self.provenance.snapshot_hash {
+            return Err(CoreError::new(
+                ErrorCode::TargetReplaced,
+                "action ref is bound to an older snapshot",
+            ));
+        }
+        if self.evidence.target_generation != Some(page.target_generation) {
+            return Err(CoreError::new(
+                ErrorCode::TargetReplaced,
+                "actionability evidence is not bound to the current target generation",
+            ));
+        }
+        ActionabilityChecker::check_with_target_generation(
+            operation.into(),
+            &self.element_ref,
+            &self.frame_id,
+            &self.provenance,
+            page.target_generation,
+            &self.evidence,
+        )
+    }
+}
+
+/// Validate the typed actionability envelope in one action request.
+///
+/// Element mutations fail closed when the proof is absent. This function is
+/// intentionally the shared boundary used by enqueue, dequeue, and the final
+/// pre-dispatch gate; page-level operations may omit the envelope.
+pub fn validate_request_actionability(
+    request: &ActionRequest<BTreeMap<String, String>>,
+    page: &PageDescriptor,
+    current_snapshot_hash: Option<&ContentHash>,
+) -> Result<(), CoreError> {
+    let input = ActionabilityInput::from_payload(&request.payload)?;
+    if requires_element_actionability(request.operation) && input.is_none() {
+        return Err(CoreError::invalid_argument(
+            "element mutation requires a complete ref, provenance, frame, and actionability proof",
+        ));
+    }
+    let Some(input) = input else {
+        return Ok(());
+    };
+    input
+        .validate_for_page(request.operation, page, current_snapshot_hash)
+        .map(|_| ())
+}
+
+fn parse_payload_json<T: for<'de> Deserialize<'de>>(
+    payload: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<T, CoreError> {
+    let value = payload.get(key).ok_or_else(|| {
+        CoreError::invalid_argument(format!("action payload field {key} is required"))
+    })?;
+    if value.len() > 65_536 || value.chars().any(char::is_control) {
+        return Err(CoreError::invalid_argument(format!(
+            "action payload field {key} is invalid or too large"
+        )));
+    }
+    serde_json::from_str(value).map_err(|error| {
+        CoreError::invalid_argument(format!(
+            "action payload field {key} is not valid JSON: {error}"
+        ))
+    })
 }
 
 /// Validated action proof returned only after every required check passes.
@@ -576,6 +766,139 @@ mod tests {
                 &evidence,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn actionability_matrix_fails_closed_for_target_and_ownership_changes() {
+        let (element_ref, provenance, frame) = fixture();
+        let generation = agentyc_core::Generation::new(1);
+        let base = ActionabilityEvidence::proven_interactive()
+            .with_target_generation(generation)
+            .with_generations(
+                Some(generation),
+                provenance.navigation_generation,
+                provenance.document_generation,
+                Some(provenance.snapshot_hash.clone()),
+            );
+        let cases = vec![
+            (
+                "disconnected",
+                ActionKind::Click,
+                base.clone().with_connected(false),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "hidden",
+                ActionKind::Click,
+                base.clone().with_visible(false),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "disabled",
+                ActionKind::Click,
+                base.clone().with_disabled(true),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "readonly",
+                ActionKind::Input,
+                base.clone().with_readonly(true),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "covered",
+                ActionKind::Click,
+                base.clone().with_covered(true),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "moving",
+                ActionKind::Click,
+                base.clone().with_moving(true),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "offscreen",
+                ActionKind::Click,
+                base.clone().with_offscreen(true),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "wrong-hit-target",
+                ActionKind::Click,
+                base.clone().with_hit_target(false),
+                frame.clone(),
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                "user-control",
+                ActionKind::Click,
+                base.clone().with_user_control(true),
+                frame.clone(),
+                ErrorCode::UserControlRequired,
+            ),
+            (
+                "oopif-frame",
+                ActionKind::Click,
+                base.clone(),
+                FrameId::from_suffix("other").expect("frame"),
+                ErrorCode::StaleRef,
+            ),
+            (
+                "rerendered-snapshot",
+                ActionKind::Click,
+                base.clone().with_generations(
+                    Some(generation),
+                    provenance.navigation_generation,
+                    provenance.document_generation,
+                    Some(ContentHash::from_bytes(b"rerendered")),
+                ),
+                frame.clone(),
+                ErrorCode::TargetReplaced,
+            ),
+            (
+                "stale-generation",
+                ActionKind::Click,
+                base.clone().with_generations(
+                    Some(generation),
+                    Generation::new(2),
+                    provenance.document_generation,
+                    Some(provenance.snapshot_hash.clone()),
+                ),
+                frame.clone(),
+                ErrorCode::TargetReplaced,
+            ),
+        ];
+        for (name, action, evidence, requested_frame, expected) in cases {
+            let error = ActionabilityChecker::check(
+                action,
+                &element_ref,
+                &requested_frame,
+                &provenance,
+                &evidence,
+            )
+            .expect_err(name);
+            assert_eq!(error.code, expected, "case {name}");
+        }
+    }
+
+    #[test]
+    fn file_and_evaluate_are_not_element_action_kinds() {
+        assert_eq!(
+            ActionKind::from(ActionOperation::Upload),
+            ActionKind::Evaluate
+        );
+        assert_eq!(
+            ActionKind::from(ActionOperation::Evaluate),
+            ActionKind::Evaluate
         );
     }
 
