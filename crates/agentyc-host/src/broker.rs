@@ -468,6 +468,158 @@ impl Broker {
         })
     }
 
+    /// Apply a bounded extension lifecycle event to the durable logical ledger.
+    ///
+    /// Native Messaging events are advisory browser observations, never client
+    /// authority. Page generations only move forward; target-loss events mark a
+    /// page lost and invalidate its snapshot cache without closing any tab.
+    pub fn apply_bridge_event(
+        &self,
+        authority: &AuthorityTicket,
+        event: &Value,
+        _now: Timestamp,
+    ) -> Result<(), HostError> {
+        let event_name = event.get("event").and_then(Value::as_str).unwrap_or("");
+        if event_name.is_empty() || event_name == "inventory" {
+            return Ok(());
+        }
+        let event_payload = event
+            .get("payload")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let space_text = event_payload
+            .get("space_id")
+            .and_then(Value::as_str)
+            .or_else(|| event.get("space_id").and_then(Value::as_str));
+        let page_text = event_payload
+            .get("page_id")
+            .and_then(Value::as_str)
+            .or_else(|| event.get("page_id").and_then(Value::as_str));
+        self.with_inner(|inner| {
+            inner.ledger.update(|state| {
+                authorize_ticket(state, authority)?;
+                if event_name == "browser.session_changed" {
+                    let profile = authority.profile_binding_id().cloned();
+                    let space_ids: Vec<_> = state
+                        .spaces
+                        .iter()
+                        .filter_map(|(space_id, _space)| {
+                            (profile.is_some()
+                                && state.profile_bindings.get(space_id) == profile.as_ref())
+                            .then_some(space_id.clone())
+                        })
+                        .collect();
+                    for space_id in space_ids {
+                        let mut changed = false;
+                        if let Some(space) = state.spaces.get_mut(&space_id) {
+                            for page in &mut space.pages {
+                                if matches!(
+                                    page.lifecycle,
+                                    PageLifecycle::Closed | PageLifecycle::Closing
+                                ) {
+                                    continue;
+                                }
+                                bump_page_generations(page)?;
+                                page.lifecycle = PageLifecycle::TargetLost;
+                                page.binding = PageBindingState::Lost;
+                                changed = true;
+                            }
+                            if changed {
+                                space.lifecycle = SpaceLifecycle::Orphaned;
+                                state.snapshots.remove(&space_id);
+                            }
+                        }
+                        if changed {
+                            append_event(
+                                state,
+                                EventScope::space(space_id),
+                                EventKind::PageChanged,
+                                payload([
+                                    ("lifecycle", "target_lost".to_owned()),
+                                    ("reason", event_name.to_owned()),
+                                ]),
+                                None,
+                                true,
+                            )?;
+                        }
+                    }
+                    return Ok(());
+                }
+                let (Some(space_text), Some(page_text)) = (space_text, page_text) else {
+                    return Ok(());
+                };
+                let Ok(space_id) = space_text.parse::<SpaceId>() else {
+                    return Ok(());
+                };
+                let Ok(page_id) = page_text.parse::<PageId>() else {
+                    return Ok(());
+                };
+                authorize_profile_for_mutation(state, &space_id, authority)?;
+                let mut page_changed = false;
+                let target_lost = matches!(event_name, "page.lost" | "page.replaced");
+                let target = event_payload
+                    .get("target_generation")
+                    .and_then(Value::as_u64);
+                let navigation = event_payload
+                    .get("navigation_generation")
+                    .and_then(Value::as_u64);
+                let document = event_payload
+                    .get("document_generation")
+                    .and_then(Value::as_u64);
+                if let Some(space) = state.spaces.get_mut(&space_id) {
+                    if let Some(page) = space.page_mut(&page_id) {
+                        if let Some(value) =
+                            target.filter(|value| *value > page.target_generation.get())
+                        {
+                            page.target_generation = Generation::new(value);
+                            page_changed = true;
+                        }
+                        if let Some(value) =
+                            navigation.filter(|value| *value > page.navigation_generation.get())
+                        {
+                            page.navigation_generation = Generation::new(value);
+                            page_changed = true;
+                        }
+                        if let Some(value) =
+                            document.filter(|value| *value > page.document_generation.get())
+                        {
+                            page.document_generation = Generation::new(value);
+                            page_changed = true;
+                        }
+                        if target_lost {
+                            if !matches!(
+                                page.lifecycle,
+                                PageLifecycle::Closed | PageLifecycle::Closing
+                            ) {
+                                if target.is_none() {
+                                    bump_page_generations(page)?;
+                                }
+                                page.lifecycle = PageLifecycle::TargetLost;
+                                page.binding = PageBindingState::Lost;
+                                page_changed = true;
+                            }
+                        }
+                        if page_changed {
+                            state.snapshots.remove(&space_id);
+                        }
+                    }
+                }
+                if page_changed {
+                    append_event(
+                        state,
+                        EventScope::page(space_id, page_id),
+                        EventKind::PageChanged,
+                        payload([("reason", event_name.to_owned())]),
+                        None,
+                        target_lost,
+                    )?;
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// Return a fresh, space-scoped live inventory without changing ledger state.
     pub fn page_inventory(
         &self,
@@ -480,6 +632,7 @@ impl Broker {
         let bridge = self.bridge()?;
         let observation = bridge.observe().map_err(HostError::Bridge)?;
         let observation = sanitize_observation_snapshot(observation)?;
+        self.reconcile_bridge_pages(&observation)?;
         let pages = observation
             .pages
             .into_iter()
@@ -1448,14 +1601,8 @@ impl Broker {
         let profile_binding_id = authority
             .profile_binding_id()
             .map(|value| value.as_str().to_owned());
-        for (
-            page_id,
-            target_generation,
-            navigation_generation,
-            document_generation,
-            url,
-            title,
-        ) in pages
+        for (page_id, target_generation, navigation_generation, document_generation, url, title) in
+            pages
         {
             let mut proof = json!({
                 "issued_by_host": true,
@@ -2859,6 +3006,106 @@ impl Broker {
         .map(|receipt| ActionResult { receipt })
     }
 
+    /// Adopt monotonic page generations observed by the trusted extension bridge.
+    ///
+    /// Chrome navigation/document events are faster than the host's next client
+    /// request. Updating the logical ledger from a sanitized inventory prevents
+    /// a valid post-navigation snapshot/action from being rejected merely because
+    /// the host still holds the previous generation. Observations can only move
+    /// generations forward and never grant ownership or lease authority.
+    fn reconcile_bridge_pages(&self, observation: &ObservationSnapshot) -> Result<(), HostError> {
+        self.with_inner(|inner| {
+            inner.ledger.update(|state| {
+                let mut changed = Vec::new();
+                for record in &observation.pages {
+                    let Some(space_id) = record.get("space_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let Some(page_id) = record.get("page_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let Ok(space_id) = space_id.parse::<SpaceId>() else {
+                        continue;
+                    };
+                    let Ok(page_id) = page_id.parse::<PageId>() else {
+                        continue;
+                    };
+                    let Some(target_generation) = record
+                        .get("target_generation")
+                        .and_then(Value::as_u64)
+                        .filter(|value| *value > 0)
+                    else {
+                        continue;
+                    };
+                    let Some(navigation_generation) = record
+                        .get("navigation_generation")
+                        .and_then(Value::as_u64)
+                        .filter(|value| *value > 0)
+                    else {
+                        continue;
+                    };
+                    let Some(document_generation) = record
+                        .get("document_generation")
+                        .and_then(Value::as_u64)
+                        .filter(|value| *value > 0)
+                    else {
+                        continue;
+                    };
+                    let Some(space) = state.spaces.get_mut(&space_id) else {
+                        continue;
+                    };
+                    let Some(page) = space.page_mut(&page_id) else {
+                        continue;
+                    };
+                    if page.ownership != PageOwnership::Agent
+                        || page.binding != PageBindingState::Bound
+                        || !matches!(page.lifecycle, PageLifecycle::Managed)
+                    {
+                        continue;
+                    }
+                    if target_generation < page.target_generation.get()
+                        || navigation_generation < page.navigation_generation.get()
+                        || document_generation < page.document_generation.get()
+                    {
+                        continue;
+                    }
+                    let changed_generation = target_generation > page.target_generation.get()
+                        || navigation_generation > page.navigation_generation.get()
+                        || document_generation > page.document_generation.get();
+                    if !changed_generation {
+                        continue;
+                    }
+                    page.target_generation = Generation::new(target_generation);
+                    page.navigation_generation = Generation::new(navigation_generation);
+                    page.document_generation = Generation::new(document_generation);
+                    if let Some(url) = record.get("url").and_then(Value::as_str) {
+                        page.url = bounded_optional(Some(url.to_owned()))?;
+                    }
+                    if let Some(title) = record.get("title").and_then(Value::as_str) {
+                        page.title = bounded_optional(Some(title.to_owned()))?;
+                    }
+                    state
+                        .snapshots
+                        .entry(space_id.clone())
+                        .or_default()
+                        .remove(&page_id);
+                    changed.push((space_id, page_id));
+                }
+                for (space_id, page_id) in changed {
+                    append_event(
+                        state,
+                        EventScope::page(space_id, page_id),
+                        EventKind::PageChanged,
+                        payload([("source", "bridge_observation".to_owned())]),
+                        None,
+                        false,
+                    )?;
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// Read a clean cached snapshot or perform exactly one bridge scan on a miss/dirty entry.
     pub fn read_snapshot(
         &self,
@@ -2870,6 +3117,9 @@ impl Broker {
     ) -> Result<SnapshotRead, HostError> {
         let bridge = self.bridge()?;
         require_capability(&*bridge, Capability::Snapshot)?;
+        let live_observation = bridge.observe().map_err(HostError::Bridge)?;
+        let live_observation = sanitize_observation_snapshot(live_observation)?;
+        self.reconcile_bridge_pages(&live_observation)?;
         let (cached, generation) = self.with_inner(|inner| {
             inner.ledger.update(|state| {
                 let generation =
@@ -4204,6 +4454,63 @@ mod tests {
                     100
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn bridge_page_loss_events_fence_logical_pages_without_closing_tabs() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let owner = admit_authority(&broker, "owner");
+        let space = broker.create_space(&owner, "loss").expect("space");
+        let lease = broker
+            .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+            .expect("lease");
+        let page = broker
+            .create_page_at(
+                &space.space_id,
+                &owner,
+                lease.lease.lease_epoch,
+                "page",
+                Timestamp::new(0),
+            )
+            .expect("page");
+        let bound = broker
+            .bind_page(
+                &space.space_id,
+                &page.page_id,
+                &owner,
+                lease.lease.lease_epoch,
+                Timestamp::new(0),
+                Some("https://agent.test/".to_owned()),
+                None,
+                0,
+            )
+            .expect("bound page");
+        let extension = admit_authority_with_nonce(&broker, "extension", "extension-loss");
+        let event = serde_json::json!({
+            "kind": "event",
+            "event": "page.lost",
+            "payload": {
+                "space_id": space.space_id,
+                "page_id": page.page_id,
+                "target_generation": bound.target_generation.get() + 1,
+                "navigation_generation": bound.navigation_generation.get() + 1,
+                "document_generation": bound.document_generation.get() + 1,
+            }
+        });
+        broker
+            .apply_bridge_event(&extension, &event, Timestamp::new(1))
+            .expect("bridge event");
+        let updated = broker
+            .describe_space(&owner, &space.space_id)
+            .expect("updated space");
+        let updated_page = updated.page(&page.page_id).expect("updated page");
+        assert_eq!(updated_page.lifecycle, PageLifecycle::TargetLost);
+        assert_eq!(updated_page.binding, PageBindingState::Lost);
+        assert_eq!(
+            updated_page.target_generation.get(),
+            bound.target_generation.get() + 1
         );
     }
 
