@@ -4,11 +4,11 @@
 //! consumer-side replay/coalescing layer that never invents a scope for an
 //! event and explicitly reports gaps as resynchronization requests.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use agentyc_core::{
-    BrokerEpoch, CoreError, EventCursor, EventKind, EventRecord, EventScope, EventSequence,
-    GenerationWatermark, ResumeResult,
+    BrokerEpoch, CoreError, EventCursor, EventId, EventKind, EventRecord, EventScope,
+    EventSequence, GenerationWatermark, ResumeResult,
 };
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +116,10 @@ pub struct EventRouter {
     /// keeps the earliest sequence so a waiter registered before the burst can
     /// still observe the coalesced result.
     retained_starts: VecDeque<EventSequence>,
+    /// IDs of recently accepted source events, including events coalesced out
+    /// of the retained event list.
+    seen_event_ids: HashSet<EventId>,
+    seen_event_order: VecDeque<EventId>,
     limits: RouterLimits,
     resync_required: bool,
 }
@@ -128,6 +132,8 @@ impl EventRouter {
             sequence: EventSequence::new(0),
             events: VecDeque::new(),
             retained_starts: VecDeque::new(),
+            seen_event_ids: HashSet::new(),
+            seen_event_order: VecDeque::new(),
             limits,
             resync_required: false,
         }
@@ -140,6 +146,8 @@ impl EventRouter {
             sequence: cursor.sequence,
             events: VecDeque::new(),
             retained_starts: VecDeque::new(),
+            seen_event_ids: HashSet::new(),
+            seen_event_order: VecDeque::new(),
             limits,
             resync_required: false,
         }
@@ -197,6 +205,11 @@ impl EventRouter {
                 reason: RouterResyncReason::BrokerEpochChanged,
             };
         }
+        if self.seen_event_ids.contains(&event.event_id) {
+            return RouterIngest::Accepted {
+                cursor: self.cursor(),
+            };
+        }
         let expected = self.sequence.get().saturating_add(1);
         if event.sequence.get() != expected {
             self.resync_required = true;
@@ -209,6 +222,8 @@ impl EventRouter {
         if event.resync_required {
             self.resync_required = true;
         }
+
+        self.remember_event_id(event.event_id.clone());
 
         if self.limits.coalesce_dirty_events && is_coalescible(event.event) {
             let can_coalesce = self.events.back().is_some_and(|previous| {
@@ -278,10 +293,18 @@ impl EventRouter {
             cursor: self.cursor(),
         };
         for event in batch.events {
+            if event.broker_epoch == self.broker_epoch
+                && self.seen_event_ids.contains(&event.event_id)
+            {
+                outcome = self.ingest(event);
+                continue;
+            }
             // Broker batches may already be scope-filtered, so absent
             // sequences are not proof of a gap here. Direct `ingest` remains
             // strict and reports sequence gaps.
-            if event.sequence.get() > self.sequence.get().saturating_add(1) {
+            if event.broker_epoch == self.broker_epoch
+                && event.sequence.get() > self.sequence.get().saturating_add(1)
+            {
                 self.sequence = EventSequence::new(event.sequence.get().saturating_sub(1));
             }
             outcome = self.ingest(event);
@@ -358,7 +381,21 @@ impl EventRouter {
         self.sequence = cursor.sequence;
         self.events.clear();
         self.retained_starts.clear();
+        self.seen_event_ids.clear();
+        self.seen_event_order.clear();
         self.resync_required = false;
+    }
+
+    fn remember_event_id(&mut self, event_id: EventId) {
+        if !self.seen_event_ids.insert(event_id.clone()) {
+            return;
+        }
+        self.seen_event_order.push_back(event_id);
+        while self.seen_event_order.len() > self.limits.max_events.max(1) {
+            if let Some(expired) = self.seen_event_order.pop_front() {
+                self.seen_event_ids.remove(&expired);
+            }
+        }
     }
 
     /// Return whether an event's generation watermark is at least a target.
@@ -507,6 +544,64 @@ mod tests {
         );
         assert_eq!(replay.result, ResumeResult::Accepted);
         assert_eq!(replay.events[0].sequence, EventSequence::new(2));
+    }
+
+    #[test]
+    fn duplicate_event_id_does_not_redeliver_or_advance_watermark() {
+        let scope = EventScope {
+            space_id: None,
+            page_id: None,
+        };
+        let mut router = EventRouter::new(BrokerEpoch::new(1), RouterLimits::new(8));
+        let original = event(1, scope.clone(), EventKind::ConnectionChanged, "original");
+        let duplicate = EventRecord {
+            sequence: EventSequence::new(2),
+            payload: BTreeMap::from([(String::from("value"), String::from("retry"))]),
+            ..original.clone()
+        };
+
+        assert!(matches!(
+            router.ingest(original),
+            RouterIngest::Accepted { .. }
+        ));
+        assert!(matches!(
+            router.ingest(duplicate),
+            RouterIngest::Accepted { .. }
+        ));
+        assert_eq!(router.cursor().sequence, EventSequence::new(1));
+        assert_eq!(router.retained().len(), 1);
+        assert_eq!(router.retained()[0].payload["value"], "original");
+    }
+
+    #[test]
+    fn replay_batch_ignores_duplicate_ids_before_gap_adjustment() {
+        let scope = EventScope {
+            space_id: None,
+            page_id: None,
+        };
+        let mut router = EventRouter::new(BrokerEpoch::new(1), RouterLimits::new(8));
+        let original = event(1, scope.clone(), EventKind::ConnectionChanged, "one");
+        let duplicate = original.clone();
+        let next = event(2, scope, EventKind::ConnectionChanged, "two");
+        router.ingest(original);
+
+        let outcome = router
+            .ingest_batch(EventBatch {
+                broker_epoch: BrokerEpoch::new(1),
+                result: ResumeResult::Accepted,
+                events: vec![duplicate, next],
+                cursor: EventCursor {
+                    broker_epoch: BrokerEpoch::new(1),
+                    sequence: EventSequence::new(2),
+                },
+            })
+            .expect("batch ingestion");
+
+        assert!(matches!(outcome, RouterIngest::Accepted { .. }));
+        assert_eq!(router.cursor().sequence, EventSequence::new(2));
+        assert_eq!(router.retained().len(), 2);
+        assert_eq!(router.retained()[0].sequence, EventSequence::new(1));
+        assert_eq!(router.retained()[1].sequence, EventSequence::new(2));
     }
 
     #[test]
