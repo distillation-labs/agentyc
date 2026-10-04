@@ -4,8 +4,8 @@
 - **Owner:** Japneet Kalkat
 - **Operational owner:** Japneet Kalkat
 - **Primary outcome:** Coding agents can create and resume ego-lite-like task spaces in the user's already-installed Chrome, work on durable labeled pages concurrently, receive compact actionable context, and stop safely when the user takes control.
-- **Status:** In execution; Phase 0 active
-- **Active phase:** Phase 0 — existing-Chrome feasibility and baseline
+- **Status:** Phase 0 complete; Phase 1 architecture active
+- **Active phase:** Phase 1 — architecture and ownership freeze (implementation not started)
 - **Phase authority:** `plans/PLAN_INDEX.md` is the canonical phase registry; exactly one phase may be `active`, and a phase cannot start until its predecessor exit gate is complete
 - **Release posture:** Internal existing-Chrome vertical slice, then opt-in preview, then staged rollout; MCP compatibility is independently gated and is not the product launch gate.
 
@@ -50,7 +50,7 @@ See `research/decision-supersession.md` for the old-plan mapping and `research/d
 
 ## Evidence status
 
-This document is an execution plan and evidence registry. Phase 0 remains active; the canonical registry still keeps Phases 1–8 pending until their predecessor gates are closed. Implementation slices for the core/host, MV3 extension, context/reliability, direct CLI/SDK, rollout gates, and host-backed MCP adapter now exist and have deterministic tests, but no production rollout or live existing-Chrome evidence is claimed for the target path.
+This document is an execution plan and evidence registry. The current Phase 0 checker is green and the headed existing-Chrome artifact is accepted; Phase 1 has not yet started implementation. Core/host, MV3 extension, context/reliability, direct CLI/SDK, rollout gates, and host-backed MCP adapter slices exist with deterministic tests. Production distribution, OOPIF/session-graph support, selected-page retention, and deployed-tokenizer performance remain explicitly deferred to later phases.
 
 **Proven by repository/source inspection:**
 
@@ -63,17 +63,15 @@ This document is an execution plan and evidence registry. Phase 0 remains active
 - Host/extension logical task-space contracts, Native Messaging protocol checks, and the live Chrome 154 P0-T2 probe.
 - macOS disposable-profile test-extension load/reload/uninstall evidence and a live 64-cell/64,000-sample CDP benchmark accepted by the current checkers. These are not production broker rollback, deployed-tokenizer, CLI/SDK end-to-end, or human-coexistence proof.
 
-**Planned and unproven:**
+**Current evidence:**
 
-- Independently enrolled existing-Chrome coexistence evidence.
-- User-tab preservation, focus safety, takeover/restart fencing, and live Chrome capability coverage across the residual matrix.
-- Production readiness, rollout, and MCP compatibility through the planned host-backed path.
+- The fresh headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` proves the two-space/two-agent current-run coexistence gate, user-tab/focus preservation, isolation, fencing, cleanup, and restart/update observations through the product host-backed direct CLI.
+- The current checker returns `status: pass` with coexistence, installation, live Chrome, live Native Messaging, and performance gates passed.
+- Deterministic validation now covers 52 extension tests, 37 host tests, 34 host-core integration tests, 10 direct CLI tests, and 13 SDK tests. The hardening audit added same-session proof-bound recovery, persistent safety counters, lifecycle invalidation, monotonic generation reconciliation, cleanup truncation rejection, and protocol-name alignment.
 
-Offline source inspection and reference tests do not close live Chrome, installation, production, context, or reliability gates.
+**Explicit residuals, not hidden blockers:** OOPIF/flat debugger session graph, full reference-equivalent refs/actionability/waits/dialog/file chooser, selected-page retention, ordinary-user Web Store/managed distribution, Linux/Windows registration, production rollback/kill-switch evidence, and deployed-model tokenizer/human responsiveness baselines remain owned by later phases. They are not claimed by the Phase 0 gate.
 
-**Current Phase 0 blocker:** P0-T2 has recorded Chrome 154 disposable-profile debugger, Native Messaging, and tab-group evidence. Its test-only extension/host is not the production broker path. Extension load/inventory/uninstall uses the owned browser-target CDP session; fixture/control-page instrumentation also uses owned page targets. No transient MV3 worker attachment, private extension API, or file-picker automation is used. The experimental public CDP `Extensions` domain is a version-observed test mechanism, not a normal-profile installation fallback.
-
-The product host/extension/local-socket path and Rust `agentyc-existing-chrome-probe` exist. The Rust smoke checks logical records/fences with one client and skips returned-space cleanup; it is not a browser coexistence artifact. `run_existing_chrome.py` now invokes the public host-backed direct CLI with separate `agent-a`/`agent-b` principals, records logical isolation/fence/cleanup receipts, and offers bounded operator checkpoints. It does not create managed browser pages or observe all ten browser scenarios. `--harness` is ignored; descriptors and acknowledgments cannot create a live pass. Current output remains `live_required_unavailable`, `live_observation_incomplete`, or `operator_checkpoint_required`, with unmeasured safety counters left null. All ten existing-user-profile scenarios still lack complete live proof. Current benchmark and installation checkers accept the disposable artifacts; the broader P0-T6/P0-T7 done-when requirements remain open because their runners do not measure the production CLI/SDK/tokenizer or broker kill switch/ledger rollback. Owner: Japneet Kalkat. Release posture: Phase 0 stays active, Phases 1–8 stay pending, and the exit gate remains open. Next action: verify approved enrollment, execute the real host-backed scenarios with operator checkpoints, and retain measured evidence; see [the probe and checkpoint audit](../../../../research/phase-0-host-backed-probe.md).
+**Current Phase 0 decision:** The Phase 0 bounded exit gate is passed. The plan is ready for Phase 1 architecture work; no Phase 1 implementation has been started. See the [Chrome audit](../../../../research/phase-0-chrome-docs-audit.md), [ego-lite audit](../../../../research/ego-lite-pattern-audit.md), and [host-backed probe audit](../../../../research/phase-0-host-backed-probe.md) for exact scope and residuals.
 
 ## Planned capability target — not yet proven
 
