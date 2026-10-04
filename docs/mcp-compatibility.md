@@ -1,0 +1,97 @@
+# MCP Compatibility Boundary
+
+**Status:** repository evidence and Phase 2/8 contract notes; not a Phase 8 release certificate. "Current" describes checked-in source/tests at this revision. "Target" describes the pending Phase 2/8 plan and must not be read as implemented behavior.
+
+## Current MCP surfaces
+
+| Surface | Current behavior | Evidence |
+| --- | --- | --- |
+| Legacy direct-CDP `BrowserServer` | Explicit compatibility path (`agentyc mcp --legacy-cdp`, or legacy HTTP `serve`); legacy `ServerState` owns `BrowserRuntime` and CDP/page selection. | `crates/agentyc-mcp/src/lib.rs`, `src/tools/mod.rs`, `crates/agentyc/src/main.rs` |
+| Host-backed in-process `HostBrowserServer` | 29 logical host/space/page/lease/snapshot/action/event tool routes; takes an injected `Broker` and host handshake. It does not install these tools in the legacy router. | `crates/agentyc-mcp/src/host_server.rs`, `src/host_adapter.rs` |
+| Host-backed remote `RemoteHostBrowserServer` | 30 declared logical routes sent through `LocalSocketClient`; 18 are marked supported by the local protocol, and 12 return a typed `capability_unavailable` result before forwarding. | `crates/agentyc-mcp/src/remote_host_server.rs` |
+
+The normal CLI host-backed route uses the local host socket; it does not silently fall back to the legacy runtime. The explicit legacy `serve` route creates a `BrowserServer` per `rmcp` HTTP session. These are separate services and their route counts are not additive. See `crates/agentyc/src/main.rs`, `docs/configuration.md`, and `research/phase-0-host-backed-probe.md`.
+
+## Legacy tool profiles
+
+The legacy router measures **61 default tools** and **76 tools with the extended profile**. `tests/mcp_protocol.rs::test_tool_count_is_61` asserts the default count and its initialize helper uses `2024-11-05`. The 76 declarations are in `crates/agentyc-mcp/src/lib.rs`; `tests/fixtures/mcp/tool_catalog.json` contains 76 names. `BrowserServer::new` adds the observability router only when `AGENTYC_EXTENDED` is `1`, `true`, or `yes`; CLI flags set that variable. The 15 additional declarations are:
+
+| Group | Extended-only tools |
+| --- | --- |
+| Console/network inspection | `browser_get_console_logs`, `browser_get_network_log`, `browser_inspect_network_entry`, `browser_clear_logs` |
+| Network controls | `browser_add_network_mock`, `browser_remove_network_mock`, `browser_list_network_mocks`, `browser_set_network_conditions`, `browser_get_network_conditions`, `browser_replay_request` |
+| Downloads | `browser_get_downloads`, `browser_wait_for_download` |
+| Trace/debug | `browser_start_trace`, `browser_stop_trace`, `browser_export_debug_bundle` |
+
+The source still returns the static server instruction "61 tools" for either legacy profile. `Cargo.toml` also has stale "61-tool" description metadata. Therefore the **route counts are measured**, but metadata/profile advertisement is inconsistent; Phase 8 requires it to reflect the active profile. Treat `tool_catalog.json` status values as a capability inventory, not a wire-level MCP support guarantee or a versioned schema manifest.
+
+## Host-backed routes and unsupported protocol methods
+
+The in-process host server currently declares 29 routes, grouped by domain:
+
+| Domain | Routes | Count |
+| --- | --- | ---: |
+| Space | `host_space_list`, `host_space_create`, `host_space_describe`, `host_space_finish`, `host_space_release` | 5 |
+| Lease/control | `host_lease_acquire`, `host_lease_renew`, `host_lease_return_control`, `host_lease_takeover`, `host_lease_takeover_with_control_ticket`, `host_lease_control_ticket`, `host_lease_acknowledge_return_control`, `host_lease_acknowledge_fence` | 8 |
+| Page | `host_page_create`, `host_page_list`, `host_page_bind`, `host_page_mark_lost`, `host_page_close` | 5 |
+| Snapshot | `host_snapshot_read`, `host_snapshot_put`, `host_snapshot_mark_dirty` | 3 |
+| Action | `host_action_execute`, `host_action_enqueue`, `host_action_dispatch`, `host_action_status`, `host_action_reconcile` | 5 |
+| Events | `host_event_cursor`, `host_event_resume`, `host_event_publish` | 3 |
+| **Total** |  | **29** |
+
+These are logical host operations, not proof that each has a live browser/extension implementation. The separate remote host route catalog declares 30 tools and explicitly marks these 12 underlying methods unsupported by its current local-protocol surface: `space.describe`, `space.takeover_with_control_ticket`, `space.control_ticket`, `space.acknowledge_return_control`, `space.acknowledge_fence`, `page.bind`, `page.mark_lost`, `snapshot.put`, `snapshot.mark_dirty`, `action.enqueue`, `action.dispatch`, and `events.publish`. Calls to the associated `host_*` tools return `CallToolResult.isError=true` with structured code `capability_unavailable`; they do not reach the host. Other errors from the socket path can map to `native_host_unavailable`, `invalid_json`, or the host's canonical error code.
+
+The extension capability plan forbids silently broadening permissions or falling back to another browser/CDP client. Specific tool support remains capability- and policy-dependent: a declared route is not evidence of live support. Phase 8 requires each legacy tool to be proven through the real host/extension/browser path or marked partial/unsupported with a typed fallback.
+
+## Compatibility and migration matrix
+
+| Concern | Current evidence | Phase 2/8 target (pending) |
+| --- | --- | --- |
+| Authority/state | Legacy server directly owns runtime/browser state. Host adapter uses host-issued connection authority and accepts logical `space_*`, `page_*`, and action identities, not browser IDs. The remote adapter forwards bounded fields to the owner host. | MCP is an adapter only; each admitted transport connection maps to host-assigned principal/context; host/core remain canonical. No raw browser identifier is authority. |
+| Default space and legacy selection | Legacy tools use active-page/tab-centric state. Host logical routes take explicit logical IDs for scoped operations; no implemented compatibility-space migration is evidenced here. | Any implicit compatibility space is per connection and created only for a legacy call; selection is convenience, not authorization. Scope all unsafe global/session operations to owned pages. |
+| `tab_id`/`target_id` | Legacy routes and response paths expose/use tab-centric and raw fields; `lib.rs` documents four-character `tab_id`. Host adapter audit explicitly rejects browser/tab/target/session identity fields. | Raw fields are adapter-only, deprecated, never accepted as authority; `browser_list_tabs` maps to structured pages. Close paths require owned page, fresh generation proof, lease/policy and user-intent confirmation. |
+| MCP version | Workspace pins `rmcp = "1.7"` (lockfile pins the resolved release); `tests/mcp_protocol.rs` initializes with `2024-11-05`. | Preserve `2024-11-05`. Reject/do not claim `2025-11-25` and `2026-07-28` for this `rmcp 1.7` product unless a deliberate SDK upgrade revisits the decision with dual-era tests. A single existing initialize test is not a complete version-negotiation matrix. |
+| Tool failure vs protocol error | Legacy `tools::res` generally converts operation errors into text `CallToolResult::error` (`isError=true`) and classifies some errors by message substring. Host adapter returns structured `isError=true` with canonical `{code,retryable,guidance,message}` and optional details; action failures can include receipt/reconciliation details. | Tool execution errors remain JSON-RPC success responses with `CallToolResult.isError=true` and stable canonical metadata. Malformed requests, unknown tools, invalid protocol/session state, and transport failures remain JSON-RPC/transport errors. Do not classify canonical errors by string substring. |
+| Cancellation | Existing legacy tool wrappers do not establish an end-to-end MCP cancellation contract. Host logical action receipts and local protocol support cancellation/reconciliation concepts, but that does not establish transport-to-extension cancellation. | A queued mutation cancelled before dispatch is `cancelled`; an already-dispatched mutation whose response is lost is `unknown_outcome` and must not be replayed. Wait cancellation is independent. Return action/reconcile identifiers and next action. |
+| EOF/disconnect/DELETE | Legacy stdio calls `service.waiting()`; protocol tests forcibly kill the child and do not assert graceful EOF, cancellation, or lease behavior. HTTP uses `rmcp` Streamable HTTP service/session manager. Host socket task failures can return `native_host_unavailable`; no full MCP disconnect mapping is established by current tests. | Stdio EOF and HTTP graceful DELETE have explicit but distinct teardown semantics. Abrupt HTTP reset/response loss cancels queued work and waits, classifies dispatched mutations as unknown, marks connection disconnected, retains pages and leases until normal expiry/release. DELETE may clear connection selection but never implicitly relinquishes page ownership. `Mcp-Session-Id` is a transport identifier, not authentication or a space/lease. |
+| Events | Host adapter has logical cursor/resume and tests event replay plus `event_lagged`; this is distinct from HTTP SSE transport conformance. | Scope event streams by connection/space/page; preserve cursor/resume behavior and return resync guidance on lag. Test SSE framing, `Last-Event-ID`, reconnect, and filtering. |
+| HTTP admission | Legacy HTTP service is configured in `crates/agentyc/src/main.rs`; repository research records local loopback defaults and stronger checks for non-loopback. | Validate loopback/Origin/Host/auth before creating MCP sessions; test headers, GET/POST/DELETE, session IDs, SSE, reset and status behavior. Session IDs do not authenticate. |
+
+The disconnect semantics in the target column are Phase 8 contract requirements, **not** claims that the current `rmcp` adapters implement them. Current host adapter unit tests do establish structured tool errors, `unknown_outcome` with action/reconcile metadata, no re-dispatch during reconcile, logical event resume, and lag signaling.
+
+## Stable host error boundary
+
+The host adapter serializes operation failures as an MCP tool result (`isError=true`) with structured content:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "capability_unavailable",
+    "retryable": false,
+    "guidance": "...",
+    "message": "..."
+  }
+}
+```
+
+Optional `details` carry context; action results may also add `action_id`, `reconcile_token`, and `next_action`. The remote host adapter preserves structured host errors and reports unsupported methods as `capability_unavailable`. The legacy direct-CDP adapter does not yet meet this canonical stable-code contract: it has legacy text and substring-based prefixes. Phase 2 lists canonical error codes including `extension_not_connected`, `space_required`, `space_not_found`, `space_forbidden`, `user_control_required`, `lease_expired`, `stale_lease`, `page_not_found`, `page_not_owned`, `unmanaged_page`, `stale_ref`, `target_replaced`, `event_lagged`, `unknown_outcome`, `reconciliation_required`, `capability_unavailable`, `permission_denied`, `native_host_unavailable`, `protocol_mismatch`, `message_too_large`, `invalid_argument`, `timeout`, `cancelled`, `host_draining`, and `ledger_incompatible`. MCP compatibility must preserve canonical codes rather than infer them from prose.
+
+## Explicit non-goals
+
+- Do not make MCP the canonical browser/task-space state owner or primary product interface; the direct host/CLI/SDK path is primary and MCP is compatibility-only.
+- Do not upgrade to the modern MCP wire era, merge protocol eras, or claim remote multi-tenant MCP service support in this compatibility work.
+- Do not implement a new task-space UX in MCP or let MCP bypass host leases, user control, extension capability policy, profile binding, or ownership.
+- Do not reintroduce direct CDP/temporary-browser behavior into the host-backed path, auto-launch/download Chrome, or silently fall back from an unavailable host/extension.
+- Do not expose raw browser IDs as stable identity, accept raw IDs as authorization, auto-adopt user tabs, or let global close affect unmanaged/user-owned pages.
+- Do not interpret an MCP session ID as identity proof, a logical space, a lease, or a browser target; do not release page ownership merely because a transport disappears.
+- Do not treat a declared tool, deterministic fake-host test, protocol-only pass, or host metadata smoke as proof of headed real-browser capability.
+
+## Evidence sources
+
+- [Phase 2 contracts](exec-plans/active/agentyc-browser-task-spaces/plans/phase-2-contracts.md), especially P2-T7 and the measured legacy-profile note.
+- [Phase 8 MCP compatibility plan](exec-plans/active/agentyc-browser-task-spaces/plans/phase-8-mcp-compatibility.md), especially adapter rules and P8-T4/P8-T5/P8-T7/P8-T8.
+- `crates/agentyc-mcp/src/lib.rs`, `src/host_server.rs`, `src/remote_host_server.rs`, `src/host_adapter.rs`, `src/tools/mod.rs`.
+- `crates/agentyc/Cargo.toml`, workspace `Cargo.toml`, `Cargo.lock`, `crates/agentyc/src/main.rs`.
+- `tests/mcp_protocol.rs`, `crates/agentyc-mcp/src/host_adapter_audit.rs`, and `tests/fixtures/mcp/tool_catalog.json`.
+- [MCP transport decision/source map](exec-plans/active/agentyc-browser-task-spaces/research/source-map.md#q-05--which-mcp-transport-semantics-should-the-refactor-preserve) and [host-backed probe audit](../research/phase-0-host-backed-probe.md).
