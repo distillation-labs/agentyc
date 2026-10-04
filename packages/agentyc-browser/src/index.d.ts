@@ -66,6 +66,54 @@ export type LogicalActionId = string & {
   readonly __logicalActionId: unique symbol;
 };
 
+export type ActionOperation =
+  | "navigate"
+  | "click"
+  | "input"
+  | "evaluate"
+  | "scroll"
+  | "wait"
+  | "screenshot"
+  | "storage_write"
+  | "cookie_write"
+  | "upload"
+  | "close";
+
+export interface OperationCliMapping {
+  readonly command: readonly string[];
+  readonly option?: string;
+}
+export interface OperationDefinition {
+  readonly key: string;
+  readonly kind: "request" | "action";
+  readonly operation?: ActionOperation;
+  readonly wireMethods: readonly string[];
+  readonly sideEffecting: boolean;
+  readonly supported: boolean;
+  readonly sdk?: string;
+  readonly cli?: OperationCliMapping;
+  readonly unsupportedReason?: string;
+}
+export const OPERATION_REGISTRY: readonly OperationDefinition[];
+export function actionOperationNames(): ActionOperation[];
+export function operationForAction(
+  operation: string,
+): OperationDefinition | undefined;
+export function operationForMethod(
+  method: string,
+): OperationDefinition | undefined;
+
+export const DEFAULT_LEASE_TTL_MS: number;
+export const DEFAULT_WAIT_TIMEOUT_MS: number;
+export const MAX_WAIT_TIMEOUT_MS: number;
+export const MAX_REQUEST_DEADLINE_MS: number;
+export const PROFILE_DISCLOSURE: Readonly<{
+  profileScope: "shared_existing_profile";
+  sharedStateNotice: "shared_profile_state";
+  isolationClaim: false;
+  profileDisclosureAcknowledged: true;
+}>;
+
 export interface WireRequest {
   protocol: number;
   requests: Array<{
@@ -201,6 +249,8 @@ export interface ActionReceipt {
 }
 export interface RequestOptions {
   signal?: AbortSignal;
+  requestId?: string;
+  deadlineMs?: number;
 }
 export interface PageOptions extends RequestOptions {
   leaseEpoch?: number;
@@ -216,8 +266,39 @@ export interface SpaceTransitionOptions extends RequestOptions {
   now?: number;
 }
 export interface ActionOptions extends PageOptions {
+  actionId?: LogicalActionId;
   idempotencyKey?: string;
+  now?: number;
   postcondition?: unknown;
+}
+export interface ManagedPageOptions extends PageOptions {
+  url?: string;
+  title?: string;
+}
+export interface CreateSpaceOptions extends RequestOptions {
+  retention?: unknown;
+  acceptSharedProfileDisclosure: true;
+}
+export interface ReclaimOptions extends LeaseOptions {
+  controlTicket: unknown;
+}
+export interface SubmitActionRequest {
+  request_id?: string;
+  requestId?: string;
+  action_id?: LogicalActionId;
+  actionId?: LogicalActionId;
+  idempotency_key?: string;
+  idempotencyKey?: string;
+  space_id: LogicalSpaceId;
+  page_id?: LogicalPageId;
+  lease_epoch?: number;
+  operation: ActionOperation;
+  payload?: Record<string, string>;
+  postcondition?: unknown;
+  now?: number;
+  deadline_ms?: number;
+  deadlineMs?: number;
+  signal?: AbortSignal;
 }
 
 export class Page {
@@ -229,8 +310,8 @@ export class Page {
   create(options?: PageOptions): Promise<this>;
   snapshot(options?: PageOptions): Promise<unknown>;
   action(
-    operation: string,
-    payload?: Record<string, unknown>,
+    operation: ActionOperation,
+    payload?: Record<string, string>,
     options?: ActionOptions,
   ): Promise<ActionReceipt | unknown>;
   close(options?: PageOptions): Promise<unknown>;
@@ -248,6 +329,8 @@ export interface EventsOptions extends RequestOptions {
 export interface WaitOptions extends RequestOptions {
   timeoutMs?: number;
   after?: unknown;
+  spaceId?: LogicalSpaceId;
+  pageId?: LogicalPageId;
 }
 export class TaskSpace {
   private constructor();
@@ -257,10 +340,13 @@ export class TaskSpace {
   readonly leaseEpoch?: number;
   page(labelOrId: string): Page;
   newPage(label: string, options?: PageOptions): Promise<Page>;
+  newManagedPage(label: string, options?: ManagedPageOptions): Promise<Page>;
   listPages(options?: RequestOptions): Promise<Page[]>;
+  inventory(options?: RequestOptions): Promise<unknown>;
   claim(options?: LeaseOptions): Promise<unknown>;
   renew(options?: LeaseOptions): Promise<unknown>;
   takeover(options?: LeaseOptions): Promise<unknown>;
+  reclaim(options: ReclaimOptions): Promise<unknown>;
   returnControl(options?: LeaseOptions): Promise<unknown>;
   finish(options?: SpaceTransitionOptions): Promise<unknown>;
   release(options?: SpaceTransitionOptions): Promise<unknown>;
@@ -280,10 +366,9 @@ export class BrowserClient {
   readonly transport: LocalTransport;
   readonly connected: boolean;
   taskSpace(spaceId: LogicalSpaceId): TaskSpace;
-  createSpace(
-    label: string,
-    options?: { retention?: unknown; signal?: AbortSignal },
-  ): Promise<TaskSpace>;
+  createSpace(label: string, options: CreateSpaceOptions): Promise<TaskSpace>;
+  listSpaces(options?: RequestOptions): Promise<TaskSpace[]>;
+  pruneSpaces(maxCount?: number, options?: RequestOptions): Promise<unknown>;
   hostStatus(options?: RequestOptions): Promise<unknown>;
   events(options?: EventsOptions): Promise<unknown>;
   resumeEvents(options?: EventsOptions): Promise<unknown>;
@@ -301,9 +386,7 @@ export class BrowserClient {
     now?: number,
     options?: RequestOptions,
   ): Promise<ActionReceipt | unknown>;
-  submitAction(
-    request: Record<string, unknown>,
-  ): Promise<ActionReceipt | unknown>;
+  submitAction(request: SubmitActionRequest): Promise<ActionReceipt | unknown>;
   waitFor(condition: unknown, options?: WaitOptions): Promise<unknown>;
   request<T = unknown>(
     method: string,
@@ -346,7 +429,7 @@ export function reconcileAction(
 ): Promise<ActionReceipt | unknown>;
 export function submitAction(
   client: BrowserClient,
-  request: Record<string, unknown>,
+  request: SubmitActionRequest,
 ): Promise<ActionReceipt | unknown>;
 export function readEvents(
   client: BrowserClient,
