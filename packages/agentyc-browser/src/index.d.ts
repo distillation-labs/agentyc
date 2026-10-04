@@ -334,15 +334,7 @@ export type ScrollDelta = ActionTargetFields & {
   deltaY?: ActionFieldValue;
 };
 export type PageHelperName =
-  | "goto"
-  | "click"
-  | "type"
-  | "fill"
-  | "press"
-  | "scroll"
-  | "select"
-  | "upload"
-  | "evaluate";
+  "goto" | "click" | "type" | "fill" | "scroll" | "evaluate";
 export const PAGE_HELPER_OPERATIONS: Readonly<
   Record<PageHelperName, ActionOperation>
 >;
@@ -380,6 +372,7 @@ export class Page {
   readonly label?: string;
   readonly record?: PageRecord;
   create(options?: PageOptions): Promise<this>;
+  resolve(options?: RequestOptions): Promise<this>;
   snapshot(options?: SnapshotOptions): Promise<unknown>;
   action(
     operation: ActionOperation,
@@ -401,7 +394,7 @@ export class Page {
     text: string,
     options?: ActionOptions,
   ): Promise<ActionReceipt | unknown>;
-  press(key: string, options?: PressOptions): Promise<ActionReceipt | unknown>;
+  press(key: string, options?: PressOptions): Promise<never>;
   scroll(
     delta?: ScrollDelta,
     options?: ActionOptions,
@@ -410,12 +403,12 @@ export class Page {
     target: ActionTarget | null | undefined,
     value: string,
     options?: ActionOptions,
-  ): Promise<ActionReceipt | unknown>;
+  ): Promise<never>;
   upload(
     target: ActionTarget | null | undefined,
     fields?: ActionTargetFields,
     options?: ActionOptions,
-  ): Promise<ActionReceipt | unknown>;
+  ): Promise<never>;
   evaluate(
     expression: string,
     options?: ActionOptions,
