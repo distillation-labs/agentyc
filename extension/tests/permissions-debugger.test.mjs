@@ -74,6 +74,7 @@ test("Chrome errors collapse to the stable bounded classifier vocabulary", () =>
     [
       classifyChromeError(new Error("Cannot access contents of the page")),
       classifyChromeError(new Error("blocked by enterprise policy")),
+      classifyChromeError(new Error("Host access is restricted by policy.")),
       classifyChromeError(new Error("DLP blocked screenshot"), {
         operation: "Page.captureScreenshot",
       }),
@@ -92,6 +93,7 @@ test("Chrome errors collapse to the stable bounded classifier vocabulary", () =>
     ],
     [
       "restricted_url",
+      "policy_denied",
       "policy_denied",
       "artifact_denied",
       "artifact_denied",
