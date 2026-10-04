@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Cursor ring</title>
+  <desc id="desc">A target ring with a focused automation cursor</desc>
+  <rect width="128" height="128" rx="28" fill="#DD1E2F" />
+  <circle cx="59" cy="58" r="33" fill="none" stroke="#FFF6E8" stroke-width="12" />
+  <circle cx="59" cy="58" r="10" fill="#FFF6E8" />
+  <path d="m73 72 31 25-16-1-6 15Z" fill="#DD1E2F" stroke="#FFF6E8" stroke-width="6" stroke-linejoin="round" />
+</svg>
