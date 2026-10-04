@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Execute the real macOS disposable-profile extension lifecycle for P0-T7.
+"""Execute the real macOS disposable-profile extension lifecycle.
 
 The default mode is read-only and writes only a bounded offline record. ``--run``
 launches an owned Chrome process with an empty temporary profile and uses the
-public browser-target CDP Extensions domain. No existing browser endpoint,
-user profile, command-line extension loading, private extension API, or
-operator-supplied lifecycle claim is accepted.
+public browser-target CDP Extensions domain. The Phase 4 default stages the
+production extension, opens a checked-in browser-task fixture outside the
+extension tree, and records source/host provenance. No existing browser
+endpoint, user profile, command-line extension loading, private extension API,
+or operator-supplied lifecycle claim is accepted.
 """
 
 from __future__ import annotations
@@ -726,13 +728,37 @@ def execute_lifecycle(
 
 
 def write_record(artifact_dir: Path, record: dict[str, Any]) -> Path:
+    artifact_dir = safe_artifact_dir(str(artifact_dir))
+    if record.get("lifecycle_lane") == "phase4-production" and record.get("status") == "live_passed":
+        validation_record = dict(record)
+        validation_record.pop("record_validation", None)
+        errors = validate_lifecycle_record(
+            validation_record,
+            require_live=True,
+            require_provenance=True,
+            require_production_provenance=True,
+        )
+        if errors:
+            raise ValueError("lifecycle record provenance or safety validation failed")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     phase = 4 if record.get("lifecycle_lane") == "phase4-production" else 0
-    rendered = add_envelope(
-        record,
-        kind="install-lifecycle",
-        build_tuple={"phase": phase, "lifecycle_lane": record.get("lifecycle_lane", "legacy-test")},
-    )
+    build_tuple: dict[str, Any] = {
+        "phase": phase,
+        "lifecycle_lane": record.get("lifecycle_lane", "legacy-test"),
+    }
+    provenance = record.get("lifecycle_provenance")
+    if isinstance(provenance, dict):
+        manifest_identity = provenance.get("manifest_identity")
+        host_identity = provenance.get("host_identity")
+        build_tuple.update(
+            {
+                "source_root": provenance.get("source_root"),
+                "source_tree_sha256": provenance.get("source_tree_sha256"),
+                "manifest_sha256": manifest_identity.get("sha256") if isinstance(manifest_identity, dict) else None,
+                "host_manifest_sha256": host_identity.get("sha256") if isinstance(host_identity, dict) else None,
+            }
+        )
+    rendered = add_envelope(record, kind="install-lifecycle", build_tuple=build_tuple)
     rendered = redact_for_persistence(rendered)
     path = artifact_dir / RECORD_NAME
     write_json_atomic(path, rendered)
