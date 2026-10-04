@@ -18,6 +18,28 @@ use crate::{
 pub const DEFAULT_MAX_DELTA_OPERATIONS: usize = 1024;
 /// Maximum number of chained deltas by default.
 pub const DEFAULT_MAX_DELTA_CHAIN_DEPTH: u16 = 8;
+/// Current snapshot envelope schema version.
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 1;
+/// Maximum elements admitted in one complete snapshot body.
+pub const MAX_SNAPSHOT_ELEMENTS: usize = 16_384;
+/// Maximum attributes admitted on one snapshot element.
+pub const MAX_SNAPSHOT_ATTRIBUTES: usize = 64;
+/// Maximum UTF-8 bytes in an attribute key.
+pub const MAX_SNAPSHOT_ATTRIBUTE_KEY_BYTES: usize = 128;
+/// Maximum UTF-8 bytes in an attribute value.
+pub const MAX_SNAPSHOT_ATTRIBUTE_VALUE_BYTES: usize = 16 * 1024;
+/// Maximum UTF-8 bytes in an element text value.
+pub const MAX_SNAPSHOT_TEXT_BYTES: usize = 64 * 1024;
+/// Maximum frame-version components in one snapshot provenance vector.
+pub const MAX_SNAPSHOT_FRAME_VERSIONS: usize = 1024;
+/// Maximum changed element keys carried by one envelope.
+pub const MAX_SNAPSHOT_CHANGED_KEYS: usize = MAX_SNAPSHOT_ELEMENTS;
+/// Maximum omitted field names carried by one bounded envelope.
+pub const MAX_SNAPSHOT_OMITTED_FIELDS: usize = 256;
+/// Maximum UTF-8 bytes in one omitted field name.
+pub const MAX_SNAPSHOT_OMITTED_FIELD_BYTES: usize = 256;
+/// Maximum UTF-8 bytes in a tokenizer identifier.
+pub const MAX_SNAPSHOT_TOKENIZER_BYTES: usize = 128;
 
 /// A transport-neutral snapshot element with deterministic field order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +59,47 @@ pub struct SnapshotElement {
 }
 
 impl SnapshotElement {
+    /// Validate bounded element fields before hashing or admission.
+    pub fn validate(&self) -> Result<(), SnapshotValidationError> {
+        if self.parent.as_ref() == Some(&self.key) {
+            return Err(SnapshotValidationError::InvalidParent(self.key.clone()));
+        }
+        if self
+            .text
+            .as_ref()
+            .is_some_and(|text| text.len() > MAX_SNAPSHOT_TEXT_BYTES)
+        {
+            return Err(SnapshotValidationError::FieldTooLarge {
+                field: "text",
+                size: self.text.as_ref().map_or(0, String::len),
+                max: MAX_SNAPSHOT_TEXT_BYTES,
+            });
+        }
+        if self.attributes.len() > MAX_SNAPSHOT_ATTRIBUTES {
+            return Err(SnapshotValidationError::TooManyAttributes {
+                count: self.attributes.len(),
+                max: MAX_SNAPSHOT_ATTRIBUTES,
+            });
+        }
+        for (key, value) in &self.attributes {
+            if key.is_empty() || key.len() > MAX_SNAPSHOT_ATTRIBUTE_KEY_BYTES {
+                return Err(SnapshotValidationError::FieldTooLarge {
+                    field: "attribute_key",
+                    size: key.len(),
+                    max: MAX_SNAPSHOT_ATTRIBUTE_KEY_BYTES,
+                });
+            }
+            if value.len() > MAX_SNAPSHOT_ATTRIBUTE_VALUE_BYTES {
+                return Err(SnapshotValidationError::FieldTooLarge {
+                    field: "attribute_value",
+                    size: value.len(),
+                    max: MAX_SNAPSHOT_ATTRIBUTE_VALUE_BYTES,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Return this element's logical key.
     pub fn key(&self) -> &ElementKey {
         &self.key
@@ -125,13 +188,53 @@ impl SnapshotDocument {
         snapshot_version: SnapshotVersion,
         mut elements: Vec<SnapshotElement>,
     ) -> Result<Self, SnapshotValidationError> {
+        if elements.len() > MAX_SNAPSHOT_ELEMENTS {
+            return Err(SnapshotValidationError::TooManyElements {
+                count: elements.len(),
+                max: MAX_SNAPSHOT_ELEMENTS,
+            });
+        }
         normalize_elements(&mut elements)?;
         let snapshot_hash = hash_elements(&elements)?;
-        Ok(Self {
+        let document = Self {
             snapshot_version,
             elements,
             snapshot_hash,
-        })
+        };
+        document.validate()?;
+        Ok(document)
+    }
+
+    /// Validate element bounds, canonical order, and the declared body hash.
+    pub fn validate(&self) -> Result<(), SnapshotValidationError> {
+        if self.elements.len() > MAX_SNAPSHOT_ELEMENTS {
+            return Err(SnapshotValidationError::TooManyElements {
+                count: self.elements.len(),
+                max: MAX_SNAPSHOT_ELEMENTS,
+            });
+        }
+        let mut previous: Option<(&ElementKey, u32)> = None;
+        let mut keys = BTreeSet::new();
+        for element in &self.elements {
+            element.validate()?;
+            if !keys.insert(element.key.clone()) {
+                return Err(SnapshotValidationError::DuplicateKey(element.key.clone()));
+            }
+            if previous.is_some_and(|(key, order)| {
+                order > element.order || (order == element.order && key >= &element.key)
+            }) {
+                return Err(SnapshotValidationError::NonCanonicalBody);
+            }
+            previous = Some((&element.key, element.order));
+        }
+        let actual = hash_elements(&self.elements)?;
+        if actual != self.snapshot_hash {
+            return Err(SnapshotValidationError::BodyHashMismatch {
+                expected: self.snapshot_hash.clone(),
+                actual,
+            });
+        }
+        Ok(())
     }
 
     /// Construct an empty normalized document.
@@ -168,6 +271,16 @@ pub struct SnapshotProvenance {
 }
 
 impl SnapshotProvenance {
+    /// Validate provenance metadata before it is used to authorize a ref.
+    pub fn validate(&self) -> Result<(), SnapshotValidationError> {
+        if !self.coherent && matches!(self.coverage, SnapshotCoverage::Complete) {
+            return Err(SnapshotValidationError::InvalidProvenance(
+                "an incoherent snapshot cannot claim complete coverage".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Return whether this provenance can issue refs.
     pub const fn can_issue_refs(&self) -> bool {
         self.coherent && matches!(self.coverage, SnapshotCoverage::Complete)
@@ -198,6 +311,7 @@ pub struct ElementRef {
 impl ElementRef {
     /// Validate this ref against current snapshot provenance.
     pub fn validate_against(&self, provenance: &SnapshotProvenance) -> Result<(), CoreError> {
+        provenance.validate().map_err(|error| error.core_error())?;
         if !provenance.can_issue_refs() {
             return Err(CoreError::stale_ref(
                 "snapshot is partial or incoherent and cannot validate refs",
@@ -316,6 +430,12 @@ impl SnapshotDelta {
                 max: limits.max_chain_depth,
             });
         }
+        if self.result_snapshot_version <= self.base_snapshot_version {
+            return Err(DeltaError::VersionDidNotAdvance {
+                base: self.base_snapshot_version,
+                result: self.result_snapshot_version,
+            });
+        }
 
         let mut previous: Option<(u8, &str)> = None;
         let mut targets = BTreeSet::new();
@@ -326,6 +446,17 @@ impl SnapshotDelta {
                 return Err(DeltaError::NonCanonicalOrder);
             }
             previous = Some(current);
+            match operation {
+                DeltaOperation::Upsert { element, .. }
+                | DeltaOperation::Replace { element, .. } => {
+                    element
+                        .validate()
+                        .map_err(|error| DeltaError::InvalidElement(Box::new(error)))?;
+                }
+                DeltaOperation::Remove { .. }
+                | DeltaOperation::Move { .. }
+                | DeltaOperation::FrameReset { .. } => {}
+            }
             if let Some(key) = operation.target_key() {
                 if !targets.insert(key.clone()) {
                     return Err(DeltaError::DuplicateTarget(key.clone()));
@@ -372,6 +503,21 @@ impl SnapshotDelta {
         if base.snapshot_hash != self.base_hash {
             return Err(DeltaError::ResyncRequired(ResyncReason::BaseHashMismatch));
         }
+        base.validate()
+            .map_err(|error| DeltaError::InvalidSnapshot(Box::new(error)))?;
+        if let Some(frame_id) = self
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                DeltaOperation::FrameReset { frame_id, .. } => Some(frame_id.clone()),
+                DeltaOperation::Upsert { .. }
+                | DeltaOperation::Remove { .. }
+                | DeltaOperation::Move { .. }
+                | DeltaOperation::Replace { .. } => None,
+            })
+        {
+            return Err(DeltaError::FrameResetRequiresVersionVector(frame_id));
+        }
 
         let mut elements = base.elements.clone();
         for operation in &self.operations {
@@ -407,7 +553,11 @@ impl SnapshotDelta {
                         .unwrap_or(elements.len());
                     elements.insert(insert_at, element);
                 }
-                DeltaOperation::FrameReset { .. } => {}
+                DeltaOperation::FrameReset { frame_id, .. } => {
+                    return Err(DeltaError::FrameResetRequiresVersionVector(
+                        frame_id.clone(),
+                    ));
+                }
             }
         }
         normalize_elements(&mut elements)
@@ -557,11 +707,69 @@ impl SnapshotEnvelope {
         !self.truncated && !self.resync_required && self.provenance().can_issue_refs()
     }
 
-    /// Validate canonical body order, body/result hashes, and mode/base metadata.
+    /// Validate bounds, provenance, canonical body order, hashes, and mode metadata.
     pub fn validate(&self) -> Result<(), SnapshotValidationError> {
+        if self.schema_version != SNAPSHOT_SCHEMA_VERSION {
+            return Err(SnapshotValidationError::UnsupportedSchemaVersion(
+                self.schema_version,
+            ));
+        }
+        self.provenance().validate()?;
+        if self.frame_versions.len() > MAX_SNAPSHOT_FRAME_VERSIONS {
+            return Err(SnapshotValidationError::TooManyFrameVersions {
+                count: self.frame_versions.len(),
+                max: MAX_SNAPSHOT_FRAME_VERSIONS,
+            });
+        }
+        if self.changed.len() > MAX_SNAPSHOT_CHANGED_KEYS {
+            return Err(SnapshotValidationError::TooManyChangedKeys {
+                count: self.changed.len(),
+                max: MAX_SNAPSHOT_CHANGED_KEYS,
+            });
+        }
+        if self.omitted.len() > MAX_SNAPSHOT_OMITTED_FIELDS {
+            return Err(SnapshotValidationError::TooManyOmittedFields {
+                count: self.omitted.len(),
+                max: MAX_SNAPSHOT_OMITTED_FIELDS,
+            });
+        }
+        if let Some(tokenizer) = &self.tokenizer
+            && tokenizer.len() > MAX_SNAPSHOT_TOKENIZER_BYTES
+        {
+            return Err(SnapshotValidationError::TokenizerTooLarge {
+                size: tokenizer.len(),
+                max: MAX_SNAPSHOT_TOKENIZER_BYTES,
+            });
+        }
+        if self.omitted.iter().any(|field| field.is_empty()) {
+            return Err(SnapshotValidationError::InvalidProvenance(
+                "omitted field names must not be empty".to_owned(),
+            ));
+        }
+        if let Some(field) = self
+            .omitted
+            .iter()
+            .find(|field| field.len() > MAX_SNAPSHOT_OMITTED_FIELD_BYTES)
+        {
+            return Err(SnapshotValidationError::OmittedFieldTooLarge {
+                size: field.len(),
+                max: MAX_SNAPSHOT_OMITTED_FIELD_BYTES,
+            });
+        }
+        if self.truncated && matches!(self.coverage, SnapshotCoverage::Complete) {
+            return Err(SnapshotValidationError::InvalidProvenance(
+                "a truncated snapshot cannot claim complete coverage".to_owned(),
+            ));
+        }
         validate_canonical_keys(&self.changed)?;
         match (&self.mode, &self.delta_or_elements) {
             (SnapshotMode::Full | SnapshotMode::Compact, SnapshotBody::Elements { elements }) => {
+                if elements.len() > MAX_SNAPSHOT_ELEMENTS {
+                    return Err(SnapshotValidationError::TooManyElements {
+                        count: elements.len(),
+                        max: MAX_SNAPSHOT_ELEMENTS,
+                    });
+                }
                 if self.base_snapshot_version.is_some()
                     || self.base_hash.is_some()
                     || self.delta_sequence.is_some()
@@ -571,8 +779,7 @@ impl SnapshotEnvelope {
                 {
                     return Err(SnapshotValidationError::UnexpectedBodyMetadata);
                 }
-                let document = SnapshotDocument::new(self.snapshot_version, elements.clone())
-                    .map_err(|error| SnapshotValidationError::InvalidBody(error.to_string()))?;
+                let document = SnapshotDocument::new(self.snapshot_version, elements.clone())?;
                 if document.elements.as_slice() != elements.as_slice() {
                     return Err(SnapshotValidationError::NonCanonicalBody);
                 }
@@ -626,8 +833,9 @@ impl SnapshotEnvelope {
         Ok(())
     }
 
-    /// Build one ref only when provenance permits it.
+    /// Build one ref only after the entire envelope and its provenance validate.
     pub fn make_ref(&self, ref_id: RefId, frame_id: FrameId) -> Result<ElementRef, CoreError> {
+        self.validate().map_err(|error| error.core_error())?;
         if !self.can_issue_refs() {
             return Err(CoreError::stale_ref(
                 "refs require a complete coherent non-truncated snapshot",
@@ -710,6 +918,38 @@ fn validate_canonical_keys(keys: &[ElementKey]) -> Result<(), SnapshotValidation
 /// Errors raised while normalizing or validating snapshot contracts.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SnapshotValidationError {
+    /// The body contains more elements than the bounded contract permits.
+    #[error("snapshot contains {count} elements, maximum is {max}")]
+    TooManyElements {
+        /// Actual element count.
+        count: usize,
+        /// Maximum admitted count.
+        max: usize,
+    },
+    /// An element contains too many attributes.
+    #[error("snapshot element contains {count} attributes, maximum is {max}")]
+    TooManyAttributes {
+        /// Actual attribute count.
+        count: usize,
+        /// Maximum admitted count.
+        max: usize,
+    },
+    /// One bounded text field exceeds its byte limit.
+    #[error("snapshot {field} is {size} bytes, maximum is {max}")]
+    FieldTooLarge {
+        /// Logical field name.
+        field: &'static str,
+        /// Actual UTF-8 byte length.
+        size: usize,
+        /// Maximum admitted byte length.
+        max: usize,
+    },
+    /// An element points to itself as its parent.
+    #[error("snapshot element {0} cannot be its own parent")]
+    InvalidParent(ElementKey),
+    /// Provenance fields cannot be used to authorize refs.
+    #[error("invalid snapshot provenance: {0}")]
+    InvalidProvenance(String),
     /// Two elements use the same key.
     #[error("duplicate snapshot element key {0}")]
     DuplicateKey(ElementKey),
@@ -768,6 +1008,67 @@ pub enum SnapshotValidationError {
     /// A canonical element could not be represented.
     #[error("snapshot element contains invalid canonical data")]
     InvalidCanonicalData,
+    /// The envelope schema is not supported by this core version.
+    #[error("unsupported snapshot schema version {0}")]
+    UnsupportedSchemaVersion(u16),
+    /// The frame-version vector exceeds its bound.
+    #[error("snapshot contains {count} frame versions, maximum is {max}")]
+    TooManyFrameVersions {
+        /// Actual frame-version count.
+        count: usize,
+        /// Maximum admitted count.
+        max: usize,
+    },
+    /// The changed-key list exceeds its bound.
+    #[error("snapshot contains {count} changed keys, maximum is {max}")]
+    TooManyChangedKeys {
+        /// Actual changed-key count.
+        count: usize,
+        /// Maximum admitted count.
+        max: usize,
+    },
+    /// The omitted-field list exceeds its bound.
+    #[error("snapshot contains {count} omitted fields, maximum is {max}")]
+    TooManyOmittedFields {
+        /// Actual omitted-field count.
+        count: usize,
+        /// Maximum admitted count.
+        max: usize,
+    },
+    /// An omitted field name exceeds its byte bound.
+    #[error("snapshot omitted field is {size} bytes, maximum is {max}")]
+    OmittedFieldTooLarge {
+        /// Actual UTF-8 byte length.
+        size: usize,
+        /// Maximum admitted byte length.
+        max: usize,
+    },
+    /// The tokenizer identifier exceeds its byte bound.
+    #[error("snapshot tokenizer is {size} bytes, maximum is {max}")]
+    TokenizerTooLarge {
+        /// Actual UTF-8 byte length.
+        size: usize,
+        /// Maximum admitted byte length.
+        max: usize,
+    },
+}
+
+impl SnapshotValidationError {
+    /// Map validation failures to a stable core error for protocol callers.
+    pub fn core_error(&self) -> CoreError {
+        let code = match self {
+            Self::TooManyElements { .. }
+            | Self::TooManyAttributes { .. }
+            | Self::FieldTooLarge { .. }
+            | Self::TooManyFrameVersions { .. }
+            | Self::TooManyChangedKeys { .. }
+            | Self::TooManyOmittedFields { .. }
+            | Self::OmittedFieldTooLarge { .. }
+            | Self::TokenizerTooLarge { .. } => ErrorCode::MessageTooLarge,
+            _ => ErrorCode::InvalidArgument,
+        };
+        CoreError::new(code, self.to_string())
+    }
 }
 
 /// Errors raised while applying a bounded delta.
@@ -806,6 +1107,20 @@ pub enum DeltaError {
         /// Embedded element key.
         element: ElementKey,
     },
+    /// The result version did not advance beyond the base version.
+    #[error("delta result version {result:?} does not advance base version {base:?}")]
+    VersionDidNotAdvance {
+        /// Base snapshot version.
+        base: SnapshotVersion,
+        /// Result snapshot version.
+        result: SnapshotVersion,
+    },
+    /// An embedded replacement element violates snapshot bounds.
+    #[error("delta contains an invalid element: {0}")]
+    InvalidElement(Box<SnapshotValidationError>),
+    /// A frame reset needs the frame-version vector that is not present on a document.
+    #[error("frame reset for {0} requires a frame-version vector and was rejected")]
+    FrameResetRequiresVersionVector(FrameId),
     /// An operation targets an absent element.
     #[error("delta target {0} is missing")]
     MissingTarget(ElementKey),
@@ -836,12 +1151,19 @@ impl DeltaError {
             Self::TooManyOperations { .. } | Self::ChainTooLong { .. } => {
                 CoreError::new(ErrorCode::MessageTooLarge, self.to_string())
             }
+            Self::InvalidElement(error) => error.core_error(),
             _ => CoreError::new(ErrorCode::InvalidArgument, self.to_string()),
         }
     }
 }
 
 fn normalize_elements(elements: &mut Vec<SnapshotElement>) -> Result<(), SnapshotValidationError> {
+    if elements.len() > MAX_SNAPSHOT_ELEMENTS {
+        return Err(SnapshotValidationError::TooManyElements {
+            count: elements.len(),
+            max: MAX_SNAPSHOT_ELEMENTS,
+        });
+    }
     elements.sort_by(|left, right| {
         left.order
             .cmp(&right.order)
@@ -900,7 +1222,7 @@ fn append_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{DeltaSequence, FrameId, RefId};
+    use crate::ids::{DeltaSequence, FrameId, FrameVersion, RefId};
 
     fn element(suffix: &str, order: u32) -> SnapshotElement {
         SnapshotElement {
@@ -1146,5 +1468,78 @@ mod tests {
             choose_snapshot_decision(true, true, true, 20, 100, 1, DeltaLimits::default()),
             SnapshotDecision::Delta
         );
+    }
+
+    #[test]
+    fn snapshot_bounds_provenance_and_ref_issuance_fail_closed() {
+        let mut oversized = element("large", 0);
+        oversized.text = Some("x".repeat(MAX_SNAPSHOT_TEXT_BYTES + 1));
+        assert!(matches!(
+            oversized.validate(),
+            Err(SnapshotValidationError::FieldTooLarge { field: "text", .. })
+        ));
+
+        let mut envelope = full_envelope(vec![element("one", 0)]);
+        envelope.changed = vec![ElementKey::from_suffix("one").expect("key")];
+        envelope.validate().expect("valid envelope");
+        let reference = envelope
+            .make_ref(
+                RefId::from_suffix("one").expect("ref"),
+                FrameId::from_suffix("main").expect("frame"),
+            )
+            .expect("validated ref");
+        reference
+            .validate_against(&envelope.provenance())
+            .expect("matching provenance");
+
+        let mut malformed = envelope.clone();
+        malformed.omitted = vec!["x".repeat(MAX_SNAPSHOT_OMITTED_FIELD_BYTES + 1)];
+        let error = malformed
+            .make_ref(
+                RefId::from_suffix("bad").expect("ref"),
+                FrameId::from_suffix("main").expect("frame"),
+            )
+            .expect_err("malformed envelope cannot issue refs");
+        assert_eq!(error.code, ErrorCode::MessageTooLarge);
+
+        let invalid_provenance = SnapshotProvenance {
+            coherent: false,
+            coverage: SnapshotCoverage::Complete,
+            ..envelope.provenance()
+        };
+        assert!(invalid_provenance.validate().is_err());
+        assert_eq!(
+            reference
+                .validate_against(&invalid_provenance)
+                .expect_err("invalid provenance")
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn frame_reset_delta_is_validated_but_apply_fails_closed() {
+        let base =
+            SnapshotDocument::new(SnapshotVersion::new(1), vec![element("a", 0)]).expect("base");
+        let delta = SnapshotDelta {
+            base_snapshot_version: base.snapshot_version,
+            base_hash: base.snapshot_hash.clone(),
+            result_snapshot_version: SnapshotVersion::new(2),
+            result_hash: base.snapshot_hash.clone(),
+            delta_sequence: DeltaSequence::new(1),
+            chain_depth: 1,
+            operations: vec![DeltaOperation::FrameReset {
+                frame_id: FrameId::from_suffix("child").expect("frame"),
+                frame_version: FrameVersion::new(2),
+            }],
+        };
+        delta
+            .validate(DeltaLimits::default())
+            .expect("frame reset shape");
+        assert!(matches!(
+            delta.apply(&base, DeltaLimits::default()),
+            Err(DeltaError::FrameResetRequiresVersionVector(frame))
+                if frame == FrameId::from_suffix("child").expect("frame")
+        ));
     }
 }
