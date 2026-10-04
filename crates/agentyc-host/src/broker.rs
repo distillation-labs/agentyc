@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use agentyc_core::{
@@ -1083,9 +1084,17 @@ impl Broker {
 
         let bridge = self.bridge()?;
         let fence = bridge.fence(space_id, old_epoch, new_epoch, self.broker_epoch()?);
-        let (acknowledged, bridge_error) = match fence {
+        let (fence_acknowledged, bridge_error) = match fence {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
+        };
+        let (acknowledged, bridge_error) = if fence_acknowledged {
+            match self.rebind_pages_after_fence(space_id, authority, new_epoch) {
+                Ok(()) => (true, None),
+                Err(error) => (false, Some(error.as_core_error())),
+            }
+        } else {
+            (false, bridge_error)
         };
         let lifecycle = self.finish_fence(
             space_id,
@@ -1200,9 +1209,17 @@ impl Broker {
         })?;
         let bridge = self.bridge()?;
         let fence = bridge.fence(space_id, old_epoch, new_epoch, self.broker_epoch()?);
-        let (acknowledged, bridge_error) = match fence {
+        let (fence_acknowledged, bridge_error) = match fence {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
+        };
+        let (acknowledged, bridge_error) = if fence_acknowledged {
+            match self.rebind_pages_after_fence(space_id, authority, new_epoch) {
+                Ok(()) => (true, None),
+                Err(error) => (false, Some(error.as_core_error())),
+            }
+        } else {
+            (false, bridge_error)
         };
         let lifecycle = self.finish_fence(
             space_id,
@@ -1334,9 +1351,17 @@ impl Broker {
         })?;
         let bridge = self.bridge()?;
         let fence = bridge.fence(space_id, old_epoch, lease_epoch, self.broker_epoch()?);
-        let (acknowledged, bridge_error) = match fence {
+        let (fence_acknowledged, bridge_error) = match fence {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
+        };
+        let (acknowledged, bridge_error) = if !return_pending && fence_acknowledged {
+            match self.rebind_pages_after_fence(space_id, authority, lease_epoch) {
+                Ok(()) => (true, None),
+                Err(error) => (false, Some(error.as_core_error())),
+            }
+        } else {
+            (fence_acknowledged, bridge_error)
         };
         let lifecycle = if return_pending {
             if acknowledged {
@@ -1373,6 +1398,130 @@ impl Broker {
             fence_acknowledged: acknowledged,
             lifecycle,
         })
+    }
+
+    /// Rebind retained extension pages before durable takeover ownership is published.
+    ///
+    /// A fence only revokes the old lease. The extension must separately prove that
+    /// each inactive retained tab is still the exact logical page before the new
+    /// lease can become actionable. Non-extension test bridges have no browser
+    /// binding to rebind and intentionally skip this step.
+    fn rebind_pages_after_fence(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+    ) -> Result<(), HostError> {
+        let pages = self.with_inner(|inner| {
+            authorize_ticket(inner.ledger.state(), authority)?;
+            let descriptor = inner.ledger.state().spaces.get(space_id).ok_or_else(|| {
+                CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
+            })?;
+            Ok(descriptor
+                .pages
+                .iter()
+                .filter(|page| {
+                    matches!(
+                        page.binding,
+                        PageBindingState::Bound | PageBindingState::UserOwned
+                    ) && !matches!(
+                        page.lifecycle,
+                        PageLifecycle::Closed | PageLifecycle::Closing
+                    )
+                })
+                .map(|page| {
+                    (
+                        page.page_id.clone(),
+                        page.target_generation.get(),
+                        page.navigation_generation.get(),
+                        page.document_generation.get(),
+                        page.url.clone(),
+                        page.title.clone(),
+                    )
+                })
+                .collect::<Vec<_>>())
+        })?;
+        let bridge = self.bridge()?;
+        let Some(extension_epochs) = bridge.extension_epochs() else {
+            return Ok(());
+        };
+        let profile_binding_id = authority
+            .profile_binding_id()
+            .map(|value| value.as_str().to_owned());
+        for (
+            page_id,
+            target_generation,
+            navigation_generation,
+            document_generation,
+            url,
+            title,
+        ) in pages
+        {
+            let mut proof = json!({
+                "issued_by_host": true,
+                "proof_id": format!("proof-rebind-{}-{}", page_id, lease_epoch.get()),
+                "kind": "rebind",
+                "purpose": "rebind",
+                "space_id": space_id.to_string(),
+                "page_id": page_id.to_string(),
+                "lease_epoch": lease_epoch.get(),
+                "target_generation": target_generation,
+                "navigation_generation": navigation_generation,
+                "document_generation": document_generation,
+                "rebind": true,
+                "expires_at": current_millis().saturating_add(15 * 60 * 1000),
+            });
+            if let Some(object) = proof.as_object_mut() {
+                if let Some(url) = &url {
+                    object.insert("url".to_owned(), json!(url));
+                }
+                if let Some(title) = &title {
+                    object.insert("title".to_owned(), json!(title));
+                }
+                if let Some(profile_binding_id) = &profile_binding_id {
+                    object.insert("profile_instance_id".to_owned(), json!(profile_binding_id));
+                }
+                object.insert(
+                    "browser_session_epoch".to_owned(),
+                    json!(extension_epochs.browser_session_epoch),
+                );
+            }
+            let result = bridge.rebind_page(
+                space_id,
+                &page_id,
+                lease_epoch,
+                target_generation,
+                navigation_generation,
+                document_generation,
+                proof,
+            )?;
+            let object = result.as_object().ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::InvalidJson,
+                    "managed page rebind result is not an object",
+                )
+            })?;
+            let valid = object.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
+                && object.get("page_id").and_then(Value::as_str) == Some(page_id.as_str())
+                && object.get("ownership").and_then(Value::as_str) == Some("agent")
+                && object.get("lifecycle").and_then(Value::as_str) == Some("managed")
+                && object.get("binding_state").and_then(Value::as_str) == Some("bound")
+                && object.get("lease_epoch").and_then(Value::as_u64) == Some(lease_epoch.get())
+                && object.get("target_generation").and_then(Value::as_u64)
+                    == Some(target_generation)
+                && object.get("navigation_generation").and_then(Value::as_u64)
+                    == Some(navigation_generation)
+                && object.get("document_generation").and_then(Value::as_u64)
+                    == Some(document_generation);
+            if !valid {
+                return Err(CoreError::new(
+                    ErrorCode::TargetReplaced,
+                    "managed page rebind result does not match the durable generation",
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 
     fn finish_fence(
@@ -1564,9 +1713,24 @@ impl Broker {
                 );
             }
         }
-        let record = bridge
+        let created_record = bridge
             .create_page(space_id, &planned.page_id, lease_epoch, url, title, proof)
             .map_err(HostError::Bridge)?;
+        // Page creation can return before Chrome emits the final navigation
+        // update. Refresh the extension-backed logical record so the durable
+        // ledger adopts the current navigation/document generations rather than
+        // racing the first load and producing a false target-replaced result.
+        let record = bridge
+            .observe()
+            .map_err(HostError::Bridge)?
+            .pages
+            .into_iter()
+            .find(|value| {
+                value.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
+                    && value.get("page_id").and_then(Value::as_str)
+                        == Some(planned.page_id.as_str())
+            })
+            .unwrap_or(created_record);
         let object = record.as_object().ok_or_else(|| {
             HostError::Core(CoreError::new(
                 ErrorCode::InvalidJson,
@@ -1586,7 +1750,19 @@ impl Broker {
             .and_then(Value::as_u64)
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(0);
-        let bound = self.bind_page(
+        let observed_generation = |field: &str| {
+            object
+                .get(field)
+                .and_then(Value::as_u64)
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    HostError::Core(CoreError::new(
+                        ErrorCode::TargetReplaced,
+                        format!("managed page bridge result is missing {field}"),
+                    ))
+                })
+        };
+        let bound = self.bind_page_with_generations(
             space_id,
             &planned.page_id,
             authority,
@@ -1598,6 +1774,9 @@ impl Broker {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             frame_count,
+            Some(observed_generation("target_generation")?),
+            Some(observed_generation("navigation_generation")?),
+            Some(observed_generation("document_generation")?),
         )?;
         let _ = bridge.present_group(space_id, &planned.page_id, lease_epoch, title);
         Ok(bound)
@@ -1615,6 +1794,36 @@ impl Broker {
         url: Option<String>,
         title: Option<String>,
         frame_count: u32,
+    ) -> Result<PageDescriptor, HostError> {
+        self.bind_page_with_generations(
+            space_id,
+            page_id,
+            authority,
+            lease_epoch,
+            now,
+            url,
+            title,
+            frame_count,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bind_page_with_generations(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        now: Timestamp,
+        url: Option<String>,
+        title: Option<String>,
+        frame_count: u32,
+        target_generation: Option<u64>,
+        navigation_generation: Option<u64>,
+        document_generation: Option<u64>,
     ) -> Result<PageDescriptor, HostError> {
         self.with_inner(|inner| {
             ensure_ready(inner)?;
@@ -1643,18 +1852,43 @@ impl Broker {
                 page.lifecycle = PageLifecycle::Managed;
                 page.ownership = PageOwnership::Agent;
                 page.binding = PageBindingState::Bound;
-                page.target_generation = page
-                    .target_generation
-                    .checked_next()
-                    .ok_or_else(|| CoreError::invalid_argument("target generation overflow"))?;
-                page.navigation_generation = page
-                    .navigation_generation
-                    .checked_next()
-                    .ok_or_else(|| CoreError::invalid_argument("navigation generation overflow"))?;
-                page.document_generation = page
-                    .document_generation
-                    .checked_next()
-                    .ok_or_else(|| CoreError::invalid_argument("document generation overflow"))?;
+                page.target_generation = match target_generation {
+                    Some(value) if value > 0 => Generation::new(value),
+                    Some(_) => {
+                        return Err(CoreError::invalid_argument(
+                            "target generation must be positive",
+                        )
+                        .into());
+                    }
+                    None => page
+                        .target_generation
+                        .checked_next()
+                        .ok_or_else(|| CoreError::invalid_argument("target generation overflow"))?,
+                };
+                page.navigation_generation = match navigation_generation {
+                    Some(value) if value > 0 => Generation::new(value),
+                    Some(_) => {
+                        return Err(CoreError::invalid_argument(
+                            "navigation generation must be positive",
+                        )
+                        .into());
+                    }
+                    None => page.navigation_generation.checked_next().ok_or_else(|| {
+                        CoreError::invalid_argument("navigation generation overflow")
+                    })?,
+                };
+                page.document_generation = match document_generation {
+                    Some(value) if value > 0 => Generation::new(value),
+                    Some(_) => {
+                        return Err(CoreError::invalid_argument(
+                            "document generation must be positive",
+                        )
+                        .into());
+                    }
+                    None => page.document_generation.checked_next().ok_or_else(|| {
+                        CoreError::invalid_argument("document generation overflow")
+                    })?,
+                };
                 page.url = bounded_optional(url)?;
                 page.title = bounded_optional(title)?;
                 page.frame_count = frame_count;
@@ -1815,7 +2049,18 @@ impl Broker {
         let cleanup = self.with_inner(|inner| {
             ensure_ready(inner)?;
             inner.ledger.update(|state| {
-                authorize_finish_claim(state, space_id, authority, lease_epoch, now, false)?;
+                let allow_draining = state
+                    .spaces
+                    .get(space_id)
+                    .is_some_and(|space| space.lifecycle == SpaceLifecycle::Draining);
+                authorize_finish_claim(
+                    state,
+                    space_id,
+                    authority,
+                    lease_epoch,
+                    now,
+                    allow_draining,
+                )?;
                 let (cleanup, retention) = {
                     let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
                         CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
@@ -3145,7 +3390,9 @@ fn require_operation_capabilities(
 ) -> Result<(), HostError> {
     let required = match operation {
         ActionOperation::Evaluate => vec![Capability::Evaluate],
-        ActionOperation::Screenshot => vec![Capability::Artifact],
+        // Screenshot is an allowlisted debugger action; artifact transport is
+        // only required for uploads and other out-of-band artifact flows.
+        ActionOperation::Screenshot => vec![Capability::Action],
         ActionOperation::Upload => vec![Capability::Action, Capability::Artifact],
         ActionOperation::Wait => vec![Capability::Wait],
         ActionOperation::Navigate
@@ -3606,6 +3853,14 @@ fn bounded_warning(warning: &str) -> String {
         .filter(|character| !character.is_control())
         .take(512)
         .collect()
+}
+
+fn current_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().min(u128::from(u64::MAX)) as u64
+        })
 }
 
 fn lease_times(now: Timestamp, ttl: u64) -> Result<(Timestamp, Timestamp), HostError> {
