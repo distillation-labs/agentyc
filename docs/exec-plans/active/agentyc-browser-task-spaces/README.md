@@ -1,13 +1,12 @@
 # agentyc Existing-Chrome Task Spaces and Reliable Automation
 
-- **Tier:** Initiative — cross-crate runtime migration, new Chrome extension/native host, multi-process local protocol, user-control boundary, compatibility adapter, and staged rollout.
+- **Tier:** Initiative — cross-crate runtime migration, new Chrome extension/native host, multi-process local protocol, user-control boundary, and compatibility adapter.
 - **Owner:** Japneet Kalkat
 - **Operational owner:** Japneet Kalkat
 - **Primary outcome:** Coding agents can create and resume ego-lite-like task spaces in the user's already-installed Chrome, work on durable labeled pages concurrently, receive compact actionable context, and stop safely when the user takes control.
 - **Status:** Phase 0, Phase 1, Phase 2, and Phase 3 complete; Phase 4 active
 - **Active phase:** Phase 4 — Chrome extension and task-space UI
 - **Phase authority:** `plans/PLAN_INDEX.md` is the canonical phase registry; exactly one phase may be `active`, and a phase cannot start until its predecessor exit gate is complete
-- **Release posture:** Internal existing-Chrome vertical slice, then opt-in preview, then staged rollout; MCP compatibility is independently gated and is not the product launch gate.
 
 ## Decision brief
 
@@ -46,7 +45,7 @@ The default path does **not** download a browser, launch a second browser, requi
 
 **Stop rationale:** The repository and cloned ego-lite harness were audited; official Chrome remote-debugging, debugger, Native Messaging, service-worker, content-script, scripting, tabs, tab-groups, storage, side-panel, distribution, and browser-target CDP Extensions sources were retrieved; independent architecture reviews converged on the same host/extension/CLI direction. The automated P0-T2 probe has now passed against installed Chrome 154 using `Extensions.loadUnpacked`/`getExtensions`/`uninstall` with a disposable profile; the remaining uncertainty is explicitly gated in Phase 0 rather than hidden.
 
-See `research/decision-supersession.md` for the old-plan mapping and `research/decision-closure.md` for active decisions D-09–D-18.
+See `research/decision-supersession.md` for the old-plan mapping and `research/decision-closure.md` for active decisions D-09–D-17.
 
 ## Evidence status
 
@@ -61,21 +60,21 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 **Implemented or evidenced:**
 
 - Host/extension logical task-space contracts, Native Messaging protocol checks, and the live Chrome 154 P0-T2 probe.
-- macOS disposable-profile test-extension load/reload/uninstall evidence and a live 64-cell/64,000-sample CDP benchmark accepted by the current checkers. These are not production broker rollback, deployed-tokenizer, CLI/SDK end-to-end, or human-coexistence proof.
+- macOS disposable-profile test-extension load/reload/uninstall evidence and a live 64-cell/64,000-sample CDP benchmark accepted by the current checkers. These are not deployed-tokenizer, CLI/SDK end-to-end, or human-coexistence proof.
 
 **Current evidence:**
 
 - The accepted headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` proves the two-space/two-agent current-run coexistence gate, user-tab/focus preservation, isolation, fencing, cleanup, and restart/update observations through the product host-backed direct CLI. The source-identical smoke `artifacts/p0-coexistence/live-hardening-basic-3/` additionally passes current-source browser inventory, snapshots, actions, focus, isolation, and cleanup; disruptive restart/update actions remain operator-approved checkpoints.
 - The current checker returns `status: pass` with coexistence, installation, live Chrome, live Native Messaging, and performance gates passed. The disposable P0 lane is not existing-profile proof.
-- Deterministic validation includes 72 extension tests, 67 host-library tests, 66 host integration tests, 15 direct CLI tests, 28 core tests, 77 rollout/harness tests, and the Phase 1/2/3/4 quality and contract checkers. Phase 3 adds stale-owner lock recovery, endpoint metadata, Native Messaging shim forwarding, peer-credential admission, broker scheduler permits, pause/handoff fences, profile rebind fencing, and an explicit legacy runtime boundary.
+- Deterministic validation includes 72 extension tests, 67 host-library tests, 66 host integration tests, 15 direct CLI tests, 28 core tests, 77 harness tests, and the Phase 1/2/3/4 quality and contract checkers. Phase 3 adds stale-owner lock recovery, endpoint metadata, Native Messaging shim forwarding, peer-credential admission, broker scheduler permits, pause/handoff fences, profile rebind fencing, and an explicit legacy runtime boundary.
 
-**Explicit residuals, not hidden blockers:** OOPIF/flat debugger session graph, full reference-equivalent refs/actionability/waits/dialog/file chooser, selected-page retention, ordinary-user Web Store/managed distribution, Linux/Windows registration, production rollback/kill-switch evidence, and deployed-model tokenizer/human responsiveness baselines remain owned by later phases. They are not claimed by the Phase 0 gate.
+**Explicit residuals, not hidden blockers:** OOPIF/flat debugger session graph, full reference-equivalent refs/actionability/waits/dialog/file chooser, selected-page retention, ordinary-user Web Store/managed distribution, Linux/Windows registration, deployed-model tokenizer/human responsiveness baselines remain owned by later phases. They are not claimed by the Phase 0 gate.
 
-**Current phase decision:** Phase 0's bounded checker, Phase 1's architecture gate, Phase 2's deterministic contract exit gate, and Phase 3's host-core exit gate pass. Phase 4 is active for the MV3 extension and task-space UI. Live existing-profile permission, distribution, rollback, OOPIF, deployed-tokenizer, and human-responsiveness evidence remains explicitly owned by later rollout phases. See the [Phase 3 Chrome audit](research/phase-3-chrome-docs-audit.md), [Chrome audit](../../../../research/phase-0-chrome-docs-audit.md), [ego-lite audit](../../../../research/ego-lite-pattern-audit.md), and [host-backed probe audit](../../../../research/phase-0-host-backed-probe.md) for exact scope and residuals.
+**Current phase decision:** Phase 0's bounded checker, Phase 1's architecture gate, Phase 2's deterministic contract exit gate, and Phase 3's host-core exit gate pass. Phase 4 is active for the MV3 extension and task-space UI. Live existing-profile permission, distribution, OOPIF, deployed-tokenizer, and human-responsiveness evidence remains explicitly owned by later phases. See the [Phase 3 Chrome audit](research/phase-3-chrome-docs-audit.md), [Chrome audit](../../../../research/phase-0-chrome-docs-audit.md), [ego-lite audit](../../../../research/ego-lite-pattern-audit.md), and [host-backed probe audit](../../../../research/phase-0-host-backed-probe.md) for exact scope and residuals.
 
 ## Planned capability target — not yet proven
 
-Every bullet below is a target or requirement for the staged work, not a statement that agentyc implements it or that live Chrome has validated it. It remains gated by Phase 0 and the later production phases.
+Every bullet below is a target or requirement for the planned work, not a statement that agentyc implements it or that live Chrome has validated it. It remains gated by Phase 0 and the later production phases.
 
 ### Agent and task-space experience
 
@@ -151,7 +150,6 @@ Reopen deferred items only on a documented trigger in `research/decision-superse
 | Native bridge     | Malformed, oversized, wrong-origin, truncated, replayed, and version-mismatched messages fail closed                                                                                    | Native host/extension protocol tests                         |
 | Compatibility     | Frozen legacy MCP baseline remains green through Phases 0–7; MCP compatibility release additionally passes wire, concurrency, fault, context, and host-backed headed-Chrome conformance | Phase 7 baseline plus Phase 8 MCP release suite              |
 | Operations        | Metrics identify broker/profile/space/page/action/lease epoch without cookies, tokens, headers, page bodies, screenshots, or raw browser IDs                                            | Redaction and runbook review                                 |
-| Rollback          | Mutation kill switch pauses spaces without closing user tabs or killing user Chrome; incompatible binaries refuse the ledger                                                            | Rollback drill                                               |
 
 Targets marked initial are provisional until Phase 0 records real Chrome, model-token, and end-to-end baselines.
 
@@ -190,14 +188,14 @@ These gates apply to the planned agentyc path and remain unproven until Phase 0,
 
 ## Production-grade validation bar
 
-The direct CLI/SDK path and the MCP compatibility adapter share one mandatory evidence program, but retain separate release gates: direct rollout is gated by direct-product evidence plus the frozen legacy MCP baseline; MCP compatibility release is additionally gated by Phase 8 host-backed protocol and real-browser conformance. Protocol-only tests cannot release browser automation. The test strategy is defined in `research/production-test-strategy.md` and is a phase-gated requirement.
+The direct CLI/SDK path and the MCP compatibility adapter share one mandatory evidence program, but retain separate validation gates: the direct product is gated by direct-product evidence plus the frozen legacy MCP baseline; MCP compatibility is additionally gated by Phase 8 host-backed protocol and real-browser conformance. Protocol-only tests cannot validate browser automation. The test strategy is defined in `research/production-test-strategy.md` and is a phase-gated requirement.
 
 - Required layers are pure unit/property, deterministic component, process/Native Messaging, headed existing-Chrome, and nightly/pre-release load/soak/chaos.
 - Required tests fail on missing Chrome, skipped/ignored coverage, swallowed tool errors, leaked child processes, or missing redacted artifacts; retries may classify flakes but cannot make a failed required test pass.
 - Realistic MCP scenarios must exercise navigation, redirects, dynamic DOM, frames/OOPIFs, dialogs, downloads/uploads, waits, snapshots/refs, user takeover, concurrent spaces, host/extension/worker/browser restarts, reconnects, and unrelated user-tab coexistence through the real host/extension/Chrome path before MCP compatibility release.
-- The MCP suite must verify wire lifecycle, HTTP/SSE/session behavior, exact tool/schema manifests, stable error mapping, cancellation, disconnect/unknown outcomes, event replay/backpressure, concurrency/fairness, ownership, and every supported tool in real headed Chrome; these are Phase 8 MCP gates, not hidden prerequisites for the direct Phase 7 release.
+- The MCP suite must verify wire lifecycle, HTTP/SSE/session behavior, exact tool/schema manifests, stable error mapping, cancellation, disconnect/unknown outcomes, event replay/backpressure, concurrency/fairness, ownership, and every supported tool in real headed Chrome; these are Phase 8 MCP gates, not hidden prerequisites for the direct Phase 7 launch.
 - Context and speed gates report transport bytes, serialized tokens, deployed model-context tokens, scan/queue/bridge/browser/serialization timings, cache state, actionable-control coverage, stale-ref/unknown rates, event lag, CPU/RSS, and human-tab responsiveness separately. Tail gates use at least 200 valid samples for p95 and 1,000 for p99 with bootstrap confidence intervals; thirty samples are smoke-only.
-- Any authorization bypass, cross-space mutation, user-tab close, stale-agent mutation after takeover, secret leak, blind mutation replay, or silent unknown-success is an automatic release blocker.
+- Any authorization bypass, cross-space mutation, user-tab close, stale-agent mutation after takeover, secret leak, blind mutation replay, or silent unknown-success is an automatic launch blocker.
 
 ## Naming, identity, and trust rules
 
@@ -210,7 +208,7 @@ The direct CLI/SDK path and the MCP compatibility adapter share one mandatory ev
 
 ## Component/version matrix
 
-The release tuple is versioned and published before preview: Chrome milestone/platform/policy, extension ID/build, native-host manifest/binary, host/ledger schema, CLI, Node SDK, and MCP adapter profile. A component may connect only when its declared compatibility range and ledger/protocol schema are accepted; otherwise it fails closed with `protocol_mismatch` or `ledger_incompatible` before mutation authority.
+The launch tuple is versioned and published before launch: Chrome milestone/platform/policy, extension ID/build, native-host manifest/binary, host/ledger schema, CLI, Node SDK, and MCP adapter profile. A component may connect only when its declared compatibility range and ledger/protocol schema are accepted; otherwise it fails closed with `protocol_mismatch` or `ledger_incompatible` before mutation authority.
 
 - Rust workspace: edition 2024; the supported compiler floor is the pinned `rust-toolchain.toml` value created in Phase 0, not the historical README claim.
 - Planned Node package: `packages/agentyc-browser/`, with its own `package.json` and `package-lock.json`; npm is the selected package manager, and the Node floor is frozen by Phase 0 before SDK implementation.
@@ -284,16 +282,6 @@ event.subscribe/resume
 artifact.screenshot/pdf/html
 ```
 
-## Rollout and rollback
-
-1. **Feasibility:** prove extension/host handshake and two-space headed-Chrome vertical slice in a synthetic profile; no production default changes.
-2. **Internal existing-Chrome:** install the signed/unpacked extension and native host for a controlled profile; validate login coexistence, user tabs, side-panel takeover, restart, and cleanup.
-3. **Opt-in preview:** enable existing-Chrome mode for named users; keep legacy MCP adapter available; collect task-level token/latency/recovery metrics.
-4. **Staged expansion:** broaden supported Chrome versions/cohorts only after isolation, permission, bridge, performance, and support gates pass.
-5. **Default candidate:** make extension/host CLI the documented default; retain MCP and legacy CDP as explicit compatibility paths.
-
-Rollback disables new mutations, marks spaces paused, retains pages, drains only broker-owned work, preserves ledger/action records, and leaves user tabs/Chrome untouched. It never invokes the old global `close_all`, closes a whole tab group, or downgrades to a binary that cannot read the current ledger. Explicit page cleanup remains a separate user-confirmed operation with a fresh live-page/generation proof.
-
 ## Research and phases
 
 - [Decision supersession](research/decision-supersession.md)
@@ -310,8 +298,8 @@ Rollback disables new mutations, marks spaces paused, retains pages, drains only
 - [Phase 4 — Chrome extension and task-space UI](plans/phase-4-extension.md)
 - [Phase 5 — context and automation](plans/phase-5-context-and-automation.md)
 - [Phase 6 — direct CLI and SDK](plans/phase-6-direct-cli-sdk.md)
-- [Phase 7 — hardening, validation, direct rollout](plans/phase-7-direct-rollout.md)
+- [Phase 7 — hardening, validation, and launch](plans/phase-7-hardening.md)
 - [Phase 8 — MCP compatibility and deprecation](plans/phase-8-mcp-compatibility.md)
 - [Phase registry and execution rules](plans/PLAN_INDEX.md)
 
-**Planning note:** Phase 0, Phase 1, Phase 2, and Phase 3 are complete under their bounded/deterministic gates. Phase 4 is active. Offline, disposable, host-only, and operator-acknowledgement results do not close existing-profile or production-release gates; those remain explicitly gated in later phases.
+**Planning note:** Phase 0, Phase 1, Phase 2, and Phase 3 are complete under their bounded/deterministic gates. Phase 4 is active. Offline, disposable, host-only, and operator-acknowledgement results do not close existing-profile or launch-readiness gates; those remain explicitly gated in later phases.
