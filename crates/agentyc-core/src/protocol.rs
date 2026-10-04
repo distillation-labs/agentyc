@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, mem};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 
 use crate::{
     errors::{CoreError, ErrorCode, FrameError},
@@ -42,6 +42,8 @@ pub const MAX_WAIT_CONDITION_NODES: usize = 32;
 pub const MAX_WAIT_CONDITION_FIELDS: usize = 16;
 /// Maximum encoded size of one wait condition payload key or value.
 pub const MAX_WAIT_CONDITION_TEXT_BYTES: usize = 4 * 1024;
+/// Maximum timeout accepted by a typed wait request.
+pub const MAX_WAIT_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
 
 fn validate_protocol_version(protocol: u16) -> Result<(), CoreError> {
     if protocol != PROTOCOL_VERSION {
@@ -376,6 +378,88 @@ impl<P> ResponseEnvelope<P> {
 
 /// An event envelope with a generic payload.
 pub type EventEnvelope<P = BTreeMap<String, String>> = EventRecord<P>;
+
+/// Typed indication that a negotiated capability is unavailable for one operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityUnavailableResult {
+    /// Capability that was requested.
+    pub capability: Capability,
+    /// Canonical method or operation name requested.
+    pub method: String,
+    /// Stable error exposed to the adapter.
+    pub error: CoreError,
+}
+
+impl CapabilityUnavailableResult {
+    /// Construct a typed capability-unavailable result.
+    pub fn new(capability: Capability, method: impl Into<String>) -> Self {
+        Self {
+            capability,
+            method: method.into(),
+            error: CoreError::new(
+                ErrorCode::CapabilityUnavailable,
+                "requested capability is unavailable",
+            ),
+        }
+    }
+
+    /// Construct and validate a capability-unavailable result in one step.
+    pub fn try_new(capability: Capability, method: impl Into<String>) -> Result<Self, CoreError> {
+        let result = Self::new(capability, method);
+        result.validate()?;
+        Ok(result)
+    }
+
+    /// Validate method identity and the stable error code.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        let mut parts = self.method.split('.');
+        if self.method.is_empty()
+            || self.method.len() > 128
+            || !parts.all(|part| {
+                !part.is_empty()
+                    && part.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || byte == b'_'
+                            || byte == b'-'
+                    })
+            })
+        {
+            return Err(CoreError::invalid_argument(
+                "capability-unavailable method is not a valid operation name",
+            ));
+        }
+        if self.error.code != ErrorCode::CapabilityUnavailable {
+            return Err(CoreError::invalid_argument(
+                "capability-unavailable result must use capability_unavailable",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Compatibility alias used by older adapters.
+pub type CapabilityUnavailable = CapabilityUnavailableResult;
+
+/// Result that distinguishes a capability response from a typed unavailable result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum CapabilityResult<T> {
+    /// The capability produced a typed value.
+    Available(T),
+    /// The capability was not available for this operation.
+    Unavailable(CapabilityUnavailableResult),
+}
+
+impl<T> CapabilityResult<T> {
+    /// Validate the unavailable branch when present.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if let Self::Unavailable(result) = self {
+            result.validate()?;
+        }
+        Ok(())
+    }
+}
 
 /// Kind of bounded artifact chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -776,6 +860,130 @@ impl CancelEnvelope {
         }
         Ok(())
     }
+
+    /// Convert the compatibility envelope into its validated typed form.
+    pub fn typed(&self) -> Result<CancelRequest, CoreError> {
+        self.validate()?;
+        Ok(CancelRequest {
+            protocol: self.protocol,
+            request_id: self.request_id.clone(),
+            reason: self.reason.as_deref().map(CancelReason::new).transpose()?,
+        })
+    }
+}
+
+/// A validated cancellation reason retained separately from the legacy string field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CancelReason(String);
+
+impl CancelReason {
+    /// Validate and construct a bounded reason.
+    pub fn new(value: impl Into<String>) -> Result<Self, CoreError> {
+        let value = value.into();
+        if value.is_empty() || value.len() > MAX_CANCEL_REASON_BYTES {
+            return Err(CoreError::invalid_argument(format!(
+                "cancellation reason must be between 1 and {MAX_CANCEL_REASON_BYTES} bytes"
+            )));
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrow the reason text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume the newtype and return its text.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for CancelReason {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for CancelReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<String> for CancelReason {
+    type Error = CoreError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<&str> for CancelReason {
+    type Error = CoreError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for CancelReason {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(de::Error::custom)
+    }
+}
+
+/// Typed cancellation request for adapters that can use validated fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRequest {
+    /// Protocol version for this request.
+    pub protocol: u16,
+    /// Request being cancelled.
+    pub request_id: RequestId,
+    /// Optional validated reason.
+    pub reason: Option<CancelReason>,
+}
+
+impl CancelRequest {
+    /// Validate the typed cancellation request.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_protocol_version(self.protocol)?;
+        if let Some(reason) = &self.reason
+            && (reason.0.is_empty() || reason.0.len() > MAX_CANCEL_REASON_BYTES)
+        {
+            return Err(CoreError::invalid_argument(
+                "typed cancellation reason is outside its bound",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert to the compatibility envelope without changing its wire shape.
+    pub fn into_envelope(self) -> CancelEnvelope {
+        CancelEnvelope {
+            protocol: self.protocol,
+            request_id: self.request_id,
+            reason: self.reason.map(CancelReason::into_string),
+        }
+    }
+}
+
+impl TryFrom<&CancelEnvelope> for CancelRequest {
+    type Error = CoreError;
+
+    fn try_from(value: &CancelEnvelope) -> Result<Self, Self::Error> {
+        value.typed()
+    }
+}
+
+impl From<CancelRequest> for CancelEnvelope {
+    fn from(value: CancelRequest) -> Self {
+        value.into_envelope()
+    }
 }
 
 /// Serializable condition that can complete an event-driven wait.
@@ -868,6 +1076,136 @@ impl WaitCondition {
         visit(self, 0, &mut 0)
     }
 }
+
+/// Typed request for an event-driven wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitRequest {
+    /// Protocol version for this request.
+    pub protocol: u16,
+    /// Request identity used to match the wait result.
+    pub request_id: RequestId,
+    /// Event or generation condition to observe.
+    pub condition: WaitCondition,
+    /// Maximum wait duration in milliseconds.
+    pub timeout_ms: u64,
+    /// Optional logical event scope.
+    pub scope: Option<crate::events::EventScope>,
+    /// Optional cursor from which event delivery may resume.
+    pub resume_from: Option<ResumeWatermark>,
+}
+
+impl WaitRequest {
+    /// Validate protocol, condition complexity, timeout, and scope.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_protocol_version(self.protocol)?;
+        self.condition.validate()?;
+        if self.timeout_ms > MAX_WAIT_TIMEOUT_MS {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                format!("wait timeout exceeds {MAX_WAIT_TIMEOUT_MS} milliseconds"),
+            ));
+        }
+        if let Some(scope) = &self.scope {
+            scope.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Terminal or in-flight status of a typed wait request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitStatus {
+    /// The wait has been accepted but has not completed.
+    Pending,
+    /// The condition matched an event.
+    Matched,
+    /// The timeout elapsed before a match.
+    TimedOut,
+    /// The caller cancelled the wait.
+    Cancelled,
+    /// The requested resume position is no longer retained.
+    ResyncRequired,
+}
+
+/// Typed result for a wait request, including its event watermark.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitResult<P = BTreeMap<String, String>> {
+    /// Protocol version for this result.
+    pub protocol: u16,
+    /// Request identity being completed.
+    pub request_id: RequestId,
+    /// Wait lifecycle result.
+    pub status: WaitStatus,
+    /// Matching event when the status is `matched`.
+    pub event: Option<EventRecord<P>>,
+    /// Last event position observed by the broker.
+    pub resume: Option<ResumeWatermark>,
+    /// Stable error for timeout, cancellation, or resync.
+    pub error: Option<CoreError>,
+}
+
+impl<P> WaitResult<P> {
+    /// Validate status-dependent event and error invariants.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_protocol_version(self.protocol)?;
+        match self.status {
+            WaitStatus::Pending | WaitStatus::Matched => {
+                if self.status == WaitStatus::Pending && self.event.is_some() {
+                    return Err(CoreError::invalid_argument(
+                        "pending wait result cannot contain a matching event",
+                    ));
+                }
+                if self.status == WaitStatus::Matched && self.event.is_none() {
+                    return Err(CoreError::invalid_argument(
+                        "matched wait result must contain an event",
+                    ));
+                }
+                if let Some(event) = &self.event {
+                    event.validate_scope()?;
+                }
+                if self.error.is_some() {
+                    return Err(CoreError::invalid_argument(
+                        "successful wait result cannot contain an error",
+                    ));
+                }
+            }
+            WaitStatus::TimedOut => {
+                if self.event.is_some()
+                    || self.error.as_ref().map(|error| error.code) != Some(ErrorCode::Timeout)
+                {
+                    return Err(CoreError::invalid_argument(
+                        "timed-out wait result must contain only a timeout error",
+                    ));
+                }
+            }
+            WaitStatus::Cancelled => {
+                if self.event.is_some()
+                    || self.error.as_ref().map(|error| error.code) != Some(ErrorCode::Cancelled)
+                {
+                    return Err(CoreError::invalid_argument(
+                        "cancelled wait result must contain only a cancelled error",
+                    ));
+                }
+            }
+            WaitStatus::ResyncRequired => {
+                if self.event.is_some()
+                    || self.error.as_ref().map(|error| error.code) != Some(ErrorCode::EventLagged)
+                {
+                    return Err(CoreError::invalid_argument(
+                        "resync wait result must contain an event-lagged error",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Compatibility name for adapters that call a typed wait result a response.
+pub type WaitResponse<P = BTreeMap<String, String>> = WaitResult<P>;
+/// Compatibility name for callers that use outcome terminology.
+pub type WaitOutcome = WaitStatus;
 
 /// Envelope used to request event replay after a cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1441,5 +1779,69 @@ mod tests {
                 .expect("serialize compatible artifact");
         assert_eq!(legacy_json["kind"], "artifact");
         assert!(legacy_json.get("final_chunk").is_some());
+    }
+
+    #[test]
+    fn typed_wait_cancel_and_capability_results_are_bounded_and_exact() {
+        let cancel = CancelEnvelope {
+            protocol: PROTOCOL_VERSION,
+            request_id: crate::ids::RequestId::from_suffix("typed").expect("request"),
+            reason: Some("caller stopped".to_owned()),
+        };
+        let typed_cancel = cancel.typed().expect("typed cancel");
+        assert_eq!(
+            serde_json::to_string(&typed_cancel).expect("cancel json"),
+            r#"{"protocol":1,"request_id":"req_typed","reason":"caller stopped"}"#
+        );
+        assert!(serde_json::from_str::<CancelReason>(r#"""#).is_err());
+
+        let wait = WaitRequest {
+            protocol: PROTOCOL_VERSION,
+            request_id: crate::ids::RequestId::from_suffix("wait").expect("request"),
+            condition: WaitCondition::EventKind {
+                event: crate::events::EventKind::PageChanged,
+            },
+            timeout_ms: MAX_WAIT_TIMEOUT_MS,
+            scope: Some(crate::events::EventScope::page(
+                SpaceId::from_suffix("one").expect("space"),
+                crate::ids::PageId::from_suffix("main").expect("page"),
+            )),
+            resume_from: Some(ResumeWatermark {
+                broker_epoch: BrokerEpoch::new(2),
+                sequence: EventSequence::new(7),
+            }),
+        };
+        wait.validate().expect("bounded wait");
+        let mut over_timeout = wait.clone();
+        over_timeout.timeout_ms = MAX_WAIT_TIMEOUT_MS + 1;
+        assert_eq!(
+            over_timeout.validate().expect_err("timeout bound").code,
+            ErrorCode::MessageTooLarge
+        );
+        let mut page_only = wait;
+        page_only.scope = Some(crate::events::EventScope {
+            space_id: None,
+            page_id: Some(crate::ids::PageId::from_suffix("main").expect("page")),
+        });
+        assert!(page_only.validate().is_err());
+
+        let unavailable = CapabilityResult::<String>::Unavailable(
+            CapabilityUnavailableResult::new(Capability::Evaluate, "page.evaluate"),
+        );
+        unavailable.validate().expect("typed capability error");
+        assert_eq!(
+            serde_json::to_string(&unavailable).expect("capability json"),
+            r#"{"kind":"unavailable","value":{"capability":"evaluate","method":"page.evaluate","error":{"code":"capability_unavailable","retryable":false,"guidance":"none","message":"requested capability is unavailable"}}}"#
+        );
+
+        let timed_out = WaitResult::<BTreeMap<String, String>> {
+            protocol: PROTOCOL_VERSION,
+            request_id: crate::ids::RequestId::from_suffix("wait").expect("request"),
+            status: WaitStatus::TimedOut,
+            event: None,
+            resume: None,
+            error: Some(CoreError::new(ErrorCode::Timeout, "wait timed out")),
+        };
+        timed_out.validate().expect("timeout result");
     }
 }
