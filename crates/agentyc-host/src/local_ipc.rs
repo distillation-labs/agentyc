@@ -377,17 +377,23 @@ fn validate_socket_path(path: &Path) -> Result<PathBuf, HostError> {
             "local host socket path is invalid".to_owned(),
         ));
     }
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| HostError::Invariant("local host socket path is invalid".to_owned()))?;
     let parent = path.parent().ok_or_else(|| {
         HostError::Invariant("local host socket must have a parent directory".to_owned())
     })?;
-    if !parent.is_dir() || parent.is_symlink() || path.file_name().is_none() {
+    if !parent.is_dir() {
         return Err(HostError::Invariant(
             "local host socket parent must be a real directory".to_owned(),
         ));
     }
     let mut current = parent;
     loop {
-        if current.is_symlink() {
+        if std::fs::symlink_metadata(current)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            && !is_allowed_system_path_alias(current)
+        {
             return Err(HostError::Invariant(
                 "local host socket path contains a symlink".to_owned(),
             ));
@@ -398,7 +404,27 @@ fn validate_socket_path(path: &Path) -> Result<PathBuf, HostError> {
         }
         current = next;
     }
-    Ok(path.to_path_buf())
+    let canonical_parent = parent.canonicalize().map_err(|_| {
+        HostError::Invariant("local host socket parent must be a real directory".to_owned())
+    })?;
+    Ok(canonical_parent.join(file_name))
+}
+
+#[cfg(target_os = "macos")]
+fn is_allowed_system_path_alias(path: &Path) -> bool {
+    let expected_target = match path {
+        path if path == Path::new("/var") => Path::new("/private/var"),
+        path if path == Path::new("/tmp") => Path::new("/private/tmp"),
+        path if path == Path::new("/etc") => Path::new("/private/etc"),
+        _ => return false,
+    };
+    path.canonicalize()
+        .is_ok_and(|target| target == expected_target)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_allowed_system_path_alias(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -495,6 +521,17 @@ mod tests {
         let mut payload = vec![0_u8; length];
         stream.read_exact(&mut payload).expect("response payload");
         payload
+    }
+
+    #[test]
+    fn socket_path_validation_rejects_non_system_symlink_ancestors() {
+        let directory = tempdir().expect("directory");
+        let target = directory.path().join("target");
+        let alias = directory.path().join("alias");
+        std::fs::create_dir(&target).expect("target directory");
+        std::os::unix::fs::symlink(&target, &alias).expect("directory symlink");
+
+        assert!(validate_socket_path(&alias.join("host.sock")).is_err());
     }
 
     #[test]
