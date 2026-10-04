@@ -32,8 +32,9 @@ pub use protocol::{
     MAX_CONTROL_FRAME_PAYLOAD_BYTES, MAX_CUMULATIVE_ARTIFACT_BYTES, MAX_IN_FLIGHT_ARTIFACT_BYTES,
     MAX_WAIT_CONDITION_DEPTH, MAX_WAIT_CONDITION_FIELDS, MAX_WAIT_CONDITION_NODES,
     MAX_WAIT_CONDITION_TEXT_BYTES, MAX_WAIT_TIMEOUT_MS, PROTOCOL_VERSION, RequestEnvelope,
-    ResponseEnvelope, ResumeEnvelope, ResumeResult, ResumeWatermark, WaitCondition, WaitOutcome,
-    WaitRequest, WaitResponse, WaitResult, WaitStatus, decode_frame, decode_utf8, encode_frame,
+    ResponseEnvelope, ResumeEnvelope, ResumeResult, ResumeWatermark, WaitCondition,
+    WaitDownloadState, WaitElementState, WaitHistoryDirection, WaitNavigationKind, WaitRequest,
+    WaitResponse, WaitResult, WaitStatus, WaitTextMatcher, decode_frame, decode_utf8, encode_frame,
     negotiate_version,
 };
 pub use records::{
