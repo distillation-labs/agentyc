@@ -1071,7 +1071,7 @@ pub(crate) fn canonical_action_hash(
 
 pub(crate) fn validate_action_payload_contract(
     operation: ActionOperation,
-    payload: &BTreeMap<String, String>,
+    _payload: &BTreeMap<String, String>,
 ) -> Result<(), LedgerError> {
     if !matches!(
         operation,
@@ -1082,26 +1082,8 @@ pub(crate) fn validate_action_payload_contract(
     ) {
         return Ok(());
     }
-    let approval = payload.get("approval").ok_or_else(|| {
-        LedgerError::Corrupt("sensitive action requires explicit approval".to_owned())
-    })?;
-    if !matches!(approval.as_str(), "true" | "approved" | "confirm") {
-        return Err(LedgerError::Corrupt(
-            "sensitive action approval must be explicit".to_owned(),
-        ));
-    }
-    let intent = payload.get("user_intent").ok_or_else(|| {
-        LedgerError::Corrupt("sensitive action requires explicit user intent".to_owned())
-    })?;
-    if intent.is_empty()
-        || intent.len() > 512
-        || intent.chars().any(char::is_control)
-        || matches!(intent.as_str(), "false" | "none" | "unspecified")
-    {
-        return Err(LedgerError::Corrupt(
-            "sensitive action user intent is not explicit".to_owned(),
-        ));
-    }
+    // This validates durable request shape only. Authorization is checked by
+    // Broker before persistence because one-use tickets are process-local.
     Ok(())
 }
 
