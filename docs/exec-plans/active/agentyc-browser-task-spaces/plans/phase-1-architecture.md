@@ -1,7 +1,7 @@
 ---
 phase: 1
 name: Core architecture, security, and invariants
-status: active
+status: complete
 owner: Japneet Kalkat
 primary_outcome: A transport-neutral architecture and executable state/ownership/security model for the host broker, Chrome extension, direct clients, and MCP adapter.
 depends_on: phase-0
@@ -222,43 +222,43 @@ agentyc-browser
 
 ## Tasks
 
-- [ ] P1-T1 — Publish the component and ownership record.
+- [x] P1-T1 — Publish the component and ownership record.
   - **Files:** this phase, `docs/architecture.md`, new `docs/architecture-existing-chrome.md`, `plans/PLAN_INDEX.md`.
   - **Done when:** every state/flow has one owner; `space`/`space_id` is canonical; MCP, CLI, SDK, extension, and host dependencies are explicit; no raw Chrome state escapes the host/extension adapter; the phase registry has one executable file per phase.
   - **Validation:** `python3 scripts/check_exec_plan.py docs/exec-plans/active/agentyc-browser-task-spaces` (new deterministic checker); `rg -n "CdpClient|BrowserRuntime|active_page" crates/agentyc-mcp crates/agentyc/src` with only legacy allowlisted paths; architecture artifact `artifacts/p1-architecture-review.md`.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P1-T2 — Freeze domain IDs, generations, and public presentation rules.
+- [x] P1-T2 — Freeze domain IDs, generations, and public presentation rules.
   - **Files:** planned `crates/agentyc-core/src/{ids.rs,records.rs,states.rs}`; output contract examples; `scripts/check_core_contracts.py`.
   - **Done when:** space/page/frame/document/navigation/snapshot/ref/action/event identities and no-raw-ID rules are normative; the checker is deterministic and owned by this task.
   - **Validation:** `python3 scripts/check_core_contracts.py --negative-identity-fixtures`; schema review and negative examples for `[id] name`, `tabId`, `targetId`, `sessionId`.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P1-T3 — Freeze lifecycle, lease, handoff, takeover, and recovery transitions.
+- [x] P1-T3 — Freeze lifecycle, lease, handoff, takeover, and recovery transitions.
   - **Files:** planned `crates/agentyc-core/src/{spaces.rs,leases.rs,actions.rs,pages.rs}`; `artifacts/p1-state-machines.md`; `scripts/check_state_machines.py`.
   - **Done when:** each space/page/lease/action/binding state has exactly one canonical owner, transition initiator, guard, side effect, durable record, duplicate behavior, error, and user-visible result; no side panel or extension can directly persist authoritative transitions; the checker is deterministic and owned by this task.
   - **Validation:** `python3 scripts/check_state_machines.py --artifact artifacts/p1-state-machines.md`; transition table covers stale epoch, duplicate claim, disconnect, extension restart, user takeover, extension fence barrier, page close, browser restart, rebind-required, and broker restart.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P1-T4 — Freeze extension capability and permission policy.
+- [x] P1-T4 — Freeze extension capability and permission policy.
   - **Files:** `extension/manifest.json` design, `docs/security/extension-permissions.md`, capability matrix from Phase 0, `scripts/check_extension_permissions.py`.
   - **Done when:** required/optional permissions, host access, debugger domains, content-script worlds, evaluate policy, cookies/storage/download/upload policy, and unsupported responses are explicit; `debugger` is never modeled as an optional permission; live grants, revocations, enterprise policy denial, incognito scope, restricted URLs, screenshot/DLP denial, and user-gesture requirements have typed behavior; the checker is deterministic and owned by this task.
   - **Validation:** `python3 scripts/check_extension_permissions.py --matrix artifacts/p0-capabilities.json`; security review against S-019–S-024; denial, revocation, policy, incognito, restricted-page, and mid-action permission tests pass; no permission lacks a user-visible reason and test.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P1-T5 — Freeze host trust, local IPC, Native Messaging, and version policy.
+- [x] P1-T5 — Freeze host trust, local IPC, Native Messaging, and version policy.
   - **Files:** planned `crates/agentyc-core/src/protocol.rs`, `crates/agentyc-host/src/{security.rs,version.rs}`, `docs/security/host-protocol.md`, `scripts/check_host_protocol.py`.
   - **Done when:** framing, OS-peer admission, exact transport-origin handling, handshake, authentication boundary, nonce/sequence, broker epoch, cumulative size limits, cancellation, events, reconnect, host lock, version compatibility, and artifact transfer are specified; remote TCP is disabled unless a future decision explicitly enables it; the checker is deterministic and owned by this task.
   - **Validation:** `python3 scripts/check_host_protocol.py --artifact artifacts/p1-host-trust.md`; protocol threat model and failure matrix include forged origin, direct native-binary execution, symlink endpoint, replay, reconnect sequence reset, chunk flood, and same-user threat limits.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P1-T6 — Freeze persistence/reconciliation and migration policy.
+- [x] P1-T6 — Freeze persistence/reconciliation and migration policy.
   - **Files:** planned `crates/agentyc-host/src/ledger.rs`, state-directory schema, `docs/configuration.md`, `scripts/check_recovery_matrix.py`.
   - **Done when:** logical records/action status survive client reconnect; browser/extension restart invalidates authority as needed; target hints are non-authoritative; corrupt/incompatible ledgers quarantine/fail closed; stop/crash/update/uninstall/rollback retain pages rather than implicitly closing them; the checker is deterministic and owned by this task.
   - **Validation:** `python3 scripts/check_recovery_matrix.py --artifact artifacts/p1-recovery.md`; recovery matrix covers partial writes, host crash, Chrome restart, profile mismatch, extension update, old binary, rollback, two-phase create/claim crash, and cleanup confirmation.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P1-T7 — Freeze performance/context/reliability gates.
+- [x] P1-T7 — Freeze performance/context/reliability gates.
   - **Files:** README metrics, `docs/release-gate.md`, Phase 0 baseline addendum, `scripts/check_release_gate.py`.
   - **Done when:** end-to-end first action, batch round trips, snapshot scans/tokens, event lag, action deadlines, host/Chrome RSS, and user responsiveness have exact measurement methods and owners; the checker is deterministic and owned by this task.
   - **Validation:** `python3 scripts/check_release_gate.py --phase 0`; sign thresholds or explicitly carry a provisional threshold to Phase 7 direct rollout.
@@ -266,13 +266,13 @@ agentyc-browser
 
 ## Quality checklist
 
-- [ ] Host/extension/client/MCP ownership is explicit.
-- [ ] Profile sharing is not described as isolation.
-- [ ] User-control states and raw-ID prohibition are contract-level invariants.
-- [ ] Every mutation has a lease/epoch and policy check.
-- [ ] Extension worker restart and Native Messaging reconnect are state-machine paths with distinct worker, browser, connection, and broker epochs.
-- [ ] Takeover cannot complete without a durable fence acknowledgement; missing acknowledgement fails closed.
-- [ ] Security, privacy, distribution, and rollback are architecture constraints, not follow-up notes.
+- [x] Host/extension/client/MCP ownership is explicit.
+- [x] Profile sharing is not described as isolation.
+- [x] User-control states and raw-ID prohibition are contract-level invariants.
+- [x] Every mutation has a lease/epoch and policy check.
+- [x] Extension worker restart and Native Messaging reconnect are state-machine paths with distinct worker, browser, connection, and broker epochs.
+- [x] Takeover cannot complete without a durable fence acknowledgement; missing acknowledgement fails closed.
+- [x] Security, privacy, distribution, and rollback are architecture constraints, not follow-up notes.
 
 ## Handoff out
 
