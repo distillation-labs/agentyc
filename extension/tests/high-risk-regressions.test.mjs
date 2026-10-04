@@ -208,8 +208,7 @@ test("browser session advancement retires old bindings and raw tab identities", 
   await worker.advanceBrowserSession("test");
   assert.equal(worker.metadata.browserSessionEpoch, oldEpoch + 1);
   const reboundRecord = worker.tabs.getInternalByPage("page_session");
-  assert.equal(reboundRecord?.sessionEpoch, oldEpoch + 1);
-  assert.equal(reboundRecord?.bindingState, "bound");
+  assert.equal(reboundRecord, undefined);
   assert.equal(chrome.tabsData.has(oldRecord.rawTabId), true);
   assert.equal(worker.tabs.retiredRawTabIds.has(oldRecord.rawTabId), true);
   assert.throws(
@@ -267,6 +266,9 @@ test("tab removal and replacement invalidate debugger and frame mappings", async
     frameId: "frame_internal",
     logicalFrameId: "frame_logical",
   });
+  tabs.handleDetached(1, { oldWindowId: 1 });
+  assert.equal(bridge.isAttached("page_map"), false);
+  assert.equal(frames.getInternalBinding(1), undefined);
   tabs.handleRemoved(1);
   assert.equal(bridge.isAttached("page_map"), false);
   assert.equal(frames.getInternalBinding(1), undefined);
@@ -283,6 +285,9 @@ test("tab removal and replacement invalidate debugger and frame mappings", async
     pageId: "page_map_two",
     leaseEpoch: 1,
   });
+  tabs.handleAttached(2, { newWindowId: 2 });
+  assert.equal(bridge.isAttached("page_map_two"), false);
+  assert.equal(frames.getInternalBinding(2), undefined);
   tabs.handleReplaced(2, 2);
   assert.equal(bridge.isAttached("page_map_two"), false);
   assert.equal(frames.getInternalBinding(2), undefined);
