@@ -1,7 +1,7 @@
 ---
 phase: 2
 name: Core, local protocol, and compatibility contracts
-status: pending
+status: complete
 owner: Japneet Kalkat
 primary_outcome: Versioned transport-neutral schemas and golden fixtures for task spaces, pages, leases, snapshots, actions, events, local IPC, Native Messaging, CLI/SDK, and MCP compatibility.
 depends_on: phase-1
@@ -151,49 +151,49 @@ Required error codes include `extension_not_connected`, `profile_not_found`, `sp
 
 ## Tasks
 
-- [ ] P2-T1 — Add and freeze `agentyc-core` domain contracts.
+- [x] P2-T1 — Add and freeze `agentyc-core` domain contracts.
   - **Files:** add `crates/agentyc-core/Cargo.toml`; `src/{lib.rs,ids.rs,records.rs,states.rs,errors.rs,protocol.rs,snapshots.rs,actions.rs,events.rs}`; workspace `Cargo.toml`.
   - **Done when:** all public newtypes/records serialize deterministically, IDs cannot be confused with raw browser handles, state/error enums cover Phase 1 transitions, and no core module imports Chrome/CDP/MCP.
   - **Validation:** `cargo test -p agentyc-core --locked`; JSON schema/golden fixtures under `crates/agentyc-core/tests/fixtures/`.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P2-T2 — Define local framing and handshake contracts.
+- [x] P2-T2 — Define local framing and handshake contracts.
   - **Files:** `crates/agentyc-core/src/protocol.rs`; planned `crates/agentyc-host/src/protocol.rs`; `docs/security/host-protocol.md`.
   - **Done when:** 4-byte big-endian framing, max-frame rejection before allocation, clean/truncated EOF, invalid UTF-8/JSON, version negotiation, hello/hello_ok, request/response/event/artifact envelopes, cancellation, and resume watermark are specified.
   - **Validation:** fragmented/coalesced/truncated/oversized frame tests; protocol mismatch and out-of-order response golden tests.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P2-T3 — Define Native Messaging bridge envelopes and security fields.
+- [x] P2-T3 — Define Native Messaging bridge envelopes and security fields.
   - **Files:** planned `crates/agentyc-host/src/native_messaging.rs` contract types; `extension/src/protocol.ts`; `install/native-messaging/README.md`; `docs/security/host-protocol.md`.
   - **Done when:** transport-supplied caller origin is separated from JSON payload; exact extension-ID allowlist has no wildcards; enrolled profile binding state, broker epoch, connection nonce, independent per-direction sequence, protocol, capability, and bounded message/chunk/artifact fields are explicit; reconnect starts a new connection epoch and sequence space; content scripts cannot use the host channel directly.
   - **Validation:** exact-origin, forged-origin-field, replay, reconnect-sequence-reset, oversized, chunk-flood, malformed, bridge reconnect, direct-host-execution, and host-crash fixtures pass.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P2-T4 — Define snapshot, ref, action, wait, artifact, and capability schemas.
+- [x] P2-T4 — Define snapshot, ref, action, wait, artifact, and capability schemas.
   - **Files:** `crates/agentyc-core/src/{snapshots.rs,actions.rs,events.rs}`; `docs/api-local.md`; fixture directories for snapshots/actions/capabilities.
   - **Done when:** clean/delta/full/truncated/resync, stale ref, action unknown/reconcile, wait cancellation, artifact handle/chunk, and unsupported capability responses are distinguishable and bounded; delta hashes/order/coverage/cache states and action dispatch/reconciliation states are normative.
   - **Validation:** golden JSON with tokenizer metadata, transport/UTF-8/serialized/model-context token fields, exact error code, redaction, and no raw IDs; deterministic delta apply/reject/resync, coherent/partial multi-frame, artifact size/chunk, and stale-generation tests.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P2-T5 — Freeze task-space/page/lease/user-control request model.
+- [x] P2-T5 — Freeze task-space/page/lease/user-control request model.
   - **Files:** `crates/agentyc-core/src/{records.rs,states.rs}`; `docs/api-local.md`.
   - **Done when:** create/resume/claim/renew/handoff/accept/pause/takeover/return/finish/release/adopt/page operations use canonical `space_id`, define owner/authority class, epoch, confirmation ticket, retention, binding/rebind state, fresh generation proof, and duplicate behavior. A user-intent ticket is single-use, expiring, action-hash-bound, and cannot be forged by a payload boolean.
   - **Validation:** state-machine fixture tests for duplicate claim, stale epoch, takeover, extension fence barrier, user return, orphan recovery, rebind-required, release, stale tab-ID reuse, and cleanup confirmation.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P2-T6 — Define CLI and Node SDK contract mapping.
+- [x] P2-T6 — Define CLI and Node SDK contract mapping.
   - **Files:** planned `packages/agentyc-browser/{package.json,src/client.ts,src/types.ts,src/space.ts,src/page.ts}`; `docs/cli.md`; `crates/agentyc/src/frontend.rs` command mapping.
   - **Done when:** one operation maps identically across local JSON, CLI `--json`, and typed SDK; stdout/stderr, exit codes, reconnect, cancellation, batch script, and unknown action behavior are explicit.
   - **Validation:** protocol/client contract tests; example script uses `taskSpace(...).page(...).snapshot(...)` without raw IDs.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P2-T7 — Define MCP adapter and legacy deprecation matrix.
+- [x] P2-T7 — Define MCP adapter and legacy deprecation matrix.
   - **Files:** `crates/agentyc-mcp/src/{compat.rs,adapter.rs,connection.rs}` design; `crates/agentyc-mcp/src/state.rs` migration boundary; `docs/api.md`; `tests/mcp_protocol.rs` expected fixtures; planned `tests/fixtures/mcp/{stdio,http,schemas,errors,workflows}/`.
   - **Done when:** legacy stdio/HTTP connection maps to a host-assigned principal, default compatibility `space` behavior is explicit, unsafe global operations become scoped, raw fields are adapter-only, unsupported extension capabilities have typed MCP errors, and modern MCP remains separate. The matrix distinguishes tool execution failures (`CallToolResult.isError=true`) from JSON-RPC protocol errors and defines rmcp 1.7 cancellation/disconnect/EOF behavior. It includes exact versioned default/extended tool manifests, schemas, side effects, authority, deprecation, and stable error mappings.
   - **Validation:** compatibility matrix covers measured default 61 and extended 76 tools, profile advertisement, accepted `2024-11-05`, explicit rejection/not-claim for `2025-11-25` and `2026-07-28` under `rmcp 1.7`, HTTP session/GET/SSE/DELETE/header behavior, `isError`, state fields, `tab_id`, cancellation, abrupt disconnect, host ownership, duplicate/out-of-order requests, event replay, and schema goldens. Archive sanitized wire transcripts and manifests.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P2-T8 — Audit all primary outputs for identity leakage.
+- [x] P2-T8 — Audit all primary outputs for identity leakage.
   - **Files:** new/updated `README.md`, `SKILL.md`, `.agents/skills/agentyc-browser-automation/`, `plugins/agentyc-browser-automation/`, CLI examples, extension side-panel fixtures, debug schemas.
   - **Done when:** no primary output or documentation uses `[id] name`, raw target/session/tab IDs, or tab-centric active-page assumptions; only the legacy adapter has marked deprecated fields.
   - **Validation:** negative fixture/grep test with allowlisted adapter paths; fresh-agent documentation review.
@@ -201,17 +201,17 @@ Required error codes include `extension_not_connected`, `profile_not_found`, `sp
 
 ## Quality checklist
 
-- [ ] Core compiles without Chrome/CDP/MCP dependencies.
-- [ ] Local and Native Messaging frames are distinct and bounded.
-- [ ] Every mutation has request/action/idempotency identity and lease epoch.
-- [ ] Every snapshot/ref declares provenance and resync behavior.
-- [ ] CLI/SDK/MCP mapping does not add a second semantic contract.
-- [ ] `space_id` is canonical and `group_id` is only an explicitly deprecated compatibility alias.
-- [ ] Native Messaging transport metadata, user intent, and profile-binding state cannot be forged through payload fields.
-- [ ] Primary outputs contain only structured logical identity.
-- [ ] Snapshot deltas have deterministic hashes, bounded chains, coverage, and full-resync semantics.
-- [ ] Token metrics distinguish transport, serialized, and deployed model-context boundaries.
-- [ ] Every canonical error has stable code, retryability, action/reconcile guidance, and layer-specific mapping.
+- [x] Core compiles without Chrome/CDP/MCP dependencies.
+- [x] Local and Native Messaging frames are distinct and bounded.
+- [x] Every mutation has request/action/idempotency identity and lease epoch.
+- [x] Every snapshot/ref declares provenance and resync behavior.
+- [x] CLI/SDK/MCP mapping does not add a second semantic contract.
+- [x] `space_id` is canonical and `group_id` is only an explicitly deprecated compatibility alias.
+- [x] Native Messaging transport metadata, user intent, and profile-binding state cannot be forged through payload fields.
+- [x] Primary outputs contain only structured logical identity.
+- [x] Snapshot deltas have deterministic hashes, bounded chains, coverage, and full-resync semantics.
+- [x] Token metrics distinguish transport, serialized, and deployed model-context boundaries.
+- [x] Every canonical error has stable code, retryability, action/reconcile guidance, and layer-specific mapping.
 
 ## Handoff out
 
