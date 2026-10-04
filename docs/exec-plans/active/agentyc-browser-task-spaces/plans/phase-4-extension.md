@@ -36,7 +36,7 @@ Implement the browser-side half of the new product. The extension must work in t
 
 ## Unresolved questions
 
-- **U4-1:** exact Web Store/managed packaging and update channel; owner: Japneet Kalkat; carry to Phase 8 if not needed for internal preview.
+- **U4-1:** exact Web Store/managed packaging and update channel; owner: Japneet Kalkat; carry to Phase 8 if not needed for direct launch.
 - **U4-2:** whether a content-script fallback is required for any debugger-restricted domain; owner: Japneet Kalkat; resolve from capability matrix.
 
 ## Scope
@@ -108,7 +108,7 @@ extension/
 - [ ] P4-T1 — Add the MV3 manifest and build/package contract.
   - **Files:** `extension/manifest.json`, `extension/package.json`, lockfile/build config, `docs/installation.md`.
   - **Done when:** minimum Chrome version, exact permissions/host match patterns, side-panel entry, service worker, content scripts, CSP, development/production IDs, Native Messaging host name, enterprise-policy denial behavior, and incognito policy are explicit. `sidePanel.open()` is documented as user-action-gated.
-  - **Validation:** `npm ci --prefix extension`; `npm test --prefix extension`; manifest lint; install unpacked in a clean test profile; permission review against S-019–S-024; reject undocumented `<all_urls>`/cookies/downloads/file/incognito expansion.
+  - **Validation:** `npm ci --prefix extension`; `npm test --prefix extension`; manifest lint; install unpacked in a clean test profile; permission review against S-019–S-024; reject undocumented `<all_urls>`/cookies/downloads/file/incognito additions.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P4-T2 — Implement service-worker/native-host connection lifecycle.
@@ -157,7 +157,7 @@ extension/
 - [ ] Content/page messages are treated as untrusted.
 - [ ] No primary extension/host UI displays raw IDs or `[id] name`.
 - [ ] Profile binding is explicit and cannot be forged with a profile UUID or payload role field.
-- [ ] Stop, crash, update, uninstall, rollback, and ambiguous rebind retain pages; explicit cleanup uses fresh proof and confirmation.
+- [ ] Stop, crash, update, uninstall, and ambiguous rebind retain pages; explicit cleanup uses fresh proof and confirmation.
 
 ## Handoff out
 
