@@ -532,6 +532,73 @@ export class TabsRegistry {
     return this.publicRecord(record);
   }
 
+  /**
+   * Restore a durable binding after a service-worker restart in the same
+   * browser session. This is intentionally narrower than a host rebind:
+   * exact tab hints and the current session are required, and no URL match or
+   * host-proof forgery is accepted here.
+   */
+  restoreManagedBinding({
+    tabId,
+    spaceId,
+    pageId,
+    leaseEpoch,
+    targetGeneration,
+    navigationGeneration,
+    documentGeneration,
+  } = {}) {
+    assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
+    for (const [value, name] of [
+      [leaseEpoch, "lease_epoch"],
+      [targetGeneration, "target_generation"],
+      [navigationGeneration, "navigation_generation"],
+      [documentGeneration, "document_generation"],
+    ]) {
+      if (!Number.isSafeInteger(value) || value < 1)
+        throw new ProtocolError("stale_generation", `${name} is invalid`);
+    }
+    const record = this.byRawTab.get(tabId);
+    if (
+      !record ||
+      record.sessionEpoch !== this.browserSessionEpoch ||
+      record.ownership !== "unmanaged" ||
+      record.bindingState !== "unbound" ||
+      record.active === true ||
+      record.incognito === true ||
+      this.retiredRawTabIds.has(tabId)
+    ) {
+      throw new ProtocolError(
+        "stale_target",
+        "same-session durable binding is not an exact inactive tab match",
+      );
+    }
+    const priorPage = this.byPage.get(pageId);
+    if (priorPage && priorPage !== record)
+      throw new ProtocolError(
+        "ambiguous_binding",
+        "logical page is already bound to another live tab",
+      );
+    if (record.pageId !== undefined)
+      throw new ProtocolError(
+        "ambiguous_binding",
+        "tab is already logically bound",
+      );
+    this.byPage.set(pageId, record);
+    record.spaceId = spaceId;
+    record.pageId = pageId;
+    record.ownership = "agent";
+    record.lifecycle = "managed";
+    record.bindingState = "bound";
+    record.leaseEpoch = leaseEpoch;
+    record.targetGeneration = targetGeneration;
+    record.navigationGeneration = navigationGeneration;
+    record.documentGeneration = documentGeneration;
+    record.generation = targetGeneration;
+    this.groups?.claimTab(spaceId, tabId);
+    this.emit("page.bound", record, { reason: "same_session_worker_restore" });
+    return this.publicRecord(record);
+  }
+
   /** Rebind one retained inactive tab after an acknowledged lease fence. */
   async rebindManagedTab({
     spaceId,
@@ -576,8 +643,39 @@ export class TabsRegistry {
         "rebind proof does not authorize a retained page rebind",
       );
 
-    const record = this.byPage.get(pageId);
-    if (!record || record.spaceId !== spaceId)
+    let record = this.byPage.get(pageId);
+    if (!record) {
+      const candidate = this.findRehydrateCandidate({
+        url: proof.url,
+        title: proof.title,
+      });
+      if (!candidate)
+        throw new ProtocolError(
+          "page_not_found",
+          "retained page is not available for rebind",
+        );
+      const rebound = this.bindManagedTab({
+        tab: { id: candidate.rawTabId },
+        spaceId,
+        pageId,
+        leaseEpoch,
+        ownershipProof: proof,
+        targetGeneration,
+        navigationGeneration,
+        documentGeneration,
+        url: candidate.url,
+        title: candidate.title,
+      });
+      await this.groups
+        ?.presentSpace({
+          spaceId,
+          tabId: candidate.rawTabId,
+          title: candidate.title || "agentyc",
+        })
+        .catch(() => {});
+      return rebound;
+    }
+    if (record.spaceId !== spaceId)
       throw new ProtocolError("page_not_found", "logical page is not bound");
     if (
       record.ownership === "agent" &&
@@ -697,6 +795,24 @@ export class TabsRegistry {
     }
   }
 
+  async focusedTabSnapshot() {
+    if (typeof this.chrome?.tabs?.query !== "function") return undefined;
+    try {
+      const tabs = await chromeCall(
+        this.chrome.tabs.query.bind(this.chrome.tabs),
+        { active: true, lastFocusedWindow: true },
+      );
+      const tab = Array.isArray(tabs) ? tabs[0] : undefined;
+      if (!tab || !Number.isInteger(tab.id)) return undefined;
+      return {
+        tabId: tab.id,
+        windowId: Number.isInteger(tab.windowId) ? tab.windowId : undefined,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   async createAgentPage({
     spaceId,
     pageId,
@@ -706,6 +822,7 @@ export class TabsRegistry {
     ownershipProof,
     windowHint,
     onDispatch = () => {},
+    isLive = () => true,
   } = {}) {
     assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
     const creationSessionEpoch = this.browserSessionEpoch;
@@ -739,6 +856,7 @@ export class TabsRegistry {
     }
     if (rawWindowId !== undefined) options.windowId = rawWindowId;
     if (typeof url === "string" && url.length > 0) options.url = url;
+    const focusedBefore = await this.focusedTabSnapshot();
     this.assertFence({ spaceId, leaseEpoch });
     let tab;
     try {
@@ -756,27 +874,50 @@ export class TabsRegistry {
       throw unknownDispatch("Chrome did not return a created tab identity");
     }
     this.hostCreatedTabIds.add(tab.id);
-    if (this.browserSessionEpoch !== creationSessionEpoch) {
+    if (this.browserSessionEpoch !== creationSessionEpoch || !isLive()) {
       const sessionError = new ProtocolError(
-        "stale_epoch",
-        "browser session changed during page creation",
+        "unknown_outcome",
+        "page creation completed after its worker authority ended",
       );
+      sessionError.outcome = "unknown";
+      sessionError.retryable = false;
       await this.rollbackCreatedTab(tab, sessionError);
       throw sessionError;
     }
-    if (tab.active === true) {
+    const focusedAfter = await this.focusedTabSnapshot();
+    const focusChanged =
+      focusedBefore &&
+      focusedAfter &&
+      (focusedBefore.tabId !== focusedAfter.tabId ||
+        focusedBefore.windowId !== focusedAfter.windowId);
+    if (tab.active === true || focusChanged) {
       const record = this.observeTab(tab, "focus_theft");
       record.lifecycle = "unmanaged";
       record.ownership = "unmanaged";
+      record.bindingState = "unbound";
       this.hostCreatedTabIds.delete(tab.id);
+      if (tab.active !== true)
+        await this.rollbackCreatedTab(
+          tab,
+          new Error("focus changed during page creation"),
+        );
       throw new ProtocolError(
         "focus_theft",
-        "Chrome activated an agent tab; it was not claimed",
+        "Chrome changed the focused tab or window during agent page creation",
       );
     }
     let publicRecord;
     try {
       this.assertFence({ spaceId, leaseEpoch });
+      if (!isLive()) {
+        const error = new ProtocolError(
+          "unknown_outcome",
+          "page creation authority ended before binding",
+        );
+        error.outcome = "unknown";
+        error.retryable = false;
+        throw error;
+      }
       publicRecord = this.bindManagedTab({
         tab,
         spaceId,
@@ -1256,6 +1397,17 @@ export class TabsRegistry {
           ? undefined
           : browserHint(record.rawWindowId, this.hintSalt),
       tab_hint: browserHint(record.rawTabId, this.hintSalt),
+      ...(record.ownership === "unmanaged" && record.active === true
+        ? {
+            // This is a salted content fingerprint, not a URL/title. It lets
+            // the runner prove focus continuity across Chrome session hint
+            // rotation without exporting user-tab metadata.
+            focus_hint: browserHint(
+              `focus:${record.url ?? ""}\u0000${record.title ?? ""}`,
+              this.profileInstanceId ?? "focus",
+            ),
+          }
+        : {}),
     };
   }
 
@@ -1372,6 +1524,7 @@ export class TabsRegistry {
     record.targetGeneration += 1;
     record.generation = record.targetGeneration;
     record.bindingState = record.pageId ? "lost" : record.bindingState;
+    this.onLifecycle("attached", tabId, record);
     this.emit(record.pageId ? "page.changed" : "tab.observed", record, {
       reason: "tab_attached",
     });
@@ -1383,6 +1536,7 @@ export class TabsRegistry {
     record.targetGeneration += 1;
     record.generation = record.targetGeneration;
     if (record.pageId) record.bindingState = "lost";
+    this.onLifecycle("detached", tabId, record);
     this.emit(record.pageId ? "page.changed" : "tab.observed", record, {
       reason: "tab_detached",
     });
