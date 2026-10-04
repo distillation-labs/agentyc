@@ -1,8 +1,8 @@
 # Phase 0 Chrome documentation audit
 
 **Captured:** 2026-10-03 UTC
-**Status:** static audit complete; live existing-profile gate remains blocked
-**Sources:** official Chrome for Developers pages and the official Chrome DevTools Protocol schema; latest-indexed Context7 retrieval is supplemental, not Chrome 154 runtime proof
+**Status:** current audit complete; Phase 0 live coexistence evidence is present, with bounded Phase 1 residuals
+**Sources:** direct retrieval from official Chrome for Developers pages, the official Chrome DevTools Protocol schema, and Context7 fallback retrieval of the same official documentation. Firecrawl MCP was unavailable because the local service refused connections; direct official retrieval is recorded as a bounded fallback, not internet-wide saturation.
 
 ## Sources checked
 
@@ -63,6 +63,28 @@ Context7 MCP was unavailable; the documented `npx --yes ctx7@latest` fallback re
 
 See [host-backed probe and operator checkpoints](phase-0-host-backed-probe.md) for the runtime/evidence lanes and remaining user-control gaps.
 
-## Remaining Phase 0 evidence gap
+## Current implementation audit — 2026-10-03
 
-The documentation and static contracts are corrected, but this audit does not create live evidence. `scripts/check_phase_0_baseline.py research/phase-0-baseline.md` must remain blocked until an approved extension/host enrollment exists in the user's existing Chrome profile and all ten coexistence scenarios execute with zero user-tab closes, focus theft, cross-space mutations, and stale-agent mutations.
+The prior sections preserve the historical audit. The current worktree now has a fresh headed existing-Chrome artifact at `artifacts/p0-coexistence/live-checkpoints-auto12/report.json`; it records two managed pages, two visual groups, an unrelated active user tab, snapshots, allowlisted actions, cross-space and stale-lease rejection, fence/reclaim, cleanup, and worker/host/browser/extension recovery. The canonical checker value is `pass`.
+
+Verified hardening applied after the live capture:
+
+- Same-session worker recovery now requires the exact persisted tab hint and current browser-session epoch. URL/title matching no longer authorizes binding, and the extension no longer fabricates a host rebind proof. Browser-session changes remain `rebind_required` until a fresh host-issued proof is used.
+- Tab attach/detach lifecycle events invalidate debugger/frame routing before later use; late worker operations cannot commit a managed binding after the worker stop token changes.
+- Safety counters persist across MV3 worker replacement, reset on a new Chrome session, and the runner/checker reject non-zero counters instead of synthesizing zeroes.
+- Unmanaged user-tab URLs/titles are removed before Native Messaging inventory transmission; cleanup rejects truncated inventories as absence proof.
+- Fence retries at the current epoch are idempotent acknowledgements; older epochs remain rejected. Close reconciliation remains `unknown` without positive absence evidence.
+- Host snapshot/page-inventory paths adopt only monotonic generations observed from the trusted extension bridge, preventing valid navigation from becoming a permanent stale-generation failure. The Native Messaging supervisor now drains lifecycle events into the broker; page-loss/session-change events fence logical records without closing tabs.
+- The direct SDK now uses the host's `snapshot.read`/`events.resume` method names; the host returns a typed capability result for the not-yet-implemented `wait.for` adapter.
+- Focus continuity across Chrome tab-hint rotation uses a salted content fingerprint rather than exporting a user URL/title; cleanup and the live runner reject truncated inventory as absence proof.
+
+## Official-contract residuals carried to Phase 1
+
+These are explicit capability/distribution limits, not hidden Phase 0 claims:
+
+- Chrome debugger flat related-target/OOPIF auto-attach is not implemented; frame/OOPIF operations remain partial/unsupported until an internal `Target.setAutoAttach` session graph is added and tested. The manifest floor of Chrome 125 reflects the documented API availability, not completed product support.
+- `active:false` is necessary but does not control window focus. Page creation now verifies the active tab/window before claiming a page; multi-window visual-group presentation remains best-effort and must not be treated as ownership.
+- Ordinary Chrome distribution is still a trusted unpacked development build or enterprise-managed macOS path; Web Store signing and Linux/Windows registration are release work, not Phase 0 evidence.
+- Chrome update installation is idle-dependent. Persisted state migration and compatibility fencing for future extension versions remain Phase 1 hardening.
+
+The current checker must be rerun after every runtime/source change. No official documentation retrieval proves installed behavior; live artifacts and deterministic tests remain the behavioral evidence.
