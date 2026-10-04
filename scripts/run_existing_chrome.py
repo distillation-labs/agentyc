@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -45,6 +45,7 @@ MAX_CLI_STDOUT_BYTES = 128 * 1024
 MAX_CLI_STDERR_BYTES = 16 * 1024
 MAX_CLI_TIMEOUT_SECONDS = 15.0
 MAX_OPERATOR_CHECKPOINT_SECONDS = 60.0
+LIVE_LEASE_TTL = 15 * 60 * 1000
 MAX_OPERATOR_LINE_CHARS = 160
 MAX_LIVE_RECEIPTS = 96
 MAX_INVENTORY_POLL_ATTEMPTS = 5
@@ -1610,7 +1611,12 @@ def _set_scenario(
             return
 
 
-def _operator_checkpoint(name: str, timeout: float) -> tuple[bool, str]:
+def _operator_checkpoint(
+    name: str,
+    timeout: float,
+    *,
+    heartbeat: Callable[[], None] | None = None,
+) -> tuple[bool, str]:
     """Accept only a fixed acknowledgement; it is never used as evidence."""
     token = f"{CHECKPOINT_TOKEN_PREFIX} {name} ACK"
     print(
@@ -1623,9 +1629,21 @@ def _operator_checkpoint(name: str, timeout: float) -> tuple[bool, str]:
             stream = sys.stdin
             if not stream.isatty():
                 stream = stack.enter_context(open("/dev/tty", "r", encoding="utf-8"))
-            ready, _, _ = select.select([stream], [], [], timeout)
-            if not ready:
-                return False, "checkpoint_timeout"
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False, "checkpoint_timeout"
+                ready, _, _ = select.select([stream], [], [], min(1.0, remaining))
+                if ready:
+                    break
+                if heartbeat is not None:
+                    try:
+                        heartbeat()
+                    except (OSError, ProbeError, TypeError, ValueError):
+                        # A restart may temporarily make renewal unavailable;
+                        # post-checkpoint live observations remain authoritative.
+                        pass
             line = stream.readline(MAX_OPERATOR_LINE_CHARS + 1)
             if len(line) > MAX_OPERATOR_LINE_CHARS:
                 return False, "checkpoint_line_oversized"
@@ -1999,7 +2017,17 @@ def orchestrate_live(
                 "cleanup_inventory_ok": False,
             }
             spaces.append(space)
-            claim = cli.call(["space", "claim", "--space-id", space_id], principal=principal)
+            claim = cli.call(
+                [
+                    "space",
+                    "claim",
+                    "--space-id",
+                    space_id,
+                    "--ttl",
+                    str(LIVE_LEASE_TTL),
+                ],
+                principal=principal,
+            )
             _append_receipt(transport_receipts, f"space.claim.{label}", claim)
             lease_epoch = _claim_result(claim, space_id)
             if lease_epoch is None:
@@ -2171,7 +2199,14 @@ def orchestrate_live(
 
             old_epoch = first["lease_epoch"]
             takeover = cli.call(
-                ["space", "takeover", "--space-id", first["space_id"]],
+                [
+                    "space",
+                    "takeover",
+                    "--space-id",
+                    first["space_id"],
+                    "--ttl",
+                    str(LIVE_LEASE_TTL),
+                ],
                 principal=first["principal"],
             )
             _append_receipt(transport_receipts, "space.takeover.research", takeover)
@@ -2268,6 +2303,8 @@ def orchestrate_live(
                             second["space_id"],
                             "--control-ticket",
                             return_ticket_json,
+                            "--ttl",
+                            str(LIVE_LEASE_TTL),
                         ],
                         principal=second["principal"],
                     )
@@ -2326,12 +2363,35 @@ def orchestrate_live(
                 focus_checks.append(_focus_is_unchanged(baseline_focus, latest_inventory.get("user_focus")))
 
             if operator_checkpoint:
+                def renew_live_leases() -> None:
+                    for live_space in spaces:
+                        live_epoch = live_space.get("lease_epoch")
+                        if not isinstance(live_epoch, int):
+                            continue
+                        cli.call(
+                            [
+                                "space",
+                                "renew",
+                                "--space-id",
+                                live_space["space_id"],
+                                "--lease-epoch",
+                                str(live_epoch),
+                                "--ttl",
+                                str(LIVE_LEASE_TTL),
+                            ],
+                            principal=live_space["principal"],
+                        )
+
                 checkpoint_before_host = host_observation
                 checkpoint_before_inventory = latest_inventory
                 if not isinstance(checkpoint_before_inventory, dict) or not checkpoint_before_inventory.get("observed"):
                     failures.append("checkpoint_baseline_inventory_missing")
                 for name in RESTART_SCENARIOS:
-                    acknowledged, checkpoint_status = _operator_checkpoint(name, checkpoint_timeout)
+                    acknowledged, checkpoint_status = _operator_checkpoint(
+                        name,
+                        checkpoint_timeout,
+                        heartbeat=renew_live_leases,
+                    )
                     checkpoint_record: dict[str, Any] = {
                         "name": name,
                         "acknowledged": acknowledged,
@@ -2352,6 +2412,60 @@ def orchestrate_live(
                         failures.append(f"{name}_post_host_invalid")
                         continue
                     binding_current = after_host.get("profile_instance_id") == observed_profile_binding
+                    if name in {
+                        "host-restart-recovery",
+                        "chrome-restart-recovery",
+                        "extension-update-recovery",
+                    }:
+                        for recover_space in spaces:
+                            recover_claim = cli.call(
+                                [
+                                    "space",
+                                    "claim",
+                                    "--space-id",
+                                    recover_space["space_id"],
+                                    "--ttl",
+                                    str(LIVE_LEASE_TTL),
+                                ],
+                                principal=recover_space["principal"],
+                            )
+                            _append_receipt(
+                                transport_receipts,
+                                f"space.recover.claim.{name}.{recover_space['label']}",
+                                recover_claim,
+                            )
+                            recover_epoch = _claim_result(
+                                recover_claim,
+                                recover_space["space_id"],
+                            )
+                            if recover_epoch is None:
+                                failures.append(f"{name}_lease_recovery_invalid")
+                                continue
+                            recover_takeover = cli.call(
+                                [
+                                    "space",
+                                    "takeover",
+                                    "--space-id",
+                                    recover_space["space_id"],
+                                    "--ttl",
+                                    str(LIVE_LEASE_TTL),
+                                ],
+                                principal=recover_space["principal"],
+                            )
+                            _append_receipt(
+                                transport_receipts,
+                                f"space.recover.takeover.{name}.{recover_space['label']}",
+                                recover_takeover,
+                            )
+                            recovered_epoch = _takeover_result(
+                                recover_takeover,
+                                recover_space["space_id"],
+                                recover_epoch,
+                            )
+                            if recovered_epoch is None:
+                                failures.append(f"{name}_lease_recovery_invalid")
+                            else:
+                                recover_space["lease_epoch"] = recovered_epoch
                     after_inventory = _poll_managed_inventory(
                         cli,
                         spaces,
