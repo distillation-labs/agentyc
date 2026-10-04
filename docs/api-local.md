@@ -6,7 +6,7 @@
 
 The SDK accepts an injected transport or a real framed local host socket. An injected transport can be a Native Messaging/local IPC adapter, a test handler, or another local host adapter that implements the same request-batch shape. Without an injected transport, pass `socketPath` or set `AGENTYC_HOST_SOCKET`; `connect({ profile })` fails with `native_host_unavailable` when no socket is configured rather than pretending to be connected.
 
-The built-in `LocalProtocolTransport` uses the Rust envelope contract: one UTF-8 JSON `Envelope` per four-byte big-endian length frame, with the bounded one MiB control-payload default. It performs `hello`/`hello_ok`, request/response correlation, cancellation, event delivery, and cursor-based resume. The Rust host dispatcher remains the authority for method support and canonical errors.
+The built-in `LocalProtocolTransport` uses the Rust envelope contract: one UTF-8 JSON `Envelope` per four-byte big-endian length frame, with the bounded one MiB control-payload default. It performs `hello`/`hello_ok`, request/response correlation, cancellation, and explicit cursor-based event resume. The current local socket is request/resume driven; it does not push a continuous event stream. The Rust host dispatcher remains the authority for method support and canonical errors.
 
 No browser is implicitly launched or downloaded. Live automation requires an enrolled extension and Native Messaging host. For deterministic testing and CI, an injected transport provides an offline test seam.
 
@@ -75,9 +75,9 @@ await space.returnControl();
 
 ### Explicit shared-profile disclosure
 
-Task spaces share the user's existing browser profile state. Calling `client.createSpace(label, options)` requires `{ acceptSharedProfileDisclosure: true }`. Omission throws an `AgentycError` with code `invalid_argument`.
+Task spaces share the user's existing browser profile state. Calling `client.createSpace(label, options)` requires `{ acceptSharedProfileDisclosure: true }`. Omission throws an `AgentycError` with code `permission_denied`.
 
-`TaskSpace.page(label)` is lazy. `TaskSpace.newPage(label)` sends a logical page-create request immediately. Lease epochs are retained on the handle after claim/renew/takeover and can be supplied explicitly when a caller is recovering state.
+`TaskSpace.page(label)` creates a lazy handle that resolves an existing page by label on first use; labels must identify exactly one page within the space. Use `TaskSpace.page(pageId)` to address a known logical ID. `TaskSpace.newPage(label)` sends a logical page-create request immediately. Page creation, snapshots, close, and actions require a claimed lease; the SDK rejects missing lease epochs before dispatch. Lease epochs are retained after claim/renew/takeover and cleared after return, finish, or release.
 
 The SDK exposes host-backed `finish(options?)` and `release(options?)` transitions. Both accept `{ leaseEpoch, now }` and send those authorization values to the host; the SDK never simulates lifecycle transitions locally.
 
@@ -90,14 +90,13 @@ const events = await space.events({ afterSequence: 0 });
 await space.waitFor({ kind: "page_changed" }, { timeoutMs: 10_000 });
 ```
 
-### Supported operations vs. planned convenience methods
+### Supported helpers and capability limits
 
-Actions are dispatched via `page.action(operation, payload?, options?)`. The supported operations are:
-`navigate`, `click`, `input`, `evaluate`, `scroll`, `wait`, `screenshot`, `storage_write`, `cookie_write`, `upload`, `close`.
+Actions may be dispatched through `page.action(operation, payload?, options?)`. The canonical action names are `navigate`, `click`, `input`, `evaluate`, `scroll`, `wait`, `screenshot`, `storage_write`, `cookie_write`, `upload`, and `close`; availability is still determined by the connected host and extension.
 
-Planned convenience helper methods (such as `page.goto()`, `page.click()`, or `page.type()`) are planned contract wrappers and are not currently implemented on `Page`. Always use `page.action(operation, payload)` directly.
+The SDK implements `page.goto()`, `page.click()`, `page.type()`, `page.fill()`, `page.scroll()`, `page.evaluate()`, and `page.waitForURL()` as wrappers over those canonical operations. `page.press()`, `page.select()`, and `page.upload()` currently fail locally with `CapabilityUnavailableError`; the current extension action policy does not provide those semantics. `type` and `fill` both map to the host's `input` operation. The SDK does not claim those operations have passed live Chrome validation.
 
-Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` resumes retained events and preserves the latest cursor across reconnects; callers must resync when the host reports a lagged or invalid cursor.
+Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` registers a local listener and performs one retained-event resume; the current local socket does not push a continuous event stream. For ongoing observation, use repeated `client.events(...)` reads or a bounded `waitFor(...)`. Callers must resync when the host reports a lagged or invalid cursor.
 
 ## Batching
 
