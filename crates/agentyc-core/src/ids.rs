@@ -191,12 +191,19 @@ opaque_id!(SnapshotId, "snapshot_");
 opaque_id!(FrameId, "frame_");
 opaque_id!(RequestId, "req_");
 opaque_id!(ActionId, "action_");
+opaque_id!(UserIntentTicketId, "ticket_");
 opaque_id!(EventId, "evt_");
 opaque_id!(RefId, "ref_");
 opaque_id!(IdempotencyKey, "idem_");
 opaque_id!(ReconcileToken, "reconcile_");
 opaque_id!(ArtifactId, "artifact_");
 opaque_id!(ElementKey, "element_");
+
+/// Compatibility alias for the host-issued user-intent ticket identity.
+///
+/// New code should prefer [`UserIntentTicketId`], while the alias keeps the
+/// shorter name available to adapters that already call these values tickets.
+pub type TicketId = UserIntentTicketId;
 
 macro_rules! counter_id {
     ($(#[$meta:meta])* $name:ident) => {
