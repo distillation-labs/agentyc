@@ -1,9 +1,18 @@
 import {
   ProtocolError,
   assertLogicalScope,
+  chromeErrorMessage,
+  classifyChromeError,
   isRestrictedUrl,
   redactBrowserIdentifiers,
 } from "./protocol.mjs";
+import { isAllowedDebuggerEvent } from "./frames.mjs";
+
+export { DEBUGGER_EVENT_ALLOWLIST, isAllowedDebuggerEvent } from "./frames.mjs";
+
+// Chrome documents "0.1" as the minimum required debugger protocol version;
+// use it so newer compatible protocol revisions remain attachable.
+export const REQUIRED_DEBUGGER_PROTOCOL_VERSION = "0.1";
 
 export const DEBUGGER_DOMAIN_ALLOWLIST = Object.freeze({
   Accessibility: Object.freeze([
@@ -116,6 +125,44 @@ const RUNTIME_EVALUATE_PARAMETER_ALLOWLIST = new Set([
   "throwOnSideEffect",
 ]);
 
+const INTERNAL_RELATED_TARGET_METHOD = "Target.setAutoAttach";
+const RELATED_TARGET_TYPES = new Set(["iframe"]);
+
+const ARTIFACT_METHOD_PURPOSES = Object.freeze({
+  "Page.captureScreenshot": "screenshot",
+  "Page.printToPDF": "pdf",
+});
+
+export function isArtifactDebuggerCommand(method) {
+  return Object.prototype.hasOwnProperty.call(ARTIFACT_METHOD_PURPOSES, method);
+}
+
+const MAX_ARTIFACT_APPROVAL_LIFETIME_MS = 15 * 60 * 1000;
+const MAX_USED_ARTIFACT_APPROVALS = 1024;
+const APPROVAL_ID_RE = /^[A-Za-z0-9._:-]{8,128}$/;
+
+function pageOrigin(url) {
+  if (typeof url !== "string") return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === "null" ? undefined : parsed.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function approvalExpiry(approval) {
+  return approval?.expires_at ?? approval?.expires_at_ms;
+}
+
+function chromeProtocolError(error, operation, context = {}) {
+  const code = classifyChromeError(error, { operation, ...context });
+  if (code === "unknown") return undefined;
+  return new ProtocolError(code, chromeErrorMessage(code), {
+    chrome_error: code,
+  });
+}
+
 function chromeApiOrGlobal(chromeApi) {
   return chromeApi ?? globalThis.chrome;
 }
@@ -205,7 +252,9 @@ export class DebuggerBridge {
     this.profileInstanceId = profileInstanceId;
     this.browserSessionEpoch = browserSessionEpoch;
     this.attached = new Map();
+    this.relatedSessions = new Map();
     this.usedEvaluationApprovals = new Map();
+    this.usedArtifactApprovals = new Map();
     this.started = false;
     this.removeListeners = [];
   }
@@ -230,7 +279,9 @@ export class DebuggerBridge {
     for (const remove of this.removeListeners.splice(0)) remove();
     this.started = false;
     this.attached.clear();
+    this.relatedSessions.clear();
     this.usedEvaluationApprovals.clear();
+    this.usedArtifactApprovals.clear();
   }
 
   setIdentity({ profileInstanceId, browserSessionEpoch } = {}) {
@@ -246,7 +297,9 @@ export class DebuggerBridge {
     for (const tabId of [...this.attached.keys()])
       this.frames.invalidateTab(tabId, "browser_session_changed");
     this.attached.clear();
+    this.relatedSessions.clear();
     this.usedEvaluationApprovals.clear();
+    this.usedArtifactApprovals.clear();
     this.frames.reset?.("browser_session_changed");
   }
 
@@ -255,6 +308,215 @@ export class DebuggerBridge {
     for (const [id, expiresAt] of this.usedEvaluationApprovals) {
       if (expiresAt <= now) this.usedEvaluationApprovals.delete(id);
     }
+  }
+
+  pruneArtifactApprovals() {
+    const now = this.now();
+    for (const [id, expiresAt] of this.usedArtifactApprovals) {
+      if (expiresAt <= now) this.usedArtifactApprovals.delete(id);
+    }
+  }
+
+  approvalFrameScope(approval) {
+    return approval?.frame_scope ?? approval?.frameScope;
+  }
+
+  assertCurrentFrameScope(record, approval) {
+    const frameScope = this.approvalFrameScope(approval);
+    if (typeof frameScope !== "string" || frameScope.length === 0)
+      throw new ProtocolError(
+        "permission_denied",
+        "approval must name a logical frame scope",
+      );
+    if (typeof this.frames?.assertFrameScope === "function") {
+      return this.frames.assertFrameScope({
+        tabId: record.rawTabId,
+        frameScope,
+      });
+    }
+    if (frameScope !== "main")
+      throw new ProtocolError(
+        "permission_denied",
+        "logical frame scope is unavailable",
+      );
+    return { frameScope, origin: pageOrigin(record.url) };
+  }
+
+  validateRuntimeEvaluationApproval(
+    approval,
+    { record, spaceId, pageId, leaseEpoch } = {},
+  ) {
+    if (!approval || typeof approval !== "object" || Array.isArray(approval))
+      throw new ProtocolError(
+        "user_confirmation_required",
+        "runtime evaluation requires host approval",
+      );
+    if (
+      approval.issued_by_host !== true ||
+      typeof approval.approval_id !== "string" ||
+      !APPROVAL_ID_RE.test(approval.approval_id)
+    )
+      throw new ProtocolError(
+        "user_confirmation_required",
+        "runtime evaluation approval is incomplete",
+      );
+    if (approval.purpose !== "runtime.evaluate")
+      throw new ProtocolError(
+        "permission_denied",
+        "runtime evaluation approval purpose is invalid",
+      );
+    const expiresAt = approvalExpiry(approval);
+    const now = this.now();
+    if (
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= now ||
+      expiresAt > now + MAX_APPROVAL_LIFETIME_MS
+    )
+      throw new ProtocolError(
+        "approval_expired",
+        "runtime evaluation approval is expired",
+      );
+    const targetGeneration = approval.target_generation ?? approval.generation;
+    if (
+      targetGeneration !== record.targetGeneration ||
+      approval.navigation_generation !== record.navigationGeneration ||
+      approval.document_generation !== record.documentGeneration
+    )
+      throw new ProtocolError(
+        "permission_denied",
+        "runtime evaluation approval generation scope is not current",
+      );
+    if (
+      approval.space_id !== spaceId ||
+      approval.page_id !== pageId ||
+      approval.lease_epoch !== leaseEpoch ||
+      (this.profileInstanceId !== undefined &&
+        approval.profile_instance_id !== this.profileInstanceId) ||
+      (this.browserSessionEpoch !== undefined &&
+        approval.browser_session_epoch !== this.browserSessionEpoch)
+    )
+      throw new ProtocolError(
+        "permission_denied",
+        "runtime evaluation approval scope is not current",
+      );
+    const frame = this.assertCurrentFrameScope(record, approval);
+    const origin = frame.origin ?? pageOrigin(record.url);
+    const approvedOrigin = approval.origin ?? approval.origin_scope;
+    if (!origin || approvedOrigin !== origin)
+      throw new ProtocolError(
+        "permission_denied",
+        "runtime evaluation approval origin scope is not current",
+      );
+    return { approvalId: approval.approval_id, expiresAt };
+  }
+
+  validateArtifactApproval(
+    approval,
+    {
+      record,
+      spaceId,
+      pageId,
+      leaseEpoch,
+      method,
+      requireFrameBinding = true,
+    } = {},
+  ) {
+    const deny = (message) => new ProtocolError("artifact_denied", message);
+    if (!isArtifactDebuggerCommand(method))
+      throw new ProtocolError(
+        "capability_unavailable",
+        "command is not an artifact operation",
+      );
+    if (!approval || typeof approval !== "object" || Array.isArray(approval))
+      throw deny("artifact capture requires a host-issued approval");
+    if (
+      approval.issued_by_host !== true ||
+      typeof approval.approval_id !== "string" ||
+      !APPROVAL_ID_RE.test(approval.approval_id)
+    )
+      throw deny("artifact approval is incomplete");
+    if (approval.purpose !== ARTIFACT_METHOD_PURPOSES[method])
+      throw deny("artifact approval purpose is invalid");
+    const expiresAt = approvalExpiry(approval);
+    const now = this.now();
+    if (
+      !Number.isSafeInteger(expiresAt) ||
+      expiresAt <= now ||
+      expiresAt > now + MAX_ARTIFACT_APPROVAL_LIFETIME_MS
+    )
+      throw deny("artifact approval is expired");
+    if (approval.user_gesture !== true && approval.gesture !== true)
+      throw new ProtocolError(
+        "user_confirmation_required",
+        "artifact capture requires a current user gesture",
+      );
+    const targetGeneration = approval.target_generation ?? approval.generation;
+    if (
+      approval.space_id !== spaceId ||
+      approval.page_id !== pageId ||
+      approval.lease_epoch !== leaseEpoch ||
+      targetGeneration !== record.targetGeneration ||
+      approval.navigation_generation !== record.navigationGeneration ||
+      approval.document_generation !== record.documentGeneration ||
+      (this.profileInstanceId !== undefined &&
+        approval.profile_instance_id !== this.profileInstanceId) ||
+      (this.browserSessionEpoch !== undefined &&
+        approval.browser_session_epoch !== this.browserSessionEpoch)
+    )
+      throw deny("artifact approval scope is not current");
+    const frameScope = this.approvalFrameScope(approval);
+    if (frameScope !== "main")
+      throw deny("artifact frame scope is not supported");
+    let frame;
+    if (requireFrameBinding) {
+      try {
+        frame = this.assertCurrentFrameScope(record, approval);
+      } catch (error) {
+        if (error instanceof ProtocolError)
+          throw deny("artifact frame scope is not current");
+        throw error;
+      }
+    } else {
+      frame = { frameScope, origin: pageOrigin(record.url) };
+    }
+    const origin = frame.origin ?? pageOrigin(record.url);
+    const approvedOrigin = approval.origin ?? approval.origin_scope;
+    if (!origin || approvedOrigin !== origin)
+      throw deny("artifact origin is not current");
+    return { approvalId: approval.approval_id, expiresAt };
+  }
+
+  assertArtifactApproval({
+    spaceId,
+    pageId,
+    leaseEpoch,
+    method,
+    approval,
+  } = {}) {
+    const record = this.tabs.assertPageDispatch({
+      spaceId,
+      pageId,
+      leaseEpoch,
+      mutation: false,
+    });
+    if (record.incognito === true)
+      throw new ProtocolError(
+        "incognito_not_supported",
+        "incognito pages are not enrolled",
+      );
+    if (isRestrictedUrl(record.url))
+      throw new ProtocolError(
+        "restricted_url",
+        "page cannot accept artifact capture",
+      );
+    return this.validateArtifactApproval(approval, {
+      record,
+      spaceId,
+      pageId,
+      leaseEpoch,
+      method,
+      requireFrameBinding: false,
+    });
   }
 
   validateAttachment(record, attachment, { spaceId, pageId, leaseEpoch } = {}) {
@@ -278,6 +540,7 @@ export class DebuggerBridge {
   invalidateTab(tabId, reason = "target_lost") {
     const attachment = this.attached.get(tabId);
     this.attached.delete(tabId);
+    this.relatedSessions.delete(tabId);
     this.frames.invalidateTab(tabId, reason);
     if (attachment) {
       this.onStateChange("detached", {
@@ -303,10 +566,90 @@ export class DebuggerBridge {
       tabId,
       spaceId: attachment.spaceId,
       pageId: attachment.pageId,
+      origin: pageOrigin(record.url),
       targetGeneration: attachment.targetGeneration,
       documentGeneration: attachment.documentGeneration,
       navigationGeneration: attachment.navigationGeneration,
     });
+  }
+
+  async configureRelatedTargets(tabId, sessionId = undefined) {
+    const sendCommandFn = this.chrome?.debugger?.sendCommand;
+    if (typeof sendCommandFn !== "function")
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Chrome debugger.sendCommand is unavailable",
+      );
+    const target = { tabId, ...(sessionId ? { sessionId } : {}) };
+    await chromeCall(
+      sendCommandFn.bind(this.chrome.debugger),
+      target,
+      INTERNAL_RELATED_TARGET_METHOD,
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+        filter: [{ type: "iframe", exclude: false }],
+      },
+    );
+  }
+
+  handleRelatedTargetAttached(source = {}, params = {}) {
+    if (
+      !Number.isInteger(source.tabId) ||
+      typeof params.sessionId !== "string" ||
+      params.sessionId.length === 0
+    )
+      return false;
+    const attachment = this.attached.get(source.tabId);
+    const targetInfo = params.targetInfo;
+    if (!attachment || !RELATED_TARGET_TYPES.has(targetInfo?.type))
+      return false;
+    try {
+      this.frames.bindSession({
+        tabId: source.tabId,
+        sessionId: params.sessionId,
+        spaceId: attachment.spaceId,
+        pageId: attachment.pageId,
+        origin: pageOrigin(targetInfo.url),
+        targetGeneration: attachment.targetGeneration,
+        navigationGeneration: attachment.navigationGeneration,
+        documentGeneration: attachment.documentGeneration,
+      });
+      let sessions = this.relatedSessions.get(source.tabId);
+      if (!sessions) {
+        sessions = new Set();
+        this.relatedSessions.set(source.tabId, sessions);
+      }
+      sessions.add(params.sessionId);
+      void this.configureRelatedTargets(source.tabId, params.sessionId).catch(
+        () => {
+          this.frames.invalidateSession(
+            source.tabId,
+            params.sessionId,
+            "related_target_setup_failed",
+          );
+          sessions.delete(params.sessionId);
+        },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  handleRelatedTargetDetached(source = {}, params = {}) {
+    if (!Number.isInteger(source.tabId) || typeof params.sessionId !== "string")
+      return false;
+    const sessions = this.relatedSessions.get(source.tabId);
+    sessions?.delete(params.sessionId);
+    if (sessions?.size === 0) this.relatedSessions.delete(source.tabId);
+    this.frames.invalidateSession(
+      source.tabId,
+      params.sessionId,
+      "related_target_detached",
+    );
+    return true;
   }
 
   async attach({ spaceId, pageId, leaseEpoch, onDispatch = () => {} } = {}) {
@@ -316,6 +659,11 @@ export class DebuggerBridge {
       leaseEpoch,
       mutation: false,
     });
+    if (record.incognito === true)
+      throw new ProtocolError(
+        "incognito_not_supported",
+        "incognito pages are not enrolled",
+      );
     if (isRestrictedUrl(record.url))
       throw new ProtocolError(
         "restricted_url",
@@ -341,16 +689,18 @@ export class DebuggerBridge {
       await chromeCall(
         attachFn.bind(this.chrome.debugger),
         { tabId: record.rawTabId },
-        "1.3",
+        REQUIRED_DEBUGGER_PROTOCOL_VERSION,
       );
+      await this.configureRelatedTargets(record.rawTabId);
     } catch (error) {
-      throw new ProtocolError(
-        "permission_denied",
-        "Chrome rejected debugger attachment",
-        {
-          cause: error instanceof Error ? error.message : String(error),
-        },
-      );
+      const classified = chromeProtocolError(error, "debugger.attach", {
+        url: record.url,
+        incognito: record.incognito === true,
+      });
+      if (classified) throw classified;
+      throw unknownDispatch("debugger attachment result was not confirmed", {
+        chrome_error: "unknown",
+      });
     }
     const attachment = {
       rawTabId: record.rawTabId,
@@ -381,6 +731,7 @@ export class DebuggerBridge {
         tabId: record.rawTabId,
         spaceId,
         pageId,
+        origin: pageOrigin(record.url),
         targetGeneration: record.targetGeneration,
         navigationGeneration: record.navigationGeneration,
         documentGeneration: record.documentGeneration,
@@ -391,14 +742,18 @@ export class DebuggerBridge {
         if (typeof this.chrome?.debugger?.detach === "function")
           await this.chrome.debugger.detach({ tabId: record.rawTabId });
       } catch (cleanupError) {
+        const classified = chromeProtocolError(
+          cleanupError,
+          "debugger.detach",
+          {
+            url: record.url,
+            incognito: record.incognito === true,
+          },
+        );
+        if (classified) throw classified;
         throw unknownDispatch(
           "debugger attachment rollback was not confirmed",
-          {
-            cause:
-              cleanupError instanceof Error
-                ? cleanupError.message
-                : String(cleanupError),
-          },
+          { chrome_error: "unknown" },
         );
       }
       throw error;
@@ -439,8 +794,13 @@ export class DebuggerBridge {
         tabId: record.rawTabId,
       });
     } catch (error) {
+      const classified = chromeProtocolError(error, "debugger.detach", {
+        url: record.url,
+        incognito: record.incognito === true,
+      });
+      if (classified) throw classified;
       throw unknownDispatch("debugger detach result was lost", {
-        cause: error instanceof Error ? error.message : String(error),
+        chrome_error: "unknown",
       });
     }
     this.attached.delete(record.rawTabId);
@@ -463,6 +823,7 @@ export class DebuggerBridge {
     expectedTargetGeneration,
     expectedNavigationGeneration,
     expectedDocumentGeneration,
+    frameScope,
     commandId,
     capability,
     approval,
@@ -486,6 +847,25 @@ export class DebuggerBridge {
       expectedDocumentGeneration,
       mutation,
     });
+    if (record.incognito === true)
+      throw new ProtocolError(
+        "incognito_not_supported",
+        "incognito pages are not enrolled",
+      );
+    if (isRestrictedUrl(record.url))
+      throw new ProtocolError(
+        "restricted_url",
+        "page cannot accept debugger commands",
+      );
+    const artifactApproval = isArtifactDebuggerCommand(method)
+      ? this.validateArtifactApproval(approval, {
+          record,
+          spaceId,
+          pageId,
+          leaseEpoch,
+          method,
+        })
+      : undefined;
     const attachment = this.attached.get(record.rawTabId);
     if (!attachment)
       throw new ProtocolError(
@@ -497,6 +877,7 @@ export class DebuggerBridge {
       pageId,
       leaseEpoch,
     });
+    let runtimeApproval;
     if (method === "Runtime.evaluate") {
       const expression = params?.expression ?? params?.script;
       if (
@@ -520,12 +901,12 @@ export class DebuggerBridge {
           "runtime evaluation requires an explicit capability",
         );
       }
-      if (!approval || approval.issued_by_host !== true) {
-        throw new ProtocolError(
-          "user_confirmation_required",
-          "runtime evaluation requires host approval",
-        );
-      }
+      runtimeApproval = this.validateRuntimeEvaluationApproval(approval, {
+        record,
+        spaceId,
+        pageId,
+        leaseEpoch,
+      });
     }
     if (method === "Page.bringToFront" || method === "Target.activateTarget") {
       throw new ProtocolError(
@@ -553,53 +934,13 @@ export class DebuggerBridge {
     if (method === "Runtime.evaluate") {
       const expression = params?.expression ?? params?.script;
       if (
-        !approval ||
-        typeof approval.approval_id !== "string" ||
-        !/^[A-Za-z0-9._:-]{8,128}$/.test(approval.approval_id) ||
-        typeof approval.script_hash !== "string" ||
+        typeof approval?.script_hash !== "string" ||
         !/^(?:sha256:)?[a-f0-9]{64}$/i.test(approval.script_hash)
-      ) {
+      )
         throw new ProtocolError(
           "user_confirmation_required",
           "runtime evaluation approval is incomplete",
         );
-      }
-      const expiresAt = approval.expires_at ?? approval.expires_at_ms;
-      if (
-        !Number.isSafeInteger(expiresAt) ||
-        expiresAt <= this.now() ||
-        expiresAt > this.now() + MAX_APPROVAL_LIFETIME_MS
-      ) {
-        throw new ProtocolError(
-          "approval_expired",
-          "runtime evaluation approval is expired",
-        );
-      }
-      if (
-        approval.space_id !== spaceId ||
-        approval.page_id !== pageId ||
-        approval.lease_epoch !== leaseEpoch ||
-        (approval.target_generation ?? approval.generation) !==
-          record.targetGeneration ||
-        (this.profileInstanceId !== undefined &&
-          approval.profile_instance_id !== this.profileInstanceId) ||
-        (this.browserSessionEpoch !== undefined &&
-          approval.browser_session_epoch !== this.browserSessionEpoch)
-      ) {
-        throw new ProtocolError(
-          "permission_denied",
-          "runtime evaluation approval scope is not current",
-        );
-      }
-      if (
-        approval.purpose !== undefined &&
-        approval.purpose !== "runtime.evaluate"
-      ) {
-        throw new ProtocolError(
-          "permission_denied",
-          "runtime evaluation approval purpose is invalid",
-        );
-      }
       this.pruneEvaluationApprovals();
       if (this.usedEvaluationApprovals.has(approval.approval_id))
         throw new ProtocolError(
@@ -634,16 +975,45 @@ export class DebuggerBridge {
           "resource_exhausted",
           "evaluation approval cache is full",
         );
-      this.usedEvaluationApprovals.set(approval.approval_id, expiresAt);
+      this.usedEvaluationApprovals.set(
+        runtimeApproval.approvalId,
+        runtimeApproval.expiresAt,
+      );
+    }
+    if (artifactApproval) {
+      this.pruneArtifactApprovals();
+      if (this.usedArtifactApprovals.has(artifactApproval.approvalId))
+        throw new ProtocolError(
+          "replay_rejected",
+          "artifact approval was already consumed",
+        );
+      if (this.usedArtifactApprovals.size >= MAX_USED_ARTIFACT_APPROVALS)
+        throw new ProtocolError(
+          "resource_exhausted",
+          "artifact approval cache is full",
+        );
+      this.usedArtifactApprovals.set(
+        artifactApproval.approvalId,
+        artifactApproval.expiresAt,
+      );
     }
 
+    const debuggerTarget = { tabId: record.rawTabId };
+    if (frameScope !== undefined) {
+      const resolvedFrame = this.frames.resolveFrameScope({
+        tabId: record.rawTabId,
+        frameScope,
+      });
+      if (resolvedFrame.sessionId)
+        debuggerTarget.sessionId = resolvedFrame.sessionId;
+    }
     let dispatched = false;
     try {
       onDispatch();
       dispatched = true;
       const result = await chromeCall(
         sendCommandFn.bind(this.chrome.debugger),
-        { tabId: record.rawTabId },
+        debuggerTarget,
         method,
         params,
       );
@@ -668,19 +1038,27 @@ export class DebuggerBridge {
         document_generation: attachment.documentGeneration,
       };
     } catch (error) {
-      if (dispatched && mutation) {
-        throw unknownDispatch("debugger mutation dispatch result was lost", {
-          command_id: commandId,
-          cause: error instanceof Error ? error.message : String(error),
-        });
-      }
       if (error instanceof ProtocolError) throw error;
+      const classified = chromeProtocolError(error, method, {
+        url: record.url,
+        incognito: record.incognito === true,
+      });
+      if (classified) throw classified;
+      if (dispatched && (mutation || isArtifactDebuggerCommand(method))) {
+        throw unknownDispatch(
+          isArtifactDebuggerCommand(method)
+            ? "debugger artifact dispatch result was lost"
+            : "debugger mutation dispatch result was lost",
+          {
+            ...(commandId !== undefined ? { command_id: commandId } : {}),
+            chrome_error: "unknown",
+          },
+        );
+      }
       throw new ProtocolError(
         "debugger_command_failed",
         "debugger command failed",
-        {
-          cause: error instanceof Error ? error.message : String(error),
-        },
+        { chrome_error: "unknown" },
       );
     }
   }
@@ -688,6 +1066,15 @@ export class DebuggerBridge {
   handleEvent(source = {}, method, params = {}) {
     if (!Number.isInteger(source.tabId) || typeof method !== "string")
       return null;
+    if (method === "Target.attachedToTarget") {
+      this.handleRelatedTargetAttached(source, params);
+      return null;
+    }
+    if (method === "Target.detachedFromTarget") {
+      this.handleRelatedTargetDetached(source, params);
+      return null;
+    }
+    if (!isAllowedDebuggerEvent(method)) return null;
     const routed = this.frames.routeDebuggerEvent({
       tabId: source.tabId,
       sessionId: source.sessionId,
@@ -703,8 +1090,12 @@ export class DebuggerBridge {
     if (!Number.isInteger(source.tabId)) return null;
     const attachment = this.attached.get(source.tabId);
     if (source.sessionId) {
+      this.relatedSessions.get(source.tabId)?.delete(source.sessionId);
+      if (this.relatedSessions.get(source.tabId)?.size === 0)
+        this.relatedSessions.delete(source.tabId);
       this.frames.invalidateSession(source.tabId, source.sessionId, reason);
     } else {
+      this.relatedSessions.delete(source.tabId);
       this.frames.invalidateTab(source.tabId, reason);
       this.attached.delete(source.tabId);
     }
@@ -746,9 +1137,18 @@ export function debuggerOperationError(error) {
       outcome: error.outcome,
       details: error.details,
     };
+  const chromeError = classifyChromeError(error);
+  if (chromeError !== "unknown")
+    return {
+      code: chromeError,
+      message: chromeErrorMessage(chromeError),
+      retryable: false,
+      details: { chrome_error: chromeError },
+    };
   return {
     code: "debugger_command_failed",
-    message: error instanceof Error ? error.message : String(error),
+    message: "debugger command failed",
     retryable: false,
+    details: { chrome_error: "unknown" },
   };
 }
