@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "phase": 4,
+  "status": "active",
+  "release_eligible": false,
+  "plan": "docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-4-extension.md",
+  "audit": "docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-4-chrome-docs-audit.md",
+  "required_tests": [
+    "npm ci --prefix extension",
+    "npm test --prefix extension",
+    "npm run check --prefix extension",
+    "python3 scripts/run_phase4_live_probe.py --chrome-binary <installed-Chrome>"
+  ],
+  "nonclaims": [
+    "headed existing-profile Chrome",
+    "production installation/distribution",
+    "enterprise policy and rollback",
+    "release eligibility"
+  ]
+}
