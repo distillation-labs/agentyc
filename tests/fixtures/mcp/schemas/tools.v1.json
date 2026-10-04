@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "kind": "mcp-tool-schemas",
+  "status": "contract-only",
+  "sanitized": true,
+  "live_claims": false,
+  "entries": [
+    {
+      "name": "host_space_create",
+      "scope": "logical-host",
+      "deprecated": false,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {"type": "string", "description": "Logical task-space label."}
+        },
+        "required": ["label"]
+      }
+    },
+    {
+      "name": "host_page_close",
+      "scope": "logical-host",
+      "deprecated": false,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "space_id": {"type": "string", "pattern": "^space_[a-z0-9_]+$"},
+          "page_id": {"type": "string", "pattern": "^page_[a-z0-9_]+$"},
+          "lease_epoch": {"type": "integer", "minimum": 1}
+        },
+        "required": ["space_id", "page_id", "lease_epoch"]
+      }
+    },
+    {
+      "name": "host_action_execute",
+      "scope": "logical-host",
+      "deprecated": false,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {"type": "string", "pattern": "^req_[a-z0-9_]+$"},
+          "action_id": {"type": "string", "pattern": "^action_[a-z0-9_]+$"},
+          "space_id": {"type": "string", "pattern": "^space_[a-z0-9_]+$"},
+          "page_id": {"type": "string", "pattern": "^page_[a-z0-9_]+$"},
+          "lease_epoch": {"type": "integer", "minimum": 1},
+          "operation": {"type": "string"}
+        },
+        "required": ["request_id", "action_id", "space_id", "page_id", "lease_epoch", "operation"]
+      }
+    },
+    {
+      "name": "browser_get_state",
+      "scope": "legacy-adapter",
+      "deprecated": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {"type": "string", "enum": ["min", "full", "auto"]},
+          "since_hash": {"type": "string"}
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "browser_switch_tab",
+      "scope": "adapter-only",
+      "deprecated": true,
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tab_id": {"type": "string", "description": "Deprecated adapter field; never authority.", "example": "<redacted browser id>"}
+        },
+        "required": ["tab_id"]
+      }
+    }
+  ],
+  "nonclaims": [
+    "Logical host schemas are canonical for the direct boundary; legacy tab_id is retained only as a redacted adapter compatibility field.",
+    "These JSON Schemas do not prove a live MCP server, browser target, or Chrome capability."
+  ]
+}
