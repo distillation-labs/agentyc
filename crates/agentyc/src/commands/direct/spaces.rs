@@ -32,6 +32,8 @@ pub(super) fn run(context: &DirectContext, command: SpaceCommand) -> DirectResul
         SpaceCommand::Takeover(args) => takeover(context, args),
         SpaceCommand::Reclaim(args) => reclaim(context, args),
         SpaceCommand::Return(args) => return_control(context, args),
+        SpaceCommand::Pause(args) => pause(context, args),
+        SpaceCommand::Handoff(args) => handoff(context, args),
         SpaceCommand::Finish(args) => finish(context, args),
         SpaceCommand::Release(args) => release(context, args),
     }
@@ -440,6 +442,53 @@ fn return_control(context: &DirectContext, args: LeaseReturnArgs) -> DirectResul
         "fence_epoch": remote_field(&response, "fence_epoch")?,
         "lifecycle": remote_string(&response, "lifecycle")?,
         "control_ticket": remote_field(&response, "control_ticket")?,
+    }))
+}
+
+fn pause(context: &DirectContext, args: LeaseArgs) -> DirectResult<Value> {
+    fenced_transition(context, args, "space.pause")
+}
+
+fn handoff(context: &DirectContext, args: LeaseArgs) -> DirectResult<Value> {
+    fenced_transition(context, args, "space.handoff")
+}
+
+fn fenced_transition(
+    context: &DirectContext,
+    args: LeaseArgs,
+    method: &str,
+) -> DirectResult<Value> {
+    let space_id = parse_space(&args.space_id)?;
+    let now = timestamp(args.now);
+    if let Some((broker, authority)) = context.local() {
+        let space = if method == "space.pause" {
+            broker
+                .pause_space(&space_id, authority, now, args.ttl)
+                .map_err(host_error)?
+        } else {
+            broker
+                .handoff_space(&space_id, authority, now, args.ttl)
+                .map_err(host_error)?
+        };
+        return Ok(json!({
+            "space": space,
+            "space_id": space.space_id,
+            "lifecycle": space.lifecycle,
+        }));
+    }
+
+    let response = context.request(
+        method,
+        BTreeMap::from([
+            ("space_id".to_owned(), space_id.to_string()),
+            ("now".to_owned(), now.get().to_string()),
+            ("ttl".to_owned(), args.ttl.to_string()),
+        ]),
+    )?;
+    Ok(json!({
+        "space": remote_field(&response, "space")?,
+        "space_id": remote_string(&response, "space_id")?,
+        "lifecycle": remote_string(&response, "lifecycle")?,
     }))
 }
 
