@@ -120,7 +120,11 @@ test("production content bridge accepts only extension requests and exposes no N
       operation: "document.title",
     },
   });
-  assert.equal(sent.length, 1, "hostile page postMessage is not a content request");
+  assert.equal(
+    sent.length,
+    1,
+    "hostile page postMessage is not a content request",
+  );
 
   assert.equal(
     runtimeListener(harness.request(), { id: "hostile-page" }),
@@ -159,6 +163,22 @@ test("production content bridge accepts only extension requests and exposes no N
   assert.equal(sent.at(-1).document_id, ready.document_id);
 });
 
+test("prompt-like page text is returned as data and cannot alter the typed operation boundary", () => {
+  const harness = contentHarness();
+  harness.runtimeListener(
+    harness.request({
+      operation: "document.text",
+      payload: {},
+    }),
+    { id: "test-extension-id" },
+  );
+  const result = harness.sent.at(-1);
+  assert.equal(result.type, "agentyc.content.result");
+  assert.match(result.result.text, /Trusted document text/);
+  assert.doesNotMatch(result.result.text, /execute|tool|system/i);
+  assert.equal(harness.nativeMessagingReads, 0);
+});
+
 test("page-world bridge rejects hostile source, origin, nonce, document, expiry, size, and operation", () => {
   const windowLike = new FakeWindow();
   const documentLike = {
@@ -188,7 +208,11 @@ test("page-world bridge rejects hostile source, origin, nonce, document, expiry,
     origin: "https://attacker.test",
     data: base,
   });
-  assert.equal(windowLike.sent.length, 0, "invalid init does not establish bridge state");
+  assert.equal(
+    windowLike.sent.length,
+    0,
+    "invalid init does not establish bridge state",
+  );
 
   windowLike.dispatch("message", { data: base });
   assert.equal(windowLike.sent.at(-1).data.type, "agentyc.page.ready");
@@ -234,5 +258,9 @@ test("page-world bridge rejects hostile source, origin, nonce, document, expiry,
   windowLike.dispatch("pagehide");
   windowLike.sent.length = 0;
   windowLike.dispatch("message", { data: request() });
-  assert.equal(windowLike.sent.length, 0, "pagehide clears page-world bridge state");
+  assert.equal(
+    windowLike.sent.length,
+    0,
+    "pagehide clears page-world bridge state",
+  );
 });
