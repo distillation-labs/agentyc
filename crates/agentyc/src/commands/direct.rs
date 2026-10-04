@@ -571,7 +571,7 @@ pub struct DirectCommandError {
 }
 
 impl DirectCommandError {
-    fn new(code: impl Into<String>, exit_code: i32) -> Self {
+    pub(crate) fn new(code: impl Into<String>, exit_code: i32) -> Self {
         Self {
             code: code.into(),
             exit_code,
