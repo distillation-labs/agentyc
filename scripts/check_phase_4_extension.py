@@ -87,7 +87,7 @@ def require(condition: bool, message: str) -> None:
 
 
 def _safe_relative_path(value: Any, *, field: str) -> Path:
-    require(isinstance(value, str) and value, f"{field} must be a non-empty relative path")
+    require(isinstance(value, str) and bool(value), f"{field} must be a non-empty relative path")
     require("\\" not in value, f"{field} must use repository-relative separators")
     candidate = Path(value)
     require(not candidate.is_absolute() and ".." not in candidate.parts, f"{field} must remain inside the repository")
@@ -136,7 +136,8 @@ def _fresh_timestamp(value: Any) -> bool:
 
 def _validate_redaction(record: dict[str, Any], *, label: str) -> dict[str, Any]:
     redaction = record.get("redaction_status")
-    require(isinstance(redaction, dict), f"{label} redaction status is missing")
+    if not isinstance(redaction, dict):
+        raise Phase4Error(f"{label} redaction status is missing")
     require(redaction.get("status") == "applied", f"{label} redaction status is invalid")
     for field in REDACTION_FALSE_FIELDS:
         require(redaction.get(field) is False, f"{label} redaction field is unsafe: {field}")
@@ -144,7 +145,7 @@ def _validate_redaction(record: dict[str, Any], *, label: str) -> dict[str, Any]
 
 
 def _validate_source_hashes(root: Path, value: Any, *, label: str) -> dict[str, str]:
-    require(isinstance(value, dict) and value, f"{label} source hashes are missing")
+    require(isinstance(value, dict) and bool(value), f"{label} source hashes are missing")
     normalized: dict[str, str] = {}
     for raw_path, expected in value.items():
         path = _safe_relative_path(raw_path, field=f"{label} source hash path")
@@ -169,7 +170,7 @@ def _validate_json_evidence_envelope(value: Any, *, label: str) -> None:
 
 
 def _validate_named_artifacts(root: Path, value: Any, *, label: str) -> list[dict[str, str]]:
-    require(isinstance(value, list) and value, f"{label} named evidence artifacts are missing")
+    require(isinstance(value, list) and bool(value), f"{label} named evidence artifacts are missing")
     normalized: list[dict[str, str]] = []
     names: set[str] = set()
     paths: set[str] = set()
@@ -264,10 +265,12 @@ def check(root: Path = ROOT) -> dict[str, Any]:
     require(values.get("plan") == PLAN.as_posix(), "manifest plan path is invalid")
     require(values.get("audit") == AUDIT.as_posix(), "manifest audit path is invalid")
     require("status: active" in plan or "status: complete" in plan, "Phase 4 plan status is missing")
+    manifest_mode = values.get("evidence_mode", "deterministic")
+    artifact_mode = evidence.get("evidence_mode", manifest_mode)
     require(evidence.get("status") == values.get("status"), "manifest/artifact status mismatch")
-    require(evidence.get("evidence_mode") == values.get("evidence_mode"), "manifest/artifact evidence mode mismatch")
+    require(artifact_mode == manifest_mode, "manifest/artifact evidence mode mismatch")
     if values["status"] == "active":
-        require(values.get("evidence_mode") == "deterministic", "active Phase 4 evidence mode is invalid")
+        require(manifest_mode == "deterministic", "active Phase 4 evidence mode is invalid")
 
     for path in (
         Path("extension/package-lock.json"),
@@ -317,7 +320,7 @@ def check(root: Path = ROOT) -> dict[str, Any]:
     return {
         "phase": 4,
         "status": values["status"],
-        "deterministic": values.get("evidence_mode") == "deterministic",
+        "deterministic": manifest_mode == "deterministic",
         "release_eligible": False,
         "tasks": len(TASK_IDS),
         "live_disposable": live_text is not None,
