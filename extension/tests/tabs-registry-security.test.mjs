@@ -340,6 +340,27 @@ test("ordinary updates preserve lost/user-owned binding state and advance indepe
   assert.equal(record.targetGeneration, beforeAttach + 2);
 });
 
+test("discarded and frozen tab updates remain logical state and never imply ownership", async () => {
+  const chrome = new FakeChrome({
+    tabs: [
+      { id: 1, url: "https://agent.test/", discarded: false, frozen: false },
+    ],
+  });
+  const tabs = makeRegistry(chrome);
+  await tabs.start();
+  const record = await managedPage(tabs, "space_state", "page_state", 1);
+  await tabs.handleUpdated(
+    1,
+    { discarded: true, frozen: true },
+    { ...chrome.tabsData.get(1), discarded: true, frozen: true },
+  );
+  assert.equal(record.discarded, true);
+  assert.equal(record.frozen, true);
+  assert.equal(record.ownership, "agent");
+  assert.equal(record.bindingState, "bound");
+  assert.deepEqual(chrome.removedTabIds, []);
+});
+
 test("production manifest keeps only isolated content bridge and no broad host/scripting permissions", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("../manifest.json", import.meta.url), "utf8"),
