@@ -568,13 +568,21 @@ export class ServiceWorkerController {
   }
 
   async rehydrateManagedBindings() {
+    // Chrome may restore tabs asynchronously during browser startup. Refresh
+    // twice across one bounded yield before matching exact logical URLs.
+    await this.tabs.refreshSession().catch(() => {});
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+    await this.tabs.refreshSession().catch(() => {});
     const stored = this.storedManagedBindings;
     this.storedManagedBindings = undefined;
     let restored = false;
+    const hadPersistedBindings =
+      isPlainObject(stored) &&
+      Array.isArray(stored.bindings) &&
+      stored.bindings.length > 0;
     if (
       !isPlainObject(stored) ||
       stored.profile_instance_id !== this.metadata.profileInstanceId ||
-      stored.browser_session_epoch !== this.metadata.browserSessionEpoch ||
       !Array.isArray(stored.bindings)
     ) {
       await this.persistManagedBindings().catch(() => {});
@@ -591,10 +599,16 @@ export class ServiceWorkerController {
         typeof binding.tab_hint !== "string" ||
         !Number.isSafeInteger(binding.lease_epoch) ||
         binding.lease_epoch < 1 ||
-        binding.browser_session_epoch !== this.metadata.browserSessionEpoch
+        !Number.isSafeInteger(binding.browser_session_epoch) ||
+        binding.browser_session_epoch < 1
       )
         continue;
-      const candidate = this.tabs.findByHint(binding.tab_hint);
+      const candidate =
+        this.tabs.findByHint(binding.tab_hint) ??
+        this.tabs.findRehydrateCandidate({
+          url: binding.url,
+          title: binding.title,
+        });
       if (
         !candidate ||
         candidate.ownership !== "unmanaged" ||
@@ -657,7 +671,10 @@ export class ServiceWorkerController {
       }
     }
     if (restored) this.recoveryObserved = true;
-    await this.persistManagedBindings().catch(() => {});
+    // Keep an unmatched prior-session binding for the next browser-start
+    // refresh; overwriting it with an empty list would destroy recovery proof.
+    if (restored || !hadPersistedBindings)
+      await this.persistManagedBindings().catch(() => {});
   }
 
   async recoverPersistedActionState() {
@@ -1211,6 +1228,32 @@ export class ServiceWorkerController {
   async advanceBrowserSession(reason = "extension_lifecycle") {
     if (this.sessionAdvancePromise) return this.sessionAdvancePromise;
     this.sessionAdvancePromise = (async () => {
+      const priorBrowserSessionEpoch = this.metadata.browserSessionEpoch;
+      const retainedBindings = this.tabs
+        .inventory()
+        .filter(
+          (record) =>
+            record?.ownership === "agent" &&
+            record?.lifecycle === "managed" &&
+            record?.binding_state === "bound" &&
+            typeof record.space_id === "string" &&
+            typeof record.page_id === "string" &&
+            typeof record.tab_hint === "string" &&
+            Number.isSafeInteger(record.lease_epoch),
+        )
+        .slice(0, MAX_PERSISTED_MANAGED_BINDINGS)
+        .map((record) => ({
+          space_id: record.space_id,
+          page_id: record.page_id,
+          lease_epoch: record.lease_epoch,
+          tab_hint: record.tab_hint,
+          target_generation: record.target_generation,
+          navigation_generation: record.navigation_generation,
+          document_generation: record.document_generation,
+          browser_session_epoch: record.browser_session_epoch,
+          url: record.url,
+          title: record.title,
+        }));
       const nextEpoch =
         (Number.isSafeInteger(this.metadata.browserSessionEpoch)
           ? this.metadata.browserSessionEpoch
@@ -1257,6 +1300,22 @@ export class ServiceWorkerController {
         await this.native.connect().catch(() => {});
       }
       await this.tabs.refreshSession();
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
+      await this.tabs.refreshSession();
+      const storedBindings = await storageGet(this.storage, [
+        MANAGED_BINDINGS_KEY,
+      ]).catch(() => ({}));
+      const persistedBindings = storedBindings[MANAGED_BINDINGS_KEY];
+      this.storedManagedBindings =
+        Array.isArray(persistedBindings?.bindings) &&
+        persistedBindings.bindings.length > 0
+          ? persistedBindings
+          : {
+              profile_instance_id: this.metadata.profileInstanceId,
+              browser_session_epoch: priorBrowserSessionEpoch,
+              bindings: retainedBindings,
+            };
+      await this.rehydrateManagedBindings();
       return nextEpoch;
     })().finally(() => {
       this.sessionAdvancePromise = null;
@@ -1708,6 +1767,19 @@ export class ServiceWorkerController {
           ownershipProof: params.ownership_proof,
           intentTicket: params.intent_ticket,
           onDispatch: () => this.markActionDispatched(actionId),
+        });
+        await this.persistManagedBindings().catch(() => {});
+        return record;
+      }
+      case "page.rebind": {
+        const record = await this.tabs.rebindManagedTab({
+          spaceId,
+          pageId,
+          leaseEpoch,
+          targetGeneration: params.target_generation,
+          navigationGeneration: params.navigation_generation,
+          documentGeneration: params.document_generation,
+          ownershipProof: params.ownership_proof,
         });
         await this.persistManagedBindings().catch(() => {});
         return record;
