@@ -8,8 +8,9 @@ use std::collections::{BTreeMap, VecDeque};
 
 use agentyc_core::{
     CoreError, ElementRef, FrameId, FrameVersion, Generation, PageId, RefEpoch, RefId,
-    SnapshotEnvelope, SnapshotProvenance, SpaceId, Timestamp,
+    SnapshotEnvelope, SnapshotProvenance, SnapshotVersion, SpaceId, Timestamp,
 };
+
 use serde::{Deserialize, Serialize};
 
 /// Bounds for the in-memory reference registry.
@@ -69,10 +70,95 @@ pub enum RefInvalidationReason {
     RefEpochChanged,
     /// The logical frame was replaced or removed.
     FrameReplaced,
+    /// A rerender invalidated element locations without changing navigation.
+    Rerendered,
+    /// Raw evaluation may have changed page state outside the snapshot model.
+    RawEvaluation,
+    /// A takeover changed the authority generation.
+    Takeover,
+    /// A reconnect changed the bridge provenance.
+    Reconnect,
     /// The owning logical page or space was invalidated.
     ScopeInvalidated,
     /// All references were invalidated during a reset.
     RegistryReset,
+}
+
+/// Stable next-step information for a stale logical ref.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefStaleHint {
+    /// Request or retain a fresh complete snapshot.
+    RefreshSnapshot,
+    /// Rebuild the frame-scoped locator in the current frame.
+    RefreshFrame,
+    /// Re-read the current document after a rerender or replacement.
+    RefreshDocument,
+    /// Request a snapshot after navigation settles.
+    RefreshNavigation,
+    /// The ref lifetime elapsed and it must be issued again.
+    Expired,
+    /// Authority or bridge provenance changed.
+    Reconnect,
+    /// The registry no longer retains enough information to reuse the ref.
+    #[default]
+    Reissue,
+}
+
+impl RefStaleHint {
+    /// Return the stable wire hint used in stale-ref guidance.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RefreshSnapshot => "refresh_snapshot",
+            Self::RefreshFrame => "refresh_frame",
+            Self::RefreshDocument => "refresh_document",
+            Self::RefreshNavigation => "refresh_navigation",
+            Self::Expired => "expired",
+            Self::Reconnect => "reconnect",
+            Self::Reissue => "reissue",
+        }
+    }
+}
+
+impl std::fmt::Display for RefStaleHint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl RefInvalidationReason {
+    /// Return deterministic caller guidance for this invalidation cause.
+    pub const fn stale_hint(self) -> RefStaleHint {
+        match self {
+            Self::Expired => RefStaleHint::Expired,
+            Self::FrameReplaced => RefStaleHint::RefreshFrame,
+            Self::DocumentChanged | Self::Rerendered => RefStaleHint::RefreshDocument,
+            Self::NavigationChanged => RefStaleHint::RefreshNavigation,
+            Self::RawEvaluation => RefStaleHint::RefreshSnapshot,
+            Self::Takeover | Self::Reconnect => RefStaleHint::Reconnect,
+            Self::RefEpochChanged | Self::ScopeInvalidated => RefStaleHint::RefreshSnapshot,
+            Self::Explicit | Self::Capacity | Self::RegistryReset => RefStaleHint::Reissue,
+        }
+    }
+}
+
+/// Last successful logical validation of a reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefValidation {
+    /// Document generation proven by the validation.
+    pub generation: Generation,
+    /// Exact document generation proven by the validation.
+    pub document_generation: Generation,
+    /// Exact navigation generation proven by the validation.
+    pub navigation_generation: Generation,
+    /// Exact snapshot version proven by the validation.
+    pub snapshot_version: SnapshotVersion,
+    /// Exact frame version when one was supplied by the snapshot.
+    pub frame_version: Option<FrameVersion>,
+    /// Logical time of the validation.
+    pub validated_at: Timestamp,
+    /// Absolute expiry retained by the registry.
+    pub expires_at: Option<Timestamp>,
 }
 
 /// A live reference and the complete proof that created it.
@@ -88,6 +174,39 @@ pub struct RefRecord {
     pub expires_at: Option<Timestamp>,
     /// Frame version captured when the source envelope carried one.
     pub frame_version: Option<FrameVersion>,
+    /// Last document generation successfully validated.
+    #[serde(default)]
+    pub last_validated_generation: Generation,
+    /// Logical time of the last successful validation.
+    #[serde(default)]
+    pub last_validated_at: Timestamp,
+    /// Snapshot version used by the last successful validation.
+    #[serde(default)]
+    pub last_validated_snapshot_version: SnapshotVersion,
+    /// Navigation generation used by the last successful validation.
+    #[serde(default)]
+    pub last_validated_navigation_generation: Generation,
+    /// Document generation used by the last successful validation.
+    #[serde(default)]
+    pub last_validated_document_generation: Generation,
+    /// Frame version used by the last successful validation, when known.
+    #[serde(default)]
+    pub last_validated_frame_version: Option<FrameVersion>,
+}
+
+impl RefRecord {
+    /// Return the complete last-validation record for this ref.
+    pub const fn last_validation(&self) -> RefValidation {
+        RefValidation {
+            generation: self.last_validated_generation,
+            document_generation: self.last_validated_document_generation,
+            navigation_generation: self.last_validated_navigation_generation,
+            snapshot_version: self.last_validated_snapshot_version,
+            frame_version: self.last_validated_frame_version,
+            validated_at: self.last_validated_at,
+            expires_at: self.expires_at,
+        }
+    }
 }
 
 /// A bounded record explaining why a previously issued ref can no longer be used.
@@ -99,6 +218,9 @@ pub struct RefTombstone {
     pub element_ref: ElementRef,
     /// Stable invalidation cause.
     pub reason: RefInvalidationReason,
+    /// Caller-facing logical recovery hint.
+    #[serde(default)]
+    pub hint: RefStaleHint,
     /// Logical time at which the tombstone was created.
     pub invalidated_at: Timestamp,
 }
@@ -195,6 +317,7 @@ impl RefRegistry {
         self.register(element_ref.clone(), envelope.provenance(), now)?;
         if let Some(record) = self.active.get_mut(&element_ref.ref_id) {
             record.frame_version = envelope.frame_versions.get(&element_ref.frame_id).copied();
+            record.last_validated_frame_version = record.frame_version;
         }
         Ok(element_ref)
     }
@@ -253,12 +376,21 @@ impl RefRegistry {
             .limits
             .default_ttl
             .map(|ttl| Timestamp::new(now.get().saturating_add(ttl)));
+        let document_generation = provenance.document_generation;
+        let navigation_generation = provenance.navigation_generation;
+        let snapshot_version = provenance.snapshot_version;
         self.active.insert(
             element_ref.ref_id.clone(),
             RefRecord {
                 element_ref,
                 provenance,
                 issued_at: now,
+                last_validated_generation: document_generation,
+                last_validated_at: now,
+                last_validated_snapshot_version: snapshot_version,
+                last_validated_navigation_generation: navigation_generation,
+                last_validated_document_generation: document_generation,
+                last_validated_frame_version: None,
                 expires_at,
                 frame_version: None,
             },
@@ -291,21 +423,39 @@ impl RefRegistry {
         };
         if &record.element_ref != element_ref {
             return Err(CoreError::stale_ref(
-                "ref identity or provenance was altered",
+                "ref identity or provenance was altered; hint=reissue",
             ));
         }
         if &record.element_ref.frame_id != frame_id {
             return Err(CoreError::stale_ref(
-                "ref frame provenance does not match the requested frame",
+                "ref frame provenance does not match the requested frame; hint=refresh_frame",
             ));
         }
-        if current.snapshot_hash != record.provenance.snapshot_hash || current != &record.provenance
-        {
-            return Err(CoreError::stale_ref(
-                "current snapshot provenance does not match the ref",
-            ));
+        if current != &record.provenance {
+            let reason = if record.element_ref.refs_epoch != current.refs_epoch {
+                RefInvalidationReason::RefEpochChanged
+            } else if record.element_ref.navigation_generation != current.navigation_generation {
+                RefInvalidationReason::NavigationChanged
+            } else if record.element_ref.document_generation != current.document_generation {
+                RefInvalidationReason::DocumentChanged
+            } else {
+                RefInvalidationReason::Rerendered
+            };
+            self.invalidate_ref(&element_ref.ref_id, reason, now);
+            return Err(self.stale_error(&element_ref.ref_id));
         }
         element_ref.validate_against(current)?;
+        let frame_version = record.frame_version;
+        let record = self
+            .active
+            .get_mut(&element_ref.ref_id)
+            .expect("ref was present during validation");
+        record.last_validated_generation = current.document_generation;
+        record.last_validated_at = now;
+        record.last_validated_snapshot_version = current.snapshot_version;
+        record.last_validated_navigation_generation = current.navigation_generation;
+        record.last_validated_document_generation = current.document_generation;
+        record.last_validated_frame_version = frame_version;
         Ok(record)
     }
 
@@ -325,6 +475,18 @@ impl RefRegistry {
             ));
         }
         let frame_version = envelope.frame_versions.get(&element_ref.frame_id).copied();
+        if self.active.get(&element_ref.ref_id).is_some_and(|record| {
+            record.element_ref == *element_ref
+                && record.frame_version.is_some()
+                && record.frame_version != frame_version
+        }) {
+            self.invalidate_ref(
+                &element_ref.ref_id,
+                RefInvalidationReason::FrameReplaced,
+                now,
+            );
+            return Err(self.stale_error(&element_ref.ref_id));
+        }
         let record = self.resolve_ref(
             element_ref,
             &element_ref.frame_id,
@@ -333,7 +495,7 @@ impl RefRegistry {
         )?;
         if record.frame_version.is_some() && record.frame_version != frame_version {
             return Err(CoreError::stale_ref(
-                "frame identity was reused with a different frame version",
+                "frame identity was reused with a different frame version; hint=refresh_frame",
             ));
         }
         Ok(record)
@@ -380,7 +542,7 @@ impl RefRegistry {
         _now: Timestamp,
     ) -> Result<(), CoreError> {
         Err(CoreError::stale_ref(
-            "ref resolution requires an exact logical frame; frame guessing is forbidden",
+            "ref resolution requires an exact logical frame; frame guessing is forbidden; hint=refresh_frame",
         ))
     }
 
@@ -397,6 +559,7 @@ impl RefRegistry {
         self.add_tombstone(RefTombstone {
             ref_id: ref_id.clone(),
             element_ref: record.element_ref,
+            hint: reason.stale_hint(),
             reason,
             invalidated_at: now,
         });
@@ -440,6 +603,81 @@ impl RefRegistry {
             RefInvalidationReason::FrameReplaced,
             now,
         )
+    }
+
+    /// Invalidate refs affected by a rerender while retaining page scope.
+    pub fn invalidate_rerender(
+        &mut self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        now: Timestamp,
+    ) -> usize {
+        self.invalidate_matching(
+            |record| {
+                record.element_ref.space_id == *space_id && record.element_ref.page_id == *page_id
+            },
+            RefInvalidationReason::Rerendered,
+            now,
+        )
+    }
+
+    /// Invalidate refs after an untracked raw evaluation.
+    pub fn invalidate_raw_evaluation(
+        &mut self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        now: Timestamp,
+    ) -> usize {
+        self.invalidate_matching(
+            |record| {
+                record.element_ref.space_id == *space_id && record.element_ref.page_id == *page_id
+            },
+            RefInvalidationReason::RawEvaluation,
+            now,
+        )
+    }
+
+    /// Invalidate refs after a logical takeover.
+    pub fn invalidate_takeover(
+        &mut self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        now: Timestamp,
+    ) -> usize {
+        self.invalidate_matching(
+            |record| {
+                record.element_ref.space_id == *space_id && record.element_ref.page_id == *page_id
+            },
+            RefInvalidationReason::Takeover,
+            now,
+        )
+    }
+
+    /// Invalidate refs after a bridge reconnect or mapping reset.
+    pub fn invalidate_reconnect(
+        &mut self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        now: Timestamp,
+    ) -> usize {
+        self.invalidate_matching(
+            |record| {
+                record.element_ref.space_id == *space_id && record.element_ref.page_id == *page_id
+            },
+            RefInvalidationReason::Reconnect,
+            now,
+        )
+    }
+
+    /// Alias naming the frame-replacement invalidation explicitly.
+    pub fn invalidate_frame_replacement(
+        &mut self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        frame_id: &FrameId,
+        now: Timestamp,
+    ) -> usize {
+        self.invalidate_frame(space_id, page_id, frame_id, now)
     }
 
     /// Invalidate every ref in one logical page scope.
@@ -543,6 +781,10 @@ impl RefRegistry {
                             != current.document_generation
                         {
                             RefInvalidationReason::DocumentChanged
+                        } else if record.element_ref.snapshot_version != current.snapshot_version
+                            || record.provenance.snapshot_hash != current.snapshot_hash
+                        {
+                            RefInvalidationReason::Rerendered
                         } else {
                             RefInvalidationReason::Explicit
                         }
@@ -584,6 +826,16 @@ impl RefRegistry {
     /// Number of currently active refs.
     pub fn active_len(&self) -> usize {
         self.active.len()
+    }
+
+    /// Return the last successful validation metadata for a live ref.
+    pub fn last_validation(&self, ref_id: &RefId) -> Option<RefValidation> {
+        self.active.get(ref_id).map(RefRecord::last_validation)
+    }
+
+    /// Return the stale recovery hint retained for an invalidated ref.
+    pub fn stale_hint(&self, ref_id: &RefId) -> Option<RefStaleHint> {
+        self.tombstones.get(ref_id).map(|tombstone| tombstone.hint)
     }
 
     /// Alias for [`Self::invalidate_document_generation`].
@@ -688,9 +940,12 @@ impl RefRegistry {
 
     fn stale_error(&self, ref_id: &RefId) -> CoreError {
         if let Some(tombstone) = self.tombstones.get(ref_id) {
-            CoreError::stale_ref(format!("ref was invalidated: {:?}", tombstone.reason))
+            CoreError::stale_ref(format!(
+                "ref was invalidated: {:?}; hint={}",
+                tombstone.reason, tombstone.hint
+            ))
         } else {
-            CoreError::stale_ref("ref is not present in the bounded registry")
+            CoreError::stale_ref("ref is not present in the bounded registry; hint=reissue")
         }
     }
 }
@@ -788,5 +1043,148 @@ mod tests {
                 .is_err()
         );
         assert!(registry.tombstone_len() <= 1);
+    }
+
+    #[test]
+    fn successful_resolution_updates_last_validation_metadata() {
+        let (snapshot, frame) = fixture();
+        let mut registry = RefRegistry::with_limits(8, 8);
+        let element_ref = registry
+            .issue(&snapshot, frame, Timestamp::new(1))
+            .expect("issue");
+        let before = registry
+            .last_validation(&element_ref.ref_id)
+            .expect("initial validation");
+        registry
+            .resolve(
+                &element_ref,
+                &element_ref.frame_id,
+                &snapshot.provenance(),
+                Timestamp::new(9),
+            )
+            .expect("resolve");
+        let after = registry
+            .last_validation(&element_ref.ref_id)
+            .expect("last validation");
+        assert_eq!(after.validated_at, Timestamp::new(9));
+        assert_eq!(after.generation, snapshot.document_generation);
+        assert_eq!(after.document_generation, snapshot.document_generation);
+        assert_eq!(after.navigation_generation, snapshot.navigation_generation);
+        assert_eq!(after.snapshot_version, snapshot.snapshot_version);
+        assert_eq!(after.frame_version, Some(FrameVersion::new(1)));
+        assert_eq!(after.expires_at, before.expires_at);
+    }
+
+    #[test]
+    fn expiry_and_provenance_changes_retain_stale_hints() {
+        let (snapshot, frame) = fixture();
+        let mut expiry_registry =
+            RefRegistry::new(RefRegistryLimits::new(8, 8).with_default_ttl(Some(2)));
+        let expiring = expiry_registry
+            .issue(&snapshot, frame.clone(), Timestamp::new(0))
+            .expect("issue");
+        let expiry_error = expiry_registry
+            .resolve(&expiring, &frame, &snapshot.provenance(), Timestamp::new(3))
+            .expect_err("expired ref must be stale");
+        assert!(expiry_error.message.contains("hint=expired"));
+        assert_eq!(
+            expiry_registry.stale_hint(&expiring.ref_id),
+            Some(RefStaleHint::Expired)
+        );
+        assert!(
+            expiry_registry
+                .tombstone(&expiring.ref_id)
+                .expect("expiry tombstone")
+                .reason
+                == RefInvalidationReason::Expired
+        );
+
+        let mut rerendered = snapshot.clone();
+        rerendered.snapshot_version = SnapshotVersion::new(2);
+        rerendered.snapshot_hash = agentyc_core::ContentHash::from_bytes(b"rerendered");
+        rerendered.result_hash = rerendered.snapshot_hash.clone();
+        let mut rerender_registry = RefRegistry::with_limits(8, 8);
+        let rerender_ref = rerender_registry
+            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .expect("issue");
+        assert!(
+            rerender_registry
+                .resolve(
+                    &rerender_ref,
+                    &frame,
+                    &rerendered.provenance(),
+                    Timestamp::new(2),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            rerender_registry
+                .tombstone(&rerender_ref.ref_id)
+                .map(|t| t.reason),
+            Some(RefInvalidationReason::Rerendered)
+        );
+
+        let mut navigation_registry = RefRegistry::with_limits(8, 8);
+        let navigation_ref = navigation_registry
+            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .expect("issue");
+        let mut navigated = snapshot.clone();
+        navigated.navigation_generation = Generation::new(2);
+        navigated.document_generation = Generation::new(2);
+        assert!(
+            navigation_registry
+                .resolve(
+                    &navigation_ref,
+                    &frame,
+                    &navigated.provenance(),
+                    Timestamp::new(2),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            navigation_registry
+                .tombstone(&navigation_ref.ref_id)
+                .map(|t| t.reason),
+            Some(RefInvalidationReason::NavigationChanged)
+        );
+    }
+
+    #[test]
+    fn raw_evaluation_and_frame_replacement_have_specific_hints() {
+        let (snapshot, frame) = fixture();
+        let mut raw_registry = RefRegistry::with_limits(8, 8);
+        let raw_ref = raw_registry
+            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .expect("issue");
+        assert_eq!(
+            raw_registry.invalidate_raw_evaluation(
+                &snapshot.space_id,
+                &snapshot.page_id,
+                Timestamp::new(2),
+            ),
+            1
+        );
+        assert_eq!(
+            raw_registry.stale_hint(&raw_ref.ref_id),
+            Some(RefStaleHint::RefreshSnapshot)
+        );
+
+        let mut frame_registry = RefRegistry::with_limits(8, 8);
+        let frame_ref = frame_registry
+            .issue(&snapshot, frame, Timestamp::new(1))
+            .expect("issue");
+        assert_eq!(
+            frame_registry.invalidate_frame_replacement(
+                &snapshot.space_id,
+                &snapshot.page_id,
+                &frame_ref.frame_id,
+                Timestamp::new(2),
+            ),
+            1
+        );
+        assert_eq!(
+            frame_registry.stale_hint(&frame_ref.ref_id),
+            Some(RefStaleHint::RefreshFrame)
+        );
     }
 }
