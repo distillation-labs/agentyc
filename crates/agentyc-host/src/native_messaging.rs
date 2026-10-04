@@ -6,22 +6,31 @@
 //! prefix. Mixing the two transports would make framing and failure handling
 //! ambiguous.
 
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    fs,
     io::{self, Read, Write},
+    path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self, SyncSender},
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver, SyncSender},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use agentyc_core::{
-    ActionReceipt, ActionRequest, BrokerEpoch, Capability, ClientId, ClientMetadata,
-    ConnectionNonce, CoreError, ErrorCode, HelloEnvelope, LeaseEpoch, PROTOCOL_VERSION, PageId,
-    PrincipalId, ProfileBindingId, SnapshotEnvelope, SpaceId, UnknownReason,
+    ActionReceipt, ActionRequest, ArtifactBeginEnvelope, ArtifactChunkEnvelope,
+    ArtifactEndEnvelope, ArtifactTransferBudget, BrokerEpoch, Capability, ClientId, ClientMetadata,
+    ConnectionEpoch, ConnectionNonce, CoreError, ErrorCode, HelloEnvelope, LeaseEpoch,
+    MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNK_BYTES, MAX_ARTIFACT_CHUNKS,
+    MAX_CUMULATIVE_ARTIFACT_BYTES, MAX_IN_FLIGHT_ARTIFACT_BYTES, PROTOCOL_VERSION, PageId,
+    PrincipalId, ProfileBindingId, ProfileBindingState, ReconcileToken, SnapshotEnvelope, SpaceId,
+    UnknownReason,
 };
 use serde_json::{Map, Value, json};
 use thiserror::Error;
@@ -30,6 +39,7 @@ use crate::bridge::{
     Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeStatus, ExtensionEpochs,
     FenceResult, ObservationSnapshot, sanitize_observation_snapshot,
 };
+use crate::host::{native_forward_socket_path, read_endpoint_metadata};
 
 /// Maximum control payload accepted from or sent to Chrome.
 ///
@@ -54,6 +64,12 @@ const MAX_NATIVE_COLLECTION_ITEMS: usize = 256;
 const MAX_NATIVE_STRING_BYTES: usize = 64 * 1024;
 const MAX_NATIVE_TIMED_OUT_REQUESTS: usize = 256;
 const MAX_NATIVE_UNKNOWN_ACTIONS: usize = 128;
+const MAX_NATIVE_ARTIFACT_TRANSFERS: usize = 16;
+const MAX_NATIVE_CAPABILITIES: usize = 32;
+const MAX_NATIVE_ID_BYTES: usize = 256;
+const MAX_NATIVE_DEADLINE_MS: u64 = 24 * 60 * 60 * 1000;
+const MAX_NATIVE_WARNING_BYTES: usize = 4 * 1024;
+const MAX_NATIVE_WARNINGS: usize = 64;
 
 // Derived from the pinned public key in extension/manifest.json. Do not derive
 // the trusted origin from Native Messaging argv: argv is not attestable here.
@@ -96,6 +112,278 @@ impl NativeHostError {
             }
         }
     }
+}
+
+/// One broker-owned Unix endpoint used by duplicate Native Messaging shims.
+///
+/// Chrome launches a Native Messaging process per connection. The first process
+/// owns the ledger/broker; later processes forward their raw Native Messaging
+/// stream to this endpoint instead of opening another broker.
+#[cfg(unix)]
+pub struct NativeForwardServer {
+    socket_path: PathBuf,
+    stop: Arc<AtomicBool>,
+    incoming: Receiver<std::os::unix::net::UnixStream>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl std::fmt::Debug for NativeForwardServer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeForwardServer")
+            .field("socket_path", &self.socket_path)
+            .field("stopping", &self.stop.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(unix)]
+impl NativeForwardServer {
+    /// Start the forwarding endpoint owned by the current broker process.
+    pub fn start(state_dir: impl AsRef<Path>) -> Result<Self, NativeHostError> {
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+        let state_dir = state_dir.as_ref();
+        let socket_path = forwarding_socket_path(state_dir)?;
+        if socket_path.parent().is_none_or(|parent| !parent.is_dir()) {
+            return Err(NativeHostError::Unavailable(
+                "Native Messaging forwarding directory is unavailable".to_owned(),
+            ));
+        }
+        if fs::symlink_metadata(&socket_path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(NativeHostError::Protocol(
+                "Native Messaging forwarding socket is a symlink".to_owned(),
+            ));
+        }
+        if let Ok(metadata) = fs::symlink_metadata(&socket_path) {
+            if !metadata.file_type().is_socket() {
+                return Err(NativeHostError::Protocol(
+                    "Native Messaging forwarding path is not a socket".to_owned(),
+                ));
+            }
+            if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+                return Err(NativeHostError::Unavailable(
+                    "Native Messaging forwarding endpoint is already active".to_owned(),
+                ));
+            }
+            fs::remove_file(&socket_path).map_err(|error| {
+                NativeHostError::Unavailable(format!(
+                    "stale Native Messaging forwarding socket cannot be removed: {error}"
+                ))
+            })?;
+        }
+        let listener = UnixListener::bind(&socket_path).map_err(|error| {
+            NativeHostError::Unavailable(format!(
+                "Native Messaging forwarding socket bind failed: {error}"
+            ))
+        })?;
+        listener.set_nonblocking(true).map_err(|error| {
+            NativeHostError::Unavailable(format!(
+                "Native Messaging forwarding socket setup failed: {error}"
+            ))
+        })?;
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            NativeHostError::Unavailable(format!(
+                "Native Messaging forwarding socket permissions failed: {error}"
+            ))
+        })?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+        let (incoming_tx, incoming_rx) = mpsc::sync_channel(4);
+        let join_path = socket_path.clone();
+        let join = thread::Builder::new()
+            .name("agentyc-native-forward".to_owned())
+            .spawn(move || {
+                use std::io::ErrorKind;
+                while !stop_for_thread.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            if !crate::host::peer_matches_directory_owner(&stream, &join_path) {
+                                continue;
+                            }
+                            if stream.set_nonblocking(false).is_err()
+                                || incoming_tx.send(stream).is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(25));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                drop(listener);
+                remove_socket_if_owned(&join_path);
+            })
+            .map_err(|error| {
+                NativeHostError::Unavailable(format!(
+                    "Native Messaging forwarding thread failed: {error}"
+                ))
+            })?;
+        Ok(Self {
+            socket_path,
+            stop,
+            incoming: incoming_rx,
+            join: Some(join),
+        })
+    }
+
+    /// Return the endpoint path published to duplicate shims.
+    pub fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+
+    /// Receive one forwarded Native Messaging connection.
+    pub fn accept_forwarded(
+        &self,
+        timeout: Duration,
+    ) -> Result<std::os::unix::net::UnixStream, NativeHostError> {
+        self.incoming
+            .recv_timeout(timeout)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => NativeHostError::Timeout,
+                mpsc::RecvTimeoutError::Disconnected => NativeHostError::disconnected(),
+            })
+    }
+
+    /// Stop accepting forwarded shims and remove only this endpoint.
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NativeForwardServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn remove_socket_if_owned(path: &Path) {
+    let removed = fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_socket())
+        .unwrap_or(false)
+        && std::os::unix::net::UnixStream::connect(path).is_err()
+        && fs::remove_file(path).is_ok();
+    if removed {
+        let Some(parent) = path.parent() else { return };
+        let is_short_lived = parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("agentyc-forward-"));
+        if is_short_lived {
+            let _ = fs::remove_dir(parent);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn forwarding_socket_path(state_dir: &Path) -> Result<PathBuf, NativeHostError> {
+    let normal = native_forward_socket_path(state_dir);
+    if normal.as_os_str().len() <= 80 {
+        if normal.parent().is_none_or(|parent| !parent.is_dir()) {
+            return Err(NativeHostError::Unavailable(
+                "Native Messaging forwarding directory is unavailable".to_owned(),
+            ));
+        }
+        return Ok(normal);
+    }
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in state_dir.as_os_str().to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let temp_root = Path::new("/tmp");
+    let temp_root = if temp_root.is_dir() {
+        temp_root.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
+    let directory = temp_root.join(format!("agentyc-forward-{hash:016x}"));
+    if directory.exists() && !directory.is_dir() {
+        return Err(NativeHostError::Unavailable(
+            "short Native Messaging forwarding path is not a directory".to_owned(),
+        ));
+    }
+    fs::create_dir_all(&directory).map_err(|error| {
+        NativeHostError::Unavailable(format!("short Native Messaging directory failed: {error}"))
+    })?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+        NativeHostError::Unavailable(format!(
+            "short Native Messaging directory permissions failed: {error}"
+        ))
+    })?;
+    Ok(directory.join("native.sock"))
+}
+
+#[cfg(unix)]
+/// Forward one duplicate Chrome-launched stdio pair to the broker owner.
+pub fn forward_stdio_to_owner(
+    state_dir: impl AsRef<Path>,
+    timeout: Duration,
+) -> Result<(), NativeHostError> {
+    let deadline = Instant::now() + timeout;
+    let endpoint = loop {
+        match read_endpoint_metadata(state_dir.as_ref()) {
+            Ok(endpoint) => break endpoint,
+            Err(error) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(25));
+                let _ = error;
+            }
+            Err(error) => return Err(NativeHostError::Unavailable(error.to_string())),
+        }
+    };
+    let path = PathBuf::from(endpoint.native_forward_socket);
+    let stream = loop {
+        match std::os::unix::net::UnixStream::connect(&path) {
+            Ok(stream) => break stream,
+            Err(error) if Instant::now() < deadline => {
+                if error.kind() != io::ErrorKind::NotFound
+                    && error.kind() != io::ErrorKind::ConnectionRefused
+                {
+                    return Err(NativeHostError::Unavailable(error.to_string()));
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(NativeHostError::Unavailable(error.to_string())),
+        }
+    };
+    proxy_stdio(stream)
+}
+
+#[cfg(unix)]
+fn proxy_stdio(stream: std::os::unix::net::UnixStream) -> Result<(), NativeHostError> {
+    let mut to_owner = stream
+        .try_clone()
+        .map_err(|error| NativeHostError::Unavailable(error.to_string()))?;
+    let mut from_owner = stream;
+    let writer = thread::Builder::new()
+        .name("agentyc-native-forward-stdin".to_owned())
+        .spawn(move || io::copy(&mut io::stdin(), &mut to_owner))
+        .map_err(|error| NativeHostError::Unavailable(error.to_string()))?;
+    let read_result = io::copy(&mut from_owner, &mut io::stdout());
+    // Do not join a stdin reader after the owner closes: Chrome may leave the
+    // shim's stdin open briefly, and waiting here would turn owner disconnect
+    // into an unbounded process hang. Dropping the handle detaches the bounded
+    // forwarding worker; process teardown closes its descriptors.
+    drop(writer);
+    read_result
+        .map(|_| ())
+        .map_err(|error| NativeHostError::Unavailable(error.to_string()))
 }
 
 /// Configuration for one Chrome Native Messaging connection.
@@ -185,7 +473,93 @@ impl NativeHello {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeNegotiatedLimits {
+    /// Maximum control envelope payload in bytes.
+    pub max_control_bytes: usize,
+    /// Maximum artifact chunk bytes.
+    pub max_artifact_chunk_bytes: usize,
+    /// Maximum assembled artifact bytes.
+    pub max_artifact_bytes: u64,
+    /// Maximum chunks in one artifact.
+    pub max_artifact_chunks: u16,
+    /// Maximum artifact bytes buffered on one connection.
+    pub max_in_flight_artifact_bytes: usize,
+    /// Maximum artifact bytes received on one connection.
+    pub max_cumulative_artifact_bytes: u64,
+}
+
+impl NativeNegotiatedLimits {
+    /// Product limits offered by this host.
+    pub const fn host_defaults() -> Self {
+        Self {
+            max_control_bytes: MAX_NATIVE_CONTROL_BYTES,
+            max_artifact_chunk_bytes: MAX_ARTIFACT_CHUNK_BYTES,
+            max_artifact_bytes: MAX_ARTIFACT_BYTES,
+            max_artifact_chunks: MAX_ARTIFACT_CHUNKS,
+            max_in_flight_artifact_bytes: MAX_IN_FLIGHT_ARTIFACT_BYTES,
+            max_cumulative_artifact_bytes: MAX_CUMULATIVE_ARTIFACT_BYTES,
+        }
+    }
+
+    fn intersect(self, peer: Self) -> Self {
+        Self {
+            max_control_bytes: self.max_control_bytes.min(peer.max_control_bytes),
+            max_artifact_chunk_bytes: self
+                .max_artifact_chunk_bytes
+                .min(peer.max_artifact_chunk_bytes),
+            max_artifact_bytes: self.max_artifact_bytes.min(peer.max_artifact_bytes),
+            max_artifact_chunks: self.max_artifact_chunks.min(peer.max_artifact_chunks),
+            max_in_flight_artifact_bytes: self
+                .max_in_flight_artifact_bytes
+                .min(peer.max_in_flight_artifact_bytes),
+            max_cumulative_artifact_bytes: self
+                .max_cumulative_artifact_bytes
+                .min(peer.max_cumulative_artifact_bytes),
+        }
+    }
+
+    fn validate(self) -> Result<Self, NativeHostError> {
+        if self.max_control_bytes == 0
+            || self.max_control_bytes > MAX_NATIVE_CONTROL_BYTES
+            || self.max_artifact_chunk_bytes == 0
+            || self.max_artifact_chunk_bytes > MAX_ARTIFACT_CHUNK_BYTES
+            || self.max_artifact_bytes == 0
+            || self.max_artifact_bytes > MAX_ARTIFACT_BYTES
+            || self.max_artifact_chunks == 0
+            || self.max_artifact_chunks > MAX_ARTIFACT_CHUNKS
+            || self.max_in_flight_artifact_bytes == 0
+            || self.max_in_flight_artifact_bytes > MAX_IN_FLIGHT_ARTIFACT_BYTES
+            || self.max_cumulative_artifact_bytes == 0
+            || self.max_cumulative_artifact_bytes > MAX_CUMULATIVE_ARTIFACT_BYTES
+        {
+            return Err(NativeHostError::Protocol(
+                "Native Messaging negotiated limits are outside the product bounds".to_owned(),
+            ));
+        }
+        Ok(self)
+    }
+
+    fn to_value(self) -> Value {
+        json!({
+            "max_control_bytes": self.max_control_bytes,
+            "max_artifact_chunk_bytes": self.max_artifact_chunk_bytes,
+            "max_artifact_bytes": self.max_artifact_bytes,
+            "max_artifact_chunks": self.max_artifact_chunks,
+            "max_in_flight_artifact_bytes": self.max_in_flight_artifact_bytes,
+            "max_cumulative_artifact_bytes": self.max_cumulative_artifact_bytes,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct NativeArtifactTransfer {
+    begin: ArtifactBeginEnvelope,
+    progress: agentyc_core::ArtifactTransferProgress,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug)]
 struct SessionMetadata {
     expected_origin: String,
     hello: NativeHello,
@@ -194,7 +568,16 @@ struct SessionMetadata {
     next_inbound_sequence: u64,
     next_outbound_sequence: u64,
     handshake_complete: bool,
+    host_capabilities: Vec<Capability>,
     capabilities: Vec<Capability>,
+    negotiated_capability_names: Vec<String>,
+    extension_limits: NativeNegotiatedLimits,
+    negotiated_limits: NativeNegotiatedLimits,
+    profile_state: ProfileBindingState,
+    artifact_transfers: BTreeMap<String, NativeArtifactTransfer>,
+    artifact_budget: ArtifactTransferBudget,
+    outbound_artifact_transfers: BTreeMap<String, NativeArtifactTransfer>,
+    outbound_artifact_budget: ArtifactTransferBudget,
 }
 
 /// One validated inbound request waiting for the native-host supervisor.
@@ -229,6 +612,7 @@ struct NativeShared {
     timed_out: Mutex<BTreeSet<String>>,
     events: Mutex<VecDeque<Value>>,
     requests: Mutex<VecDeque<NativeRequest>>,
+    request_fingerprints: Mutex<BTreeMap<String, agentyc_core::ContentHash>>,
     closed: Mutex<Option<NativeHostError>>,
     closed_cv: Condvar,
     request_counter: AtomicU64,
@@ -285,12 +669,29 @@ impl NativeMessagingBridge {
                 next_inbound_sequence: 1,
                 next_outbound_sequence: 1,
                 handshake_complete: false,
+                host_capabilities: vec![
+                    Capability::Snapshot,
+                    Capability::Action,
+                    Capability::Wait,
+                    Capability::Artifact,
+                    Capability::Evaluate,
+                    Capability::Reconcile,
+                ],
                 capabilities: Vec::new(),
+                negotiated_capability_names: Vec::new(),
+                extension_limits: NativeNegotiatedLimits::host_defaults(),
+                negotiated_limits: NativeNegotiatedLimits::host_defaults(),
+                profile_state: ProfileBindingState::Unbound,
+                artifact_transfers: BTreeMap::new(),
+                artifact_budget: ArtifactTransferBudget::default(),
+                outbound_artifact_transfers: BTreeMap::new(),
+                outbound_artifact_budget: ArtifactTransferBudget::default(),
             }),
             pending: Mutex::new(BTreeMap::new()),
             timed_out: Mutex::new(BTreeSet::new()),
             events: Mutex::new(VecDeque::new()),
             requests: Mutex::new(VecDeque::new()),
+            request_fingerprints: Mutex::new(BTreeMap::new()),
             closed: Mutex::new(None),
             closed_cv: Condvar::new(),
             request_counter: AtomicU64::new(1),
@@ -330,6 +731,172 @@ impl NativeMessagingBridge {
         self.post("event", fields)
     }
 
+    /// Send one explicit artifact transfer declaration to the extension.
+    pub fn send_artifact_begin(
+        &self,
+        begin: &ArtifactBeginEnvelope,
+    ) -> Result<(), NativeHostError> {
+        begin
+            .validate()
+            .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+        self.validate_outbound_artifact_limits(
+            begin.total_bytes,
+            begin.chunk_size,
+            begin.chunk_count,
+        )?;
+        {
+            let mut session = self.shared.session.lock().map_err(|_| {
+                NativeHostError::Unavailable("session state is poisoned".to_owned())
+            })?;
+            let key = begin.artifact_id.to_string();
+            if session.outbound_artifact_transfers.len() >= MAX_NATIVE_ARTIFACT_TRANSFERS
+                || session.outbound_artifact_transfers.contains_key(&key)
+            {
+                return Err(NativeHostError::Protocol(
+                    "outbound artifact transfer is duplicated or exceeds the connection bound"
+                        .to_owned(),
+                ));
+            }
+            let connection_epoch =
+                ConnectionEpoch::new(session.connection_epoch.ok_or_else(|| {
+                    NativeHostError::Protocol("artifact connection epoch is missing".to_owned())
+                })?);
+            let progress = agentyc_core::ArtifactTransferProgress::begin(begin, connection_epoch)
+                .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+            session.outbound_artifact_transfers.insert(
+                key,
+                NativeArtifactTransfer {
+                    begin: begin.clone(),
+                    progress,
+                    bytes: Vec::new(),
+                },
+            );
+        }
+        let mut fields = serde_json::to_value(begin)
+            .map_err(|_| NativeHostError::Protocol("artifact_begin is not JSON".to_owned()))?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| {
+                NativeHostError::Protocol("artifact_begin is not an object".to_owned())
+            })?;
+        let result = self.post("artifact_begin", std::mem::take(&mut fields));
+        if result.is_err() {
+            if let Ok(mut session) = self.shared.session.lock() {
+                session
+                    .outbound_artifact_transfers
+                    .remove(&begin.artifact_id.to_string());
+            }
+        }
+        result
+    }
+
+    /// Send one ordered artifact chunk to the extension.
+    pub fn send_artifact_chunk(
+        &self,
+        chunk: &ArtifactChunkEnvelope,
+    ) -> Result<(), NativeHostError> {
+        chunk
+            .validate()
+            .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+        if chunk.bytes.len() > MAX_ARTIFACT_CHUNK_BYTES {
+            return Err(NativeHostError::MessageTooLarge);
+        }
+        {
+            let mut session = self.shared.session.lock().map_err(|_| {
+                NativeHostError::Unavailable("session state is poisoned".to_owned())
+            })?;
+            if session
+                .outbound_artifact_budget
+                .in_flight_bytes()
+                .saturating_add(chunk.bytes.len())
+                > session.negotiated_limits.max_in_flight_artifact_bytes
+                || session
+                    .outbound_artifact_budget
+                    .cumulative_bytes()
+                    .saturating_add(chunk.bytes.len() as u64)
+                    > session.negotiated_limits.max_cumulative_artifact_bytes
+            {
+                return Err(NativeHostError::MessageTooLarge);
+            }
+            session
+                .outbound_artifact_budget
+                .receive(chunk.bytes.len())
+                .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+            let key = chunk.artifact_id.to_string();
+            let Some(transfer) = session.outbound_artifact_transfers.get_mut(&key) else {
+                let _ = session.outbound_artifact_budget.release(chunk.bytes.len());
+                return Err(NativeHostError::Protocol(
+                    "outbound artifact chunk has no active begin".to_owned(),
+                ));
+            };
+            if let Err(error) = transfer.progress.accept_chunk(chunk) {
+                let _ = session.outbound_artifact_budget.release(chunk.bytes.len());
+                return Err(NativeHostError::Protocol(error.to_string()));
+            }
+            transfer.bytes.extend_from_slice(&chunk.bytes);
+        }
+        let fields = serde_json::to_value(chunk)
+            .map_err(|_| NativeHostError::Protocol("artifact_chunk is not JSON".to_owned()))?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| {
+                NativeHostError::Protocol("artifact_chunk is not an object".to_owned())
+            })?;
+        self.post("artifact_chunk", fields)
+    }
+
+    /// Send completion metadata for an explicit artifact transfer.
+    pub fn send_artifact_end(&self, end: &ArtifactEndEnvelope) -> Result<(), NativeHostError> {
+        end.validate()
+            .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+        let key = end.artifact_id.to_string();
+        let mut session =
+            self.shared.session.lock().map_err(|_| {
+                NativeHostError::Unavailable("session state is poisoned".to_owned())
+            })?;
+        let Some(transfer) = session.outbound_artifact_transfers.remove(&key) else {
+            return Err(NativeHostError::Protocol(
+                "outbound artifact end has no active begin".to_owned(),
+            ));
+        };
+        let byte_count = transfer.bytes.len();
+        let result = transfer
+            .progress
+            .validate_complete()
+            .and_then(|_| end.validate_against(&transfer.begin, &transfer.bytes));
+        let release = session.outbound_artifact_budget.release(byte_count);
+        drop(session);
+        result
+            .and(release)
+            .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+        let fields = serde_json::to_value(end)
+            .map_err(|_| NativeHostError::Protocol("artifact_end is not JSON".to_owned()))?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| NativeHostError::Protocol("artifact_end is not an object".to_owned()))?;
+        self.post("artifact_end", fields)
+    }
+
+    fn validate_outbound_artifact_limits(
+        &self,
+        total_bytes: u64,
+        chunk_size: u32,
+        chunk_count: u16,
+    ) -> Result<(), NativeHostError> {
+        let session =
+            self.shared.session.lock().map_err(|_| {
+                NativeHostError::Unavailable("session state is poisoned".to_owned())
+            })?;
+        let limits = session.negotiated_limits;
+        if total_bytes > limits.max_artifact_bytes
+            || u64::from(chunk_size) > limits.max_artifact_chunk_bytes as u64
+            || chunk_count > limits.max_artifact_chunks
+        {
+            return Err(NativeHostError::MessageTooLarge);
+        }
+        Ok(())
+    }
+
     /// Send the host handshake acknowledgement after the broker admits the peer.
     pub fn complete_handshake(
         &self,
@@ -354,8 +921,13 @@ impl NativeMessagingBridge {
         }
         session.broker_epoch = Some(broker_epoch.get());
         session.connection_epoch = Some(connection_epoch.get());
-        session.capabilities = capabilities.to_vec();
-        let extension_capabilities = hello.capabilities.clone();
+        session.capabilities = intersect_capabilities(&hello.capabilities, capabilities);
+        session.negotiated_capability_names =
+            intersect_capability_names(&hello.capabilities, capabilities);
+        session.negotiated_limits = NativeNegotiatedLimits::host_defaults()
+            .intersect(session.extension_limits)
+            .validate()?;
+        session.profile_state = ProfileBindingState::Bound;
         let envelope = json!({
             "protocol": PROTOCOL_VERSION,
             "kind": "hello_ok",
@@ -365,7 +937,10 @@ impl NativeMessagingBridge {
             "connection_epoch": connection_epoch.get(),
             "worker_instance_epoch": hello.worker_instance_epoch,
             "browser_session_epoch": hello.browser_session_epoch,
-            "capabilities": extension_capabilities,
+            "capabilities": session.negotiated_capability_names,
+            "limits": session.negotiated_limits.to_value(),
+            "profile_instance_id": hello.profile_instance_id,
+            "profile_state": "bound",
         });
         session.next_outbound_sequence = session
             .next_outbound_sequence
@@ -624,6 +1199,12 @@ impl NativeMessagingBridge {
         let mut fields = Map::new();
         fields.insert("request_id".to_owned(), json!(request_id.clone()));
         fields.insert("method".to_owned(), json!(method));
+        let deadline_ms = self
+            .shared
+            .request_timeout
+            .as_millis()
+            .min(u128::from(MAX_NATIVE_DEADLINE_MS)) as u64;
+        fields.insert("deadline_ms".to_owned(), json!(deadline_ms.max(1)));
         fields.insert("params".to_owned(), Value::Object(params));
         if let Some(action_id) = action_id {
             fields.insert("action_id".to_owned(), json!(action_id));
@@ -771,7 +1352,33 @@ impl NativeMessagingBridge {
         old_epoch: Option<LeaseEpoch>,
         new_epoch: LeaseEpoch,
         broker_epoch: BrokerEpoch,
+        request_token: &ReconcileToken,
     ) -> Result<FenceResult, CoreError> {
+        let (session_broker_epoch, connection_epoch) = {
+            let session = self.shared.session.lock().map_err(|_| {
+                CoreError::new(
+                    ErrorCode::NativeHostUnavailable,
+                    "session state is poisoned",
+                )
+            })?;
+            (
+                session.broker_epoch.ok_or_else(|| {
+                    CoreError::new(ErrorCode::NativeHostUnavailable, "broker epoch is missing")
+                })?,
+                session.connection_epoch.ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::NativeHostUnavailable,
+                        "connection epoch is missing",
+                    )
+                })?,
+            )
+        };
+        if session_broker_epoch != broker_epoch.get() {
+            return Err(CoreError::new(
+                ErrorCode::ProtocolMismatch,
+                "fence broker epoch does not match the Native Messaging session",
+            ));
+        }
         let request_id = self.next_request_id();
         let (sender, receiver) = mpsc::sync_channel(1);
         {
@@ -790,16 +1397,22 @@ impl NativeMessagingBridge {
             pending.insert(request_id.clone(), sender);
         }
         let mut params = Map::new();
+        params.insert("request_token".to_owned(), json!(request_token.as_str()));
         params.insert("space_id".to_owned(), json!(space_id.to_string()));
         params.insert("lease_epoch".to_owned(), json!(new_epoch.get()));
         params.insert("fence_epoch".to_owned(), json!(new_epoch.get()));
         params.insert("broker_epoch".to_owned(), json!(broker_epoch.get()));
+        params.insert("connection_epoch".to_owned(), json!(connection_epoch));
+        params.insert("durable".to_owned(), json!(true));
         let mut fields = Map::new();
         fields.insert("request_id".to_owned(), json!(request_id.clone()));
+        fields.insert("request_token".to_owned(), json!(request_token.as_str()));
         fields.insert("space_id".to_owned(), json!(space_id.to_string()));
         fields.insert("lease_epoch".to_owned(), json!(new_epoch.get()));
         fields.insert("fence_epoch".to_owned(), json!(new_epoch.get()));
         fields.insert("broker_epoch".to_owned(), json!(broker_epoch.get()));
+        fields.insert("connection_epoch".to_owned(), json!(connection_epoch));
+        fields.insert("durable".to_owned(), json!(true));
         fields.insert("params".to_owned(), Value::Object(params));
         if let Some(old_epoch) = old_epoch {
             fields.insert("old_epoch".to_owned(), json!(old_epoch.get()));
@@ -837,15 +1450,30 @@ impl NativeMessagingBridge {
                 ));
             }
         };
+        let is_fence_ack = response.get("kind").and_then(Value::as_str) == Some("fence_ack");
         let result = response_result(response)?;
-        let acknowledged = result
-            .get("fence_epoch")
-            .and_then(Value::as_u64)
-            .is_some_and(|epoch| epoch == new_epoch.get())
+        let acknowledged = is_fence_ack
+            && result
+                .get("request_token")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == request_token.as_str())
             && result
                 .get("space_id")
                 .and_then(Value::as_str)
-                .is_some_and(|value| value == space_id.as_str());
+                .is_some_and(|value| value == space_id.as_str())
+            && result
+                .get("fence_epoch")
+                .and_then(Value::as_u64)
+                .is_some_and(|epoch| epoch == new_epoch.get())
+            && result
+                .get("broker_epoch")
+                .and_then(Value::as_u64)
+                .is_some_and(|epoch| epoch == broker_epoch.get())
+            && result
+                .get("connection_epoch")
+                .and_then(Value::as_u64)
+                .is_some_and(|epoch| epoch == connection_epoch)
+            && result.get("durable").and_then(Value::as_bool) == Some(true);
         Ok(FenceResult { acknowledged })
     }
 
@@ -992,7 +1620,13 @@ impl Bridge for NativeMessagingBridge {
         self.shared
             .session
             .lock()
-            .map(|session| session.capabilities.clone())
+            .map(|session| {
+                if session.handshake_complete {
+                    session.capabilities.clone()
+                } else {
+                    session.host_capabilities.clone()
+                }
+            })
             .unwrap_or_default()
     }
 
@@ -1142,12 +1776,25 @@ impl Bridge for NativeMessagingBridge {
 
     fn fence(
         &self,
+        _space_id: &SpaceId,
+        _old_epoch: Option<LeaseEpoch>,
+        _new_epoch: LeaseEpoch,
+        _broker_epoch: BrokerEpoch,
+    ) -> Result<FenceResult, CoreError> {
+        Ok(FenceResult {
+            acknowledged: false,
+        })
+    }
+
+    fn fence_with_token(
+        &self,
         space_id: &SpaceId,
         old_epoch: Option<LeaseEpoch>,
         new_epoch: LeaseEpoch,
         broker_epoch: BrokerEpoch,
+        request_token: &ReconcileToken,
     ) -> Result<FenceResult, CoreError> {
-        self.fence_request(space_id, old_epoch, new_epoch, broker_epoch)
+        self.fence_request(space_id, old_epoch, new_epoch, broker_epoch, request_token)
     }
 
     fn close_page(
@@ -1185,7 +1832,7 @@ fn read_loop(
             return;
         }
     };
-    let hello = match parse_hello(&first, &shared) {
+    let parsed_hello = match parse_hello(&first, &shared) {
         Ok(hello) => hello,
         Err(error) => {
             let _ = hello_tx.send(Err(error.clone()));
@@ -1193,6 +1840,7 @@ fn read_loop(
             return;
         }
     };
+    let hello = parsed_hello.hello.clone();
     {
         let mut session = match shared.session.lock() {
             Ok(session) => session,
@@ -1205,6 +1853,7 @@ fn read_loop(
         };
         session.hello = hello.clone();
         session.next_inbound_sequence = 2;
+        session.extension_limits = parsed_hello.limits;
         session.capabilities = map_capabilities(&hello.capabilities);
     }
     if hello_tx.send(Ok(hello)).is_err() {
@@ -1234,7 +1883,16 @@ fn read_loop(
     }
 }
 
-fn parse_hello(payload: &[u8], shared: &NativeShared) -> Result<NativeHello, NativeHostError> {
+#[derive(Debug)]
+struct ParsedNativeHello {
+    hello: NativeHello,
+    limits: NativeNegotiatedLimits,
+}
+
+fn parse_hello(
+    payload: &[u8],
+    shared: &NativeShared,
+) -> Result<ParsedNativeHello, NativeHostError> {
     let value = parse_bounded_json(payload)?;
     let object = value
         .as_object()
@@ -1250,6 +1908,7 @@ fn parse_hello(payload: &[u8], shared: &NativeShared) -> Result<NativeHello, Nat
             "first Native Messaging message must be hello".to_owned(),
         ));
     }
+    validate_native_shape(&value, "hello")?;
     let expected_origin = shared
         .session
         .lock()
@@ -1287,20 +1946,41 @@ fn parse_hello(payload: &[u8], shared: &NativeShared) -> Result<NativeHello, Nat
             "hello metadata is too large".to_owned(),
         ));
     }
-    Ok(NativeHello {
-        protocol: u16::try_from(protocol)
-            .map_err(|_| NativeHostError::Protocol("hello protocol is invalid".to_owned()))?,
-        nonce,
-        sequence,
-        worker_instance_epoch,
-        browser_session_epoch,
-        profile_instance_id,
-        extension_version,
-        capabilities,
+    let limits = parse_limits(object.get("limits"))?;
+    if let Some(profile_state) = object.get("profile_state").and_then(Value::as_str)
+        && profile_state != "bound"
+    {
+        return Err(NativeHostError::Protocol(
+            "Native Messaging hello requires a bound profile".to_owned(),
+        ));
+    }
+    Ok(ParsedNativeHello {
+        hello: NativeHello {
+            protocol: u16::try_from(protocol)
+                .map_err(|_| NativeHostError::Protocol("hello protocol is invalid".to_owned()))?,
+            nonce,
+            sequence,
+            worker_instance_epoch,
+            browser_session_epoch,
+            profile_instance_id,
+            extension_version,
+            capabilities,
+        },
+        limits,
     })
 }
 
 fn handle_inbound(payload: Vec<u8>, shared: &NativeShared) -> Result<(), NativeHostError> {
+    {
+        let session = shared
+            .session
+            .lock()
+            .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?;
+        if session.handshake_complete && payload.len() > session.negotiated_limits.max_control_bytes
+        {
+            return Err(NativeHostError::MessageTooLarge);
+        }
+    }
     let value = parse_bounded_json(&payload)?;
     let object = value.as_object().ok_or_else(|| {
         NativeHostError::Protocol("Native Messaging envelope is not an object".to_owned())
@@ -1327,6 +2007,7 @@ fn handle_inbound(payload: Vec<u8>, shared: &NativeShared) -> Result<(), NativeH
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(|| NativeHostError::Protocol("Native Messaging kind is missing".to_owned()))?;
+    validate_native_shape(&value, kind)?;
     {
         let mut session = shared
             .session
@@ -1363,6 +2044,9 @@ fn handle_inbound(payload: Vec<u8>, shared: &NativeShared) -> Result<(), NativeH
         }
         "request" => enqueue_request(shared, value)?,
         "event" => enqueue_event(shared, value)?,
+        "artifact_begin" => handle_native_artifact_begin(shared, value)?,
+        "artifact_chunk" => handle_native_artifact_chunk(shared, value)?,
+        "artifact_end" => handle_native_artifact_end(shared, value)?,
         "inventory" => {
             record_inventory(shared, &value)?;
             enqueue_event(shared, value)?;
@@ -1374,6 +2058,575 @@ fn handle_inbound(payload: Vec<u8>, shared: &NativeShared) -> Result<(), NativeH
         }
     }
     Ok(())
+}
+
+fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostError> {
+    let object = value.as_object().ok_or_else(|| {
+        NativeHostError::Protocol("Native Messaging envelope is not an object".to_owned())
+    })?;
+    let mut allowed = vec!["protocol", "kind", "nonce", "sequence"];
+    let hello = kind == "hello";
+    if hello {
+        allowed.extend([
+            "worker_instance_epoch",
+            "browser_session_epoch",
+            "profile_instance_id",
+            "profile_state",
+            "extension_version",
+            "capabilities",
+            "limits",
+        ]);
+    } else {
+        allowed.extend([
+            "broker_epoch",
+            "connection_epoch",
+            "worker_instance_epoch",
+            "browser_session_epoch",
+        ]);
+    }
+    let kind_fields: &[&str] = match kind {
+        "hello" => &[],
+        "hello_ok" => &[
+            "capabilities",
+            "limits",
+            "profile_instance_id",
+            "profile_state",
+        ],
+        "request" => &[
+            "request_id",
+            "action_id",
+            "method",
+            "params",
+            "deadline_ms",
+            "request_hash",
+            "context",
+        ],
+        "response" | "action_result" => &[
+            "request_id",
+            "action_id",
+            "ok",
+            "result",
+            "error",
+            "warnings",
+        ],
+        "event" => &["event", "payload", "space_id", "page_id"],
+        "inventory" => &["payload"],
+        "fence" => &[
+            "request_id",
+            "request_token",
+            "space_id",
+            "old_epoch",
+            "lease_epoch",
+            "fence_epoch",
+            "broker_epoch",
+            "connection_epoch",
+            "durable",
+            "params",
+        ],
+        "fence_ack" => &[
+            "request_id",
+            "request_token",
+            "space_id",
+            "old_epoch",
+            "lease_epoch",
+            "fence_epoch",
+            "broker_epoch",
+            "connection_epoch",
+            "durable",
+            "ok",
+            "result",
+            "error",
+            "warnings",
+        ],
+        "cancel" => &["request_id", "reason"],
+        "error" => &["error"],
+        "artifact_begin" => &[
+            "artifact_id",
+            "request_id",
+            "artifact_kind",
+            "total_bytes",
+            "chunk_size",
+            "chunk_count",
+            "digest_algorithm",
+            "digest",
+            "redacted",
+        ],
+        "artifact_chunk" => &["artifact_id", "connection_epoch", "chunk_sequence", "bytes"],
+        "artifact_end" => &[
+            "artifact_id",
+            "total_bytes",
+            "chunk_count",
+            "digest_algorithm",
+            "digest",
+        ],
+        _ => {
+            return Err(NativeHostError::Protocol(
+                "Native Messaging kind is unsupported".to_owned(),
+            ));
+        }
+    };
+    allowed.extend(kind_fields);
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(NativeHostError::Protocol(format!(
+            "unknown Native Messaging field {key}"
+        )));
+    }
+
+    if hello {
+        require_positive(object, "worker_instance_epoch")?;
+        require_positive(object, "browser_session_epoch")?;
+        require_text(object, "profile_instance_id", 128)?;
+        require_text(object, "extension_version", 128)?;
+        require_string_array(object, "capabilities", MAX_NATIVE_CAPABILITIES)?;
+        if let Some(profile_state) = object.get("profile_state") {
+            if profile_state.as_str() != Some("bound") {
+                return Err(NativeHostError::Protocol(
+                    "hello profile_state must be bound".to_owned(),
+                ));
+            }
+        }
+        if object.contains_key("limits") {
+            let _ = parse_limits(object.get("limits"))?;
+        }
+        return Ok(());
+    }
+
+    for key in [
+        "broker_epoch",
+        "connection_epoch",
+        "worker_instance_epoch",
+        "browser_session_epoch",
+    ] {
+        require_positive(object, key)?;
+    }
+    match kind {
+        "hello_ok" => {
+            require_string_array(object, "capabilities", MAX_NATIVE_CAPABILITIES)?;
+            let limits = parse_limits(object.get("limits"))?;
+            limits.validate()?;
+            require_text(object, "profile_instance_id", 128)?;
+            if object.get("profile_state").and_then(Value::as_str) != Some("bound") {
+                return Err(NativeHostError::Protocol(
+                    "hello_ok profile_state must be bound".to_owned(),
+                ));
+            }
+        }
+        "request" => {
+            require_text(object, "request_id", MAX_NATIVE_ID_BYTES)?;
+            let method = require_text(object, "method", 128)?;
+            if !valid_native_method(&method) {
+                return Err(NativeHostError::Protocol(
+                    "request method is invalid".to_owned(),
+                ));
+            }
+            let params = object
+                .get("params")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    NativeHostError::Protocol("request params are required".to_owned())
+                })?;
+            if params.len() > MAX_NATIVE_COLLECTION_ITEMS {
+                return Err(NativeHostError::MessageTooLarge);
+            }
+            if let Some(deadline) = object.get("deadline_ms")
+                && !deadline.is_null()
+                && (deadline
+                    .as_u64()
+                    .is_none_or(|value| value == 0 || value > MAX_NATIVE_DEADLINE_MS))
+            {
+                return Err(NativeHostError::Protocol(
+                    "request deadline is invalid".to_owned(),
+                ));
+            }
+            optional_text(object, "action_id", MAX_NATIVE_ID_BYTES)?;
+            optional_text(object, "request_hash", 128)?;
+            optional_text(object, "context", MAX_NATIVE_STRING_BYTES)?;
+        }
+        "response" | "action_result" => validate_native_response(object)?,
+        "event" => {
+            require_text(object, "event", 128)?;
+            object
+                .get("payload")
+                .and_then(Value::as_object)
+                .ok_or_else(|| NativeHostError::Protocol("event payload is required".to_owned()))?;
+            optional_text(object, "space_id", MAX_NATIVE_ID_BYTES)?;
+            optional_text(object, "page_id", MAX_NATIVE_ID_BYTES)?;
+        }
+        "inventory" => {
+            object
+                .get("payload")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    NativeHostError::Protocol("inventory payload is required".to_owned())
+                })?;
+        }
+        "fence" => {
+            require_text(object, "request_id", MAX_NATIVE_ID_BYTES)?;
+            require_text(object, "request_token", MAX_NATIVE_ID_BYTES)?;
+            require_text(object, "space_id", MAX_NATIVE_ID_BYTES)?;
+            require_positive(object, "lease_epoch")?;
+            require_positive(object, "fence_epoch")?;
+            if object.get("durable").and_then(Value::as_bool) != Some(true) {
+                return Err(NativeHostError::Protocol(
+                    "fence must be durable".to_owned(),
+                ));
+            }
+            object
+                .get("params")
+                .and_then(Value::as_object)
+                .ok_or_else(|| NativeHostError::Protocol("fence params are required".to_owned()))?;
+        }
+        "fence_ack" => {
+            require_text(object, "request_id", MAX_NATIVE_ID_BYTES)?;
+            validate_native_response(object)?;
+        }
+        "cancel" => {
+            require_text(object, "request_id", MAX_NATIVE_ID_BYTES)?;
+            optional_text(object, "reason", 256)?;
+        }
+        "error" => {
+            object
+                .get("error")
+                .and_then(Value::as_object)
+                .ok_or_else(|| NativeHostError::Protocol("error payload is required".to_owned()))?;
+        }
+        "artifact_begin" => validate_native_artifact_begin(object)?,
+        "artifact_chunk" => {
+            require_text(object, "artifact_id", MAX_NATIVE_ID_BYTES)?;
+            if object
+                .get("connection_epoch")
+                .and_then(Value::as_u64)
+                .is_none()
+            {
+                return Err(NativeHostError::Protocol(
+                    "artifact connection_epoch is invalid".to_owned(),
+                ));
+            }
+            require_u64(object, "chunk_sequence")?;
+            validate_native_bytes(object, "bytes", MAX_ARTIFACT_CHUNK_BYTES)?;
+        }
+        "artifact_end" => {
+            require_text(object, "artifact_id", MAX_NATIVE_ID_BYTES)?;
+            require_u64(object, "total_bytes")?;
+            require_u64(object, "chunk_count")?;
+            require_text(object, "digest_algorithm", 32)?;
+            require_text(object, "digest", 128)?;
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn validate_native_response(object: &Map<String, Value>) -> Result<(), NativeHostError> {
+    require_text(object, "request_id", MAX_NATIVE_ID_BYTES)?;
+    let ok = object
+        .get("ok")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| NativeHostError::Protocol("response ok is required".to_owned()))?;
+    let result = object.get("result");
+    let error = object.get("error");
+    if ok != result.is_some_and(|value| !value.is_null())
+        || ok == error.is_some_and(|value| !value.is_null())
+    {
+        return Err(NativeHostError::Protocol(
+            "response result/error fields do not match ok".to_owned(),
+        ));
+    }
+    if let Some(warnings) = object.get("warnings") {
+        let warnings = warnings
+            .as_array()
+            .ok_or_else(|| NativeHostError::Protocol("response warnings are invalid".to_owned()))?;
+        if warnings.len() > MAX_NATIVE_WARNINGS
+            || warnings.iter().any(|value| {
+                value
+                    .as_str()
+                    .is_none_or(|text| text.is_empty() || text.len() > MAX_NATIVE_WARNING_BYTES)
+            })
+        {
+            return Err(NativeHostError::MessageTooLarge);
+        }
+    }
+    Ok(())
+}
+
+fn validate_native_artifact_begin(object: &Map<String, Value>) -> Result<(), NativeHostError> {
+    require_text(object, "artifact_id", MAX_NATIVE_ID_BYTES)?;
+    optional_text(object, "request_id", MAX_NATIVE_ID_BYTES)?;
+    require_text(object, "artifact_kind", 32)?;
+    let total_bytes = require_u64(object, "total_bytes")?;
+    let chunk_size = require_u64(object, "chunk_size")?;
+    let chunk_count = require_u64(object, "chunk_count")?;
+    if total_bytes > MAX_ARTIFACT_BYTES
+        || chunk_size == 0
+        || chunk_size > MAX_ARTIFACT_CHUNK_BYTES as u64
+        || chunk_count > u64::from(MAX_ARTIFACT_CHUNKS)
+    {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    require_text(object, "digest_algorithm", 32)?;
+    require_text(object, "digest", 128)?;
+    object
+        .get("redacted")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| NativeHostError::Protocol("artifact redacted is invalid".to_owned()))?;
+    Ok(())
+}
+
+fn validate_native_bytes(
+    object: &Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<(), NativeHostError> {
+    let bytes = object
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| NativeHostError::Protocol(format!("{key} must be a byte array")))?;
+    if bytes.len() > max {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    if bytes
+        .iter()
+        .any(|value| value.as_u64().is_none_or(|byte| byte > u64::from(u8::MAX)))
+    {
+        return Err(NativeHostError::Protocol(format!(
+            "{key} contains an invalid byte"
+        )));
+    }
+    Ok(())
+}
+
+fn require_text(
+    object: &Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<String, NativeHostError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= max)
+        .map(str::to_owned)
+        .ok_or_else(|| NativeHostError::Protocol(format!("{key} is missing or invalid")))
+}
+
+fn optional_text(
+    object: &Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<(), NativeHostError> {
+    if let Some(value) = object.get(key)
+        && !value.is_null()
+        && value
+            .as_str()
+            .is_none_or(|text| text.is_empty() || text.len() > max)
+    {
+        return Err(NativeHostError::Protocol(format!("{key} is invalid")));
+    }
+    Ok(())
+}
+
+fn require_u64(object: &Map<String, Value>, key: &str) -> Result<u64, NativeHostError> {
+    object
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| NativeHostError::Protocol(format!("{key} is missing or invalid")))
+}
+
+fn require_positive(object: &Map<String, Value>, key: &str) -> Result<u64, NativeHostError> {
+    let value = require_u64(object, key)?;
+    if value == 0 {
+        return Err(NativeHostError::Protocol(format!("{key} must be positive")));
+    }
+    Ok(value)
+}
+
+fn require_string_array(
+    object: &Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<(), NativeHostError> {
+    let values = object
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| NativeHostError::Protocol(format!("{key} must be an array")))?;
+    if values.len() > max
+        || values.iter().any(|value| {
+            value
+                .as_str()
+                .is_none_or(|text| text.is_empty() || text.len() > 128)
+        })
+    {
+        return Err(NativeHostError::Protocol(format!("{key} is invalid")));
+    }
+    Ok(())
+}
+
+fn parse_limits(value: Option<&Value>) -> Result<NativeNegotiatedLimits, NativeHostError> {
+    let Some(value) = value else {
+        return Ok(NativeNegotiatedLimits::host_defaults());
+    };
+    let object = value.as_object().ok_or_else(|| {
+        NativeHostError::Protocol("Native Messaging limits are invalid".to_owned())
+    })?;
+    let allowed = [
+        "max_control_bytes",
+        "max_artifact_chunk_bytes",
+        "max_artifact_bytes",
+        "max_artifact_chunks",
+        "max_in_flight_artifact_bytes",
+        "max_cumulative_artifact_bytes",
+    ];
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(NativeHostError::Protocol(
+            "Native Messaging limits contain an unknown field".to_owned(),
+        ));
+    }
+    let limits = NativeNegotiatedLimits {
+        max_control_bytes: usize::try_from(require_u64(object, "max_control_bytes")?)
+            .map_err(|_| NativeHostError::MessageTooLarge)?,
+        max_artifact_chunk_bytes: usize::try_from(require_u64(object, "max_artifact_chunk_bytes")?)
+            .map_err(|_| NativeHostError::MessageTooLarge)?,
+        max_artifact_bytes: require_u64(object, "max_artifact_bytes")?,
+        max_artifact_chunks: u16::try_from(require_u64(object, "max_artifact_chunks")?)
+            .map_err(|_| NativeHostError::MessageTooLarge)?,
+        max_in_flight_artifact_bytes: usize::try_from(require_u64(
+            object,
+            "max_in_flight_artifact_bytes",
+        )?)
+        .map_err(|_| NativeHostError::MessageTooLarge)?,
+        max_cumulative_artifact_bytes: require_u64(object, "max_cumulative_artifact_bytes")?,
+    };
+    limits.validate()
+}
+
+fn valid_native_method(method: &str) -> bool {
+    let mut parts = method.split('.');
+    !method.is_empty()
+        && method.len() <= 128
+        && parts.all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'
+                        || byte == b'-'
+                })
+        })
+}
+
+fn handle_native_artifact_begin(
+    shared: &NativeShared,
+    value: Value,
+) -> Result<(), NativeHostError> {
+    let begin: ArtifactBeginEnvelope = serde_json::from_value(value).map_err(|error| {
+        NativeHostError::Protocol(format!("artifact_begin is invalid: {error}"))
+    })?;
+    begin
+        .validate()
+        .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+    let key = begin.artifact_id.to_string();
+    let mut session = shared
+        .session
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?;
+    if session.artifact_transfers.len() >= MAX_NATIVE_ARTIFACT_TRANSFERS
+        || session.artifact_transfers.contains_key(&key)
+    {
+        return Err(NativeHostError::Protocol(
+            "artifact transfer is duplicated or exceeds the connection bound".to_owned(),
+        ));
+    }
+    let limits = session.negotiated_limits;
+    if begin.total_bytes > limits.max_artifact_bytes
+        || u64::from(begin.chunk_size) > limits.max_artifact_chunk_bytes as u64
+        || begin.chunk_count > limits.max_artifact_chunks
+    {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    let connection_epoch = ConnectionEpoch::new(session.connection_epoch.ok_or_else(|| {
+        NativeHostError::Protocol("artifact connection epoch is missing".to_owned())
+    })?);
+    let progress = agentyc_core::ArtifactTransferProgress::begin(&begin, connection_epoch)
+        .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+    session.artifact_transfers.insert(
+        key,
+        NativeArtifactTransfer {
+            begin,
+            progress,
+            bytes: Vec::new(),
+        },
+    );
+    Ok(())
+}
+
+fn handle_native_artifact_chunk(
+    shared: &NativeShared,
+    value: Value,
+) -> Result<(), NativeHostError> {
+    let chunk: ArtifactChunkEnvelope = serde_json::from_value(value).map_err(|error| {
+        NativeHostError::Protocol(format!("artifact_chunk is invalid: {error}"))
+    })?;
+    chunk
+        .validate()
+        .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+    let key = chunk.artifact_id.to_string();
+    let mut session = shared
+        .session
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?;
+    let limits = session.negotiated_limits;
+    if chunk.bytes.len() > limits.max_artifact_chunk_bytes {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    if session
+        .artifact_budget
+        .in_flight_bytes()
+        .saturating_add(chunk.bytes.len())
+        > limits.max_in_flight_artifact_bytes
+    {
+        return Err(NativeHostError::MessageTooLarge);
+    }
+    session
+        .artifact_budget
+        .receive(chunk.bytes.len())
+        .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+    let Some(transfer) = session.artifact_transfers.get_mut(&key) else {
+        let _ = session.artifact_budget.release(chunk.bytes.len());
+        return Err(NativeHostError::Protocol(
+            "artifact chunk has no active begin".to_owned(),
+        ));
+    };
+    if let Err(error) = transfer.progress.accept_chunk(&chunk) {
+        let _ = session.artifact_budget.release(chunk.bytes.len());
+        return Err(NativeHostError::Protocol(error.to_string()));
+    }
+    transfer.bytes.extend_from_slice(&chunk.bytes);
+    Ok(())
+}
+
+fn handle_native_artifact_end(shared: &NativeShared, value: Value) -> Result<(), NativeHostError> {
+    let end: ArtifactEndEnvelope = serde_json::from_value(value)
+        .map_err(|error| NativeHostError::Protocol(format!("artifact_end is invalid: {error}")))?;
+    end.validate()
+        .map_err(|error| NativeHostError::Protocol(error.to_string()))?;
+    let key = end.artifact_id.to_string();
+    let mut session = shared
+        .session
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?;
+    let Some(transfer) = session.artifact_transfers.remove(&key) else {
+        return Err(NativeHostError::Protocol(
+            "artifact end has no active begin".to_owned(),
+        ));
+    };
+    let byte_count = transfer.bytes.len();
+    let result = transfer
+        .progress
+        .validate_complete()
+        .and_then(|_| end.validate_against(&transfer.begin, &transfer.bytes));
+    let release = session.artifact_budget.release(byte_count);
+    result
+        .and(release)
+        .map_err(|error| NativeHostError::Protocol(error.to_string()))
 }
 
 fn validate_common(
@@ -1451,6 +2704,41 @@ fn enqueue_request(shared: &NativeShared, value: Value) -> Result<(), NativeHost
         })
         .transpose()?;
     let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
+    let mut logical = object.clone();
+    for key in [
+        "protocol",
+        "nonce",
+        "sequence",
+        "broker_epoch",
+        "connection_epoch",
+        "worker_instance_epoch",
+        "browser_session_epoch",
+    ] {
+        logical.remove(key);
+    }
+    let fingerprint =
+        agentyc_core::ContentHash::from_bytes(&serde_json::to_vec(&logical).map_err(|_| {
+            NativeHostError::Protocol("Native Messaging request cannot be fingerprinted".to_owned())
+        })?);
+    let mut fingerprints = shared.request_fingerprints.lock().map_err(|_| {
+        NativeHostError::Unavailable("request fingerprint state is poisoned".to_owned())
+    })?;
+    if let Some(existing) = fingerprints.get(&request_id) {
+        return Err(if existing == &fingerprint {
+            NativeHostError::Protocol("duplicate Native Messaging request_id".to_owned())
+        } else {
+            NativeHostError::Protocol(
+                "Native Messaging request_id conflicts with a different hash or context".to_owned(),
+            )
+        });
+    }
+    if fingerprints.len() >= MAX_NATIVE_PENDING_REQUESTS * 16 {
+        if let Some(oldest) = fingerprints.keys().next().cloned() {
+            fingerprints.remove(&oldest);
+        }
+    }
+    fingerprints.insert(request_id.clone(), fingerprint);
+    drop(fingerprints);
     let request = NativeRequest {
         request_id,
         action_id,
@@ -1697,10 +2985,22 @@ fn write_envelope(shared: &NativeShared, value: &Value) -> Result<(), NativeHost
 }
 
 fn write_envelope_unlocked(shared: &NativeShared, value: &Value) -> Result<(), NativeHostError> {
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| NativeHostError::Protocol("Native Messaging kind is missing".to_owned()))?;
+    validate_native_shape(value, kind)?;
+    assert_no_raw_browser_identifiers(value, "")?;
     let payload = serde_json::to_vec(value).map_err(|_| {
         NativeHostError::Protocol("Native Messaging envelope is not JSON".to_owned())
     })?;
-    if payload.len() > MAX_NATIVE_CONTROL_BYTES {
+    let max_control_bytes = shared
+        .session
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?
+        .negotiated_limits
+        .max_control_bytes;
+    if payload.len() > max_control_bytes {
         return Err(NativeHostError::MessageTooLarge);
     }
     let length = u32::try_from(payload.len()).map_err(|_| NativeHostError::MessageTooLarge)?;
@@ -1771,11 +3071,15 @@ fn parse_bounded_json(payload: &[u8]) -> Result<Value, NativeHostError> {
     let value: Value = serde_json::from_slice(payload).map_err(|_| {
         NativeHostError::Protocol("Native Messaging payload is invalid JSON".to_owned())
     })?;
-    validate_json_budget(&value, 0)?;
+    validate_json_budget(&value, 0, None)?;
     Ok(value)
 }
 
-fn validate_json_budget(value: &Value, depth: usize) -> Result<(), NativeHostError> {
+fn validate_json_budget(
+    value: &Value,
+    depth: usize,
+    parent_key: Option<&str>,
+) -> Result<(), NativeHostError> {
     if depth > MAX_NATIVE_DEPTH {
         return Err(NativeHostError::MessageTooLarge);
     }
@@ -1784,11 +3088,16 @@ fn validate_json_budget(value: &Value, depth: usize) -> Result<(), NativeHostErr
             Err(NativeHostError::MessageTooLarge)
         }
         Value::Array(values) => {
-            if values.len() > MAX_NATIVE_COLLECTION_ITEMS {
+            let max_items = if parent_key == Some("bytes") {
+                MAX_ARTIFACT_CHUNK_BYTES
+            } else {
+                MAX_NATIVE_COLLECTION_ITEMS
+            };
+            if values.len() > max_items {
                 return Err(NativeHostError::MessageTooLarge);
             }
             for value in values {
-                validate_json_budget(value, depth + 1)?;
+                validate_json_budget(value, depth + 1, parent_key)?;
             }
             Ok(())
         }
@@ -1800,7 +3109,7 @@ fn validate_json_budget(value: &Value, depth: usize) -> Result<(), NativeHostErr
                 if matches!(key.as_str(), "__proto__" | "constructor" | "prototype") {
                     return Err(NativeHostError::Protocol("unsafe JSON key".to_owned()));
                 }
-                validate_json_budget(value, depth + 1)?;
+                validate_json_budget(value, depth + 1, Some(key))?;
             }
             Ok(())
         }
@@ -1922,25 +3231,59 @@ fn required_positive_u64(object: &Map<String, Value>, key: &str) -> Result<u64, 
     Ok(value)
 }
 
+fn capability_for_name(value: &str) -> Option<Capability> {
+    match value {
+        "logical_tabs" | "debugger_allowlist" | "visual_groups" => Some(Capability::Action),
+        "frame_events" => Some(Capability::Wait),
+        "snapshot" => Some(Capability::Snapshot),
+        "evaluate" => Some(Capability::Evaluate),
+        "reconcile" => Some(Capability::Reconcile),
+        "artifact_transfer" | "artifact" => Some(Capability::Artifact),
+        _ => None,
+    }
+}
+
 fn map_capabilities(values: &[String]) -> Vec<Capability> {
     let mut capabilities = Vec::new();
     for value in values {
-        let capability = match value.as_str() {
-            "logical_tabs" | "debugger_allowlist" => Some(Capability::Action),
-            "frame_events" => Some(Capability::Wait),
-            "snapshot" => Some(Capability::Snapshot),
-            "evaluate" => Some(Capability::Evaluate),
-            "reconcile" => Some(Capability::Reconcile),
-            // The extension does not advertise the artifact wire protocol yet.
-            _ => None,
-        };
-        if let Some(capability) = capability
+        if let Some(capability) = capability_for_name(value)
             && !capabilities.contains(&capability)
         {
             capabilities.push(capability);
         }
     }
     capabilities
+}
+
+fn intersect_capabilities(extension: &[String], host: &[Capability]) -> Vec<Capability> {
+    host.iter()
+        .copied()
+        .filter(|capability| {
+            extension
+                .iter()
+                .filter_map(|name| capability_for_name(name))
+                .any(|advertised| advertised == *capability)
+        })
+        .fold(Vec::new(), |mut result, capability| {
+            if !result.contains(&capability) {
+                result.push(capability);
+            }
+            result
+        })
+}
+
+fn intersect_capability_names(extension: &[String], host: &[Capability]) -> Vec<String> {
+    extension
+        .iter()
+        .filter(|name| {
+            capability_for_name(name).is_some_and(|capability| host.contains(&capability))
+        })
+        .fold(Vec::new(), |mut result, name| {
+            if !result.contains(name) {
+                result.push(name.clone());
+            }
+            result
+        })
 }
 
 fn mark_closed(shared: &NativeShared, error: NativeHostError) {
@@ -2007,6 +3350,29 @@ mod tests {
     use super::*;
     use agentyc_core::{ActionId, ActionOperation, ContentHash, IdempotencyKey, RequestId};
     use std::{sync::mpsc::Receiver, time::Instant};
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_native_shim_connections_are_received_by_one_owner_endpoint() {
+        use std::os::unix::net::UnixStream;
+
+        let directory = tempfile::tempdir_in("/tmp").expect("state directory");
+        let server = NativeForwardServer::start(directory.path()).expect("forward server");
+        let mut client = UnixStream::connect(server.socket_path()).expect("forward client");
+        client
+            .write_all(b"native-frame")
+            .expect("write forward bytes");
+        let mut forwarded = server
+            .accept_forwarded(Duration::from_secs(1))
+            .expect("forwarded connection");
+        let mut bytes = [0_u8; 12];
+        forwarded
+            .read_exact(&mut bytes)
+            .expect("read forward bytes");
+        assert_eq!(&bytes, b"native-frame");
+        server.stop();
+        assert!(!native_forward_socket_path(directory.path()).exists());
+    }
 
     #[test]
     fn chrome_origin_requires_exact_extension_id_and_normalizes_only_trailing_slash() {
@@ -2150,7 +3516,7 @@ mod tests {
         for _ in 0..(MAX_NATIVE_DEPTH + 2) {
             value = json!([value]);
         }
-        assert!(validate_json_budget(&value, 0).is_err());
+        assert!(validate_json_budget(&value, 0, None).is_err());
         assert!(parse_bounded_json(&vec![b'x'; MAX_NATIVE_CONTROL_BYTES + 1]).is_err());
     }
 
@@ -2235,6 +3601,162 @@ mod tests {
             json!(hello.browser_session_epoch),
         );
         Value::Object(object)
+    }
+
+    fn run_fence_ack(result: Value, nonce_suffix: &str) -> bool {
+        let (to_host, from_extension) = mpsc::sync_channel(8);
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let hello = NativeHello {
+            protocol: PROTOCOL_VERSION,
+            nonce: format!("nonce_{nonce_suffix}"),
+            sequence: 1,
+            worker_instance_epoch: 2,
+            browser_session_epoch: 3,
+            profile_instance_id: format!("profile_{nonce_suffix}"),
+            extension_version: "0.1.0".to_owned(),
+            capabilities: vec!["logical_tabs".to_owned()],
+        };
+        to_host
+            .send(frame_json(json!({
+                "protocol": PROTOCOL_VERSION,
+                "kind": "hello",
+                "nonce": hello.nonce,
+                "sequence": 1,
+                "worker_instance_epoch": hello.worker_instance_epoch,
+                "browser_session_epoch": hello.browser_session_epoch,
+                "profile_instance_id": hello.profile_instance_id,
+                "extension_version": hello.extension_version,
+                "capabilities": hello.capabilities,
+            })))
+            .expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        let writer = CaptureWriter(Arc::clone(&capture));
+        let config = NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+            .expect("origin")
+            .with_handshake_timeout(Duration::from_secs(1))
+            .with_request_timeout(Duration::from_secs(1));
+        let (accepted, bridge) =
+            NativeMessagingBridge::accept(reader, writer, config).expect("accept");
+        bridge
+            .complete_handshake(
+                &accepted,
+                BrokerEpoch::new(1),
+                agentyc_core::ConnectionEpoch::new(1),
+                &[Capability::Action],
+            )
+            .expect("hello_ok");
+
+        let space_id = SpaceId::from_suffix("fence_validation").expect("space");
+        let request_token = ReconcileToken::from_suffix("fence-validation").expect("token");
+        let fence_bridge = bridge.clone();
+        let fence_space = space_id.clone();
+        let fence_token = request_token.clone();
+        let fence_thread = thread::spawn(move || {
+            fence_bridge.fence_request(
+                &fence_space,
+                Some(LeaseEpoch::new(1)),
+                LeaseEpoch::new(2),
+                BrokerEpoch::new(1),
+                &fence_token,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let request_id = loop {
+            if let Some(request) = captured_frames(&capture)
+                .into_iter()
+                .find(|value| value["kind"] == "fence")
+            {
+                break request["request_id"]
+                    .as_str()
+                    .expect("fence request id")
+                    .to_owned();
+            }
+            assert!(Instant::now() < deadline, "fence request was not written");
+            thread::sleep(Duration::from_millis(2));
+        };
+        to_host
+            .send(frame_json(extension_message(
+                &hello,
+                2,
+                "fence_ack",
+                json!({
+                    "request_id": request_id,
+                    "ok": true,
+                    "result": result
+                }),
+            )))
+            .expect("fence input");
+        let acknowledged = fence_thread
+            .join()
+            .expect("fence thread")
+            .expect("fence result")
+            .acknowledged;
+        drop(to_host);
+        let _ = bridge.wait_closed();
+        acknowledged
+    }
+
+    #[test]
+    fn fence_ack_with_mismatched_token_stays_unacknowledged() {
+        assert!(!run_fence_ack(
+            json!({
+                "request_token": "reconcile_other-fence",
+                "space_id": "space_fence_validation",
+                "fence_epoch": 2,
+                "broker_epoch": 1,
+                "connection_epoch": 1,
+                "durable": true
+            }),
+            "mismatched-token"
+        ));
+    }
+
+    #[test]
+    fn fence_ack_with_durable_false_stays_unacknowledged() {
+        assert!(!run_fence_ack(
+            json!({
+                "request_token": "reconcile_fence-validation",
+                "space_id": "space_fence_validation",
+                "fence_epoch": 2,
+                "broker_epoch": 1,
+                "connection_epoch": 1,
+                "durable": false
+            }),
+            "durable-false"
+        ));
+    }
+
+    #[test]
+    fn fence_ack_with_epoch_mismatch_stays_unacknowledged() {
+        assert!(!run_fence_ack(
+            json!({
+                "request_token": "reconcile_fence-validation",
+                "space_id": "space_fence_validation",
+                "fence_epoch": 2,
+                "broker_epoch": 2,
+                "connection_epoch": 1,
+                "durable": true
+            }),
+            "epoch-mismatch"
+        ));
+    }
+
+    #[test]
+    fn current_durable_fence_ack_is_acknowledged() {
+        assert!(run_fence_ack(
+            json!({
+                "request_token": "reconcile_fence-validation",
+                "space_id": "space_fence_validation",
+                "fence_epoch": 2,
+                "broker_epoch": 1,
+                "connection_epoch": 1,
+                "durable": true
+            }),
+            "current-success"
+        ));
     }
 
     #[test]
@@ -2452,13 +3974,16 @@ mod tests {
         assert_eq!(observed.groups.len(), 1);
         assert_eq!(observed.groups[0]["space_id"], json!("space_one"));
 
+        let fence_token = ReconcileToken::from_suffix("native-fence").expect("fence token");
         let fence_bridge = bridge.clone();
+        let fence_token_for_thread = fence_token.clone();
         let fence_thread = thread::spawn(move || {
             fence_bridge.fence_request(
                 &SpaceId::from_suffix("one").expect("space"),
                 Some(LeaseEpoch::new(1)),
                 LeaseEpoch::new(2),
                 BrokerEpoch::new(1),
+                &fence_token_for_thread,
             )
         });
         let fence_request_id = loop {
@@ -2466,6 +3991,18 @@ mod tests {
                 .into_iter()
                 .find(|value| value["kind"] == "fence")
             {
+                assert_eq!(request["request_token"], json!(fence_token.as_str()));
+                assert_eq!(request["space_id"], json!("space_one"));
+                assert_eq!(request["fence_epoch"], json!(2));
+                assert_eq!(request["broker_epoch"], json!(1));
+                assert_eq!(request["connection_epoch"], json!(1));
+                assert_eq!(request["durable"], json!(true));
+                assert_eq!(
+                    request["params"]["request_token"],
+                    json!(fence_token.as_str())
+                );
+                assert_eq!(request["params"]["connection_epoch"], json!(1));
+                assert_eq!(request["params"]["durable"], json!(true));
                 break request["request_id"]
                     .as_str()
                     .expect("fence request id")
@@ -2481,7 +4018,14 @@ mod tests {
                 json!({
                     "request_id": fence_request_id,
                     "ok": true,
-                    "result": {"space_id": "space_one", "fence_epoch": 2}
+                    "result": {
+                        "request_token": fence_token.as_str(),
+                        "space_id": "space_one",
+                        "fence_epoch": 2,
+                        "broker_epoch": 1,
+                        "connection_epoch": 1,
+                        "durable": true
+                    }
                 }),
             )))
             .expect("fence input");
