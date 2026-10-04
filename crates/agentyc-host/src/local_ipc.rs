@@ -9,8 +9,8 @@
 //! not proof against another process running as the same OS user.
 
 use std::{
-    collections::BTreeMap,
-    io::{Read, Write},
+    collections::{BTreeMap, VecDeque},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -57,9 +57,13 @@ impl std::fmt::Debug for LocalHostServer {
 impl LocalHostServer {
     /// Start a local server around one already-opened broker.
     pub fn start(broker: Broker, socket_path: impl AsRef<Path>) -> Result<Self, HostError> {
-        use std::os::unix::{fs::FileTypeExt, fs::PermissionsExt, net::UnixListener};
+        use std::os::unix::{
+            fs::{FileTypeExt, PermissionsExt},
+            net::UnixListener,
+        };
 
         let socket_path = validate_socket_path(socket_path.as_ref())?;
+
         if let Ok(metadata) = std::fs::symlink_metadata(&socket_path) {
             if !metadata.file_type().is_socket() {
                 return Err(HostError::Invariant(
@@ -99,6 +103,20 @@ impl LocalHostServer {
                 while !stop_for_thread.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            debug_local_log("local client accepted");
+                            if !crate::host::peer_matches_directory_owner(&stream, &join_path) {
+                                if let Some(path) = std::env::var_os("AGENTYC_DEBUG_LOG") {
+                                    use std::io::Write as _;
+                                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                                        .create(true)
+                                        .append(true)
+                                        .open(path)
+                                    {
+                                        let _ = writeln!(file, "local peer rejected");
+                                    }
+                                }
+                                continue;
+                            }
                             if stream.set_nonblocking(false).is_err()
                                 || stream
                                     .set_read_timeout(Some(LOCAL_CLIENT_READ_TIMEOUT))
@@ -130,6 +148,7 @@ impl LocalHostServer {
                         Err(_) => break,
                     }
                 }
+                drop(listener);
                 remove_socket_if_owned(&join_path);
             })
             .map_err(|error| {
@@ -191,10 +210,28 @@ impl LocalHostServer {
 
 /// Resolve the configured local socket without accepting a browser endpoint.
 pub fn configured_socket_path(state_dir: impl AsRef<Path>) -> PathBuf {
-    std::env::var_os("AGENTYC_HOST_SOCKET")
+    if let Some(configured) = std::env::var_os("AGENTYC_HOST_SOCKET")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| state_dir.as_ref().join(DEFAULT_LOCAL_SOCKET_FILENAME))
+    {
+        return configured;
+    }
+    let configured = state_dir.as_ref().join(DEFAULT_LOCAL_SOCKET_FILENAME);
+    if configured.as_os_str().len() <= 80 {
+        return configured;
+    }
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in configured.as_os_str().to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let root = Path::new("/tmp");
+    let root = if root.is_dir() {
+        root.to_path_buf()
+    } else {
+        std::env::temp_dir()
+    };
+    root.join(format!("agentyc-host-{hash:016x}.sock"))
 }
 
 /// A persistent client for the owner-only local host socket.
@@ -204,7 +241,7 @@ pub fn configured_socket_path(state_dir: impl AsRef<Path>) -> PathBuf {
 /// response with the wrong logical request.
 #[cfg(unix)]
 pub struct LocalSocketClient {
-    stream: Mutex<std::os::unix::net::UnixStream>,
+    stream: Mutex<LocalClientStream>,
     hello_ok: HelloOkEnvelope,
     request_counter: AtomicU64,
     max_payload_bytes: usize,
@@ -226,7 +263,7 @@ impl std::fmt::Debug for LocalSocketClient {
 impl LocalSocketClient {
     /// Connect to a running native host and complete the logical core hello.
     pub fn connect(socket_path: impl AsRef<Path>, hello: HelloEnvelope) -> Result<Self, HostError> {
-        let mut stream =
+        let stream =
             std::os::unix::net::UnixStream::connect(socket_path).map_err(HostError::Transport)?;
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
@@ -235,16 +272,18 @@ impl LocalSocketClient {
             .set_write_timeout(Some(Duration::from_secs(30)))
             .map_err(HostError::Transport)?;
         let max_payload_bytes = DEFAULT_MAX_FRAME_PAYLOAD_BYTES;
-        let hello_frame = encode_frame(
-            &serde_json::to_vec(&Envelope::<BTreeMap<String, String>>::Hello(hello.clone()))?,
-            max_payload_bytes,
-        )?;
-        stream
+        let mut io = LocalClientStream::new(stream, max_payload_bytes);
+        let hello_envelope = Envelope::<BTreeMap<String, String>>::Hello(hello.clone());
+        crate::protocol::validate_typed_envelope(&hello_envelope)?;
+        let hello_frame = encode_frame(&serde_json::to_vec(&hello_envelope)?, max_payload_bytes)?;
+        io.stream
             .write_all(&hello_frame)
             .map_err(HostError::Transport)?;
-        stream.flush().map_err(HostError::Transport)?;
-        let response = read_local_frame(&mut stream, max_payload_bytes)?;
-        let envelope: Envelope<BTreeMap<String, String>> = serde_json::from_slice(&response)?;
+        io.stream.flush().map_err(HostError::Transport)?;
+        let response = read_local_frame(&mut io)?;
+        let value: serde_json::Value = serde_json::from_slice(&response)?;
+        crate::protocol::validate_wire_envelope(&value)?;
+        let envelope: Envelope<BTreeMap<String, String>> = serde_json::from_value(value)?;
         let Envelope::HelloOk(hello_ok) = envelope else {
             return Err(HostError::Core(agentyc_core::CoreError::new(
                 agentyc_core::ErrorCode::ProtocolMismatch,
@@ -253,7 +292,7 @@ impl LocalSocketClient {
         };
         hello_ok.validate_against(&hello)?;
         Ok(Self {
-            stream: Mutex::new(stream),
+            stream: Mutex::new(io),
             hello_ok,
             request_counter: AtomicU64::new(1),
             max_payload_bytes,
@@ -284,12 +323,16 @@ impl LocalSocketClient {
             deadline_ms: None,
             idempotency_key: None,
         });
+        crate::protocol::validate_typed_envelope(&request)?;
         let frame = encode_frame(&serde_json::to_vec(&request)?, self.max_payload_bytes)?;
-        let mut stream = self.stream.lock().map_err(|_| HostError::StatePoisoned)?;
-        stream.write_all(&frame).map_err(HostError::Transport)?;
-        stream.flush().map_err(HostError::Transport)?;
-        let response = read_local_frame(&mut stream, self.max_payload_bytes)?;
-        let Envelope::Response(response): Envelope = serde_json::from_slice(&response)? else {
+        let mut io = self.stream.lock().map_err(|_| HostError::StatePoisoned)?;
+        io.stream.write_all(&frame).map_err(HostError::Transport)?;
+        io.stream.flush().map_err(HostError::Transport)?;
+        let response = read_local_frame(&mut io)?;
+        let value: serde_json::Value = serde_json::from_slice(&response)?;
+        crate::protocol::validate_wire_envelope(&value)?;
+        let value = crate::protocol::legacy_wire_value(value)?;
+        let Envelope::Response(response): Envelope = serde_json::from_value(value)? else {
             return Err(HostError::Core(agentyc_core::CoreError::new(
                 agentyc_core::ErrorCode::ProtocolMismatch,
                 "local host returned a non-response envelope",
@@ -348,26 +391,50 @@ impl LocalSocketClient {
 }
 
 #[cfg(unix)]
-fn read_local_frame(
-    stream: &mut std::os::unix::net::UnixStream,
-    max_payload_bytes: usize,
-) -> Result<Vec<u8>, HostError> {
-    let mut prefix = [0_u8; 4];
-    stream
-        .read_exact(&mut prefix)
-        .map_err(HostError::Transport)?;
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length > max_payload_bytes {
-        return Err(HostError::Core(agentyc_core::CoreError::new(
-            agentyc_core::ErrorCode::MessageTooLarge,
-            "local host frame exceeds the configured bound",
-        )));
+struct LocalClientStream {
+    stream: std::os::unix::net::UnixStream,
+    decoder: FrameDecoder,
+    queued: VecDeque<Vec<u8>>,
+}
+
+#[cfg(unix)]
+impl LocalClientStream {
+    fn new(stream: std::os::unix::net::UnixStream, max_payload_bytes: usize) -> Self {
+        Self {
+            stream,
+            decoder: FrameDecoder::new(max_payload_bytes),
+            queued: VecDeque::new(),
+        }
     }
-    let mut payload = vec![0_u8; length];
-    stream
-        .read_exact(&mut payload)
-        .map_err(HostError::Transport)?;
-    Ok(payload)
+}
+
+#[cfg(unix)]
+fn read_local_frame(client_io: &mut LocalClientStream) -> Result<Vec<u8>, HostError> {
+    if let Some(frame) = client_io.queued.pop_front() {
+        return Ok(frame);
+    }
+    let mut buffer = [0_u8; READ_BUFFER_BYTES];
+    loop {
+        let count = match client_io.stream.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(HostError::Transport(error)),
+        };
+        if count == 0 {
+            return match client_io.decoder.finish() {
+                Ok(()) => Err(HostError::Transport(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "local host closed cleanly before the next response",
+                ))),
+                Err(error) => Err(HostError::Frame(error)),
+            };
+        }
+        let frames = client_io.decoder.feed(&buffer[..count])?;
+        if let Some((first, rest)) = frames.split_first() {
+            client_io.queued.extend(rest.iter().cloned());
+            return Ok(first.clone());
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -457,7 +524,18 @@ fn serve_client(mut stream: std::os::unix::net::UnixStream, broker: Broker) {
         for payload in payloads {
             let output = match server.handle_payload(&payload) {
                 Ok(output) => output,
-                Err(_) => {
+                Err(error) => {
+                    eprintln!("agentyc local protocol error: {error}");
+                    if let Some(path) = std::env::var_os("AGENTYC_DEBUG_LOG") {
+                        use std::io::Write as _;
+                        if let Ok(mut file) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                        {
+                            let _ = writeln!(file, "local protocol error: {error}");
+                        }
+                    }
                     let _ = server.close();
                     return;
                 }
@@ -468,8 +546,25 @@ fn serve_client(mut stream: std::os::unix::net::UnixStream, broker: Broker) {
             }
         }
     }
-    let _ = decoder.finish();
+    if decoder.finish().is_err() {
+        let _ = server.close();
+        return;
+    }
     let _ = server.close();
+}
+
+#[cfg(unix)]
+fn debug_local_log(message: &str) {
+    if let Some(path) = std::env::var_os("AGENTYC_DEBUG_LOG") {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "{message}");
+        }
+    }
 }
 
 #[cfg(unix)]
