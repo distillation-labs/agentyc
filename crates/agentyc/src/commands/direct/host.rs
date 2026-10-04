@@ -73,8 +73,13 @@ fn status(context: &DirectContext) -> DirectResult<Value> {
 
 fn lifecycle_name(lifecycle: HostLifecycle) -> &'static str {
     match lifecycle {
+        HostLifecycle::Starting => "starting",
+        HostLifecycle::WaitingForExtension => "waiting_for_extension",
         HostLifecycle::Ready => "ready",
         HostLifecycle::Draining => "draining",
+        HostLifecycle::Degraded(_) => "degraded",
+        HostLifecycle::Recovering => "recovering",
+        HostLifecycle::Orphaned => "orphaned",
         HostLifecycle::Stopped => "stopped",
     }
 }
