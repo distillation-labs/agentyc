@@ -11,6 +11,12 @@ import argparse
 import sys
 from pathlib import Path
 
+from threshold_decision import (
+    DecisionError,
+    load_decision_record,
+    validate_decision_record,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BYTES = 4 * 1024 * 1024
 RELEASE_DOC = Path("docs/release-gate.md")
@@ -54,6 +60,15 @@ BASELINE_MARKERS = (
     "## 6. Known false-green test paths",
     "redacted",
     "false-green",
+)
+P1_T7_MARKERS = (
+    "P1-T7 threshold decision",
+    "artifacts/p1-t7-threshold-decision.json",
+    "production path",
+    "exclusion list",
+    "not_measured_offline",
+    "new decision id",
+    "unaccounted chaos fault",
 )
 
 
@@ -130,10 +145,13 @@ def validate_policy(root: Path, phase: int) -> None:
             raise GateError("Phase 0 baseline does not disclose archived/redacted evidence")
         if "known false-green" not in baseline_lower:
             raise GateError("Phase 0 baseline must disclose false-green paths")
-    elif phase > 0:
-        # A later phase is policy-checkable but cannot be claimed complete by
-        # this Phase 1 checker without its phase-specific evidence manifest.
-        raise GateError("only Phase 0 policy/evidence disclosure is owned by this checker")
+    elif phase == 1:
+        require_markers(release, P1_T7_MARKERS, "P1-T7 release-gate policy")
+        if "provisional" not in release_normalized or "release_eligible=false" not in release_normalized:
+            raise GateError("P1-T7 policy must disclose provisional thresholds and offline non-eligibility")
+    elif phase > 1:
+        # Later phases can use the same policy with their own artifact validators.
+        raise GateError("only Phase 0 and P1-T7 policy/evidence disclosure are owned by this checker")
 
     # The architecture document is the source of the product safety boundary;
     # do not let the release document silently widen it.
@@ -143,16 +161,61 @@ def validate_policy(root: Path, phase: int) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", type=int, required=True, help="phase policy/evidence to validate; Phase 0 is supported")
+    parser.add_argument("--phase", type=int, required=True, help="phase policy/evidence to validate; Phase 0 and P1-T7 are supported")
     parser.add_argument("--root", help="repository root; defaults to the checkout containing this script")
+    parser.add_argument("--decision-record", help="repository-relative P1-T7 threshold decision record")
+    parser.add_argument("--mode", choices=("offline", "live"), help="P1-T7 evidence mode")
+    parser.add_argument(
+        "--previous-decision-record",
+        "--baseline-decision-record",
+        dest="previous_decision_record",
+        help="optional prior P1-T7 record used to validate threshold changes",
+    )
     return parser.parse_args(argv)
+
+
+def validate_phase_1(
+    root: Path,
+    decision_record: str,
+    mode: str,
+    previous_decision_record: str | None = None,
+) -> dict[str, object]:
+    """Validate the P1-T7 policy and one strict threshold decision record."""
+    validate_policy(root, 1)
+    record = load_decision_record(root, decision_record)
+    previous = load_decision_record(root, previous_decision_record) if previous_decision_record else None
+    validate_decision_record(record, mode=mode, root=root, previous_record=previous)
+    return record
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        validate_policy(resolve_root(args.root), args.phase)
-    except (GateError, OSError) as exc:
+        root = resolve_root(args.root)
+        if args.phase == 0:
+            # Preserve the Phase 0 command and result contract exactly.
+            validate_policy(root, args.phase)
+            print(f"check_release_gate: PASS (Phase {args.phase} policy and disclosed evidence)")
+            return 0
+        if args.phase == 1:
+            if not args.decision_record:
+                raise GateError("--decision-record is required for Phase 1")
+            if not args.mode:
+                raise GateError("--mode is required for Phase 1")
+            record = validate_phase_1(
+                root,
+                args.decision_record,
+                args.mode,
+                args.previous_decision_record,
+            )
+            eligible = "true" if record["release_eligible"] else "false"
+            print(
+                "check_release_gate: PASS "
+                f"(Phase 1 P1-T7 threshold decision; mode={args.mode}; release_eligible={eligible})"
+            )
+            return 0
+        validate_policy(root, args.phase)
+    except (GateError, DecisionError, OSError) as exc:
         print(f"check_release_gate: FAIL: {exc}", file=sys.stderr)
         return 1
     print(f"check_release_gate: PASS (Phase {args.phase} policy and disclosed evidence)")
