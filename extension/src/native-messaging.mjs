@@ -1,4 +1,10 @@
 import {
+  MAX_ARTIFACT_BYTES,
+  MAX_ARTIFACT_CHUNK_BYTES,
+  MAX_ARTIFACT_CHUNKS,
+  MAX_ARTIFACT_TRANSFERS,
+  MAX_CUMULATIVE_ARTIFACT_BYTES,
+  MAX_IN_FLIGHT_ARTIFACT_BYTES,
   MAX_CONTROL_BYTES,
   ProtocolError,
   SequenceValidator,
@@ -22,6 +28,36 @@ function chromeApiOrGlobal(chromeApi) {
 function addListener(event, listener) {
   if (event?.addListener) event.addListener(listener);
   return () => event?.removeListener?.(listener);
+}
+
+function defaultNativeLimits() {
+  return {
+    max_control_bytes: MAX_CONTROL_BYTES,
+    max_artifact_chunk_bytes: MAX_ARTIFACT_CHUNK_BYTES,
+    max_artifact_bytes: MAX_ARTIFACT_BYTES,
+    max_artifact_chunks: MAX_ARTIFACT_CHUNKS,
+    max_in_flight_artifact_bytes: MAX_IN_FLIGHT_ARTIFACT_BYTES,
+    max_cumulative_artifact_bytes: MAX_CUMULATIVE_ARTIFACT_BYTES,
+  };
+}
+
+function artifactDigest(bytes) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `fnv1a64:${hash.toString(16).padStart(16, "0")}`;
+}
+
+function bytesFromWire(bytes) {
+  if (
+    !Array.isArray(bytes) ||
+    bytes.some((byte) => !Number.isInteger(byte) || byte < 0 || byte > 255)
+  ) {
+    throw new ProtocolError("schema_invalid", "artifact bytes are invalid");
+  }
+  return bytes;
 }
 
 export class NativeMessagingClient {
@@ -72,6 +108,23 @@ export class NativeMessagingClient {
     this.removePortListeners = [];
     this.connectionGeneration = 0;
     this.connectPromise = null;
+    this.requestedCapabilities = [
+      "debugger_allowlist",
+      "logical_tabs",
+      "visual_groups",
+      "frame_events",
+      "snapshot",
+      "evaluate",
+      "reconcile",
+      "side_panel",
+      "artifact_transfer",
+    ];
+    this.negotiatedCapabilities = [];
+    this.limits = defaultNativeLimits();
+    this.profileState = profileInstanceId ? "bound" : "unbound";
+    this.artifactTransfers = new Map();
+    this.artifactInFlightBytes = 0;
+    this.artifactCumulativeBytes = 0;
   }
 
   get connected() {
@@ -85,6 +138,10 @@ export class NativeMessagingClient {
       connectionEpoch: this.connectionEpoch,
       workerInstanceEpoch: this.workerInstanceEpoch,
       browserSessionEpoch: this.browserSessionEpoch,
+      profileInstanceId: this.profileInstanceId,
+      profileState: this.profileState,
+      capabilities: [...this.negotiatedCapabilities],
+      limits: { ...this.limits },
       hasPort: this.port !== null,
     };
   }
@@ -116,6 +173,12 @@ export class NativeMessagingClient {
         this.connectionEpoch = undefined;
         this.outboundSequence = 1;
         this.inboundSequence.reset(1);
+        this.negotiatedCapabilities = [];
+        this.limits = defaultNativeLimits();
+        this.profileState = this.profileInstanceId ? "bound" : "unbound";
+        this.artifactTransfers.clear();
+        this.artifactInFlightBytes = 0;
+        this.artifactCumulativeBytes = 0;
         const connectionGeneration = ++this.connectionGeneration;
 
         let port;
@@ -169,16 +232,9 @@ export class NativeMessagingClient {
         browser_session_epoch: this.browserSessionEpoch,
         profile_instance_id: this.profileInstanceId,
         extension_version: this.extensionVersion,
-        capabilities: [
-          "debugger_allowlist",
-          "logical_tabs",
-          "visual_groups",
-          "frame_events",
-          "snapshot",
-          "evaluate",
-          "reconcile",
-          "side_panel",
-        ],
+        capabilities: this.requestedCapabilities,
+        ...(this.profileInstanceId ? { profile_state: "bound" } : {}),
+        limits: defaultNativeLimits(),
       }),
     );
   }
@@ -194,7 +250,12 @@ export class NativeMessagingClient {
     )
       return;
     try {
-      assertBoundedEnvelope(message, { maxBytes: MAX_CONTROL_BYTES });
+      assertBoundedEnvelope(message, {
+        maxBytes:
+          this.state === "connected"
+            ? this.limits.max_control_bytes
+            : MAX_CONTROL_BYTES,
+      });
       if (Object.prototype.hasOwnProperty.call(message, "origin")) {
         throw new ProtocolError(
           "origin_invalid",
@@ -221,6 +282,10 @@ export class NativeMessagingClient {
           "message received outside a live connection",
         );
       }
+      if (message.kind === "artifact_begin") this.acceptArtifactBegin(message);
+      else if (message.kind === "artifact_chunk")
+        this.acceptArtifactChunk(message);
+      else if (message.kind === "artifact_end") this.acceptArtifactEnd(message);
       this.onMessage(message);
     } catch (error) {
       this.failProtocol(error, { connectionGeneration, port });
@@ -270,11 +335,91 @@ export class NativeMessagingClient {
         "hello_ok targets another browser session",
       );
     }
+    if (message.profile_state !== "bound") {
+      throw new ProtocolError(
+        "handshake_invalid",
+        "hello_ok requires a bound profile state",
+      );
+    }
+    if (
+      this.profileInstanceId !== undefined &&
+      message.profile_instance_id !== this.profileInstanceId
+    ) {
+      throw new ProtocolError(
+        "stale_epoch",
+        "hello_ok targets another profile binding",
+      );
+    }
+    const capabilities = Array.isArray(message.capabilities)
+      ? message.capabilities
+      : [];
+    if (
+      new Set(capabilities).size !== capabilities.length ||
+      capabilities.some(
+        (capability) => !this.requestedCapabilities.includes(capability),
+      )
+    ) {
+      throw new ProtocolError(
+        "handshake_invalid",
+        "hello_ok capabilities are not an intersection with the hello",
+      );
+    }
+    this.negotiatedCapabilities = [...capabilities];
+    this.limits = { ...message.limits };
+    this.profileState = "bound";
     this.brokerEpoch = message.broker_epoch;
     this.connectionEpoch = message.connection_epoch;
     this.reconnectAttempt = 0;
     this.transition("connected", message);
     this.onMessage(message);
+  }
+
+  sendArtifactBegin({
+    artifactId,
+    requestId,
+    artifactKind,
+    totalBytes,
+    chunkSize,
+    chunkCount,
+    digestAlgorithm = "fnv1a64",
+    digest,
+    redacted = false,
+  } = {}) {
+    return this.send("artifact_begin", {
+      artifact_id: artifactId,
+      ...(requestId ? { request_id: requestId } : {}),
+      artifact_kind: artifactKind,
+      total_bytes: totalBytes,
+      chunk_size: chunkSize,
+      chunk_count: chunkCount,
+      digest_algorithm: digestAlgorithm,
+      digest,
+      redacted,
+    });
+  }
+
+  sendArtifactChunk({ artifactId, chunkSequence, bytes } = {}) {
+    return this.send("artifact_chunk", {
+      artifact_id: artifactId,
+      chunk_sequence: chunkSequence,
+      bytes: bytesFromWire(bytes),
+    });
+  }
+
+  sendArtifactEnd({
+    artifactId,
+    totalBytes,
+    chunkCount,
+    digestAlgorithm = "fnv1a64",
+    digest,
+  } = {}) {
+    return this.send("artifact_end", {
+      artifact_id: artifactId,
+      total_bytes: totalBytes,
+      chunk_count: chunkCount,
+      digest_algorithm: digestAlgorithm,
+      digest,
+    });
   }
 
   send(kind, fields = {}, { mutation = false, actionId } = {}) {
@@ -306,6 +451,7 @@ export class NativeMessagingClient {
         worker_instance_epoch: this.workerInstanceEpoch,
         browser_session_epoch: this.browserSessionEpoch,
       });
+      this.validateOutboundArtifact(envelope);
       this.outboundSequence = sequence + 1;
     } catch (error) {
       if (mutation && actionId) this.pendingMutations.delete(actionId);
@@ -329,6 +475,7 @@ export class NativeMessagingClient {
     requestId = createLogicalId("req"),
     actionId,
     mutation = false,
+    deadlineMs = 30_000,
     ...fields
   }) {
     return this.send(
@@ -338,6 +485,7 @@ export class NativeMessagingClient {
         ...(actionId ? { action_id: actionId } : {}),
         method,
         params,
+        deadline_ms: fields.deadline_ms ?? deadlineMs,
         ...fields,
       },
       { mutation, actionId },
@@ -378,6 +526,191 @@ export class NativeMessagingClient {
     });
   }
 
+  validateOutboundArtifact(envelope) {
+    if (!envelope.kind.startsWith("artifact_")) return;
+    if (envelope.kind === "artifact_begin") {
+      if (
+        this.artifactTransfers.size >= MAX_ARTIFACT_TRANSFERS ||
+        envelope.total_bytes > this.limits.max_artifact_bytes ||
+        envelope.chunk_size > this.limits.max_artifact_chunk_bytes ||
+        envelope.chunk_count > this.limits.max_artifact_chunks
+      ) {
+        throw new ProtocolError(
+          "message_too_large",
+          "artifact declaration exceeds negotiated limits",
+        );
+      }
+      if (this.artifactTransfers.has(envelope.artifact_id)) {
+        throw new ProtocolError(
+          "schema_invalid",
+          "artifact transfer already exists",
+        );
+      }
+      this.artifactTransfers.set(envelope.artifact_id, {
+        begin: { ...envelope },
+        bytes: [],
+        nextChunk: 0,
+      });
+      return;
+    }
+    const transfer = this.artifactTransfers.get(envelope.artifact_id);
+    if (!transfer) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "artifact transfer has no begin",
+      );
+    }
+    if (envelope.kind === "artifact_chunk") {
+      if (
+        envelope.connection_epoch !== this.connectionEpoch ||
+        envelope.chunk_sequence !== transfer.nextChunk
+      ) {
+        throw new ProtocolError(
+          "schema_invalid",
+          "artifact chunk is out of order or stale",
+        );
+      }
+      const bytes = bytesFromWire(envelope.bytes);
+      const begin = transfer.begin;
+      const expected =
+        envelope.chunk_sequence + 1 === begin.chunk_count
+          ? begin.total_bytes - envelope.chunk_sequence * begin.chunk_size
+          : begin.chunk_size;
+      if (bytes.length !== expected) {
+        throw new ProtocolError(
+          "schema_invalid",
+          "artifact chunk length does not match declaration",
+        );
+      }
+      if (
+        this.artifactInFlightBytes + bytes.length >
+          this.limits.max_in_flight_artifact_bytes ||
+        this.artifactCumulativeBytes + bytes.length >
+          this.limits.max_cumulative_artifact_bytes
+      ) {
+        throw new ProtocolError(
+          "message_too_large",
+          "artifact transfer budget exceeded",
+        );
+      }
+      this.artifactInFlightBytes += bytes.length;
+      this.artifactCumulativeBytes += bytes.length;
+      transfer.bytes.push(...bytes);
+      transfer.nextChunk += 1;
+      return;
+    }
+    if (
+      envelope.total_bytes !== transfer.begin.total_bytes ||
+      envelope.chunk_count !== transfer.begin.chunk_count ||
+      envelope.digest !== transfer.begin.digest ||
+      envelope.digest_algorithm !== transfer.begin.digest_algorithm ||
+      transfer.nextChunk !== transfer.begin.chunk_count ||
+      transfer.bytes.length !== transfer.begin.total_bytes ||
+      artifactDigest(transfer.bytes) !== transfer.begin.digest
+    ) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "artifact completion does not match declaration",
+      );
+    }
+    this.artifactInFlightBytes -= transfer.bytes.length;
+    this.artifactTransfers.delete(envelope.artifact_id);
+  }
+
+  acceptArtifactBegin(envelope) {
+    if (this.artifactTransfers.size >= MAX_ARTIFACT_TRANSFERS) {
+      throw new ProtocolError(
+        "message_too_large",
+        "too many concurrent artifact transfers",
+      );
+    }
+    if (this.artifactTransfers.has(envelope.artifact_id)) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "artifact transfer already exists",
+      );
+    }
+    if (
+      envelope.total_bytes > this.limits.max_artifact_bytes ||
+      envelope.chunk_size > this.limits.max_artifact_chunk_bytes ||
+      envelope.chunk_count > this.limits.max_artifact_chunks
+    ) {
+      throw new ProtocolError(
+        "message_too_large",
+        "artifact declaration exceeds negotiated limits",
+      );
+    }
+    this.artifactTransfers.set(envelope.artifact_id, {
+      begin: { ...envelope },
+      bytes: [],
+      nextChunk: 0,
+    });
+  }
+
+  acceptArtifactChunk(envelope) {
+    const transfer = this.artifactTransfers.get(envelope.artifact_id);
+    if (!transfer)
+      throw new ProtocolError("schema_invalid", "artifact chunk has no begin");
+    if (
+      envelope.connection_epoch !== this.connectionEpoch ||
+      envelope.chunk_sequence !== transfer.nextChunk
+    ) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "artifact chunk is out of order or stale",
+      );
+    }
+    const bytes = bytesFromWire(envelope.bytes);
+    const begin = transfer.begin;
+    const expected =
+      envelope.chunk_sequence + 1 === begin.chunk_count
+        ? begin.total_bytes - envelope.chunk_sequence * begin.chunk_size
+        : begin.chunk_size;
+    if (bytes.length !== expected) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "artifact chunk length does not match declaration",
+      );
+    }
+    if (
+      this.artifactInFlightBytes + bytes.length >
+        this.limits.max_in_flight_artifact_bytes ||
+      this.artifactCumulativeBytes + bytes.length >
+        this.limits.max_cumulative_artifact_bytes
+    ) {
+      throw new ProtocolError(
+        "message_too_large",
+        "artifact transfer budget exceeded",
+      );
+    }
+    this.artifactInFlightBytes += bytes.length;
+    this.artifactCumulativeBytes += bytes.length;
+    transfer.bytes.push(...bytes);
+    transfer.nextChunk += 1;
+  }
+
+  acceptArtifactEnd(envelope) {
+    const transfer = this.artifactTransfers.get(envelope.artifact_id);
+    if (!transfer)
+      throw new ProtocolError("schema_invalid", "artifact end has no begin");
+    if (
+      envelope.total_bytes !== transfer.begin.total_bytes ||
+      envelope.chunk_count !== transfer.begin.chunk_count ||
+      envelope.digest !== transfer.begin.digest ||
+      envelope.digest_algorithm !== transfer.begin.digest_algorithm ||
+      transfer.nextChunk !== transfer.begin.chunk_count ||
+      transfer.bytes.length !== transfer.begin.total_bytes ||
+      artifactDigest(transfer.bytes) !== transfer.begin.digest
+    ) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "artifact completion does not match declaration",
+      );
+    }
+    this.artifactInFlightBytes -= transfer.bytes.length;
+    this.artifactTransfers.delete(envelope.artifact_id);
+  }
+
   markActionComplete(actionId) {
     if (actionId) this.pendingMutations.delete(actionId);
   }
@@ -389,7 +722,11 @@ export class NativeMessagingClient {
         "Native Messaging port is unavailable",
       );
     }
-    assertBoundedEnvelope(envelope, { maxBytes: MAX_CONTROL_BYTES });
+    assertBoundedEnvelope(envelope, {
+      maxBytes: this.connected
+        ? this.limits.max_control_bytes
+        : MAX_CONTROL_BYTES,
+    });
     this.port.postMessage(envelope);
   }
 
