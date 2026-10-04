@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ids::{
-        ConnectionEpoch, ConnectionNonce, ContentHash, Generation, LeaseEpoch, PageId, PrincipalId,
-        ProfileBindingId, SpaceId, Timestamp,
+        BrokerEpoch, ConnectionEpoch, ConnectionNonce, ContentHash, Generation, LeaseEpoch, PageId,
+        PrincipalId, ProfileBindingId, SpaceId, Timestamp, UserIntentTicketId,
     },
     states::{
         Capability, LeaseState, PageBindingState, PageLifecycle, PageOwnership,
@@ -20,7 +20,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserIntentTicket {
     /// Host-issued opaque ticket identity.
-    pub ticket_id: String,
+    pub ticket_id: UserIntentTicketId,
     /// Enrolled browser profile binding that presented the confirmation.
     pub profile_binding_id: ProfileBindingId,
     /// Logical task space authorized by the confirmation.
@@ -44,6 +44,21 @@ pub struct UserIntentTicket {
 }
 
 impl UserIntentTicket {
+    /// Validate structural invariants that do not depend on the current clock.
+    pub fn validate_shape(&self) -> Result<(), crate::errors::CoreError> {
+        if self.page_id.is_some() != self.document_generation.is_some() {
+            return Err(crate::errors::CoreError::invalid_argument(
+                "page_id and document_generation must be supplied together",
+            ));
+        }
+        if self.expires_at.get() == 0 {
+            return Err(crate::errors::CoreError::invalid_argument(
+                "user-intent ticket expiry must be non-zero",
+            ));
+        }
+        Ok(())
+    }
+
     /// Check ticket bindings and atomically consume a valid ticket.
     ///
     /// Expiry is exclusive (`now == expires_at` is expired). Rejection codes and
@@ -67,9 +82,7 @@ impl UserIntentTicket {
                 "user-intent ticket has expired",
             ));
         }
-        if self.ticket_id.is_empty()
-            || self.page_id.is_some() != self.document_generation.is_some()
-            || presented.page_id.is_some() != presented.document_generation.is_some()
+        if presented.page_id.is_some() != presented.document_generation.is_some()
             || self.profile_binding_id != *presented.profile_binding_id
             || self.space_id != *presented.space_id
             || self.page_id != presented.page_id.cloned()
@@ -84,6 +97,7 @@ impl UserIntentTicket {
                 "user-intent ticket does not match the requested operation",
             ));
         }
+        self.validate_shape()?;
         self.state = UserIntentTicketState::Consumed;
         Ok(())
     }
@@ -108,6 +122,44 @@ pub struct UserIntentContext<'a> {
     pub connection_epoch: ConnectionEpoch,
     /// Current side-panel connection nonce.
     pub connection_nonce: &'a ConnectionNonce,
+}
+
+/// Explicit user acknowledgement of shared existing-profile semantics.
+///
+/// This contract is required at every external `space.create` boundary. The
+/// host does not infer consent from a profile selector, extension connection,
+/// or client principal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileDisclosure {
+    /// The profile mode shown to the user.
+    pub profile_scope: String,
+    /// The shared-state notice shown to the user.
+    pub shared_state_notice: String,
+    /// Must remain false; task spaces are not isolation boundaries.
+    pub isolation_claim: bool,
+    /// Must be true only after an explicit user acknowledgement.
+    pub acknowledged: bool,
+}
+
+impl ProfileDisclosure {
+    /// Canonical shared-profile disclosure values.
+    pub const PROFILE_SCOPE: &'static str = "shared_existing_profile";
+    pub const SHARED_STATE_NOTICE: &'static str = "shared_profile_state";
+
+    /// Validate the disclosure before a ledger create commit.
+    pub fn validate(&self) -> Result<(), crate::errors::CoreError> {
+        if self.acknowledged
+            && !self.isolation_claim
+            && self.profile_scope == Self::PROFILE_SCOPE
+            && self.shared_state_notice == Self::SHARED_STATE_NOTICE
+        {
+            return Ok(());
+        }
+        Err(crate::errors::CoreError::new(
+            crate::errors::ErrorCode::PermissionDenied,
+            "explicit shared-profile disclosure acknowledgement is required before space creation",
+        ))
+    }
 }
 
 /// Retention policy for a completed logical space or page.
@@ -160,7 +212,54 @@ impl Lease {
 
     /// Return whether the lease epoch matches a presented epoch.
     pub fn accepts_epoch(&self, presented: LeaseEpoch) -> bool {
-        self.state == LeaseState::Active && self.lease_epoch.get() == presented.get()
+        self.state.admits_mutations() && self.lease_epoch.get() == presented.get()
+    }
+
+    /// Return whether this lease is expired in the supplied core clock domain.
+    pub const fn is_expired_at(&self, now: Timestamp) -> bool {
+        now.get() >= self.expires_at.get()
+            || matches!(
+                self.state,
+                LeaseState::Expired | LeaseState::Fenced | LeaseState::Released
+            )
+    }
+
+    /// Return whether this lease can admit an ordinary mutation at `now`.
+    pub fn accepts_epoch_at(&self, presented: LeaseEpoch, now: Timestamp) -> bool {
+        self.accepts_epoch(presented) && !self.is_expired_at(now)
+    }
+
+    /// Validate an epoch for mutation admission, distinguishing expiry from a stale fence.
+    pub fn validate_epoch_at(
+        &self,
+        presented: LeaseEpoch,
+        now: Timestamp,
+    ) -> Result<(), crate::errors::CoreError> {
+        use crate::errors::{CoreError, ErrorCode};
+
+        if self.lease_epoch != presented {
+            return Err(CoreError::stale_lease(
+                self.lease_epoch.get(),
+                presented.get(),
+            ));
+        }
+        if self.is_expired_at(now) {
+            return Err(CoreError::new(
+                ErrorCode::LeaseExpired,
+                "lease has expired or is no longer active",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate the lease's own temporal and state invariants.
+    pub fn validate(&self) -> Result<(), crate::errors::CoreError> {
+        if self.expires_at < self.renew_by {
+            return Err(crate::errors::CoreError::invalid_argument(
+                "lease renew_by must not be later than expires_at",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -192,6 +291,41 @@ pub struct SpaceDescriptor {
 }
 
 impl SpaceDescriptor {
+    /// Validate the principal, lifecycle, page-independent lease, and epoch before
+    /// admitting an ordinary mutation.
+    pub fn validate_mutation_admission(
+        &self,
+        principal_id: &PrincipalId,
+        lease_epoch: LeaseEpoch,
+        now: Timestamp,
+    ) -> Result<(), crate::errors::CoreError> {
+        use crate::errors::{CoreError, ErrorCode};
+
+        if !self.lifecycle.admits_mutations() {
+            return Err(CoreError::new(
+                ErrorCode::UserControlRequired,
+                "space lifecycle does not admit ordinary mutations",
+            ));
+        }
+        if self.owner != *principal_id {
+            return Err(CoreError::new(
+                ErrorCode::SpaceForbidden,
+                "principal does not own the space",
+            ));
+        }
+        let lease = self
+            .lease
+            .as_ref()
+            .ok_or_else(|| CoreError::new(ErrorCode::LeaseExpired, "space has no active lease"))?;
+        if lease.principal_id != *principal_id {
+            return Err(CoreError::new(
+                ErrorCode::SpaceForbidden,
+                "lease principal does not own the space",
+            ));
+        }
+        lease.validate_epoch_at(lease_epoch, now)
+    }
+
     /// Find a page by its logical identity.
     pub fn page(&self, page_id: &PageId) -> Option<&PageDescriptor> {
         self.pages.iter().find(|page| &page.page_id == page_id)
@@ -243,6 +377,127 @@ impl PageDescriptor {
     }
 }
 
+/// Proof that an old lease was fenced before authority changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FenceProof {
+    /// Logical space whose old authority was fenced.
+    pub space_id: SpaceId,
+    /// Broker epoch that issued this proof.
+    pub broker_epoch: BrokerEpoch,
+    /// Lease epoch that was invalidated, when one existed.
+    pub released_epoch: Option<LeaseEpoch>,
+    /// New epoch that forms the fencing barrier.
+    pub fence_epoch: LeaseEpoch,
+    /// The execution boundary acknowledged the fence.
+    pub acknowledged: bool,
+}
+
+impl FenceProof {
+    /// Validate that this record proves a strictly newer acknowledged fence.
+    pub fn validate(&self) -> Result<(), crate::errors::CoreError> {
+        if !self.acknowledged
+            || self
+                .released_epoch
+                .is_some_and(|released| self.fence_epoch <= released)
+        {
+            return Err(crate::errors::CoreError::invalid_argument(
+                "fence proof must be acknowledged and strictly newer than the released epoch",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Proof returned after an agent lease is handed back to user control.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlReturnProof {
+    /// Logical space returned to the user.
+    pub space_id: SpaceId,
+    /// Epoch released by the returning agent.
+    pub released_epoch: LeaseEpoch,
+    /// Fence barrier that invalidates the released epoch.
+    pub fence: FenceProof,
+    /// Durable lifecycle recorded after the barrier.
+    pub lifecycle: SpaceLifecycle,
+}
+
+impl ControlReturnProof {
+    /// Validate scope, epoch, and lifecycle invariants.
+    pub fn validate(&self) -> Result<(), crate::errors::CoreError> {
+        self.fence.validate()?;
+        if self.fence.space_id != self.space_id
+            || self.fence.released_epoch != Some(self.released_epoch)
+            || self.lifecycle != SpaceLifecycle::UserOwned
+        {
+            return Err(crate::errors::CoreError::invalid_argument(
+                "control-return proof does not match its fence or lifecycle",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Compatibility name for callers that call the transition a return proof.
+pub type ReturnControlProof = ControlReturnProof;
+
+/// Proof that a logical space was durably released.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseProof {
+    /// Logical space that was released.
+    pub space_id: SpaceId,
+    /// Last epoch accepted before release.
+    pub released_epoch: Option<LeaseEpoch>,
+    /// Lifecycle recorded by the ledger.
+    pub lifecycle: SpaceLifecycle,
+    /// Core timestamp at which release was committed.
+    pub released_at: Timestamp,
+}
+
+impl ReleaseProof {
+    /// Validate that release is terminal and timestamped.
+    pub fn validate(&self) -> Result<(), crate::errors::CoreError> {
+        if !matches!(
+            self.lifecycle,
+            SpaceLifecycle::Released | SpaceLifecycle::Finished
+        ) || self.released_at.get() == 0
+        {
+            return Err(crate::errors::CoreError::invalid_argument(
+                "release proof must identify a terminal lifecycle and non-zero timestamp",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Proof that broker-owned cleanup completed after a release barrier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CleanupProof {
+    /// Logical space whose retained records were cleaned.
+    pub space_id: SpaceId,
+    /// Release barrier that authorized cleanup.
+    pub released_epoch: Option<LeaseEpoch>,
+    /// Logical pages removed from the retained record.
+    pub page_ids: Vec<PageId>,
+    /// Core timestamp at which cleanup completed.
+    pub completed_at: Timestamp,
+}
+
+impl CleanupProof {
+    /// Validate bounded, unique cleanup scope and completion time.
+    pub fn validate(&self) -> Result<(), crate::errors::CoreError> {
+        const MAX_CLEANUP_PAGES: usize = 4096;
+        if self.page_ids.len() > MAX_CLEANUP_PAGES
+            || self.page_ids.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.completed_at.get() == 0
+        {
+            return Err(crate::errors::CoreError::invalid_argument(
+                "cleanup proof has an invalid page scope or completion timestamp",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +516,33 @@ mod tests {
         );
         assert!(lease.accepts_epoch(LeaseEpoch::new(4)));
         assert!(!lease.accepts_epoch(LeaseEpoch::new(3)));
+    }
+
+    #[test]
+    fn profile_disclosure_requires_explicit_non_isolating_acknowledgement() {
+        let valid = ProfileDisclosure {
+            profile_scope: ProfileDisclosure::PROFILE_SCOPE.to_owned(),
+            shared_state_notice: ProfileDisclosure::SHARED_STATE_NOTICE.to_owned(),
+            isolation_claim: false,
+            acknowledged: true,
+        };
+        valid.validate().expect("valid disclosure");
+        assert!(
+            ProfileDisclosure {
+                acknowledged: false,
+                ..valid.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ProfileDisclosure {
+                isolation_claim: true,
+                ..valid
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
@@ -285,7 +567,7 @@ mod tests {
 
     fn intent_ticket() -> UserIntentTicket {
         UserIntentTicket {
-            ticket_id: "ticket_test_1".to_owned(),
+            ticket_id: UserIntentTicketId::from_suffix("test_1").expect("ticket"),
             profile_binding_id: ProfileBindingId::from_suffix("default").expect("profile"),
             space_id: SpaceId::from_suffix("one").expect("space"),
             page_id: Some(PageId::from_suffix("one").expect("page")),
@@ -332,6 +614,63 @@ mod tests {
                 .expect_err("replay rejected")
                 .code,
             crate::errors::ErrorCode::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn lease_admission_is_expiry_aware_and_distinguishes_stale_epochs() {
+        let principal = PrincipalId::from_suffix("agent").expect("principal");
+        let lease = Lease::active(
+            principal,
+            LeaseEpoch::new(4),
+            Timestamp::new(100),
+            Timestamp::new(80),
+        );
+        assert!(lease.accepts_epoch_at(LeaseEpoch::new(4), Timestamp::new(99)));
+        assert!(!lease.accepts_epoch_at(LeaseEpoch::new(4), Timestamp::new(100)));
+        assert_eq!(
+            lease
+                .validate_epoch_at(LeaseEpoch::new(4), Timestamp::new(100))
+                .expect_err("expired lease")
+                .code,
+            crate::errors::ErrorCode::LeaseExpired
+        );
+        assert_eq!(
+            lease
+                .validate_epoch_at(LeaseEpoch::new(3), Timestamp::new(99))
+                .expect_err("stale epoch")
+                .code,
+            crate::errors::ErrorCode::StaleLease
+        );
+    }
+
+    #[test]
+    fn recovery_and_proof_records_fail_closed() {
+        assert!(!SpaceLifecycle::Recovering.admits_mutations());
+        assert!(SpaceLifecycle::Recovering.admits_recovery_operations());
+
+        let space_id = SpaceId::from_suffix("one").expect("space");
+        let fence = FenceProof {
+            space_id: space_id.clone(),
+            broker_epoch: BrokerEpoch::new(2),
+            released_epoch: Some(LeaseEpoch::new(3)),
+            fence_epoch: LeaseEpoch::new(4),
+            acknowledged: true,
+        };
+        let returned = ControlReturnProof {
+            space_id: space_id.clone(),
+            released_epoch: LeaseEpoch::new(3),
+            fence,
+            lifecycle: SpaceLifecycle::UserOwned,
+        };
+        returned.validate().expect("valid return proof");
+        assert!(
+            ControlReturnProof {
+                lifecycle: SpaceLifecycle::Recovering,
+                ..returned
+            }
+            .validate()
+            .is_err()
         );
     }
 
