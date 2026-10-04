@@ -634,7 +634,12 @@ export class DebuggerBridge {
         targetGeneration: attachment.targetGeneration,
         navigationGeneration: attachment.navigationGeneration,
         documentGeneration: attachment.documentGeneration,
+        targetId: targetInfo.targetId,
       });
+      const sessionGeneration = this.frames.getSessionGeneration(
+        source.tabId,
+        params.sessionId,
+      );
       let sessions = this.relatedSessions.get(source.tabId);
       if (!sessions) {
         sessions = new Set();
@@ -643,12 +648,26 @@ export class DebuggerBridge {
       sessions.add(params.sessionId);
       void this.configureRelatedTargets(source.tabId, params.sessionId).catch(
         () => {
+          const current = this.frames.isCurrentSession(
+            source.tabId,
+            params.sessionId,
+            {
+              sessionGeneration,
+              targetId: targetInfo.targetId,
+            },
+          );
+          if (!current) return;
           this.frames.invalidateSession(
             source.tabId,
             params.sessionId,
             "related_target_setup_failed",
+            {
+              expectedSessionGeneration: sessionGeneration,
+              targetId: targetInfo.targetId,
+            },
           );
           sessions.delete(params.sessionId);
+          if (sessions.size === 0) this.relatedSessions.delete(source.tabId);
         },
       );
       return true;
@@ -660,14 +679,16 @@ export class DebuggerBridge {
   handleRelatedTargetDetached(source = {}, params = {}) {
     if (!Number.isInteger(source.tabId) || typeof params.sessionId !== "string")
       return false;
-    const sessions = this.relatedSessions.get(source.tabId);
-    sessions?.delete(params.sessionId);
-    if (sessions?.size === 0) this.relatedSessions.delete(source.tabId);
-    this.frames.invalidateSession(
+    const invalidated = this.frames.invalidateSession(
       source.tabId,
       params.sessionId,
       "related_target_detached",
+      params.targetId === undefined ? {} : { targetId: params.targetId },
     );
+    if (!invalidated) return false;
+    const sessions = this.relatedSessions.get(source.tabId);
+    sessions?.delete(params.sessionId);
+    if (sessions?.size === 0) this.relatedSessions.delete(source.tabId);
     return true;
   }
 
@@ -1138,10 +1159,16 @@ export class DebuggerBridge {
     if (!Number.isInteger(source.tabId)) return null;
     const attachment = this.attached.get(source.tabId);
     if (source.sessionId) {
+      const invalidated = this.frames.invalidateSession(
+        source.tabId,
+        source.sessionId,
+        reason,
+        source.targetId === undefined ? {} : { targetId: source.targetId },
+      );
+      if (!invalidated) return null;
       this.relatedSessions.get(source.tabId)?.delete(source.sessionId);
       if (this.relatedSessions.get(source.tabId)?.size === 0)
         this.relatedSessions.delete(source.tabId);
-      this.frames.invalidateSession(source.tabId, source.sessionId, reason);
     } else {
       this.relatedSessions.delete(source.tabId);
       this.frames.invalidateTab(source.tabId, reason);
