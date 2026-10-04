@@ -14,10 +14,10 @@ categories = ["web-programming", "development-tools", "command-line-utilities"]
 [dependencies]
 agentyc-core    = { workspace = true }
 agentyc-host    = { workspace = true }
-agentyc-cdp     = { workspace = true }
-agentyc-browser = { workspace = true }
-agentyc-runtime = { workspace = true }
-agentyc-tools   = { workspace = true }
+agentyc-cdp     = { workspace = true, optional = true }
+agentyc-browser = { workspace = true, optional = true }
+agentyc-runtime = { workspace = true, optional = true }
+agentyc-tools   = { workspace = true, optional = true }
 tokio = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
@@ -36,3 +36,12 @@ url = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+default = []
+legacy-cdp = [
+    "dep:agentyc-cdp",
+    "dep:agentyc-browser",
+    "dep:agentyc-runtime",
+    "dep:agentyc-tools",
+]
