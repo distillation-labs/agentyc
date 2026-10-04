@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
-  <title id="title">Path monogram</title>
-  <desc id="desc">A cream agent path with two vermilion nodes on black</desc>
-  <rect width="128" height="128" rx="28" fill="#101010" />
-  <path d="M34 38h48a16 16 0 0 1 0 32H46a16 16 0 0 0 0 32h48" fill="none" stroke="#FFF6E8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" />
-  <circle cx="94" cy="38" r="10" fill="#FF5A36" />
-  <circle cx="34" cy="102" r="10" fill="#FF5A36" />
-</svg>
