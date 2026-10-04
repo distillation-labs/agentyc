@@ -1507,16 +1507,24 @@ fn unknown_page_cleanup_fails_closed_without_blind_retry() {
             )
             .is_err()
     );
-    assert!(
-        broker
-            .finish_space(
-                &space.space_id,
-                &owner_authority,
-                lease.lease.lease_epoch,
-                Timestamp::new(4),
-            )
-            .is_err()
-    );
+    let finished = broker
+        .finish_space(
+            &space.space_id,
+            &owner_authority,
+            lease.lease.lease_epoch,
+            Timestamp::new(4),
+        )
+        .expect("retry should finalize after the page was durably marked lost");
+    assert_eq!(finished.lifecycle, agentyc_core::SpaceLifecycle::Finished);
+    let released = broker
+        .release_space(
+            &space.space_id,
+            &owner_authority,
+            lease.lease.lease_epoch,
+            Timestamp::new(5),
+        )
+        .expect("finished space should release without reopening the lost page");
+    assert_eq!(released.lifecycle, agentyc_core::SpaceLifecycle::Released);
     assert_eq!(bridge.close_count(), 1);
 }
 
