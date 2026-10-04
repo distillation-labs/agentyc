@@ -15,8 +15,9 @@ use agentyc_core::{
     EventSequence, Generation, GenerationWatermark, HelloEnvelope, HelloOkEnvelope, HostMetadata,
     Lease, LeaseEpoch, NextAction, PROTOCOL_VERSION, PageBindingState, PageDescriptor, PageId,
     PageLifecycle, PageOwnership, PrincipalId, ProfileBindingId, ProfileBindingState,
-    ReconcileToken, ReconciliationState, ResumeResult, RetentionPolicy, SnapshotEnvelope,
-    SpaceDescriptor, SpaceId, SpaceLifecycle, Timestamp, UnknownReason, negotiate_version,
+    ProfileDisclosure, ReconcileToken, ReconciliationState, ResumeResult, RetentionPolicy,
+    SnapshotEnvelope, SpaceDescriptor, SpaceId, SpaceLifecycle, Timestamp, UnknownReason,
+    negotiate_version,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
@@ -39,19 +40,41 @@ use crate::{
         PendingFenceRecord, TakeoverProofRecord, canonical_action_hash as ledger_action_hash,
         validate_action_payload_contract, validate_public_payload_shape,
     },
+    scheduler::{Backpressure, BackpressureKind, Scheduler},
     snapshots::{PageGeneration, SnapshotCacheRecord, SnapshotMetadataRead, SnapshotRead},
 };
 
 static USER_INTENT_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_USER_INTENT_TICKET_TTL_MS: u64 = 60_000;
 
+/// Why a host broker is temporarily unable to use its browser bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostDegradedReason {
+    /// The MV3 extension or Native Messaging connection is unavailable.
+    ExtensionLost,
+    /// Chrome or the browser profile disappeared behind the bridge.
+    ChromeLost,
+    /// Durable state could not be trusted or persisted.
+    LedgerError,
+}
+
 /// Lifecycle of the host broker itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostLifecycle {
-    /// The ledger and ownership lock are active.
+    /// The process is acquiring its state directory and broker lock.
+    Starting,
+    /// The broker is alive but is waiting for an extension/profile handshake.
+    WaitingForExtension,
+    /// The ledger and ownership lock are active and the bridge may serve work.
     Ready,
     /// The host rejects new work while durable state is being drained.
     Draining,
+    /// The bridge or ledger is unavailable; no mutation authority is granted.
+    Degraded(HostDegradedReason),
+    /// The broker is fencing stale work and rebuilding bridge state.
+    Recovering,
+    /// Durable logical records remain but no live browser binding is trusted.
+    Orphaned,
     /// The host has stopped accepting work.
     Stopped,
 }
@@ -104,6 +127,7 @@ impl Connection {
 pub struct Broker {
     inner: Arc<Mutex<BrokerInner>>,
     event_notifications: Arc<EventNotifications>,
+    scheduler: Scheduler,
 }
 
 #[derive(Debug, Default)]
@@ -192,19 +216,24 @@ impl Broker {
 
     /// Construct a broker around an already opened, exclusively owned ledger.
     pub fn new(ledger: Ledger, bridge: impl Bridge + 'static) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(BrokerInner {
-                ledger,
-                bridge: Arc::new(bridge),
-                lifecycle: HostLifecycle::Ready,
-                user_intent_tickets: BTreeMap::new(),
-            })),
-            event_notifications: Arc::new(EventNotifications::default()),
-        }
+        Self::with_scheduler(ledger, Arc::new(bridge), Scheduler::with_defaults())
     }
 
     /// Construct a broker around a shared bridge implementation.
     pub fn with_shared_bridge(ledger: Ledger, bridge: Arc<dyn Bridge>) -> Self {
+        Self::with_scheduler(ledger, bridge, Scheduler::with_defaults())
+    }
+
+    /// Construct a broker with explicit scheduler bounds for deterministic tests.
+    pub fn with_shared_bridge_and_scheduler(
+        ledger: Ledger,
+        bridge: Arc<dyn Bridge>,
+        scheduler: Scheduler,
+    ) -> Self {
+        Self::with_scheduler(ledger, bridge, scheduler)
+    }
+
+    fn with_scheduler(ledger: Ledger, bridge: Arc<dyn Bridge>, scheduler: Scheduler) -> Self {
         Self {
             inner: Arc::new(Mutex::new(BrokerInner {
                 ledger,
@@ -213,6 +242,7 @@ impl Broker {
                 user_intent_tickets: BTreeMap::new(),
             })),
             event_notifications: Arc::new(EventNotifications::default()),
+            scheduler,
         }
     }
 
@@ -226,6 +256,45 @@ impl Broker {
         self.with_inner(|inner| Ok(inner.lifecycle))
     }
 
+    /// Return the current bounded scheduler occupancy.
+    pub fn scheduler_snapshot(&self) -> crate::SchedulerSnapshot {
+        self.scheduler.snapshot()
+    }
+
+    /// Move the host through its explicit startup/recovery lifecycle.
+    pub fn transition_lifecycle(&self, next: HostLifecycle) -> Result<(), HostError> {
+        self.with_inner(|inner| {
+            if !valid_lifecycle_transition(inner.lifecycle, next) {
+                return Err(HostError::Invariant(format!(
+                    "invalid host lifecycle transition from {:?} to {:?}",
+                    inner.lifecycle, next
+                )));
+            }
+            inner.lifecycle = next;
+            Ok(())
+        })
+    }
+
+    /// Mark the host as waiting for the extension handshake.
+    pub fn wait_for_extension(&self) -> Result<(), HostError> {
+        self.transition_lifecycle(HostLifecycle::WaitingForExtension)
+    }
+
+    /// Mark bridge loss without discarding durable logical records.
+    pub fn mark_degraded(&self, reason: HostDegradedReason) -> Result<(), HostError> {
+        self.transition_lifecycle(HostLifecycle::Degraded(reason))
+    }
+
+    /// Begin bounded bridge recovery after a degraded period.
+    pub fn begin_recovery(&self) -> Result<(), HostError> {
+        self.transition_lifecycle(HostLifecycle::Recovering)
+    }
+
+    /// Mark the host ready after a fresh bridge/profile handshake.
+    pub fn mark_ready(&self) -> Result<(), HostError> {
+        self.transition_lifecycle(HostLifecycle::Ready)
+    }
+
     /// Return bridge capabilities without exposing bridge implementation state.
     pub fn capabilities(&self) -> Result<Vec<Capability>, HostError> {
         self.with_inner(|inner| Ok(inner.bridge.capabilities()))
@@ -234,6 +303,58 @@ impl Broker {
     /// Return safe bridge identity and epoch metadata for host status.
     pub fn bridge_status(&self) -> Result<Option<BridgeStatus>, HostError> {
         self.with_inner(|inner| Ok(inner.bridge.bridge_status()))
+    }
+
+    /// Fence all profile-bound logical records after a copied-profile or
+    /// extension-identity mismatch. This is a host recovery mutation, not an
+    /// admission grant: the observed binding remains untrusted until explicit
+    /// re-enrollment supplies a fresh proof.
+    pub fn mark_profile_rebind_required(
+        &self,
+        observed_profile: &ProfileBindingId,
+    ) -> Result<usize, HostError> {
+        self.with_inner(|inner| {
+            inner.ledger.update(|state| {
+                let profile_bindings = state.profile_bindings.clone();
+                let affected = state
+                    .spaces
+                    .values_mut()
+                    .filter(|space| {
+                        space.profile_binding == ProfileBindingState::Bound
+                            && profile_bindings.get(&space.space_id) != Some(observed_profile)
+                    })
+                    .map(|space| {
+                        space.profile_binding = ProfileBindingState::RebindRequired;
+                        let has_lease = space.lease.is_some();
+                        if let Some(lease) = space.lease.as_mut() {
+                            lease.state = LeaseState::Fenced;
+                        }
+                        if has_lease {
+                            space.lifecycle = SpaceLifecycle::Orphaned;
+                            for page in &mut space.pages {
+                                if page.admits_agent_mutations() {
+                                    page.lifecycle = PageLifecycle::Rebinding;
+                                    page.binding = PageBindingState::Lost;
+                                }
+                            }
+                        }
+                        space.space_id.clone()
+                    })
+                    .collect::<Vec<_>>();
+                for space_id in &affected {
+                    state.snapshots.remove(space_id);
+                    append_event(
+                        state,
+                        EventScope::space(space_id.clone()),
+                        EventKind::SpaceChanged,
+                        payload([("profile_binding", "rebind_required".to_owned())]),
+                        Some(DirtyReason::Unknown),
+                        true,
+                    )?;
+                }
+                Ok(affected.len())
+            })
+        })
     }
 
     /// Return a principal-filtered JSON representation of the durable state.
@@ -424,6 +545,21 @@ impl Broker {
         label: impl Into<String>,
     ) -> Result<SpaceDescriptor, HostError> {
         self.create_space_with_retention(authority, label, RetentionPolicy::default())
+    }
+
+    /// Create a new logical space after validating explicit shared-profile disclosure.
+    ///
+    /// External protocol adapters must use this entry point; the legacy
+    /// `create_space` method remains an in-process fixture seam for deterministic
+    /// tests and cannot represent user acknowledgement.
+    pub fn create_space_with_disclosure(
+        &self,
+        authority: &AuthorityTicket,
+        label: String,
+        disclosure: ProfileDisclosure,
+    ) -> Result<SpaceDescriptor, HostError> {
+        disclosure.validate()?;
+        self.create_space(authority, label)
     }
 
     /// Create a new logical space with an explicit retention policy.
@@ -652,6 +788,10 @@ impl Broker {
         authority: &AuthorityTicket,
         space_id: &SpaceId,
     ) -> Result<ObservationSnapshot, HostError> {
+        let _read_permit = self
+            .scheduler
+            .acquire_read()
+            .map_err(scheduler_backpressure)?;
         self.with_inner(|inner| {
             authorize_visible_space(inner.ledger.state(), authority, space_id)
         })?;
@@ -967,7 +1107,13 @@ impl Broker {
             })
         })?;
         let bridge = self.bridge()?;
-        let fence = bridge.fence(space_id, old_epoch, fence_epoch, self.broker_epoch()?);
+        let fence = bridge.fence_with_token(
+            space_id,
+            old_epoch,
+            fence_epoch,
+            self.broker_epoch()?,
+            &fence_token,
+        );
         match fence {
             Ok(FenceResult { acknowledged: true }) => self.finish_user_return(
                 space_id,
@@ -1262,7 +1408,13 @@ impl Broker {
         })?;
 
         let bridge = self.bridge()?;
-        let fence = bridge.fence(space_id, old_epoch, new_epoch, self.broker_epoch()?);
+        let fence = bridge.fence_with_token(
+            space_id,
+            old_epoch,
+            new_epoch,
+            self.broker_epoch()?,
+            &fence_token,
+        );
         let (fence_acknowledged, bridge_error) = match fence {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
@@ -1288,6 +1440,95 @@ impl Broker {
             lease_epoch: new_epoch,
             fence_acknowledged: acknowledged,
             lifecycle,
+        })
+    }
+
+    /// Pause an agent-owned space after a broker/extension fence barrier.
+    ///
+    /// A pause cancels queued work, marks in-flight work unknown through the
+    /// takeover fence, and leaves pages retained for an explicit resume/claim.
+    pub fn pause_space(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        now: Timestamp,
+        ttl: u64,
+    ) -> Result<SpaceDescriptor, HostError> {
+        let takeover = self.takeover(space_id, authority, now, ttl)?;
+        if !takeover.fence_acknowledged {
+            return Err(CoreError::new(
+                ErrorCode::ReconciliationRequired,
+                "pause fence was not acknowledged",
+            )
+            .into());
+        }
+        self.set_fenced_space_lifecycle(
+            space_id,
+            authority,
+            takeover.lease_epoch,
+            SpaceLifecycle::Paused,
+            now,
+        )
+    }
+
+    /// Request a handoff after the same hard fence used by pause.
+    pub fn handoff_space(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        now: Timestamp,
+        ttl: u64,
+    ) -> Result<SpaceDescriptor, HostError> {
+        let takeover = self.takeover(space_id, authority, now, ttl)?;
+        if !takeover.fence_acknowledged {
+            return Err(CoreError::new(
+                ErrorCode::ReconciliationRequired,
+                "handoff fence was not acknowledged",
+            )
+            .into());
+        }
+        self.set_fenced_space_lifecycle(
+            space_id,
+            authority,
+            takeover.lease_epoch,
+            SpaceLifecycle::HandoffRequested,
+            now,
+        )
+    }
+
+    fn set_fenced_space_lifecycle(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        lifecycle: SpaceLifecycle,
+        now: Timestamp,
+    ) -> Result<SpaceDescriptor, HostError> {
+        self.with_inner(|inner| {
+            inner.ledger.update(|state| {
+                authorize_space(state, space_id, authority, lease_epoch, now, true)?;
+                let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
+                    CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
+                })?;
+                let lease = descriptor.lease.as_mut().ok_or_else(|| {
+                    CoreError::new(ErrorCode::SpaceForbidden, "space has no current lease")
+                })?;
+                // The pause/handoff transition consumes the takeover proof and
+                // converts the acknowledged epoch into a durable fenced lease.
+                state.takeover_proofs.remove(space_id);
+                lease.state = LeaseState::Fenced;
+                descriptor.lifecycle = lifecycle;
+                let result = descriptor.clone();
+                append_event(
+                    state,
+                    EventScope::space(space_id.clone()),
+                    EventKind::SpaceChanged,
+                    payload([("lifecycle", space_lifecycle_name(lifecycle).to_owned())]),
+                    None,
+                    false,
+                )?;
+                Ok(result)
+            })
         })
     }
 
@@ -1387,7 +1628,13 @@ impl Broker {
             })
         })?;
         let bridge = self.bridge()?;
-        let fence = bridge.fence(space_id, old_epoch, new_epoch, self.broker_epoch()?);
+        let fence = bridge.fence_with_token(
+            space_id,
+            old_epoch,
+            new_epoch,
+            self.broker_epoch()?,
+            &fence_token,
+        );
         let (fence_acknowledged, bridge_error) = match fence {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
@@ -1461,7 +1708,13 @@ impl Broker {
             ))
         })?;
         let bridge = self.bridge()?;
-        let fence = bridge.fence(space_id, old_epoch, fence_epoch, self.broker_epoch()?);
+        let fence = bridge.fence_with_token(
+            space_id,
+            old_epoch,
+            fence_epoch,
+            self.broker_epoch()?,
+            &fence_token,
+        );
         match fence {
             Ok(FenceResult { acknowledged: true }) => self.finish_user_return(
                 space_id,
@@ -1529,7 +1782,13 @@ impl Broker {
             ))
         })?;
         let bridge = self.bridge()?;
-        let fence = bridge.fence(space_id, old_epoch, lease_epoch, self.broker_epoch()?);
+        let fence = bridge.fence_with_token(
+            space_id,
+            old_epoch,
+            lease_epoch,
+            self.broker_epoch()?,
+            &fence_token,
+        );
         let (fence_acknowledged, bridge_error) = match fence {
             Ok(FenceResult { acknowledged }) => (acknowledged, None),
             Err(error) => (false, Some(error)),
@@ -3030,6 +3289,20 @@ impl Broker {
                 .map(|receipt| ActionResult { receipt });
         };
 
+        // The ledger enforces ordering for durable state; the scheduler enforces
+        // bounded cross-thread admission while the bridge call is in flight.
+        // Keeping the permit alive through finish_dispatch prevents a second
+        // mutation in the same space from overtaking an uncertain outcome.
+        let _mutation_permit = if is_mutating(request.operation) {
+            Some(
+                self.scheduler
+                    .acquire_mutation(request.space_id.clone())
+                    .map_err(scheduler_backpressure)?,
+            )
+        } else {
+            None
+        };
+
         // Recheck the current lease immediately before the bridge call. A takeover
         // between dequeue and dispatch turns the receipt unknown and never replays it.
         self.with_inner(|inner| {
@@ -3388,6 +3661,10 @@ impl Broker {
         lease_epoch: LeaseEpoch,
         now: Timestamp,
     ) -> Result<SnapshotRead, HostError> {
+        let _read_permit = self
+            .scheduler
+            .acquire_read()
+            .map_err(scheduler_backpressure)?;
         let bridge = self.bridge()?;
         require_capability(&*bridge, Capability::Snapshot)?;
         let live_observation = bridge.observe().map_err(HostError::Bridge)?;
@@ -3913,6 +4190,34 @@ fn ensure_ready(inner: &BrokerInner) -> Result<(), HostError> {
         Ok(())
     } else {
         Err(CoreError::new(ErrorCode::HostDraining, "host is not accepting new work").into())
+    }
+}
+
+fn scheduler_backpressure(error: Backpressure) -> HostError {
+    let queue = match error.kind {
+        BackpressureKind::ReadQueueFull => "read queue",
+        BackpressureKind::MutationQueueFull => "space mutation queue",
+        BackpressureKind::GlobalMutationQueueFull => "global mutation queue",
+    };
+    CoreError::new(
+        ErrorCode::MessageTooLarge,
+        format!("scheduler {queue} is full; retry after backpressure"),
+    )
+    .into()
+}
+
+fn valid_lifecycle_transition(current: HostLifecycle, next: HostLifecycle) -> bool {
+    use HostLifecycle::*;
+    match (current, next) {
+        (Starting, WaitingForExtension | Ready | Degraded(_) | Stopped)
+        | (WaitingForExtension, Ready | Degraded(_) | Draining | Stopped)
+        | (Ready, Starting | WaitingForExtension | Draining | Degraded(_) | Stopped)
+        | (Degraded(_), Recovering | Draining | Stopped)
+        | (Recovering, Ready | Orphaned | Degraded(_) | Stopped)
+        | (Orphaned, Recovering | Draining | Stopped)
+        | (Draining, Stopped) => true,
+        (left, right) if left == right => true,
+        _ => false,
     }
 }
 
