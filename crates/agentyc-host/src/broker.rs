@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 
 use crate::{
     actionability::{ActionabilityChecker, ActionabilityInput, requires_element_actionability},
-    actions::ActionResult,
+    actions::{ActionResult, ArtifactHandle},
     bridge::{
         Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeStatus, ExtensionEpochs,
         FenceResult, ObservationSnapshot, sanitize_observation_snapshot,
@@ -43,6 +43,7 @@ use crate::{
         PendingFenceRecord, TakeoverProofRecord, canonical_action_hash as ledger_action_hash,
         validate_action_payload_contract, validate_public_payload_shape,
     },
+    observability::{LogLevel, ObservabilityStore, ObservationScope},
     refs::RefRegistry,
     scheduler::{Backpressure, BackpressureKind, Scheduler},
     snapshots::{
@@ -196,6 +197,8 @@ struct BrokerInner {
     lifecycle: HostLifecycle,
     /// Memory-only logical ref registry. Browser handles never enter durable state.
     ref_registry: RefRegistry,
+    /// Scoped, redacted side-state observations owned by the broker.
+    observability: ObservabilityStore,
     user_intent_tickets: BTreeMap<ReconcileToken, UserIntentTicket>,
 }
 
@@ -268,6 +271,7 @@ impl Broker {
                 snapshot_cache,
                 lifecycle: HostLifecycle::Ready,
                 ref_registry: RefRegistry::default(),
+                observability: ObservabilityStore::default(),
                 user_intent_tickets: BTreeMap::new(),
             })),
             event_notifications: Arc::new(EventNotifications::default()),
@@ -838,7 +842,7 @@ impl Broker {
             attribution.document_id = document_id;
             attribution.navigation_id = navigation_id;
 
-            inner.ledger.update(|state| {
+            let result = inner.ledger.update(|state| {
                 authorize_ticket(state, authority)?;
                 if global {
                     // A global reconnect/session event invalidates every
@@ -973,7 +977,67 @@ impl Broker {
                     )?;
                 }
                 Ok(())
-            })
+            });
+            if result.is_ok()
+                && !global
+                && let (Some(space_id), Some(page_id)) = (space_id.as_ref(), page_id.as_ref())
+            {
+                let scope = ObservationScope::page(space_id.clone(), page_id.clone());
+                // The event has already passed logical attribution and ledger
+                // admission. Manager-level redaction keeps side-state bounded;
+                // malformed optional fields are treated as observation data and
+                // do not turn a valid lifecycle event into a browser mutation.
+                let _ = record_side_state_event(
+                    &mut inner.observability,
+                    event_name,
+                    &event_payload,
+                    scope,
+                    now,
+                );
+            }
+            result
+        })
+    }
+
+    /// Read redacted logs visible to a logical scope.
+    pub fn observability_logs(
+        &self,
+        authority: &AuthorityTicket,
+        scope: &ObservationScope,
+    ) -> Result<Vec<crate::observability::LogEntry>, HostError> {
+        self.with_inner(|inner| {
+            let state = inner.ledger.state();
+            authorize_ticket(state, authority)?;
+            authorize_visible_space(state, authority, &scope.space_id)?;
+            inner.observability.logs(scope)
+        })
+    }
+
+    /// Read redacted network metadata visible to a logical scope.
+    pub fn observability_network(
+        &self,
+        authority: &AuthorityTicket,
+        scope: &ObservationScope,
+    ) -> Result<Vec<crate::observability::NetworkEntry>, HostError> {
+        self.with_inner(|inner| {
+            let state = inner.ledger.state();
+            authorize_ticket(state, authority)?;
+            authorize_visible_space(state, authority, &scope.space_id)?;
+            inner.observability.network(scope)
+        })
+    }
+
+    /// Read redacted trace metadata visible to a logical scope.
+    pub fn observability_traces(
+        &self,
+        authority: &AuthorityTicket,
+        scope: &ObservationScope,
+    ) -> Result<Vec<crate::observability::TraceEntry>, HostError> {
+        self.with_inner(|inner| {
+            let state = inner.ledger.state();
+            authorize_ticket(state, authority)?;
+            authorize_visible_space(state, authority, &scope.space_id)?;
+            inner.observability.traces(scope)
         })
     }
 
@@ -3569,9 +3633,9 @@ impl Broker {
             })
         })?;
         let Some(request) = request else {
-            return self
-                .action_status(authority, action_id)
-                .map(|receipt| ActionResult { receipt });
+            let receipt = self.action_status(authority, action_id)?;
+            let artifact = self.bridge()?.artifact_for_action(action_id)?;
+            return Ok(ActionResult { receipt, artifact });
         };
 
         // The ledger enforces ordering for durable state; the scheduler enforces
@@ -3643,7 +3707,12 @@ impl Broker {
         };
         let outcome = self.verify_final_postcondition(&request, outcome)?;
         let receipt = self.finish_dispatch(action_id, request, authority, outcome, now)?;
-        Ok(ActionResult { receipt })
+        let artifact = if receipt.status == ActionStatus::Succeeded {
+            self.bridge()?.artifact_for_action(action_id)?
+        } else {
+            None
+        };
+        Ok(ActionResult { receipt, artifact })
     }
 
     /// Enqueue and then dispatch one action through the bridge seam.
@@ -3655,7 +3724,10 @@ impl Broker {
     ) -> Result<ActionResult, HostError> {
         let receipt = self.enqueue_action(request, authority, now)?;
         if receipt.status != ActionStatus::Queued {
-            return Ok(ActionResult { receipt });
+            return Ok(ActionResult {
+                receipt,
+                artifact: None,
+            });
         }
         self.dispatch_action(&receipt.action_id, authority, receipt.lease_epoch, now)
     }
@@ -3909,7 +3981,64 @@ impl Broker {
                 Ok(result)
             })
         })
-        .map(|receipt| ActionResult { receipt })
+        .map(|receipt| ActionResult {
+            receipt,
+            artifact: None,
+        })
+    }
+
+    /// Consume one completed action artifact after validating its durable scope.
+    pub fn take_artifact(
+        &self,
+        authority: &AuthorityTicket,
+        action_id: &ActionId,
+        artifact_id: &agentyc_core::ArtifactId,
+    ) -> Result<(ArtifactHandle, Vec<u8>), HostError> {
+        let handle = self
+            .bridge()?
+            .artifact_for_action(action_id)?
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::CapabilityUnavailable,
+                    "artifact handle is unavailable",
+                )
+            })?;
+        if &handle.artifact_id != artifact_id {
+            return Err(CoreError::new(
+                ErrorCode::PermissionDenied,
+                "artifact handle does not belong to the requested action",
+            )
+            .into());
+        }
+        self.with_inner(|inner| {
+            let state = inner.ledger.state();
+            authorize_ticket(state, authority)?;
+            let receipt = state
+                .actions
+                .get(action_id)
+                .ok_or_else(|| CoreError::invalid_argument("action receipt is missing"))?;
+            authorize_visible_space(state, authority, &receipt.space_id)?;
+            if receipt.status != ActionStatus::Succeeded
+                || receipt.operation != ActionOperation::Screenshot
+                || receipt.request_id != handle.request_id
+                || receipt.space_id != handle.space_id
+                || receipt.page_id != handle.page_id
+            {
+                return Err(CoreError::new(
+                    ErrorCode::PermissionDenied,
+                    "artifact is not attached to a completed screenshot action",
+                )
+                .into());
+            }
+            Ok(())
+        })?;
+        let bytes = self.bridge()?.take_artifact(&handle)?.ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::CapabilityUnavailable,
+                "artifact bytes are unavailable",
+            )
+        })?;
+        Ok((handle, bytes))
     }
 
     /// Adopt monotonic page generations observed by the trusted extension bridge.
@@ -4712,9 +4841,9 @@ fn require_operation_capabilities(
 ) -> Result<(), HostError> {
     let required = match operation {
         ActionOperation::Evaluate => vec![Capability::Evaluate],
-        // Screenshot is an allowlisted debugger action; artifact transport is
-        // only required for uploads and other out-of-band artifact flows.
-        ActionOperation::Screenshot => vec![Capability::Action],
+        // Screenshot crosses both the action and bounded artifact-transfer
+        // boundaries; both capabilities must be negotiated before dispatch.
+        ActionOperation::Screenshot => vec![Capability::Action, Capability::Artifact],
         ActionOperation::Upload => vec![Capability::Action, Capability::Artifact],
         ActionOperation::Wait => vec![Capability::Wait],
         ActionOperation::Navigate
@@ -5450,6 +5579,90 @@ fn bridge_event_payload(
         result.insert("navigation".to_owned(), navigation.to_owned());
     }
     result
+}
+
+fn record_side_state_event(
+    store: &mut ObservabilityStore,
+    event_name: &str,
+    payload: &serde_json::Map<String, Value>,
+    scope: ObservationScope,
+    now: Timestamp,
+) -> Result<(), HostError> {
+    if event_name.starts_with("log.") {
+        let level = payload
+            .get("level")
+            .and_then(Value::as_str)
+            .and_then(LogLevel::parse)
+            .unwrap_or(LogLevel::Info);
+        let message = payload
+            .get("message")
+            .or_else(|| payload.get("text"))
+            .or_else(|| payload.get("value"))
+            .and_then(Value::as_str)
+            .unwrap_or("logical log event");
+        return store.record_log(scope, level, message, now);
+    }
+    if event_name.starts_with("network.") {
+        let url = payload
+            .get("url")
+            .or_else(|| payload.get("href"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let method = payload
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("GET");
+        let status = payload
+            .get("status")
+            .or_else(|| payload.get("response_status"))
+            .and_then(Value::as_u64)
+            .and_then(|value| u16::try_from(value).ok());
+        let resource_type = payload
+            .get("resource_type")
+            .or_else(|| payload.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("other");
+        let request_headers = bounded_string_map(payload.get("request_headers"));
+        let response_headers = bounded_string_map(payload.get("response_headers"));
+        return store.record_network(
+            scope,
+            url,
+            method,
+            status,
+            resource_type,
+            &request_headers,
+            &response_headers,
+            payload.get("request_body").and_then(Value::as_str),
+            payload.get("response_body").and_then(Value::as_str),
+            now,
+        );
+    }
+    if event_name.starts_with("trace.") {
+        let name = payload
+            .get("name")
+            .or_else(|| payload.get("operation"))
+            .and_then(Value::as_str)
+            .unwrap_or(event_name);
+        let duration_ms = payload.get("duration_ms").and_then(Value::as_u64);
+        let attributes = bounded_string_map(payload.get("attributes"));
+        return store.record_trace(scope, name, duration_ms, &attributes, now);
+    }
+    Ok(())
+}
+
+fn bounded_string_map(value: Option<&Value>) -> BTreeMap<String, String> {
+    value
+        .and_then(Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_owned()))
+                })
+                .take(128)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn snapshot_dirty_reason(reason: DirtyReason) -> SnapshotDirtyReason {
