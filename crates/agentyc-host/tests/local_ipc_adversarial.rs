@@ -3,13 +3,17 @@
 use std::{
     fs,
     io::{Read, Write},
+    net::Shutdown,
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
     time::Duration,
 };
 
-use agentyc_core::{DEFAULT_MAX_FRAME_PAYLOAD_BYTES, encode_frame};
-use agentyc_host::{Broker, FakeBridge, LocalHostServer};
+use agentyc_core::{
+    ClientMetadata, ConnectionNonce, DEFAULT_MAX_FRAME_PAYLOAD_BYTES, HelloEnvelope,
+    PROTOCOL_VERSION, PrincipalId, encode_frame,
+};
+use agentyc_host::{Broker, FakeBridge, HostError, LocalHostServer, LocalSocketClient};
 use tempfile::{TempDir, tempdir};
 
 fn start_server() -> (TempDir, LocalHostServer, PathBuf) {
@@ -41,6 +45,60 @@ fn assert_peer_closed(mut stream: UnixStream) {
 fn send_raw_frame(stream: &mut UnixStream, payload: &[u8]) {
     let frame = encode_frame(payload, DEFAULT_MAX_FRAME_PAYLOAD_BYTES).expect("bounded frame");
     stream.write_all(&frame).expect("send frame");
+}
+
+fn client_hello(suffix: &str) -> HelloEnvelope {
+    HelloEnvelope {
+        protocol: PROTOCOL_VERSION,
+        supported_protocols: vec![PROTOCOL_VERSION],
+        principal_id: PrincipalId::from_suffix(suffix).expect("principal"),
+        resume_from: None,
+        client_metadata: Some(ClientMetadata {
+            client_id: None,
+            client_name: Some("local-eof-test".to_owned()),
+            client_version: Some("1".to_owned()),
+            connection_nonce: Some(ConnectionNonce::from_suffix(suffix).expect("nonce")),
+            profile_binding_id: None,
+        }),
+    }
+}
+
+#[test]
+fn local_client_distinguishes_clean_eof_from_truncated_frame() {
+    let directory = tempdir().expect("temporary directory");
+    let clean_path = directory.path().join("c");
+    let clean_listener = UnixListener::bind(&clean_path).expect("clean listener");
+    let clean_thread = std::thread::spawn(move || {
+        let (mut stream, _) = clean_listener.accept().expect("clean accept");
+        let mut input = [0_u8; 16];
+        let _ = stream.read(&mut input);
+        stream.shutdown(Shutdown::Write).expect("clean shutdown");
+    });
+    let clean = LocalSocketClient::connect(&clean_path, client_hello("clean-eof"));
+    assert!(
+        matches!(clean, Err(HostError::Transport(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof)
+    );
+    clean_thread.join().expect("clean thread");
+
+    let truncated_path = directory.path().join("t");
+    let truncated_listener = UnixListener::bind(&truncated_path).expect("truncated listener");
+    let truncated_thread = std::thread::spawn(move || {
+        let (mut stream, _) = truncated_listener.accept().expect("truncated accept");
+        let mut input = [0_u8; 16];
+        let _ = stream.read(&mut input);
+        stream
+            .write_all(&5_u32.to_be_bytes())
+            .expect("truncated prefix");
+        stream.write_all(b"{}").expect("truncated payload");
+        stream
+            .shutdown(Shutdown::Write)
+            .expect("truncated shutdown");
+    });
+    let truncated = LocalSocketClient::connect(&truncated_path, client_hello("truncated-eof"));
+    assert!(
+        matches!(truncated, Err(HostError::Frame(error)) if error.code() == agentyc_core::ErrorCode::TruncatedFrame)
+    );
+    truncated_thread.join().expect("truncated thread");
 }
 
 #[test]
