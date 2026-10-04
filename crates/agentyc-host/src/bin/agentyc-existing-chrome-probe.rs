@@ -690,7 +690,22 @@ fn create_space_with_lease(
     let created = client
         .request(
             "space.create",
-            BTreeMap::from([("label".to_owned(), label.to_owned())]),
+            BTreeMap::from([
+                ("label".to_owned(), label.to_owned()),
+                (
+                    "profile_scope".to_owned(),
+                    "shared_existing_profile".to_owned(),
+                ),
+                (
+                    "shared_state_notice".to_owned(),
+                    "shared_profile_state".to_owned(),
+                ),
+                ("isolation_claim".to_owned(), "false".to_owned()),
+                (
+                    "profile_disclosure_acknowledged".to_owned(),
+                    "true".to_owned(),
+                ),
+            ]),
         )
         .map_err(|error| {
             format!(
