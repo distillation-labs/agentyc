@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    errors::CoreError,
     ids::{BrokerEpoch, EventId, EventSequence, Generation, PageId, SnapshotVersion, SpaceId},
     states::DirtyReason,
 };
@@ -46,6 +47,16 @@ pub struct EventScope {
 }
 
 impl EventScope {
+    /// Validate that a page scope includes its owning space.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.page_id.is_some() && self.space_id.is_none() {
+            return Err(CoreError::invalid_argument(
+                "event page scope requires a space scope",
+            ));
+        }
+        Ok(())
+    }
+
     /// Scope an event to a space.
     pub fn space(space_id: SpaceId) -> Self {
         Self {
@@ -64,6 +75,9 @@ impl EventScope {
 
     /// Return whether this event can be delivered to the requested scope.
     pub fn matches(&self, requested: &Self) -> bool {
+        if self.validate().is_err() || requested.validate().is_err() {
+            return false;
+        }
         let space_matches = requested
             .space_id
             .as_ref()
@@ -119,6 +133,11 @@ pub struct EventRecord<P = BTreeMap<String, String>> {
 }
 
 impl<P> EventRecord<P> {
+    /// Validate the event's logical scope before filtering or delivery.
+    pub fn validate_scope(&self) -> Result<(), CoreError> {
+        self.scope.validate()
+    }
+
     /// Return whether a resume cursor is strictly behind this event.
     pub const fn is_after(&self, sequence: EventSequence) -> bool {
         self.sequence.get() > sequence.get()
@@ -161,6 +180,19 @@ mod tests {
         assert!(!event_scope.matches(&EventScope::space(
             SpaceId::from_suffix("two").expect("valid space"),
         )));
+    }
+
+    #[test]
+    fn page_scope_requires_space_scope() {
+        let invalid = EventScope {
+            space_id: None,
+            page_id: Some(PageId::from_suffix("one").expect("page")),
+        };
+        assert!(invalid.validate().is_err());
+        assert!(!invalid.matches(&EventScope {
+            space_id: None,
+            page_id: None,
+        }));
     }
 
     #[test]
