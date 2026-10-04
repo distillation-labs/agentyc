@@ -86,7 +86,10 @@ async function invoke(action, params, space) {
       chromeApi,
       action,
       params,
-      intentTicket: space?.intent_tickets?.[action] ?? space?.intent_ticket,
+      intentTicket:
+        action === "create"
+          ? undefined
+          : space?.intent_tickets?.[action] ?? space?.intent_ticket,
     });
     if (response?.error)
       state = reduceState(state, {
@@ -113,7 +116,18 @@ function install() {
     void invoke("create", { label });
     if (input) input.value = "";
   });
-  chromeApi?.runtime?.onMessage?.addListener?.((message) => {
+  chromeApi?.runtime?.onMessage?.addListener?.((message, sender) => {
+    const expectedUrl = chromeApi?.runtime?.getURL?.(
+      "src/service-worker.mjs",
+    );
+    if (
+      !sender ||
+      sender.id !== chromeApi?.runtime?.id ||
+      sender.tab !== undefined ||
+      (sender.frameId !== undefined && sender.frameId !== 0) ||
+      (expectedUrl && sender.url !== expectedUrl)
+    )
+      return;
     state = reduceState(state, message);
     render();
   });
