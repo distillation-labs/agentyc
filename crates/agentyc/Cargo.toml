@@ -7,13 +7,21 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Deterministic, MCP-first browser automation for coding agents. No API key. No LLM. Just CDP, stdio MCP, and 61 tools."
-keywords = ["mcp", "browser", "automation", "cdp", "agent"]
+description = "Host-backed browser task-space automation for coding agents via direct CLI and Node SDK; MCP is compatibility-only."
+keywords = ["browser", "automation", "task-space", "cli", "agent"]
 categories = ["web-programming", "development-tools", "command-line-utilities"]
 
 [[bin]]
 name = "agentyc"
 path = "src/main.rs"
+
+[features]
+test-support = []
+
+[[bin]]
+name = "agentyc-test-host"
+path = "src/bin/test-host.rs"
+required-features = ["test-support"]
 
 [dependencies]
 agentyc-core    = { workspace = true }
