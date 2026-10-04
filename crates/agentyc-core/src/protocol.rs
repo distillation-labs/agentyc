@@ -986,6 +986,84 @@ impl From<CancelRequest> for CancelEnvelope {
     }
 }
 
+/// Text matching strategy used by typed browser wait contracts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum WaitTextMatcher {
+    /// Match the complete value.
+    Exact {
+        /// Expected value.
+        value: String,
+    },
+    /// Match a substring.
+    Contains {
+        /// Required substring.
+        value: String,
+    },
+    /// Match a prefix.
+    Prefix {
+        /// Required prefix.
+        value: String,
+    },
+    /// Match a suffix.
+    Suffix {
+        /// Required suffix.
+        value: String,
+    },
+}
+
+/// Navigation transition used by a typed URL wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitNavigationKind {
+    /// A normal URL navigation.
+    Url,
+    /// A same-document history transition.
+    History,
+    /// A reload transition.
+    Reload,
+    /// Any navigation transition.
+    Any,
+}
+
+/// History direction used by a typed history wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitHistoryDirection {
+    /// Back navigation.
+    Back,
+    /// Forward navigation.
+    Forward,
+    /// Either direction.
+    Any,
+}
+
+/// Element state used by a typed element wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitElementState {
+    /// The element is attached.
+    Present,
+    /// The element is absent.
+    Absent,
+    /// The element is visible.
+    Visible,
+    /// The element is hidden.
+    Hidden,
+}
+
+/// Download state used by a typed download wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitDownloadState {
+    /// The download started.
+    Started,
+    /// The download completed.
+    Completed,
+    /// The download failed or was cancelled.
+    Failed,
+}
+
 /// Serializable condition that can complete an event-driven wait.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -1025,6 +1103,86 @@ pub enum WaitCondition {
         /// Nested conditions.
         conditions: Vec<WaitCondition>,
     },
+    /// Match a URL/navigation postcondition.
+    Url {
+        /// URL matcher.
+        matcher: WaitTextMatcher,
+        /// Optional transition kind.
+        navigation: Option<WaitNavigationKind>,
+        /// Optional generation postcondition.
+        generation: Option<crate::events::GenerationWatermark>,
+    },
+    /// Match a same-document history transition.
+    History {
+        /// Required direction.
+        direction: WaitHistoryDirection,
+        /// Optional generation postcondition.
+        generation: Option<crate::events::GenerationWatermark>,
+    },
+    /// Match a reload transition.
+    Reload {
+        /// Optional generation postcondition.
+        generation: Option<crate::events::GenerationWatermark>,
+    },
+    /// Match a scoped network-idle postcondition.
+    NetworkIdle {
+        /// Required quiet interval in milliseconds.
+        quiet_ms: u64,
+    },
+    /// Match a request.
+    Request {
+        /// Optional URL matcher.
+        url: Option<WaitTextMatcher>,
+        /// Optional HTTP method.
+        method: Option<String>,
+        /// Optional resource type.
+        resource_type: Option<String>,
+    },
+    /// Match a response.
+    Response {
+        /// Optional URL matcher.
+        url: Option<WaitTextMatcher>,
+        /// Optional correlated request method.
+        method: Option<String>,
+        /// Optional resource type.
+        resource_type: Option<String>,
+        /// Optional HTTP status.
+        status: Option<u16>,
+    },
+    /// Match mutation quiet plus geometry stability.
+    StableDom {
+        /// Required mutation quiet interval in milliseconds.
+        quiet_ms: u64,
+        /// Required geometry quiet interval in milliseconds.
+        geometry_quiet_ms: u64,
+    },
+    /// Match an element state.
+    Element {
+        /// Optional CSS selector.
+        selector: Option<String>,
+        /// Optional text matcher.
+        text: Option<WaitTextMatcher>,
+        /// Required element state.
+        state: WaitElementState,
+        /// Optional generation postcondition.
+        generation: Option<crate::events::GenerationWatermark>,
+    },
+    /// Match a logical page state.
+    Page {
+        /// Optional logical page identity.
+        page_id: Option<crate::ids::PageId>,
+        /// Optional page lifecycle value.
+        lifecycle: Option<String>,
+        /// Optional generation postcondition.
+        generation: Option<crate::events::GenerationWatermark>,
+    },
+    /// Match a download lifecycle state.
+    Download {
+        /// Optional filename matcher.
+        name: Option<WaitTextMatcher>,
+        /// Required download state.
+        state: WaitDownloadState,
+    },
 }
 
 impl WaitCondition {
@@ -1044,6 +1202,29 @@ impl WaitCondition {
             }
             let bounded =
                 |text: &str| !text.is_empty() && text.len() <= MAX_WAIT_CONDITION_TEXT_BYTES;
+            let validate_matcher = |matcher: &WaitTextMatcher| match matcher {
+                WaitTextMatcher::Exact { value }
+                | WaitTextMatcher::Contains { value }
+                | WaitTextMatcher::Prefix { value }
+                | WaitTextMatcher::Suffix { value } => {
+                    if bounded(value) {
+                        Ok(())
+                    } else {
+                        Err(CoreError::invalid_argument(
+                            "wait matcher value must be non-empty and bounded",
+                        ))
+                    }
+                }
+            };
+            let validate_optional_text = |value: &Option<String>| {
+                if value.as_deref().is_none_or(bounded) {
+                    Ok(())
+                } else {
+                    Err(CoreError::invalid_argument(
+                        "wait condition text must be non-empty and bounded",
+                    ))
+                }
+            };
             match condition {
                 WaitCondition::Event { payload, .. } => {
                     if payload.len() > MAX_WAIT_CONDITION_FIELDS
@@ -1066,6 +1247,56 @@ impl WaitCondition {
                 WaitCondition::Any { conditions } | WaitCondition::All { conditions } => {
                     for child in conditions {
                         visit(child, depth + 1, nodes)?;
+                    }
+                }
+                WaitCondition::Url { matcher, .. } => validate_matcher(matcher)?,
+                WaitCondition::History { .. } | WaitCondition::Reload { .. } => {}
+                WaitCondition::NetworkIdle { quiet_ms } => {
+                    if *quiet_ms > MAX_WAIT_TIMEOUT_MS {
+                        return Err(CoreError::new(
+                            ErrorCode::MessageTooLarge,
+                            "network-idle quiet interval exceeds the wait timeout bound",
+                        ));
+                    }
+                }
+                WaitCondition::Request {
+                    url,
+                    method,
+                    resource_type,
+                }
+                | WaitCondition::Response {
+                    url,
+                    method,
+                    resource_type,
+                    ..
+                } => {
+                    if let Some(url) = url {
+                        validate_matcher(url)?;
+                    }
+                    validate_optional_text(method)?;
+                    validate_optional_text(resource_type)?;
+                }
+                WaitCondition::StableDom {
+                    quiet_ms,
+                    geometry_quiet_ms,
+                } => {
+                    if *quiet_ms > MAX_WAIT_TIMEOUT_MS || *geometry_quiet_ms > MAX_WAIT_TIMEOUT_MS {
+                        return Err(CoreError::new(
+                            ErrorCode::MessageTooLarge,
+                            "stable-DOM quiet interval exceeds the wait timeout bound",
+                        ));
+                    }
+                }
+                WaitCondition::Element { selector, text, .. } => {
+                    validate_optional_text(selector)?;
+                    if let Some(text) = text {
+                        validate_matcher(text)?;
+                    }
+                }
+                WaitCondition::Page { lifecycle, .. } => validate_optional_text(lifecycle)?,
+                WaitCondition::Download { name, .. } => {
+                    if let Some(name) = name {
+                        validate_matcher(name)?;
                     }
                 }
                 WaitCondition::EventKind { .. } | WaitCondition::GenerationAtLeast { .. } => {}
