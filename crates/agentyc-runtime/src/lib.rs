@@ -4,6 +4,9 @@
 //! shared lifecycle and common agent-facing operations. It intentionally
 //! returns typed/JSON values rather than frontend-specific result objects.
 
+pub mod host_client;
+pub use host_client::HostClient;
+
 use std::sync::Arc;
 use std::time::Duration;
 
