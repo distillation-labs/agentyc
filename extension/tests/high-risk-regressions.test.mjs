@@ -5,6 +5,7 @@ import { DebuggerBridge, hashRuntimeScript } from "../src/debugger-bridge.mjs";
 import { FramesRegistry } from "../src/frames.mjs";
 import { GroupsRegistry } from "../src/groups.mjs";
 import { TabsRegistry } from "../src/tabs-registry.mjs";
+import { sendPanelAction } from "../src/sidepanel/controls.mjs";
 import { FakeChrome, hostEnvelope, makeHostHelloOk } from "./fake-chrome.mjs";
 
 const wait = () => new Promise((resolve) => setImmediate(resolve));
@@ -474,18 +475,62 @@ test("pre-dispatch capability failures stay capability errors", async () => {
 test("side-panel destructive actions require expiring single-use intent tickets", async () => {
   const chrome = new FakeChrome();
   const { worker, port } = await boot(chrome);
-  const denied = await worker.handleSidePanelRequest({
-    action: "stop",
-    params: { space_id: "space_panel" },
-  });
+  const sender = {
+    id: chrome.runtime.id,
+    url: "chrome-extension://fake-extension-id/src/sidepanel/index.html",
+    origin: "chrome-extension://fake-extension-id",
+    frameId: 0,
+  };
+  const untrusted = await worker.handleRuntimeMessage(
+    {
+      type: "agentyc.sidepanel.request",
+      action: "create",
+      params: { label: "not from side panel" },
+    },
+    { ...sender, url: "https://attacker.test/" },
+  );
+  assert.equal(untrusted.ok, false);
+  assert.equal(untrusted.error.code, "permission_denied");
+  worker.native.sendRequest = ({ requestId }) => {
+    worker.pending.get(requestId)?.resolve({
+      ok: true,
+      result: { space_id: "space_created" },
+    });
+  };
+  const created = await worker.handleRuntimeMessage(
+    {
+      type: "agentyc.sidepanel.request",
+      action: "create",
+      params: { label: "created without ticket" },
+    },
+    sender,
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.result.space_id, "space_created");
+  const denied = await worker.handleSidePanelRequest(
+    {
+      action: "stop",
+      params: { space_id: "space_panel" },
+    },
+    sender,
+  );
   assert.equal(denied.ok, false);
   assert.equal(denied.error.code, "user_confirmation_required");
+  for (const action of ["pause", "retain"]) {
+    const missingTicket = await worker.handleSidePanelRequest(
+      { action, params: { space_id: "space_panel" } },
+      sender,
+    );
+    assert.equal(missingTicket.ok, false);
+    assert.equal(missingTicket.error.code, "user_confirmation_required");
+  }
   const ticket = {
     issued_by_host: true,
     ticket_id: "ticket_panel_1",
     purpose: "sidepanel",
     action: "stop",
     space_id: "space_panel",
+    profile_instance_id: worker.metadata.profileInstanceId,
     expires_at: Date.now() + 10_000,
     browser_session_epoch: worker.metadata.browserSessionEpoch,
   };
@@ -514,14 +559,32 @@ test("side-panel destructive actions require expiring single-use intent tickets"
     action: "stop",
     params: { space_id: "space_panel" },
     intent_ticket: ticket,
-  });
+  }, sender);
   assert.equal(accepted.ok, true);
   const replay = await worker.handleSidePanelRequest({
     action: "stop",
     params: { space_id: "space_panel" },
     intent_ticket: ticket,
-  });
+  }, sender);
   assert.equal(replay.ok, false);
   assert.equal(replay.error.code, "replay_rejected");
   worker.stop();
+});
+
+test("side-panel controls keep create ticket-free and require tickets for controls", async () => {
+  const messages = [];
+  const chromeApi = {
+    runtime: { sendMessage: async (message) => messages.push(message) },
+  };
+  await sendPanelAction({
+    chromeApi,
+    action: "create",
+    params: { label: "new space" },
+  });
+  await assert.rejects(
+    () => sendPanelAction({ chromeApi, action: "pause", params: {} }),
+    /host intent ticket/,
+  );
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].action, "create");
 });
