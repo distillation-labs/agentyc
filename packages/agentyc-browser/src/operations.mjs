@@ -205,7 +205,8 @@ const requestEntries = [
     supported: false,
     sdk: undefined,
     cli: undefined,
-    unsupportedReason: "cancellation is a request-envelope operation, not an action operation",
+    unsupportedReason:
+      "cancellation is a request-envelope operation, not an action operation",
   },
   {
     key: "page.navigate",
@@ -215,7 +216,8 @@ const requestEntries = [
     supported: false,
     sdk: undefined,
     cli: undefined,
-    unsupportedReason: "navigation is represented by action.execute with operation navigate",
+    unsupportedReason:
+      "navigation is represented by action.execute with operation navigate",
   },
   {
     key: "page.adopt",
@@ -225,7 +227,8 @@ const requestEntries = [
     supported: false,
     sdk: undefined,
     cli: undefined,
-    unsupportedReason: "page adoption is not a Phase 2 local protocol operation",
+    unsupportedReason:
+      "page adoption is not a Phase 2 local protocol operation",
   },
 ];
 
@@ -296,8 +299,16 @@ export function operationForMethod(method) {
   return typeof method === "string" ? METHOD_BY_NAME.get(method) : undefined;
 }
 
-export function methodMayHaveSideEffects(method, requested = false) {
-  return Boolean(requested) || operationForMethod(method)?.sideEffecting === true;
+/**
+ * Conservative side-effect classification. Registered methods use the registry.
+ * Unknown methods default to side-effecting; only an explicit `false` opts an
+ * unknown method out, and `true` always wins.
+ */
+export function methodMayHaveSideEffects(method, requested = undefined) {
+  if (requested) return true;
+  const entry = operationForMethod(method);
+  if (entry) return entry.sideEffecting === true;
+  return requested !== false;
 }
 
 export function actionOperationNames() {
