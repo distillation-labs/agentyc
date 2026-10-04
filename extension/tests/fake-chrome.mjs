@@ -46,7 +46,11 @@ function copyTab(tab) {
 }
 
 export class FakeChrome {
-  constructor({ tabs = [] } = {}) {
+  constructor({
+    tabs = [],
+    debuggerAttachFailures = new Map(),
+    debuggerDetachFailures = new Map(),
+  } = {}) {
     this.nextTabId = 100;
     this.nextGroupId = 20;
     this.ports = [];
@@ -55,7 +59,22 @@ export class FakeChrome {
     this.groupUpdates = [];
     this.sidePanelBehaviorCalls = [];
     this.debuggerCommands = [];
+    this.debuggerInternalCommands = [];
     this.debuggerFailures = new Map();
+    this.debuggerAttachCalls = [];
+    this.debuggerDetachCalls = [];
+    this.debuggerAttachFailures = new Map(
+      debuggerAttachFailures instanceof Map
+        ? debuggerAttachFailures
+        : Object.entries(debuggerAttachFailures ?? {}),
+    );
+    this.debuggerDetachFailures = new Map(
+      debuggerDetachFailures instanceof Map
+        ? debuggerDetachFailures
+        : Object.entries(debuggerDetachFailures ?? {}),
+    );
+    this.debuggerAttachFailure = undefined;
+    this.debuggerDetachFailure = undefined;
     this.storageData = {};
     this.tabsGetCalls = [];
     this.tabsCreateCalls = [];
@@ -214,17 +233,32 @@ export class FakeChrome {
       onDetach: new FakeEvent(),
       attached: new Set(),
       attach: async (source) => {
+        this.debuggerAttachCalls.push({ ...source });
+        const failure =
+          this.debuggerAttachFailures.get(source.tabId) ??
+          this.debuggerAttachFailure;
+        if (failure)
+          throw typeof failure === "function" ? failure(source) : failure;
         this.debugger.attached.add(source.tabId);
       },
       detach: async (source) => {
+        this.debuggerDetachCalls.push({ ...source });
+        const failure =
+          this.debuggerDetachFailures.get(source.tabId) ??
+          this.debuggerDetachFailure;
+        if (failure)
+          throw typeof failure === "function" ? failure(source) : failure;
         this.debugger.attached.delete(source.tabId);
       },
       sendCommand: async (source, method, params) => {
-        this.debuggerCommands.push({
+        const command = {
           source: { ...source },
           method,
           params: structuredClone(params),
-        });
+        };
+        if (method === "Target.setAutoAttach")
+          this.debuggerInternalCommands.push(command);
+        else this.debuggerCommands.push(command);
         const failure = this.debuggerFailures.get(method);
         if (failure) throw failure;
         return {
@@ -303,6 +337,16 @@ export function makeHostHelloOk(
     worker_instance_epoch: workerInstanceEpoch,
     browser_session_epoch: browserSessionEpoch,
     capabilities: ["logical_tabs", "debugger_allowlist"],
+    profile_instance_id: hello.profile_instance_id ?? "profile_fake",
+    profile_state: "bound",
+    limits: {
+      max_control_bytes: 1024 * 1024,
+      max_artifact_chunk_bytes: 256 * 1024,
+      max_artifact_bytes: 32 * 1024 * 1024,
+      max_artifact_chunks: 256,
+      max_in_flight_artifact_bytes: 4 * 1024 * 1024,
+      max_cumulative_artifact_bytes: 64 * 1024 * 1024,
+    },
   };
 }
 
