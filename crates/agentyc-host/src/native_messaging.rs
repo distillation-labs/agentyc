@@ -548,6 +548,32 @@ impl NativeMessagingBridge {
     }
 
     /// Ask the extension to present a page in its logical space's visual group.
+    /// Rebind one retained page after an acknowledged lease fence.
+    pub fn rebind_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        target_generation: u64,
+        navigation_generation: u64,
+        document_generation: u64,
+        ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        let mut params = Map::new();
+        params.insert("space_id".to_owned(), json!(space_id.to_string()));
+        params.insert("page_id".to_owned(), json!(page_id.to_string()));
+        params.insert("lease_epoch".to_owned(), json!(lease_epoch.get()));
+        params.insert("target_generation".to_owned(), json!(target_generation));
+        params.insert(
+            "navigation_generation".to_owned(),
+            json!(navigation_generation),
+        );
+        params.insert("document_generation".to_owned(), json!(document_generation));
+        params.insert("ownership_proof".to_owned(), ownership_proof);
+        self.request_value("page.rebind", params, None)
+    }
+
+    /// Present one managed page in its space's visual tab group.
     pub fn present_group(
         &self,
         space_id: &SpaceId,
@@ -919,6 +945,28 @@ impl Bridge for NativeMessagingBridge {
             lease_epoch,
             url,
             title,
+            ownership_proof,
+        )
+    }
+
+    fn rebind_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        target_generation: u64,
+        navigation_generation: u64,
+        document_generation: u64,
+        ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        NativeMessagingBridge::rebind_page(
+            self,
+            space_id,
+            page_id,
+            lease_epoch,
+            target_generation,
+            navigation_generation,
+            document_generation,
             ownership_proof,
         )
     }
