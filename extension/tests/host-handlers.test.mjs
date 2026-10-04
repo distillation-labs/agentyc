@@ -91,6 +91,40 @@ async function resolvePendingContent(worker, chrome, record, values) {
   }
 }
 
+test("event.wait resolves from the extension event stream with logical scope", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://user.test/" }],
+  });
+  const { worker } = await boot(chrome);
+  await managedPage(worker, "space_wait", "page_wait");
+  const pending = worker.handleHostRequest({
+    kind: "request",
+    request_id: "req_event_wait",
+    method: "event.wait",
+    space_id: "space_wait",
+    page_id: "page_wait",
+    params: {
+      condition: JSON.stringify({
+        kind: "payload",
+        key: "state",
+        value: "ready",
+      }),
+      timeout_ms: 1000,
+    },
+  });
+  await wait();
+  worker.handleExtensionEvent("page.changed", {
+    space_id: "space_wait",
+    page_id: "page_wait",
+    state: "ready",
+  });
+  const response = await pending;
+  assert.equal(response.ok, true);
+  assert.equal(response.result.payload.state, "ready");
+  assert.equal(response.result.space_id, "space_wait");
+  worker.stop();
+});
+
 test("snapshot.read uses the managed content bridge and returns bounded logical output", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://user.test/" }],
@@ -264,6 +298,129 @@ test("action routing maps the Rust debugger wire, emits a logical receipt, and r
   worker.stop();
 });
 
+test("actionability evidence rejects unsafe element states before debugger dispatch", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://user.test/" }],
+  });
+  const { worker } = await boot(chrome);
+  const record = await managedPage(
+    worker,
+    "space_actionability",
+    "page_actionability",
+  );
+  const base = {
+    connected: true,
+    visible: true,
+    disabled: false,
+    readonly: false,
+    covered: false,
+    overlay_present: false,
+    hit_target: true,
+    moving: false,
+    offscreen: false,
+    user_control: false,
+    target_generation: record.targetGeneration,
+    navigation_generation: record.navigationGeneration,
+    document_generation: record.documentGeneration,
+  };
+  const cases = [
+    ["hidden", { visible: false }, "permission_denied", "click"],
+    ["disabled", { disabled: true }, "permission_denied", "click"],
+    ["readonly", { readonly: true }, "permission_denied", "input"],
+    ["covered", { covered: true }, "permission_denied", "click"],
+    ["moving", { moving: true }, "permission_denied", "click"],
+    ["offscreen", { offscreen: true }, "permission_denied", "click"],
+    ["wrong-hit-target", { hit_target: false }, "permission_denied", "click"],
+    [
+      "rerendered",
+      { document_generation: record.documentGeneration + 1 },
+      "stale_generation",
+      "click",
+    ],
+    ["user-control", { user_control: true }, "user_control_required", "click"],
+  ];
+  for (const [suffix, change, code, operation] of cases) {
+    const response = await worker.handleHostRequest({
+      kind: "request",
+      request_id: `req_actionability_${suffix}`,
+      action_id: `action_actionability_${suffix}`,
+      method: "action.execute",
+      space_id: "space_actionability",
+      page_id: "page_actionability",
+      lease_epoch: 1,
+      params: {
+        operation,
+        actionability_evidence: { ...base, ...change },
+        payload:
+          operation === "input"
+            ? { text: "safe input" }
+            : { type: "mousePressed", x: 1, y: 1 },
+      },
+    });
+    assert.equal(response.ok, false, suffix);
+    assert.equal(response.error.code, code, suffix);
+  }
+  assert.equal(chrome.debuggerCommands.length, 0);
+  worker.stop();
+});
+
+test("actionability frame scope and file actions fail closed", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://user.test/" }],
+  });
+  const { worker } = await boot(chrome);
+  const record = await managedPage(
+    worker,
+    "space_frame_action",
+    "page_frame_action",
+  );
+  const frame = await worker.handleHostRequest({
+    kind: "request",
+    request_id: "req_oopif_actionability",
+    action_id: "action_oopif_actionability",
+    method: "action.execute",
+    space_id: "space_frame_action",
+    page_id: "page_frame_action",
+    lease_epoch: 1,
+    params: {
+      operation: "click",
+      frame_scope: "logical-oopif",
+      actionability_evidence: {
+        connected: true,
+        visible: true,
+        disabled: false,
+        readonly: false,
+        covered: false,
+        overlay_present: false,
+        hit_target: true,
+        moving: false,
+        offscreen: false,
+        user_control: false,
+        target_generation: record.targetGeneration,
+        navigation_generation: record.navigationGeneration,
+        document_generation: record.documentGeneration,
+      },
+      payload: { type: "mousePressed", x: 1, y: 1 },
+    },
+  });
+  assert.equal(frame.ok, false);
+  assert.equal(frame.error.code, "stale_generation");
+  const upload = await worker.handleHostRequest({
+    kind: "request",
+    request_id: "req_file_actionability",
+    action_id: "action_file_actionability",
+    method: "action.execute",
+    space_id: "space_frame_action",
+    page_id: "page_frame_action",
+    lease_epoch: 1,
+    params: { operation: "upload", payload: { path: "file.txt" } },
+  });
+  assert.equal(upload.ok, false);
+  assert.equal(upload.error.code, "upload_denied");
+  assert.equal(chrome.debuggerCommands.length, 0);
+  worker.stop();
+});
+
 test("snapshot-hash postconditions include observed hash and honest outcome", async () => {
   const chrome = new FakeChrome();
   const { worker } = await boot(chrome);
@@ -287,7 +444,10 @@ test("snapshot-hash postconditions include observed hash and honest outcome", as
   });
   worker.readSnapshot = async () => ({ snapshot_hash: observedHash });
 
-  const evaluation = await worker.evaluateActionPostcondition(context, context.request_id);
+  const evaluation = await worker.evaluateActionPostcondition(
+    context,
+    context.request_id,
+  );
   worker.rememberActionReceipt(context, evaluation.outcome, {
     code: evaluation.code,
     message: evaluation.code,
