@@ -272,7 +272,10 @@ test("stale fence rejects old mutations before debugger dispatch", async () => {
     method: "fence.barrier",
     space_id: "space_one",
     lease_epoch: 2,
-    params: { fence_epoch: 2 },
+    params: {
+      fence_epoch: 2,
+      request_token: "reconcile_service_worker_fence_token",
+    },
   });
   assert.equal(fence.kind, "fence_ack");
   const stale = await sendRequest(port, hello, 4, {
