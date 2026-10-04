@@ -1,1 +1,10 @@
-{"kind":"page_generation","at_least":4}
+{
+  "kind": "generation_at_least",
+  "generation": {
+    "space_generation": 0,
+    "page_generation": 4,
+    "navigation_generation": 0,
+    "document_generation": 0,
+    "snapshot_version": null
+  }
+}
