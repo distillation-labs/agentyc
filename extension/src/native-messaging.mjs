@@ -175,6 +175,7 @@ export class NativeMessagingClient {
           "visual_groups",
           "frame_events",
           "snapshot",
+          "evaluate",
           "reconcile",
           "side_panel",
         ],
