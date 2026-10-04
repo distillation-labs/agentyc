@@ -49,6 +49,7 @@ fn status(context: &DirectContext) -> DirectResult<Value> {
     Ok(json!({
         "state_directory": context.state_dir,
         "broker_epoch": remote_field(&response, "broker_epoch")?,
+        "lifecycle": remote_field(&response, "lifecycle")?,
         "connection_epoch": optional("connection_epoch")?,
         "worker_instance_epoch": optional("worker_instance_epoch")?,
         "browser_session_epoch": optional("browser_session_epoch")?,
