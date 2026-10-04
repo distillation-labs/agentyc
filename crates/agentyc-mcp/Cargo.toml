@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "MCP server library for agentyc — 61-tool deterministic browser automation over stdio/HTTP."
+description = "Host-backed MCP compatibility adapter for agentyc; optional legacy direct-CDP feature."
 keywords = ["mcp", "browser", "automation", "cdp", "agent"]
 categories = ["web-programming", "development-tools", "command-line-utilities"]
 
@@ -25,14 +25,14 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
-uuid = { workspace = true }
-base64 = { workspace = true }
-regex = { workspace = true }
-image = { workspace = true }
-md5 = { workspace = true }
+uuid = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+md5 = { workspace = true, optional = true }
 schemars = { workspace = true }
-dirs = { workspace = true }
-url = { workspace = true }
+dirs = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -44,4 +44,11 @@ legacy-cdp = [
     "dep:agentyc-browser",
     "dep:agentyc-runtime",
     "dep:agentyc-tools",
+    "dep:base64",
+    "dep:dirs",
+    "dep:image",
+    "dep:md5",
+    "dep:regex",
+    "dep:url",
+    "dep:uuid",
 ]
