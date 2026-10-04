@@ -1,6 +1,6 @@
 # Decision closure — agentyc Browser Task Spaces
 
-> **Supersession notice (2026-10-01):** The original D-01/D-06/D-08 recommendations below were closed for the former MCP-first, managed/attached-CDP scope. The user then clarified the product boundary: full ego-lite-like task spaces in the user's existing Chrome, no automatic browser download/launch, and no MCP primary surface. Those records remain as historical evidence; the active recommendations are D-09–D-18 below. See `decision-supersession.md`.
+> **Supersession notice (2026-10-01):** The original D-01/D-06/D-08 recommendations below were closed for the former MCP-first, managed/attached-CDP scope. The user then clarified the product boundary: full ego-lite-like task spaces in the user's existing Chrome, no automatic browser download/launch, and no MCP primary surface. Those records remain as historical evidence; the active recommendations are D-09–D-17 below. See `decision-supersession.md`.
 
 # Active closure — existing Chrome and non-MCP primary
 
@@ -130,25 +130,11 @@
 
 **Trade-offs accepted:** Production distribution depends on Chrome Web Store or managed deployment; some users/enterprise policies may deny debugger or host permissions.
 
-**Confidence:** high for requirements, medium for cohort/distribution timing.
+**Confidence:** high for requirements, medium for distribution readiness.
 
-**What would change the decision:** distribution or policy constraints make the intended cohort impossible; record a new supported-distribution decision.
+**What would change the decision:** distribution or policy constraints make the supported distribution impossible; record a new supported-distribution decision.
 
 **Stop rationale:** Security/installation constraints are explicit before implementation rather than hidden in a later hardening phase.
-
-## D-18 — Rollout and rollback
-
-**Recommendation:** Version and roll out the extension, native host, CLI/SDK, broker ledger, and MCP adapter together through internal synthetic-profile, internal existing-Chrome, and opt-in preview cohorts. Rollback pauses new agent mutations, preserves recoverable spaces, and never closes user tabs or kills user Chrome; incompatible old binaries cannot read newer ledgers.
-
-**Why this wins now:** The product crosses browser, native, CLI, and compatibility components; the old `off|compat|on` MCP flag is insufficient.
-
-**Trade-offs accepted:** Staged rollout is slower and requires installer/support evidence.
-
-**Confidence:** medium until Phase 0 establishes install/update behavior.
-
-**What would change the decision:** an independent component can be safely rolled back without ledger/user-tab risk; otherwise keep atomic bundles.
-
-**Stop rationale:** Rollback behavior is part of the trust boundary, not a post-launch detail.
 
 ---
 
@@ -288,7 +274,7 @@
 
 **Alternatives rejected:** Trusting `Mcp-Session-Id` as authentication is not valid; silently adopting shared tabs is unsafe; a broad unauthenticated remote mode is out of scope.
 
-**Traps avoided:** `browser_evaluate` is mutation-capable even when it appears to be a read, so it requires the owner lease; rollback never uses global close.
+**Traps avoided:** `browser_evaluate` is mutation-capable even when it appears to be a read, so it requires the owner lease.
 
 **Confidence:** high for the local security boundary, medium for future remote deployment policy.
 
