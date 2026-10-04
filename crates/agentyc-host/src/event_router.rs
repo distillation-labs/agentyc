@@ -82,6 +82,14 @@ pub enum RouterResyncReason {
     SequenceGap,
     /// The requested cursor predates retained events.
     RetainedHistoryLagged,
+    /// The event had no attribution required by its logical scope.
+    MissingAttribution,
+    /// The event envelope or batch ordering was invalid.
+    InvalidEvent,
+    /// The broker sequence could not advance without overflowing.
+    SequenceOverflow,
+    /// A broker batch cursor was inconsistent with its events or router state.
+    InvalidBatchCursor,
     /// A broker batch already declared resynchronization.
     BrokerResync,
     /// The router was explicitly reset.
@@ -122,6 +130,7 @@ pub struct EventRouter {
     seen_event_order: VecDeque<EventId>,
     limits: RouterLimits,
     resync_required: bool,
+    resync_reason: Option<RouterResyncReason>,
 }
 
 impl EventRouter {
@@ -136,6 +145,7 @@ impl EventRouter {
             seen_event_order: VecDeque::new(),
             limits,
             resync_required: false,
+            resync_reason: None,
         }
     }
 
@@ -150,6 +160,7 @@ impl EventRouter {
             seen_event_order: VecDeque::new(),
             limits,
             resync_required: false,
+            resync_reason: None,
         }
     }
 
@@ -173,7 +184,7 @@ impl EventRouter {
         RouterWatermark {
             broker_epoch: self.broker_epoch,
             sequence: self.sequence,
-            oldest_sequence: self.events.front().map(|event| event.sequence),
+            oldest_sequence: self.retained_starts.front().copied(),
             resync_required: self.resync_required,
         }
     }
@@ -199,28 +210,35 @@ impl EventRouter {
     /// Ingest one broker-sequenced event.
     pub fn ingest(&mut self, event: EventRecord) -> RouterIngest {
         if event.broker_epoch != self.broker_epoch {
-            self.resync_required = true;
-            return RouterIngest::ResyncRequired {
-                cursor: self.cursor(),
-                reason: RouterResyncReason::BrokerEpochChanged,
-            };
+            return self.require_resync(RouterResyncReason::BrokerEpochChanged);
         }
         if self.seen_event_ids.contains(&event.event_id) {
             return RouterIngest::Accepted {
                 cursor: self.cursor(),
             };
         }
-        let expected = self.sequence.get().saturating_add(1);
-        if event.sequence.get() != expected {
-            self.resync_required = true;
-            return RouterIngest::ResyncRequired {
-                cursor: self.cursor(),
-                reason: RouterResyncReason::SequenceGap,
+        if self.resync_required {
+            let reason = self.current_resync_reason();
+            return self.require_resync(reason);
+        }
+        if event.validate_routing().is_err() {
+            let reason = if event.requires_attribution() && event.metadata().is_none() {
+                RouterResyncReason::MissingAttribution
+            } else {
+                RouterResyncReason::InvalidEvent
             };
+            return self.require_resync(reason);
+        }
+        let Some(expected) = self.sequence.checked_next() else {
+            return self.require_resync(RouterResyncReason::SequenceOverflow);
+        };
+        if event.sequence.get() != expected.get() {
+            return self.require_resync(RouterResyncReason::SequenceGap);
         }
         self.sequence = event.sequence;
         if event.resync_required {
             self.resync_required = true;
+            self.resync_reason = Some(RouterResyncReason::BrokerResync);
         }
 
         self.remember_event_id(event.event_id.clone());
@@ -230,12 +248,22 @@ impl EventRouter {
                 is_coalescible(previous.event)
                     && previous.event == event.event
                     && previous.scope == event.scope
+                    && same_attribution(previous, &event)
             });
             if can_coalesce {
                 if let Some(previous) = self.events.back_mut() {
                     let mut replacement = event;
+                    let previous_count = coalesced_count(previous).unwrap_or(1);
+                    let incoming_count = coalesced_count(&replacement).unwrap_or(1);
                     replacement.coalesced = true;
                     replacement.coalesced |= previous.coalesced;
+                    replacement.dirty_reason = replacement.dirty_reason.or(previous.dirty_reason);
+                    if let Some(metadata) = replacement.generation.metadata.as_mut() {
+                        let merged_count = previous_count
+                            .saturating_add(incoming_count)
+                            .min(agentyc_core::events::EventMetadata::MAX_COALESCED_COUNT);
+                        metadata.coalesced_count = Some(merged_count.max(2));
+                    }
                     previous.clone_from(&replacement);
                 }
                 return RouterIngest::Accepted {
@@ -245,11 +273,7 @@ impl EventRouter {
         }
 
         if self.limits.max_events == 0 {
-            self.resync_required = true;
-            return RouterIngest::ResyncRequired {
-                cursor: self.cursor(),
-                reason: RouterResyncReason::RetainedHistoryLagged,
-            };
+            return self.require_resync(RouterResyncReason::RetainedHistoryLagged);
         }
         let sequence = event.sequence;
         self.events.push_back(event);
@@ -273,53 +297,82 @@ impl EventRouter {
         self.ingest(event)
     }
 
-    /// Ingest a broker replay batch without bypassing epoch/gap checks.
+    /// Ingest a broker replay batch without bypassing epoch/order checks.
     pub fn ingest_batch(&mut self, batch: EventBatch) -> Result<RouterIngest, CoreError> {
-        if batch.broker_epoch != self.broker_epoch {
-            self.resync_required = true;
-            return Ok(RouterIngest::ResyncRequired {
-                cursor: self.cursor(),
-                reason: RouterResyncReason::BrokerEpochChanged,
-            });
+        if batch.broker_epoch != self.broker_epoch || batch.cursor.broker_epoch != self.broker_epoch
+        {
+            return Ok(self.require_resync(RouterResyncReason::BrokerEpochChanged));
+        }
+        if batch.cursor.sequence.get() < self.sequence.get() {
+            return Ok(self.require_resync(RouterResyncReason::InvalidBatchCursor));
         }
         if batch.result == ResumeResult::ResyncRequired {
-            self.resync_required = true;
-            return Ok(RouterIngest::ResyncRequired {
-                cursor: self.cursor(),
-                reason: RouterResyncReason::BrokerResync,
-            });
+            return Ok(self.require_resync(RouterResyncReason::BrokerResync));
         }
-        let mut outcome = RouterIngest::Accepted {
-            cursor: self.cursor(),
-        };
+
+        let mut virtual_sequence = self.sequence;
+        let mut previous_batch_sequence: Option<EventSequence> = None;
+        for event in &batch.events {
+            if event.broker_epoch != self.broker_epoch
+                || event.sequence.get() == 0
+                || event.sequence.get() > batch.cursor.sequence.get()
+            {
+                return Ok(self.require_resync(RouterResyncReason::InvalidBatchCursor));
+            }
+            if self.seen_event_ids.contains(&event.event_id) {
+                continue;
+            }
+            if self.resync_required {
+                let reason = self.current_resync_reason();
+                return Ok(self.require_resync(reason));
+            }
+            if let Some(previous) = previous_batch_sequence
+                && event.sequence.get() <= previous.get()
+            {
+                return Ok(self.require_resync(RouterResyncReason::InvalidBatchCursor));
+            }
+            previous_batch_sequence = Some(event.sequence);
+            if event.validate_routing().is_err() {
+                let reason = if event.requires_attribution() && event.metadata().is_none() {
+                    RouterResyncReason::MissingAttribution
+                } else {
+                    RouterResyncReason::InvalidEvent
+                };
+                return Ok(self.require_resync(reason));
+            }
+            if event.sequence.get() <= virtual_sequence.get() {
+                return Ok(self.require_resync(RouterResyncReason::InvalidBatchCursor));
+            }
+            if virtual_sequence.checked_next().is_none() {
+                return Ok(self.require_resync(RouterResyncReason::SequenceOverflow));
+            }
+            virtual_sequence = event.sequence;
+        }
+
         for event in batch.events {
             if event.broker_epoch == self.broker_epoch
                 && self.seen_event_ids.contains(&event.event_id)
             {
-                outcome = self.ingest(event);
+                self.ingest(event);
                 continue;
             }
-            // Broker batches may already be scope-filtered, so absent
-            // sequences are not proof of a gap here. Direct `ingest` remains
-            // strict and reports sequence gaps.
-            if event.broker_epoch == self.broker_epoch
-                && event.sequence.get() > self.sequence.get().saturating_add(1)
-            {
-                self.sequence = EventSequence::new(event.sequence.get().saturating_sub(1));
-            }
-            outcome = self.ingest(event);
-            if matches!(outcome, RouterIngest::ResyncRequired { .. }) {
-                break;
-            }
-        }
-        if matches!(outcome, RouterIngest::Accepted { .. }) && batch.cursor.sequence > self.sequence
-        {
-            self.sequence = batch.cursor.sequence;
-            outcome = RouterIngest::Accepted {
-                cursor: self.cursor(),
+            let Some(expected) = self.sequence.checked_next() else {
+                return Ok(self.require_resync(RouterResyncReason::SequenceOverflow));
             };
+            if event.sequence.get() > expected.get() {
+                self.sequence = EventSequence::new(event.sequence.get() - 1);
+            }
+            let outcome = self.ingest(event);
+            if matches!(outcome, RouterIngest::ResyncRequired { .. }) {
+                return Ok(outcome);
+            }
         }
-        Ok(outcome)
+        if !self.resync_required && batch.cursor.sequence.get() > self.sequence.get() {
+            self.sequence = batch.cursor.sequence;
+        }
+        Ok(RouterIngest::Accepted {
+            cursor: self.cursor(),
+        })
     }
 
     /// Replay retained events after a cursor with an optional exact logical scope.
@@ -328,10 +381,12 @@ impl EventRouter {
         if self.resync_required
             || after.broker_epoch != self.broker_epoch
             || after.sequence.get() > self.sequence.get()
-            || self
-                .retained_starts
-                .front()
-                .is_some_and(|sequence| after.sequence.get().saturating_add(1) < sequence.get())
+            || self.retained_starts.front().is_some_and(|sequence| {
+                after
+                    .sequence
+                    .checked_next()
+                    .is_some_and(|next| next.get() < sequence.get())
+            })
         {
             return EventBatch {
                 broker_epoch: self.broker_epoch,
@@ -373,6 +428,7 @@ impl EventRouter {
     /// Mark the router as needing a fresh logical read.
     pub fn request_resync(&mut self) {
         self.resync_required = true;
+        self.resync_reason = Some(RouterResyncReason::Explicit);
     }
 
     /// Clear retained events and establish a new broker watermark after resync.
@@ -384,6 +440,21 @@ impl EventRouter {
         self.seen_event_ids.clear();
         self.seen_event_order.clear();
         self.resync_required = false;
+        self.resync_reason = None;
+    }
+
+    fn current_resync_reason(&self) -> RouterResyncReason {
+        self.resync_reason
+            .unwrap_or(RouterResyncReason::BrokerResync)
+    }
+
+    fn require_resync(&mut self, reason: RouterResyncReason) -> RouterIngest {
+        self.resync_required = true;
+        self.resync_reason.get_or_insert(reason);
+        RouterIngest::ResyncRequired {
+            cursor: self.cursor(),
+            reason: self.current_resync_reason(),
+        }
     }
 
     fn remember_event_id(&mut self, event_id: EventId) {
@@ -414,10 +485,25 @@ fn is_coalescible(kind: EventKind) -> bool {
     matches!(kind, EventKind::PageChanged | EventKind::SnapshotChanged)
 }
 
+fn same_attribution(left: &EventRecord, right: &EventRecord) -> bool {
+    left.attribution() == right.attribution()
+}
+
+fn coalesced_count(event: &EventRecord) -> Option<u16> {
+    event
+        .metadata()
+        .and_then(|metadata| metadata.coalesced_count)
+}
+
 fn scope_matches(event: &EventRecord, requested: &EventScope) -> bool {
-    // A broad event can be consumed by a broad request, but it must never be
-    // guessed into a page-specific waiter. Page-scoped events still match their
-    // owning space request through the core logical scope rule.
+    // A global resync/connection event carries no page data and is safe to
+    // deliver to an affected scoped waiter. It is the explicit signal that the
+    // waiter must stop replaying and refresh its logical state.
+    if event.resync_required && event.scope.space_id.is_none() && event.scope.page_id.is_none() {
+        return true;
+    }
+    // A broad ordinary event can be consumed by a broad request, but it must
+    // never be guessed into a page-specific waiter.
     if requested.page_id.is_some()
         && (requested.space_id.is_none() || event.scope.page_id.is_none())
     {
@@ -452,6 +538,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn event(sequence: u64, scope: EventScope, kind: EventKind, payload: &str) -> EventRecord {
+        let metadata = agentyc_core::events::EventMetadata::for_event(
+            kind,
+            agentyc_core::events::EventAttribution::broker(),
+        );
         EventRecord {
             protocol: agentyc_core::PROTOCOL_VERSION,
             event_id: EventId::from_suffix(format!("event-{sequence}")).expect("event identity"),
@@ -461,6 +551,7 @@ mod tests {
             event: kind,
             generation: GenerationWatermark {
                 page_generation: Generation::new(sequence),
+                metadata: Some(metadata),
                 ..GenerationWatermark::default()
             },
             dirty_reason: None,
@@ -544,6 +635,161 @@ mod tests {
         );
         assert_eq!(replay.result, ResumeResult::Accepted);
         assert_eq!(replay.events[0].sequence, EventSequence::new(2));
+    }
+
+    #[test]
+    fn coalescing_preserves_reason_count_and_oldest_source_sequence() {
+        let space = SpaceId::from_suffix("coalesce").expect("space");
+        let mut router = EventRouter::new(BrokerEpoch::new(1), RouterLimits::new(8));
+        let mut first = event(
+            1,
+            EventScope::space(space.clone()),
+            EventKind::PageChanged,
+            "first",
+        );
+        first.dirty_reason = Some(agentyc_core::states::DirtyReason::DomMutation);
+        let mut second = event(
+            2,
+            EventScope::space(space),
+            EventKind::PageChanged,
+            "second",
+        );
+        second.dirty_reason = Some(agentyc_core::states::DirtyReason::Navigation);
+        router.ingest(first);
+        router.ingest(second);
+
+        let retained = router.retained();
+        assert_eq!(retained.len(), 1);
+        assert_eq!(
+            retained[0].dirty_reason,
+            Some(agentyc_core::states::DirtyReason::Navigation)
+        );
+        assert_eq!(
+            retained[0]
+                .metadata()
+                .and_then(|metadata| metadata.coalesced_count),
+            Some(2)
+        );
+        assert_eq!(
+            router.watermark().oldest_sequence,
+            Some(EventSequence::new(1))
+        );
+    }
+
+    #[test]
+    fn scoped_missing_attribution_fails_closed_until_reset() {
+        let space = SpaceId::from_suffix("missing").expect("space");
+        let mut router = EventRouter::new(BrokerEpoch::new(1), RouterLimits::new(8));
+        let mut missing = event(
+            1,
+            EventScope::space(space.clone()),
+            EventKind::PageChanged,
+            "missing",
+        );
+        missing.generation.metadata = None;
+        assert!(matches!(
+            router.ingest(missing),
+            RouterIngest::ResyncRequired {
+                reason: RouterResyncReason::MissingAttribution,
+                ..
+            }
+        ));
+        assert!(matches!(
+            router.ingest(event(
+                2,
+                EventScope::space(space.clone()),
+                EventKind::PageChanged,
+                "new"
+            )),
+            RouterIngest::ResyncRequired { .. }
+        ));
+        router.reset(EventCursor {
+            broker_epoch: BrokerEpoch::new(1),
+            sequence: EventSequence::new(0),
+        });
+        assert!(matches!(
+            router.ingest(event(
+                1,
+                EventScope::space(space),
+                EventKind::PageChanged,
+                "reset"
+            )),
+            RouterIngest::Accepted { .. }
+        ));
+    }
+
+    #[test]
+    fn sequence_overflow_and_invalid_batch_cursor_require_resync() {
+        let max = u64::MAX;
+        let mut overflow = EventRouter::new_at(
+            EventCursor {
+                broker_epoch: BrokerEpoch::new(1),
+                sequence: EventSequence::new(max),
+            },
+            RouterLimits::new(8),
+        );
+        assert!(matches!(
+            overflow.ingest(event(
+                max,
+                EventScope {
+                    space_id: None,
+                    page_id: None,
+                },
+                EventKind::ConnectionChanged,
+                "overflow"
+            )),
+            RouterIngest::ResyncRequired {
+                reason: RouterResyncReason::SequenceOverflow,
+                ..
+            }
+        ));
+
+        let mut batch_router = EventRouter::empty();
+        let result = batch_router
+            .ingest_batch(EventBatch {
+                broker_epoch: BrokerEpoch::new(1),
+                result: ResumeResult::Accepted,
+                events: vec![event(
+                    2,
+                    EventScope {
+                        space_id: None,
+                        page_id: None,
+                    },
+                    EventKind::ConnectionChanged,
+                    "two",
+                )],
+                cursor: EventCursor {
+                    broker_epoch: BrokerEpoch::new(1),
+                    sequence: EventSequence::new(1),
+                },
+            })
+            .expect("batch ingestion");
+        assert!(matches!(
+            result,
+            RouterIngest::ResyncRequired {
+                reason: RouterResyncReason::InvalidBatchCursor,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn replay_is_broadcast_and_does_not_consume_another_subscriber() {
+        let mut router = EventRouter::empty();
+        let scope = EventScope {
+            space_id: None,
+            page_id: None,
+        };
+        router.ingest(event(1, scope.clone(), EventKind::ConnectionChanged, "one"));
+        router.ingest(event(2, scope, EventKind::ConnectionChanged, "two"));
+        let cursor = EventCursor {
+            broker_epoch: BrokerEpoch::new(1),
+            sequence: EventSequence::new(0),
+        };
+        let first = router.replay(cursor, None);
+        let second = router.replay(cursor, None);
+        assert_eq!(first.events, second.events);
+        assert_eq!(first.events.len(), 2);
     }
 
     #[test]
