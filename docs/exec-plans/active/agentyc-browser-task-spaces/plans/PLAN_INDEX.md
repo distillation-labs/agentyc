@@ -4,17 +4,17 @@ This file is the machine-readable-by-convention registry for the plan. Only the 
 
 ## Phase order and activation
 
-| Phase | Canonical file                      | Depends on | Status  | Entry condition                                                                                                     |
-| ----: | ----------------------------------- | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------- |
-|     0 | `phase-0-discovery.md`              | none       | active  | implementation slices exist; existing-profile live evidence and Phase 0 exit gate remain open                       |
-|     1 | `phase-1-architecture.md`           | 0          | pending | Phase 0 exit gate checked and baseline artifacts exist                                                              |
-|     2 | `phase-2-contracts.md`              | 1          | pending | Phase 1 exit gate checked; architecture/security artifacts exist                                                    |
-|     3 | `phase-3-core-implementation.md`    | 2          | pending | Phase 2 schemas/fixtures pass                                                                                       |
-|     4 | `phase-4-extension.md`              | 3          | pending | Phase 3 host/bridge/ledger gate passes and U3-1 is closed                                                           |
-|     5 | `phase-5-context-and-automation.md` | 4          | pending | Phase 4 real-Chrome bridge gate passes                                                                              |
-|     6 | `phase-6-direct-cli-sdk.md`         | 5          | pending | Phase 5 context/action gate passes                                                                                  |
-|     7 | `phase-7-direct-rollout.md`         | 6          | pending | Phase 6 direct interface gate passes                                                                                |
-|     8 | `phase-8-mcp-compatibility.md`      | 7          | pending | Direct rollout is explicitly released or blocked with a documented reason; existing MCP remains separately runnable |
+| Phase | Canonical file                      | Depends on | Status   | Entry condition                                                                                                     |
+| ----: | ----------------------------------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+|     0 | `phase-0-discovery.md`              | none       | complete | bounded Phase 0 checker and headed existing-Chrome evidence passed; later-phase residuals are explicit              |
+|     1 | `phase-1-architecture.md`           | 0          | active   | Phase 0 exit gate passed; architecture work may begin from the recorded browser/host boundary                       |
+|     2 | `phase-2-contracts.md`              | 1          | pending  | Phase 1 exit gate checked; architecture/security artifacts exist                                                    |
+|     3 | `phase-3-core-implementation.md`    | 2          | pending  | Phase 2 schemas/fixtures pass                                                                                       |
+|     4 | `phase-4-extension.md`              | 3          | pending  | Phase 3 host/bridge/ledger gate passes and U3-1 is closed                                                           |
+|     5 | `phase-5-context-and-automation.md` | 4          | pending  | Phase 4 real-Chrome bridge gate passes                                                                              |
+|     6 | `phase-6-direct-cli-sdk.md`         | 5          | pending  | Phase 5 context/action gate passes                                                                                  |
+|     7 | `phase-7-direct-rollout.md`         | 6          | pending  | Phase 6 direct interface gate passes                                                                                |
+|     8 | `phase-8-mcp-compatibility.md`      | 7          | pending  | Direct rollout is explicitly released or blocked with a documented reason; existing MCP remains separately runnable |
 
 Allowed status transitions are `pending -> active -> complete` or `pending -> active -> blocked`. Exactly one phase may be `active`. A phase is marked `complete` only after its exit gate and required artifacts pass; a blocked phase names an owner, impact, and next action. The README status and this registry must be updated in the same change.
 
