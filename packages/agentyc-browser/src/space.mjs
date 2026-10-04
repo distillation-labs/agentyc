@@ -4,6 +4,7 @@ import {
   invalidArgument,
   normalizeLeaseTtl,
   normalizeNow,
+  requireLeaseEpoch,
   transportOptions,
 } from "./constants.mjs";
 
@@ -44,11 +45,12 @@ export class TaskSpace {
   }
 
   async newPage(label, options = {}) {
+    const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
     const result = await this.client.request(
       "page.create",
       {
         space_id: this.id,
-        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        lease_epoch: leaseEpoch,
         label,
         now: normalizeNow(options.now),
       },
@@ -58,11 +60,12 @@ export class TaskSpace {
   }
 
   async newManagedPage(label, options = {}) {
+    const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
     const result = await this.client.request(
       "page.create_managed",
       {
         space_id: this.id,
-        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        lease_epoch: leaseEpoch,
         label,
         url: options.url,
         title: options.title,
@@ -114,11 +117,12 @@ export class TaskSpace {
   }
 
   async renew(options = {}) {
+    const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
     const result = await this.client.request(
       "space.renew",
       {
         space_id: this.id,
-        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        lease_epoch: leaseEpoch,
         ttl: normalizeLeaseTtl(options.ttl),
         now: normalizeNow(options.now),
       },
@@ -162,39 +166,48 @@ export class TaskSpace {
   }
 
   async returnControl(options = {}) {
-    return this.client.request(
+    const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
+    const result = await this.client.request(
       "space.return",
       {
         space_id: this.id,
-        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        lease_epoch: leaseEpoch,
         now: normalizeNow(options.now),
       },
       transportOptions(options),
     );
+    this.leaseEpoch = undefined;
+    return result;
   }
 
   async finish(options = {}) {
-    return this.client.request(
+    const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
+    const result = await this.client.request(
       "space.finish",
       {
         space_id: this.id,
-        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        lease_epoch: leaseEpoch,
         now: normalizeNow(options.now),
       },
       transportOptions(options),
     );
+    this.leaseEpoch = undefined;
+    return result;
   }
 
   async release(options = {}) {
-    return this.client.request(
+    const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
+    const result = await this.client.request(
       "space.release",
       {
         space_id: this.id,
-        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        lease_epoch: leaseEpoch,
         now: normalizeNow(options.now),
       },
       transportOptions(options),
     );
+    this.leaseEpoch = undefined;
+    return result;
   }
 
   async actionStatus(actionId, options = {}) {
