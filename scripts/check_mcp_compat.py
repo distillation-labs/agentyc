@@ -167,6 +167,7 @@ def inspect_repository(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     evidence_paths = {
         "package": root / "crates/agentyc-mcp/Cargo.toml",
         "tools": root / "crates/agentyc-mcp/src/lib.rs",
+        "legacy_tools": root / "crates/agentyc-mcp/src/legacy.rs",
         "compatibility_docs": root / "docs/mcp-compatibility.md",
         "phase_plan": root / "docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-8-mcp-compatibility.md",
         "catalog": root / "tests/fixtures/mcp/tool_catalog.json",
@@ -246,8 +247,11 @@ def inspect_repository(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     all_tools: list[str] = []
     extended_tools: list[str] = []
     catalog: dict[str, Any] = {}
-    if "tools" in loaded:
-        all_tools, extended_tools = _tool_declarations(loaded["tools"])
+    declaration_source = "\n".join(
+        loaded[key] for key in ("tools", "legacy_tools") if key in loaded
+    )
+    if declaration_source:
+        all_tools, extended_tools = _tool_declarations(declaration_source)
     try:
         catalog = json.loads(loaded["catalog"])
         catalog_tools = catalog.get("tools")
