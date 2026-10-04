@@ -2,7 +2,10 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -28,7 +31,9 @@ use crate::{
     },
     error::HostError,
     events::{EventBatch, EventQuery},
-    leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult},
+    leases::{
+        AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult, UserIntentTicket,
+    },
     ledger::{
         ActiveConnection, ControlTicketRecord, FencePurpose, Ledger, LedgerLimits, LedgerState,
         PendingFenceRecord, TakeoverProofRecord, canonical_action_hash as ledger_action_hash,
@@ -36,6 +41,9 @@ use crate::{
     },
     snapshots::{PageGeneration, SnapshotCacheRecord, SnapshotMetadataRead, SnapshotRead},
 };
+
+static USER_INTENT_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const MAX_USER_INTENT_TICKET_TTL_MS: u64 = 60_000;
 
 /// Lifecycle of the host broker itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +109,7 @@ struct BrokerInner {
     ledger: Ledger,
     bridge: Arc<dyn Bridge>,
     lifecycle: HostLifecycle,
+    user_intent_tickets: BTreeMap<ReconcileToken, UserIntentTicket>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +151,7 @@ impl Broker {
                 ledger,
                 bridge: Arc::new(bridge),
                 lifecycle: HostLifecycle::Ready,
+                user_intent_tickets: BTreeMap::new(),
             })),
         }
     }
@@ -153,6 +163,7 @@ impl Broker {
                 ledger,
                 bridge,
                 lifecycle: HostLifecycle::Ready,
+                user_intent_tickets: BTreeMap::new(),
             })),
         }
     }
@@ -2556,12 +2567,98 @@ impl Broker {
         })
     }
 
+    /// Issue a one-use confirmation for a sensitive action after an explicit
+    /// user confirmation in a trusted host-owned UI.
+    ///
+    /// The ticket is bound to the request's canonical hash, logical space,
+    /// lease epoch, and expiry. Adapters must not expose this issuance path to
+    /// an untrusted agent caller.
+    pub(crate) fn confirm_user_intent(
+        &self,
+        request: &ActionRequest<BTreeMap<String, String>>,
+        authority: &AuthorityTicket,
+        now: Timestamp,
+        ttl: u64,
+    ) -> Result<UserIntentTicket, HostError> {
+        if !is_sensitive_action(request.operation) {
+            return Err(CoreError::invalid_argument(
+                "user-intent tickets are only issued for sensitive actions",
+            )
+            .into());
+        }
+        if ttl == 0 || ttl > MAX_USER_INTENT_TICKET_TTL_MS {
+            return Err(CoreError::invalid_argument(
+                "user-intent ticket ttl must be between 1 and 60000 ms",
+            )
+            .into());
+        }
+        let expires_at = now
+            .get()
+            .checked_add(ttl)
+            .map(Timestamp::new)
+            .ok_or_else(|| CoreError::invalid_argument("user-intent ticket expiry overflow"))?;
+        let action_hash = ledger_action_hash(request).map_err(HostError::Ledger)?;
+        if request.request_hash != action_hash {
+            return Err(CoreError::invalid_argument(
+                "request hash does not match the complete canonical request context",
+            )
+            .into());
+        }
+        self.with_inner(|inner| {
+            ensure_ready(inner)?;
+            authorize_space(
+                inner.ledger.state(),
+                &request.space_id,
+                authority,
+                request.lease_epoch,
+                now,
+                true,
+            )?;
+            inner
+                .user_intent_tickets
+                .retain(|_, ticket| ticket.expires_at().get() > now.get());
+            let number = USER_INTENT_TICKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let token = ReconcileToken::from_suffix(format!("intent-{}-{number}", now.get()))
+                .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
+            let ticket = UserIntentTicket::host_issued(
+                token.clone(),
+                request.space_id.clone(),
+                request.lease_epoch,
+                action_hash,
+                expires_at,
+            );
+            inner.user_intent_tickets.insert(token, ticket.clone());
+            Ok(ticket)
+        })
+    }
+
     /// Admit a durable action after checking principal, space, page, epoch, and idempotency.
     pub fn enqueue_action(
         &self,
         request: ActionRequest<BTreeMap<String, String>>,
         authority: &AuthorityTicket,
         now: Timestamp,
+    ) -> Result<ActionReceipt, HostError> {
+        self.enqueue_action_inner(request, authority, now, None)
+    }
+
+    /// Admit a sensitive action using its host-issued, one-use user confirmation.
+    pub(crate) fn enqueue_action_with_user_intent(
+        &self,
+        request: ActionRequest<BTreeMap<String, String>>,
+        authority: &AuthorityTicket,
+        now: Timestamp,
+        ticket: &UserIntentTicket,
+    ) -> Result<ActionReceipt, HostError> {
+        self.enqueue_action_inner(request, authority, now, Some(ticket))
+    }
+
+    fn enqueue_action_inner(
+        &self,
+        request: ActionRequest<BTreeMap<String, String>>,
+        authority: &AuthorityTicket,
+        now: Timestamp,
+        intent_ticket: Option<&UserIntentTicket>,
     ) -> Result<ActionReceipt, HostError> {
         validate_public_payload(&request.payload)?;
         validate_action_payload_contract(request.operation, &request.payload)
@@ -2574,6 +2671,31 @@ impl Broker {
             .into());
         }
         self.with_inner(|inner| {
+            if is_sensitive_action(request.operation) {
+                let ticket = intent_ticket.ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "sensitive action requires a host-issued user-intent ticket",
+                    )
+                })?;
+                if ticket.expires_at().get() <= now.get()
+                    || ticket.space_id() != &request.space_id
+                    || ticket.lease_epoch() != request.lease_epoch
+                    || ticket.action_hash() != &request.request_hash
+                    || inner.user_intent_tickets.get(ticket.token()) != Some(ticket)
+                {
+                    return Err(CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "user-intent ticket is expired, consumed, or does not match this action",
+                    )
+                    .into());
+                }
+            } else if intent_ticket.is_some() {
+                return Err(CoreError::invalid_argument(
+                    "user-intent ticket cannot authorize a nonsensitive action",
+                )
+                .into());
+            }
             if inner.lifecycle != HostLifecycle::Ready {
                 return Err(CoreError::new(
                     ErrorCode::HostDraining,
@@ -2583,7 +2705,7 @@ impl Broker {
             }
             require_operation_capabilities(&*inner.bridge, request.operation)?;
             let max_queued_actions = inner.ledger.limits().max_queued_actions_per_space;
-            inner.ledger.update(|state| {
+            let receipt = inner.ledger.update(|state| {
                 authorize_space(
                     state,
                     &request.space_id,
@@ -2682,7 +2804,11 @@ impl Broker {
                     false,
                 )?;
                 Ok(receipt)
-            })
+            })?;
+            if let Some(ticket) = intent_ticket {
+                inner.user_intent_tickets.remove(ticket.token());
+            }
+            Ok(receipt)
         })
     }
 
@@ -4369,6 +4495,16 @@ fn is_mutating(operation: ActionOperation) -> bool {
     )
 }
 
+fn is_sensitive_action(operation: ActionOperation) -> bool {
+    matches!(
+        operation,
+        ActionOperation::Evaluate
+            | ActionOperation::CookieWrite
+            | ActionOperation::StorageWrite
+            | ActionOperation::Upload
+    )
+}
+
 fn status_name(status: ActionStatus) -> String {
     format!("{status:?}").to_ascii_lowercase()
 }
@@ -4377,7 +4513,7 @@ fn status_name(status: ActionStatus) -> String {
 mod tests {
     use super::*;
     use crate::bridge::FakeBridge;
-    use agentyc_core::{ClientId, ClientMetadata, ConnectionNonce};
+    use agentyc_core::{ClientId, ClientMetadata, ConnectionNonce, IdempotencyKey, RequestId};
     use tempfile::tempdir;
 
     fn principal(suffix: &str) -> PrincipalId {
@@ -4546,6 +4682,122 @@ mod tests {
             updated_page.target_generation.get(),
             bound.target_generation.get() + 1
         );
+    }
+
+    #[test]
+    fn user_intent_ticket_is_bound_expiring_and_single_use() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let owner = admit_authority(&broker, "intent-owner");
+        let space = broker.create_space(&owner, "intent").expect("space");
+        let lease = broker
+            .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+            .expect("lease");
+        let request = sensitive_request(
+            "intent-once",
+            space.space_id.clone(),
+            lease.lease.lease_epoch,
+        );
+
+        assert!(matches!(
+            broker.enqueue_action(request.clone(), &owner, Timestamp::new(1)),
+            Err(HostError::Core(CoreError {
+                code: ErrorCode::PermissionDenied,
+                ..
+            }))
+        ));
+
+        let ticket = broker
+            .confirm_user_intent(&request, &owner, Timestamp::new(1), 10)
+            .expect("confirmation ticket");
+        assert!(!format!("{ticket:?}").contains(ticket.token().as_str()));
+        let mut other_request = request.clone();
+        other_request
+            .payload
+            .insert("value".to_owned(), "changed".to_owned());
+        other_request.request_hash = ledger_action_hash(&other_request).expect("new hash");
+        assert!(matches!(
+            broker.enqueue_action_with_user_intent(
+                other_request,
+                &owner,
+                Timestamp::new(2),
+                &ticket,
+            ),
+            Err(HostError::Core(CoreError {
+                code: ErrorCode::PermissionDenied,
+                ..
+            }))
+        ));
+
+        broker
+            .enqueue_action_with_user_intent(request.clone(), &owner, Timestamp::new(2), &ticket)
+            .expect("admit confirmed action");
+        assert!(matches!(
+            broker.enqueue_action_with_user_intent(
+                request.clone(),
+                &owner,
+                Timestamp::new(2),
+                &ticket,
+            ),
+            Err(HostError::Core(CoreError {
+                code: ErrorCode::PermissionDenied,
+                ..
+            }))
+        ));
+
+        let expiring = broker
+            .confirm_user_intent(
+                &sensitive_request("intent-expired", space.space_id, lease.lease.lease_epoch),
+                &owner,
+                Timestamp::new(3),
+                1,
+            )
+            .expect("expiring ticket");
+        let expired_request = sensitive_request(
+            "intent-expired",
+            expiring.space_id().clone(),
+            expiring.lease_epoch(),
+        );
+        assert!(matches!(
+            broker.enqueue_action_with_user_intent(
+                expired_request,
+                &owner,
+                Timestamp::new(4),
+                &expiring,
+            ),
+            Err(HostError::Core(CoreError {
+                code: ErrorCode::PermissionDenied,
+                ..
+            }))
+        ));
+    }
+
+    fn sensitive_request(
+        suffix: &str,
+        space_id: SpaceId,
+        lease_epoch: LeaseEpoch,
+    ) -> ActionRequest<BTreeMap<String, String>> {
+        let mut request = ActionRequest {
+            request_id: RequestId::from_suffix(format!("request-{suffix}")).expect("request id"),
+            action_id: ActionId::from_suffix(format!("action-{suffix}")).expect("action id"),
+            idempotency_key: IdempotencyKey::from_suffix(format!("key-{suffix}"))
+                .expect("idempotency key"),
+            request_hash: agentyc_core::ContentHash::from_bytes(b"placeholder"),
+            space_id,
+            page_id: None,
+            lease_epoch,
+            operation: ActionOperation::Evaluate,
+            payload: BTreeMap::from([
+                ("approval".to_owned(), "approved".to_owned()),
+                (
+                    "user_intent".to_owned(),
+                    "execute reviewed operation".to_owned(),
+                ),
+            ]),
+            postcondition: None,
+        };
+        request.request_hash = ledger_action_hash(&request).expect("canonical request hash");
+        request
     }
 
     #[test]
