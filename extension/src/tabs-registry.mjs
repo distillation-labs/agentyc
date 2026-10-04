@@ -532,6 +532,141 @@ export class TabsRegistry {
     return this.publicRecord(record);
   }
 
+  /** Rebind one retained inactive tab after an acknowledged lease fence. */
+  async rebindManagedTab({
+    spaceId,
+    pageId,
+    leaseEpoch,
+    targetGeneration,
+    navigationGeneration,
+    documentGeneration,
+    ownershipProof,
+  } = {}) {
+    assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
+    if (!Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1)
+      throw new ProtocolError(
+        "stale_lease",
+        "managed tab rebind requires a lease epoch",
+      );
+    for (const [value, name] of [
+      [targetGeneration, "target_generation"],
+      [navigationGeneration, "navigation_generation"],
+      [documentGeneration, "document_generation"],
+    ]) {
+      if (!Number.isSafeInteger(value) || value < 1)
+        throw new ProtocolError("stale_generation", `${name} is invalid`);
+    }
+    const proof = logicalProof(ownershipProof, {
+      spaceId,
+      pageId,
+      leaseEpoch,
+      kind: "rebind",
+      purpose: "rebind",
+      requireExpiry: true,
+      targetGeneration,
+      profileInstanceId: this.profileInstanceId,
+      browserSessionEpoch: this.browserSessionEpoch,
+      requireProfileInstanceId: true,
+      requireBrowserSessionEpoch: true,
+      now: this.now(),
+    });
+    if (proof.rebind !== true)
+      throw new ProtocolError(
+        "permission_denied",
+        "rebind proof does not authorize a retained page rebind",
+      );
+
+    const record = this.byPage.get(pageId);
+    if (!record || record.spaceId !== spaceId)
+      throw new ProtocolError("page_not_found", "logical page is not bound");
+    if (
+      record.ownership === "agent" &&
+      record.lifecycle === "managed" &&
+      record.bindingState === "bound" &&
+      record.leaseEpoch === leaseEpoch &&
+      record.targetGeneration === targetGeneration &&
+      record.navigationGeneration === navigationGeneration &&
+      record.documentGeneration === documentGeneration
+    ) {
+      return this.publicRecord(record);
+    }
+    if (
+      record.ownership !== "agent" ||
+      record.lifecycle !== "managed" ||
+      record.bindingState !== "user_owned"
+    )
+      throw new ProtocolError(
+        "user_control_required",
+        "retained page is not awaiting an explicit lease rebind",
+      );
+    if (record.active === true)
+      throw new ProtocolError(
+        "user_control_required",
+        "active retained page remains under user control",
+      );
+    if (record.incognito === true)
+      throw new ProtocolError(
+        "incognito_not_supported",
+        "incognito pages are not enrolled",
+      );
+    if (typeof this.chrome?.tabs?.get !== "function")
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Chrome tabs.get is unavailable for rebind verification",
+      );
+
+    let liveTab;
+    try {
+      liveTab = await chromeCall(
+        this.chrome.tabs.get.bind(this.chrome.tabs),
+        record.rawTabId,
+      );
+    } catch (error) {
+      throw new ProtocolError(
+        "stale_target",
+        "retained page is no longer live",
+        {
+          cause: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+    if (
+      !liveTab ||
+      liveTab.id !== record.rawTabId ||
+      liveTab.active === true ||
+      Boolean(liveTab.incognito) !== Boolean(record.incognito) ||
+      (record.url !== undefined &&
+        liveTab.url !== undefined &&
+        safeText(liveTab.url, 4096) !== record.url)
+    )
+      throw new ProtocolError(
+        liveTab?.active === true ? "user_control_required" : "stale_target",
+        "retained page identity or user-control state changed",
+      );
+
+    this.assertFence({ spaceId, leaseEpoch });
+    const rebound = this.bindManagedTab({
+      tab: liveTab,
+      spaceId,
+      pageId,
+      leaseEpoch,
+      ownershipProof: proof,
+      targetGeneration,
+      navigationGeneration,
+      documentGeneration,
+      url: liveTab.url,
+      title: liveTab.title,
+    });
+    await this.groups
+      ?.presentSpace({
+        spaceId,
+        tabId: liveTab.id,
+        title: liveTab.title || "agentyc",
+      })
+      .catch(() => {});
+    return rebound;
+  }
+
   async rollbackCreatedTab(tab, originalError) {
     if (!tab || !Number.isInteger(tab.id)) return;
     this.hostCreatedTabIds.delete(tab.id);
@@ -1061,6 +1196,20 @@ export class TabsRegistry {
         return record;
     }
     return undefined;
+  }
+
+  /** Find one inactive unbound tab by exact persisted page metadata. */
+  findRehydrateCandidate({ url, title } = {}) {
+    if (typeof url !== "string" || url.length === 0) return undefined;
+    const candidates = [...this.byRawTab.values()].filter(
+      (record) =>
+        record.ownership === "unmanaged" &&
+        record.bindingState === "unbound" &&
+        record.active !== true &&
+        record.incognito !== true &&
+        record.url === url,
+    );
+    return candidates.length === 1 ? candidates[0] : undefined;
   }
 
   getInternalByTab(tabId) {
