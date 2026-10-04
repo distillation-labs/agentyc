@@ -1,0 +1,577 @@
+{
+  "schema_version": 1,
+  "kind": "mcp-tool-manifest",
+  "profile": "default",
+  "status": "contract-only",
+  "sanitized": true,
+  "live_claims": false,
+  "rmcp": {
+    "version": "1.7",
+    "accepted_protocol": "2024-11-05",
+    "not_claimed_protocols": [
+      "2025-11-25",
+      "2026-07-28"
+    ]
+  },
+  "transports": [
+    "stdio",
+    "http"
+  ],
+  "tool_count": 61,
+  "tools": [
+    {
+      "name": "browser_navigate",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_go_back",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_go_forward",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_refresh",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait_for_url",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait_for_network_idle",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait_for_request",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait_for_response",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait_for_stable_dom",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_state",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_html",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_screenshot",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_save_as_pdf",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_viewport",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_evaluate",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_click",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_right_click",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_double_click",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_hover",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_drag_to",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_type",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_fill_form",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_press_key",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_scroll",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_scroll_to_text",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_select_option",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_upload_file",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_handle_dialog",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_extract_content",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_find_elements",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_search_page",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait_for_element",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_focused_element",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_dropdown_options",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_attribute",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_list_frames",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_frame_html",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_storage",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_storage",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_clear_storage",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_get_cookies",
+      "status": "partial",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_cookies",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_clear_cookies",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_new_tab",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_list_tabs",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_switch_tab",
+      "status": "supported",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_close_tab",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_wait_for_tab",
+      "status": "supported",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_list_sessions",
+      "status": "legacy-only",
+      "side_effect": "read",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_close_session",
+      "status": "legacy-only",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_close_all",
+      "status": "legacy-only",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_grant_permissions",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_geolocation",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_extra_headers",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_user_agent",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_timezone",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_set_locale",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_emulate_media",
+      "status": "partial",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_save_state",
+      "status": "legacy-only",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    },
+    {
+      "name": "browser_load_state",
+      "status": "legacy-only",
+      "side_effect": "mutation",
+      "authority": "legacy_mcp_adapter",
+      "deprecation": "deprecated_legacy_profile",
+      "mapping": "compatibility_adapter_only",
+      "profile": "default"
+    }
+  ],
+  "nonclaims": [
+    "This is a sanitized repository compatibility profile, not a live MCP or browser release.",
+    "rmcp 1.7 accepts only the recorded 2024-11-05 initialize era here.",
+    "Tool declaration is not evidence of headed Chrome, extension, or host integration."
+  ]
+}
