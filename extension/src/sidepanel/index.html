@@ -9,10 +9,16 @@
     <body>
         <header>
             <div>
-                <p class="eyebrow">agentyc</p>
                 <h1>Task spaces</h1>
             </div>
-            <span id="connection-status" class="status">Waiting for host</span>
+            <span
+                id="connection-status"
+                class="status"
+                role="status"
+                aria-live="polite"
+            >
+                Waiting for host
+            </span>
         </header>
         <main>
             <section class="create-card" aria-labelledby="create-title">
@@ -26,6 +32,7 @@
                     <input
                         id="profile-disclosure-acknowledged"
                         type="checkbox"
+                        aria-describedby="profile-disclosure"
                     />
                     I understand and accept the shared-profile behavior.
                 </label>
@@ -49,6 +56,43 @@
                 <ul id="notices" aria-live="polite"></ul>
             </section>
         </main>
+        <div
+            id="confirmation-dialog"
+            class="dialog-backdrop"
+            hidden
+            aria-hidden="true"
+        >
+            <section
+                id="confirmation-dialog-panel"
+                class="dialog"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="confirmation-title"
+                aria-describedby="confirmation-description confirmation-guidance"
+                tabindex="-1"
+            >
+                <h2 id="confirmation-title">Confirm action</h2>
+                <p id="confirmation-description">
+                    Review this action before it is sent.
+                </p>
+                <p id="confirmation-guidance" class="dialog-guidance">
+                    Nothing is sent until you choose Confirm. Choose Cancel or
+                    press Escape to keep the current state.
+                </p>
+                <div class="dialog-actions">
+                    <button id="confirmation-cancel" type="button">
+                        Cancel
+                    </button>
+                    <button
+                        id="confirmation-confirm"
+                        class="primary"
+                        type="button"
+                    >
+                        Confirm
+                    </button>
+                </div>
+            </section>
+        </div>
         <script type="module" src="app.mjs"></script>
     </body>
 </html>
