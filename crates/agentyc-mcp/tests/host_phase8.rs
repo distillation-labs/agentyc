@@ -5,7 +5,7 @@ use agentyc_host::{Broker, FakeBridge, Ledger, LocalHostServer, LocalSocketClien
 use agentyc_mcp::{HostBrowserServer, RemoteHostBrowserServer};
 use rmcp::ServiceExt;
 use serde_json::{Value, json};
-use tempfile::TempDir;
+use tempfile::{Builder, TempDir};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
     time::timeout,
@@ -50,7 +50,7 @@ impl WireClient {
             .request(
                 "initialize",
                 json!({
-                    "protocolVersion": "2025-11-25",
+                    "protocolVersion": "2024-11-05",
                     "capabilities": {},
                     "clientInfo": {"name": "phase8-test", "version": "1"}
                 }),
@@ -179,7 +179,10 @@ async fn host_server_returns_structured_unsupported_capability_error() {
 
 #[tokio::test]
 async fn remote_tool_requests_enforce_request_bounds_and_unsupported_methods() {
-    let directory = tempfile::tempdir().expect("tempdir");
+    let directory = Builder::new()
+        .prefix("a8-")
+        .tempdir_in("/tmp")
+        .expect("short tempdir");
     let broker = broker(&directory, Arc::new(FakeBridge::new()));
     let socket_path = directory.path().join("phase8.sock");
     let host = LocalHostServer::start(broker, &socket_path).expect("local host");
@@ -234,7 +237,16 @@ async fn remote_tool_requests_enforce_request_bounds_and_unsupported_methods() {
     );
 
     let response = client
-        .call("host_space_create", json!({"label": "within-bound"}))
+        .call(
+            "host_space_create",
+            json!({
+                "label": "within-bound",
+                "profile_scope": "shared_existing_profile",
+                "shared_state_notice": "shared_profile_state",
+                "isolation_claim": false,
+                "profile_disclosure_acknowledged": true
+            }),
+        )
         .await;
     assert_eq!(response["result"]["isError"], false);
     assert_eq!(
