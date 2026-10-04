@@ -124,6 +124,7 @@ const OBSERVATION_FIELDS: &[&str] = &[
     "active",
     "window_hint",
     "tab_hint",
+    "focus_hint",
 ];
 
 const OBSERVATION_GROUP_FIELDS: &[&str] = &[
@@ -461,7 +462,7 @@ fn sanitize_observation_field(field: &str, value: &Value) -> Result<Value, CoreE
             }
             Ok(text)
         }
-        "window_hint" | "tab_hint" => {
+        "window_hint" | "tab_hint" | "focus_hint" => {
             if value.is_null() {
                 return Ok(Value::Null);
             }
