@@ -138,7 +138,7 @@ Lease epoch is checked at enqueue, dequeue, and immediately before extension dis
 - [ ] Every ref/action/wait resolves current logical/generation identity immediately before use.
 - [ ] No missing-session/event path mutates the selected page.
 - [ ] No mutating operation silently succeeds after user takeover or disconnect.
-- [ ] Cleanups after stop/crash/update/uninstall/rollback retain pages unless an explicit fresh-proof confirmation operation is executing.
+- [ ] Cleanups after stop/crash/update/uninstall retain pages unless an explicit fresh-proof confirmation operation is executing.
 - [ ] Extension capability gaps return explicit typed results.
 
 ## Handoff out
