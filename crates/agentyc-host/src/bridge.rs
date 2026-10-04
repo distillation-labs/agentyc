@@ -614,6 +614,7 @@ pub trait Bridge: Send + Sync {
     }
 
     /// Rebind one retained browser page to a fresh fenced lease.
+    #[allow(clippy::too_many_arguments)]
     fn rebind_page(
         &self,
         _space_id: &SpaceId,
@@ -825,6 +826,7 @@ impl Bridge for BridgeRouter {
             .create_page(space_id, page_id, lease_epoch, url, title, ownership_proof)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rebind_page(
         &self,
         space_id: &SpaceId,
@@ -935,6 +937,7 @@ struct FakeState {
     dispatch_count: usize,
     reconcile_count: usize,
     snapshot_count: usize,
+    observe_count: usize,
     close_count: usize,
     closed_pages: Vec<(SpaceId, PageId)>,
 }
@@ -974,6 +977,7 @@ impl FakeBridge {
                 dispatch_count: 0,
                 reconcile_count: 0,
                 snapshot_count: 0,
+                observe_count: 0,
                 close_count: 0,
                 closed_pages: Vec::new(),
             }),
@@ -1065,6 +1069,14 @@ impl FakeBridge {
             .unwrap_or(0)
     }
 
+    /// Number of live inventory observations requested by the broker.
+    pub fn observe_count(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.observe_count)
+            .unwrap_or(0)
+    }
+
     /// Number of snapshot scans requested by the broker.
     pub fn snapshot_scan_count(&self) -> usize {
         self.state
@@ -1139,7 +1151,10 @@ impl Bridge for FakeBridge {
     fn observe(&self) -> Result<ObservationSnapshot, CoreError> {
         self.state
             .lock()
-            .map(|state| state.observation.clone())
+            .map(|mut state| {
+                state.observe_count = state.observe_count.saturating_add(1);
+                state.observation.clone()
+            })
             .map_err(|_| {
                 CoreError::new(
                     ErrorCode::ExtensionNotConnected,
