@@ -6,7 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::CoreError,
-    ids::{BrokerEpoch, EventId, EventSequence, Generation, PageId, SnapshotVersion, SpaceId},
+    ids::{
+        BrokerEpoch, BrowserSessionEpoch, ConnectionEpoch, DocumentId, EventId, EventSequence,
+        FrameId, Generation, NavigationId, PageId, ProfileBindingId, SnapshotVersion, SpaceId,
+        WorkerInstanceEpoch,
+    },
     states::DirtyReason,
 };
 
@@ -35,6 +39,206 @@ pub enum EventKind {
     /// The connection or bridge lifecycle changed.
     #[serde(rename = "connection.changed")]
     ConnectionChanged,
+    /// A bounded liveness signal from an event source.
+    #[serde(rename = "heartbeat")]
+    Heartbeat,
+}
+
+/// Internal source that attributed an admitted event.
+///
+/// This is deliberately limited to logical sources. Raw browser target,
+/// session, tab, and debugger identifiers never belong in an event record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventSource {
+    /// The host broker emitted the event from durable state.
+    #[default]
+    Broker,
+    /// The browser extension bridge emitted the observation.
+    Bridge,
+    /// An authenticated local client requested the event.
+    Client,
+}
+
+/// Typed internal attribution for an event source.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventAttribution {
+    /// Logical source of the event.
+    pub source: EventSource,
+    /// Host connection epoch, when the source crossed a live connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_epoch: Option<ConnectionEpoch>,
+    /// Logical profile binding associated with the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_binding_id: Option<ProfileBindingId>,
+    /// Browser/profile session epoch observed by the extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_session_epoch: Option<BrowserSessionEpoch>,
+    /// Extension worker instance epoch observed by the bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_instance_epoch: Option<WorkerInstanceEpoch>,
+    /// Logical frame associated with the event, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<FrameId>,
+    /// Logical document associated with the event, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<DocumentId>,
+    /// Logical navigation associated with the event, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigation_id: Option<NavigationId>,
+}
+
+impl EventAttribution {
+    /// Construct attribution for a host-generated event.
+    pub const fn broker() -> Self {
+        Self {
+            source: EventSource::Broker,
+            connection_epoch: None,
+            profile_binding_id: None,
+            browser_session_epoch: None,
+            worker_instance_epoch: None,
+            frame_id: None,
+            document_id: None,
+            navigation_id: None,
+        }
+    }
+
+    /// Construct attribution for an authenticated client event.
+    pub fn client(
+        connection_epoch: ConnectionEpoch,
+        profile_binding_id: Option<ProfileBindingId>,
+    ) -> Self {
+        Self {
+            source: EventSource::Client,
+            connection_epoch: Some(connection_epoch),
+            profile_binding_id,
+            ..Self::broker()
+        }
+    }
+
+    /// Construct attribution for an extension bridge event.
+    pub fn bridge(
+        connection_epoch: ConnectionEpoch,
+        profile_binding_id: Option<ProfileBindingId>,
+        browser_session_epoch: Option<BrowserSessionEpoch>,
+        worker_instance_epoch: Option<WorkerInstanceEpoch>,
+    ) -> Self {
+        Self {
+            source: EventSource::Bridge,
+            connection_epoch: Some(connection_epoch),
+            profile_binding_id,
+            browser_session_epoch,
+            worker_instance_epoch,
+            ..Self::broker()
+        }
+    }
+
+    /// Validate attribution against the event's logical scope.
+    pub fn validate_for_scope(&self, scope: &EventScope) -> Result<(), CoreError> {
+        if self.connection_epoch.is_some_and(|epoch| epoch.get() == 0)
+            || self
+                .browser_session_epoch
+                .is_some_and(|epoch| epoch.get() == 0)
+            || self
+                .worker_instance_epoch
+                .is_some_and(|epoch| epoch.get() == 0)
+        {
+            return Err(CoreError::invalid_argument(
+                "event attribution contains a zero epoch",
+            ));
+        }
+        if matches!(self.source, EventSource::Bridge | EventSource::Client)
+            && self.connection_epoch.is_none()
+        {
+            return Err(CoreError::invalid_argument(
+                "connected event attribution requires a connection epoch",
+            ));
+        }
+        if (self.frame_id.is_some() || self.document_id.is_some() || self.navigation_id.is_some())
+            && scope.page_id.is_none()
+        {
+            return Err(CoreError::invalid_argument(
+                "frame, document, and navigation attribution requires a page scope",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Typed liveness metadata for a heartbeat event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventHeartbeat {
+    /// Source that emitted the heartbeat.
+    pub source: EventSource,
+}
+
+/// Optional internal metadata carried by an event generation watermark.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventMetadata {
+    /// Typed source attribution.
+    pub attribution: EventAttribution,
+    /// Heartbeat marker, present only for [`EventKind::Heartbeat`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<EventHeartbeat>,
+    /// Number of source events represented by a coalesced event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coalesced_count: Option<u16>,
+}
+
+impl EventMetadata {
+    /// Maximum number of source events represented by one retained record.
+    pub const MAX_COALESCED_COUNT: u16 = 1_024;
+
+    /// Construct metadata appropriate for an event kind.
+    pub fn for_event(event: EventKind, attribution: EventAttribution) -> Self {
+        let heartbeat = matches!(event, EventKind::Heartbeat).then_some(EventHeartbeat {
+            source: attribution.source,
+        });
+        Self {
+            attribution,
+            heartbeat,
+            coalesced_count: None,
+        }
+    }
+
+    /// Validate metadata against the event kind, scope, and coalescing marker.
+    pub fn validate(
+        &self,
+        event: EventKind,
+        scope: &EventScope,
+        coalesced: bool,
+    ) -> Result<(), CoreError> {
+        self.attribution.validate_for_scope(scope)?;
+        if self
+            .coalesced_count
+            .is_some_and(|count| !(2..=Self::MAX_COALESCED_COUNT).contains(&count))
+        {
+            return Err(CoreError::invalid_argument(
+                "event coalesced count is outside its bound",
+            ));
+        }
+        if self.coalesced_count.is_some() && !coalesced {
+            return Err(CoreError::invalid_argument(
+                "event coalesced count requires a coalesced event",
+            ));
+        }
+        match (event, self.heartbeat) {
+            (EventKind::Heartbeat, Some(heartbeat))
+                if heartbeat.source == self.attribution.source => {}
+            (EventKind::Heartbeat, _) => {
+                return Err(CoreError::invalid_argument(
+                    "heartbeat events require matching heartbeat metadata",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(CoreError::invalid_argument(
+                    "heartbeat metadata is only valid for heartbeat events",
+                ));
+            }
+            (_, None) => {}
+        }
+        Ok(())
+    }
 }
 
 /// Logical scope used for event filtering.
@@ -103,6 +307,9 @@ pub struct GenerationWatermark {
     pub document_generation: Generation,
     /// Snapshot version, when the event has snapshot provenance.
     pub snapshot_version: Option<SnapshotVersion>,
+    /// Internal attribution and bounded event metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<EventMetadata>,
 }
 
 /// One event in the broker's monotonically sequenced stream.
@@ -146,6 +353,59 @@ impl<P> EventRecord<P> {
     /// Return whether this event requires a resynchronization read.
     pub const fn requires_resync(&self) -> bool {
         self.resync_required
+    }
+
+    /// Return the internal metadata, when the event carries it.
+    pub fn metadata(&self) -> Option<&EventMetadata> {
+        self.generation.metadata.as_ref()
+    }
+
+    /// Return the internal attribution, when the event carries it.
+    pub fn attribution(&self) -> Option<&EventAttribution> {
+        self.metadata().map(|metadata| &metadata.attribution)
+    }
+
+    /// Return whether this record is a typed heartbeat.
+    pub const fn is_heartbeat(&self) -> bool {
+        matches!(self.event, EventKind::Heartbeat)
+    }
+
+    /// Return whether routing requires internal attribution for this record.
+    pub const fn requires_attribution(&self) -> bool {
+        self.scope.space_id.is_some() || self.scope.page_id.is_some() || self.is_heartbeat()
+    }
+
+    /// Validate an event produced by a broker admission path.
+    pub fn validate_admission(&self) -> Result<(), CoreError> {
+        self.validate_routing()?;
+        if self.metadata().is_none() {
+            return Err(CoreError::invalid_argument(
+                "admitted event is missing internal attribution",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate an event before consumer-side routing.
+    pub fn validate_routing(&self) -> Result<(), CoreError> {
+        self.validate_scope()?;
+        if self.protocol != crate::protocol::PROTOCOL_VERSION {
+            return Err(CoreError::invalid_argument(
+                "event protocol version is unsupported",
+            ));
+        }
+        if self.broker_epoch.get() == 0 || self.sequence.get() == 0 {
+            return Err(CoreError::invalid_argument(
+                "event epoch and sequence must be positive",
+            ));
+        }
+        match self.metadata() {
+            Some(metadata) => metadata.validate(self.event, &self.scope, self.coalesced),
+            None if self.requires_attribution() => Err(CoreError::invalid_argument(
+                "scoped event is missing internal attribution",
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -215,5 +475,55 @@ mod tests {
         };
         assert!(record.is_after(EventSequence::new(1)));
         assert!(!record.is_after(EventSequence::new(2)));
+    }
+
+    #[test]
+    fn heartbeat_metadata_is_typed_and_backward_serializable() {
+        let record = EventRecord {
+            protocol: crate::protocol::PROTOCOL_VERSION,
+            event_id: EventId::from_suffix("heartbeat").expect("valid event"),
+            broker_epoch: BrokerEpoch::new(1),
+            sequence: EventSequence::new(1),
+            scope: EventScope {
+                space_id: None,
+                page_id: None,
+            },
+            event: EventKind::Heartbeat,
+            generation: GenerationWatermark {
+                metadata: Some(EventMetadata::for_event(
+                    EventKind::Heartbeat,
+                    EventAttribution::broker(),
+                )),
+                ..GenerationWatermark::default()
+            },
+            dirty_reason: None,
+            coalesced: false,
+            resync_required: false,
+            payload: BTreeMap::<String, String>::new(),
+        };
+        record.validate_admission().expect("typed heartbeat");
+        assert!(record.is_heartbeat());
+        let encoded = serde_json::to_value(&record).expect("serialize event");
+        let decoded: EventRecord = serde_json::from_value(encoded).expect("deserialize event");
+        assert_eq!(decoded.metadata(), record.metadata());
+    }
+
+    #[test]
+    fn scoped_events_reject_missing_attribution() {
+        let space = SpaceId::from_suffix("one").expect("space");
+        let record = EventRecord {
+            protocol: crate::protocol::PROTOCOL_VERSION,
+            event_id: EventId::from_suffix("missing-attribution").expect("valid event"),
+            broker_epoch: BrokerEpoch::new(1),
+            sequence: EventSequence::new(1),
+            scope: EventScope::space(space),
+            event: EventKind::PageChanged,
+            generation: GenerationWatermark::default(),
+            dirty_reason: None,
+            coalesced: false,
+            resync_required: false,
+            payload: BTreeMap::<String, String>::new(),
+        };
+        assert!(record.validate_routing().is_err());
     }
 }
