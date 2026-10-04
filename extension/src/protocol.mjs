@@ -127,6 +127,8 @@ const RAW_BROWSER_KEYS = new Set([
   "window_id",
   "frameid",
   "frame_id",
+  "parentframeid",
+  "parent_frame_id",
   "backendnodeid",
   "backend_node_id",
   "executioncontextid",
@@ -170,7 +172,8 @@ function isRawBrowserKey(key, parentKey = "") {
   const parent = normalizedKey(parentKey);
   return (
     normalized === "id" &&
-    (parent.startsWith("frame") ||
+    (parent === "context" ||
+      parent.startsWith("frame") ||
       parent.startsWith("target") ||
       parent.startsWith("session") ||
       parent.startsWith("execution_context") ||
@@ -1233,7 +1236,7 @@ export function classifyChromeError(
   )
     return "artifact_denied";
   if (
-    /enterprise|managed policy|administrator|admin policy|blocked by policy|not allowed by policy|policy restriction/.test(
+    /enterprise|managed policy|administrator|admin policy|blocked by policy|not allowed by policy|restricted by policy|policy restriction/.test(
       text,
     )
   )
@@ -1268,6 +1271,8 @@ export const RAW_BROWSER_IDENTIFIER_KEYS = Object.freeze([
   "window_id",
   "frameId",
   "frame_id",
+  "parentFrameId",
+  "parent_frame_id",
   "backendNodeId",
   "backend_node_id",
   "executionContextId",
