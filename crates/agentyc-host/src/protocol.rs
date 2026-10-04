@@ -9,16 +9,18 @@ use std::{
 };
 
 use agentyc_core::{
-    ActionId, ActionOperation, ActionRequest, ArtifactEnvelope, BrokerEpoch, ContentHash,
+    ActionId, ActionOperation, ActionRequest, ArtifactBeginEnvelope, ArtifactChunkEnvelope,
+    ArtifactEndEnvelope, ArtifactEnvelope, ArtifactTransferBudget, BrokerEpoch, ContentHash,
     DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventKind, EventScope, EventSequence,
     FrameDecoder, GenerationWatermark, HelloEnvelope, IdempotencyKey, LeaseEpoch,
     MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition,
-    ReconcileToken, RequestEnvelope, RequestId, ResponseEnvelope, ResumeEnvelope, SpaceId,
-    Timestamp, decode_frame, decode_utf8, encode_frame,
+    ProfileDisclosure, ReconcileToken, RequestEnvelope, RequestId, ResponseEnvelope,
+    ResumeEnvelope, SpaceId, Timestamp, decode_frame, decode_utf8, encode_frame,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::{
     broker::{Broker, Connection, canonical_action_hash},
@@ -33,7 +35,9 @@ pub struct ProtocolServer {
     max_payload_bytes: usize,
     max_artifact_chunk_bytes: usize,
     connection: Option<Connection>,
-    request_states: BTreeMap<RequestId, RequestState>,
+    request_states: BTreeMap<RequestId, RequestRecord>,
+    artifact_transfers: BTreeMap<String, LocalArtifactTransfer>,
+    artifact_budget: ArtifactTransferBudget,
 }
 
 impl std::fmt::Debug for ProtocolServer {
@@ -73,6 +77,8 @@ impl ProtocolServer {
             max_artifact_chunk_bytes,
             connection: None,
             request_states: BTreeMap::new(),
+            artifact_transfers: BTreeMap::new(),
+            artifact_budget: ArtifactTransferBudget::default(),
         })
     }
 
@@ -88,7 +94,7 @@ impl ProtocolServer {
 
     /// Dispatch one decoded core envelope.
     pub fn dispatch(&mut self, envelope: Envelope) -> Result<Vec<Envelope>, HostError> {
-        envelope.validate_protocol()?;
+        validate_typed_envelope(&envelope)?;
         match envelope {
             Envelope::Hello(hello) => self.handle_hello(hello),
             Envelope::Request(request) => Ok(vec![self.handle_request(request)]),
@@ -102,17 +108,29 @@ impl ProtocolServer {
                 }
                 Ok(vec![self.handle_cancel(cancel)])
             }
+            Envelope::ArtifactBegin(begin) => self.handle_artifact_begin(begin),
+            Envelope::ArtifactChunk(chunk) => self.handle_artifact_chunk(chunk),
+            Envelope::ArtifactEnd(end) => self.handle_artifact_end(end),
             Envelope::HelloOk(_)
             | Envelope::Response(_)
             | Envelope::Event(_)
-            | Envelope::Artifact(_)
-            | Envelope::ArtifactBegin(_)
-            | Envelope::ArtifactChunk(_)
-            | Envelope::ArtifactEnd(_) => Err(agentyc_core::CoreError::invalid_argument(
+            | Envelope::Artifact(_) => Err(agentyc_core::CoreError::invalid_argument(
                 "envelope kind is not client-admissible",
             )
             .into()),
         }
+    }
+
+    /// Dispatch an envelope and return structured JSON wire values.
+    ///
+    /// The legacy [`Self::dispatch`] method remains available for callers that
+    /// use the generic string-map envelope. This method is the typed transport
+    /// path for resume and other structured results.
+    pub fn dispatch_typed(&mut self, envelope: Envelope) -> Result<Vec<Value>, HostError> {
+        self.dispatch(envelope)?
+            .iter()
+            .map(response_to_wire_value)
+            .collect()
     }
 
     /// Decode one exact length-delimited frame, dispatch it, and encode responses.
@@ -124,11 +142,13 @@ impl ProtocolServer {
     /// Dispatch one already-decoded payload from a streaming transport.
     pub fn handle_payload(&mut self, payload: &[u8]) -> Result<Vec<u8>, HostError> {
         let text = decode_utf8(payload)?;
-        let envelope: Envelope = serde_json::from_str(text)?;
-        let responses = self.dispatch(envelope)?;
+        let value: Value = serde_json::from_str(text)?;
+        validate_wire_envelope(&value)?;
+        let envelope: Envelope = serde_json::from_value(value)?;
+        let responses = self.dispatch_typed(envelope)?;
         let mut output = Vec::new();
-        for response in responses {
-            let json = serde_json::to_vec(&response)?;
+        for value in responses {
+            let json = serde_json::to_vec(&value)?;
             let encoded = encode_frame(&json, self.max_payload_bytes)?;
             output.extend_from_slice(&encoded);
         }
@@ -159,19 +179,31 @@ impl ProtocolServer {
 
     fn handle_request(&mut self, request: RequestEnvelope) -> Envelope {
         let request_id = request.request_id.clone();
-        if let Some(state) = self.request_states.get(&request_id) {
-            let error = match state {
+        if let Err(error) = validate_request(&request) {
+            return Envelope::Response(ResponseEnvelope::failure(request_id, error));
+        }
+        let fingerprint = match request_fingerprint(&request) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => return Envelope::Response(ResponseEnvelope::failure(request_id, error)),
+        };
+        if let Some(record) = self.request_states.get(&request_id) {
+            let error = match record.state {
                 RequestState::CancelledQueued => agentyc_core::CoreError::new(
                     agentyc_core::ErrorCode::Cancelled,
                     "request was cancelled before dispatch",
                 ),
+                RequestState::Dispatched | RequestState::Completed
+                    if record.fingerprint != fingerprint =>
+                {
+                    agentyc_core::CoreError::invalid_argument(
+                        "request_id was reused with a different request hash or logical context",
+                    )
+                }
                 RequestState::Dispatched | RequestState::Completed => agentyc_core::CoreError::new(
                     agentyc_core::ErrorCode::InvalidArgument,
                     "duplicate request_id; dispatched requests are never replayed",
                 ),
             };
-            self.request_states
-                .insert(request_id.clone(), RequestState::Completed);
             return Envelope::Response(ResponseEnvelope::failure(request_id, error));
         }
         if self.request_states.len() >= MAX_TRACKED_REQUESTS {
@@ -183,11 +215,28 @@ impl ProtocolServer {
                 ),
             ));
         }
-        self.request_states
-            .insert(request_id.clone(), RequestState::Dispatched);
-        let result = self.execute_request(request);
-        self.request_states
-            .insert(request_id.clone(), RequestState::Completed);
+        self.request_states.insert(
+            request_id.clone(),
+            RequestRecord {
+                state: RequestState::Dispatched,
+                fingerprint,
+            },
+        );
+        let started = Instant::now();
+        let deadline = request
+            .deadline_ms
+            .and_then(|milliseconds| started.checked_add(Duration::from_millis(milliseconds)));
+        let result = if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            Err(HostError::Core(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::Timeout,
+                "request deadline elapsed before dispatch",
+            )))
+        } else {
+            self.execute_request(request, deadline)
+        };
+        if let Some(record) = self.request_states.get_mut(&request_id) {
+            record.state = RequestState::Completed;
+        }
         match result {
             Ok(result) => Envelope::Response(ResponseEnvelope::success(request_id, result)),
             Err(error) => {
@@ -199,23 +248,36 @@ impl ProtocolServer {
     fn handle_cancel(&mut self, cancel: agentyc_core::CancelEnvelope) -> Envelope {
         let request_id = cancel.request_id;
         let result = match self.request_states.get(&request_id) {
-            Some(RequestState::CancelledQueued) => Ok("true"),
-            Some(RequestState::Dispatched) => Err(agentyc_core::CoreError::new(
-                agentyc_core::ErrorCode::UnknownOutcome,
-                "request has already been dispatched and cannot be safely cancelled",
-            )),
-            Some(RequestState::Completed) => Err(agentyc_core::CoreError::new(
-                agentyc_core::ErrorCode::InvalidArgument,
-                "request has already completed",
-            )),
+            Some(record) if record.state == RequestState::CancelledQueued => Ok("true"),
+            Some(record) if record.state == RequestState::Dispatched => {
+                Err(agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::UnknownOutcome,
+                    "request has already been dispatched and cannot be safely cancelled",
+                ))
+            }
+            Some(record) if record.state == RequestState::Completed => {
+                Err(agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::InvalidArgument,
+                    "request has already completed",
+                ))
+            }
             None if self.request_states.len() < MAX_TRACKED_REQUESTS => {
-                self.request_states
-                    .insert(request_id.clone(), RequestState::CancelledQueued);
+                let fingerprint = cancelled_request_fingerprint(&request_id);
+                self.request_states.insert(
+                    request_id.clone(),
+                    RequestRecord {
+                        state: RequestState::CancelledQueued,
+                        fingerprint,
+                    },
+                );
                 Ok("true")
             }
             None => Err(agentyc_core::CoreError::new(
                 agentyc_core::ErrorCode::MessageTooLarge,
                 "connection request tracking limit reached",
+            )),
+            Some(_) => Err(agentyc_core::CoreError::invalid_argument(
+                "request state is invalid",
             )),
         };
         Envelope::Response(match result {
@@ -227,9 +289,104 @@ impl ProtocolServer {
         })
     }
 
+    fn handle_artifact_begin(
+        &mut self,
+        begin: ArtifactBeginEnvelope,
+    ) -> Result<Vec<Envelope>, HostError> {
+        let connection_epoch = self
+            .connection
+            .as_ref()
+            .ok_or_else(|| {
+                agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::PermissionDenied,
+                    "hello is required before artifact transfer",
+                )
+            })?
+            .connection_epoch;
+        let key = begin.artifact_id.to_string();
+        if self.artifact_transfers.contains_key(&key) {
+            return Err(agentyc_core::CoreError::invalid_argument(
+                "artifact transfer was declared more than once",
+            )
+            .into());
+        }
+        if self.artifact_transfers.len() >= MAX_ARTIFACT_TRANSFERS {
+            return Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::MessageTooLarge,
+                "too many concurrent artifact transfers",
+            )
+            .into());
+        }
+        if u64::from(begin.chunk_size) > self.max_artifact_chunk_bytes as u64 {
+            return Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::MessageTooLarge,
+                "artifact declaration exceeds the configured host bound",
+            )
+            .into());
+        }
+        let progress = agentyc_core::ArtifactTransferProgress::begin(&begin, connection_epoch)?;
+        self.artifact_transfers.insert(
+            key,
+            LocalArtifactTransfer {
+                progress,
+                begin,
+                bytes: Vec::new(),
+            },
+        );
+        Ok(Vec::new())
+    }
+
+    fn handle_artifact_chunk(
+        &mut self,
+        chunk: ArtifactChunkEnvelope,
+    ) -> Result<Vec<Envelope>, HostError> {
+        let key = chunk.artifact_id.to_string();
+        let size = chunk.bytes.len();
+        if size > self.max_artifact_chunk_bytes {
+            return Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::MessageTooLarge,
+                "artifact chunk exceeds the configured host bound",
+            )
+            .into());
+        }
+        self.artifact_budget.receive(size)?;
+        let Some(transfer) = self.artifact_transfers.get_mut(&key) else {
+            let _ = self.artifact_budget.release(size);
+            return Err(agentyc_core::CoreError::invalid_argument(
+                "artifact chunk has no active begin",
+            )
+            .into());
+        };
+        if let Err(error) = transfer.progress.accept_chunk(&chunk) {
+            let _ = self.artifact_budget.release(size);
+            return Err(error.into());
+        }
+        transfer.bytes.extend_from_slice(&chunk.bytes);
+        Ok(Vec::new())
+    }
+
+    fn handle_artifact_end(
+        &mut self,
+        end: ArtifactEndEnvelope,
+    ) -> Result<Vec<Envelope>, HostError> {
+        let key = end.artifact_id.to_string();
+        let transfer = self.artifact_transfers.remove(&key).ok_or_else(|| {
+            agentyc_core::CoreError::invalid_argument("artifact end has no active begin")
+        })?;
+        let result = (|| {
+            transfer.progress.validate_complete()?;
+            end.validate_against(&transfer.begin, &transfer.bytes)?;
+            Ok::<(), agentyc_core::CoreError>(())
+        })();
+        let release = self.artifact_budget.release(transfer.bytes.len());
+        result.and(release)?;
+        Ok(Vec::new())
+    }
+
     fn execute_request(
         &self,
         request: RequestEnvelope,
+        deadline: Option<Instant>,
     ) -> Result<BTreeMap<String, String>, HostError> {
         if !request.has_valid_method() {
             return Err(agentyc_core::CoreError::invalid_argument("invalid request method").into());
@@ -251,7 +408,12 @@ impl ProtocolServer {
             }
             "space.create" => {
                 let label = required(&request.params, "label")?;
-                let space = self.broker.create_space(authority, label.to_owned())?;
+                let disclosure = profile_disclosure(&request.params)?;
+                let space = self.broker.create_space_with_disclosure(
+                    authority,
+                    label.to_owned(),
+                    disclosure,
+                )?;
                 put_json(&mut result, "space", &space)?;
                 put_json(&mut result, "space_id", &space.space_id)?;
                 put_json(&mut result, "lifecycle", &space.lifecycle)?;
@@ -304,6 +466,19 @@ impl ProtocolServer {
                     &takeover.fence_acknowledged,
                 )?;
                 put_json(&mut result, "lifecycle", &takeover.lifecycle)?;
+            }
+            "space.pause" | "space.handoff" => {
+                let space_id = parse_space(required(&request.params, "space_id")?)?;
+                let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
+                let ttl = required_u64(&request.params, "ttl")?;
+                let space = if request.method == "space.pause" {
+                    self.broker.pause_space(&space_id, authority, now, ttl)?
+                } else {
+                    self.broker.handoff_space(&space_id, authority, now, ttl)?
+                };
+                put_json(&mut result, "space", &space)?;
+                put_json(&mut result, "space_id", &space.space_id)?;
+                put_json(&mut result, "lifecycle", &space.lifecycle)?;
             }
             "space.return" | "space.return_control" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
@@ -524,16 +699,24 @@ impl ProtocolServer {
                 let scope = request_scope(&request.params)?;
                 let authority = connection.authority();
                 let started = Instant::now();
-                let deadline = started + Duration::from_millis(timeout_ms);
+                let operation_deadline = started + Duration::from_millis(timeout_ms);
+                let deadline = deadline.map_or(operation_deadline, |request_deadline| {
+                    request_deadline.min(operation_deadline)
+                });
                 let cursor = self.broker.event_cursor(authority)?;
                 let mut router =
                     crate::EventRouter::new_at(cursor, crate::RouterLimits::new(MAX_EVENT_LIMIT));
+                let effective_timeout_ms = deadline
+                    .checked_duration_since(started)
+                    .map_or(0, |duration| {
+                        duration.as_millis().min(u128::from(u64::MAX)) as u64
+                    });
                 let mut engine = crate::WaitEngine::new(ProtocolClock { started });
                 let mut registration = engine.register_scoped(
                     &router,
                     condition,
                     scope.clone(),
-                    Timestamp::new(timeout_ms),
+                    Timestamp::new(effective_timeout_ms.min(timeout_ms)),
                     crate::CancellationToken::new(),
                 );
                 loop {
@@ -620,6 +803,13 @@ impl ProtocolServer {
                 );
             }
         }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::Timeout,
+                "request deadline elapsed before a definitive response",
+            )
+            .into());
+        }
         Ok(result)
     }
 
@@ -693,21 +883,62 @@ impl ProtocolClient {
 
     /// Encode a core envelope into one bounded frame.
     pub fn encode(&self, envelope: &Envelope) -> Result<Vec<u8>, HostError> {
-        if let Envelope::Artifact(artifact) = envelope {
-            validate_artifact_envelope(artifact, self.max_artifact_chunk_bytes)?;
+        validate_core_envelope(envelope)?;
+        match envelope {
+            Envelope::Artifact(artifact) => {
+                validate_artifact_envelope(artifact, self.max_artifact_chunk_bytes)?;
+            }
+            Envelope::ArtifactBegin(begin)
+                if u64::from(begin.chunk_size) > self.max_artifact_chunk_bytes as u64 =>
+            {
+                return Err(agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::MessageTooLarge,
+                    "artifact declaration exceeds the configured host bound",
+                )
+                .into());
+            }
+            Envelope::ArtifactChunk(chunk) if chunk.bytes.len() > self.max_artifact_chunk_bytes => {
+                return Err(agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::MessageTooLarge,
+                    "artifact chunk exceeds the configured host bound",
+                )
+                .into());
+            }
+            _ => {}
         }
-        let json = serde_json::to_vec(envelope)?;
+        let value = serde_json::to_value(envelope)?;
+        validate_wire_envelope(&value)?;
+        let json = serde_json::to_vec(&value)?;
         Ok(encode_frame(&json, self.max_payload_bytes)?)
     }
 
     /// Feed fragmented or coalesced frames and decode every complete envelope.
+    ///
+    /// This retains the original string-map API. Structured result values are
+    /// represented as JSON strings here for callers that depend on the legacy
+    /// generic envelope type; [`Self::feed_typed`] exposes the wire values.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Envelope>, HostError> {
+        self.feed_values(bytes)?
+            .into_iter()
+            .map(|value| serde_json::from_value(legacy_wire_value(value)?).map_err(HostError::Json))
+            .collect()
+    }
+
+    /// Feed frames and retain structured JSON result/payload values exactly as
+    /// they appeared on the wire.
+    pub fn feed_typed(&mut self, bytes: &[u8]) -> Result<Vec<Value>, HostError> {
+        self.feed_values(bytes)
+    }
+
+    fn feed_values(&mut self, bytes: &[u8]) -> Result<Vec<Value>, HostError> {
         let frames = self.decoder.feed(bytes)?;
         frames
             .into_iter()
             .map(|frame| {
                 let text = decode_utf8(&frame)?;
-                serde_json::from_str(text).map_err(HostError::Json)
+                let value: Value = serde_json::from_str(text)?;
+                validate_wire_envelope(&value)?;
+                Ok(value)
             })
             .collect()
     }
@@ -768,8 +999,723 @@ fn validate_artifact_envelope(
     Ok(())
 }
 
+fn validate_core_envelope(envelope: &Envelope) -> Result<(), HostError> {
+    validate_typed_envelope(envelope)
+}
+
+pub(crate) fn validate_typed_envelope(envelope: &Envelope) -> Result<(), HostError> {
+    envelope.validate()?;
+    match envelope {
+        Envelope::Hello(hello) => hello.validate_handshake()?,
+        Envelope::HelloOk(hello_ok) => hello_ok.validate_handshake()?,
+        Envelope::Request(request) => validate_request(request)?,
+        Envelope::Response(response) => validate_response(response)?,
+        Envelope::Event(event) => event.validate_scope()?,
+        Envelope::ArtifactBegin(begin) => begin.validate()?,
+        Envelope::ArtifactChunk(chunk) => chunk.validate()?,
+        Envelope::ArtifactEnd(end) => end.validate()?,
+        Envelope::Artifact(artifact) => artifact.validate()?,
+        Envelope::Cancel(cancel) => cancel.validate()?,
+        Envelope::Resume(_) => {}
+    }
+    Ok(())
+}
+
+fn validate_request(request: &RequestEnvelope) -> Result<(), agentyc_core::CoreError> {
+    if request.protocol != agentyc_core::PROTOCOL_VERSION {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::ProtocolMismatch,
+            "request protocol is unsupported",
+        ));
+    }
+    if !request.has_valid_method() {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "request method is invalid",
+        ));
+    }
+    if let Some(deadline_ms) = request.deadline_ms
+        && (deadline_ms == 0 || deadline_ms > MAX_REQUEST_DEADLINE_MS)
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "deadline_ms must be between 1 and {MAX_REQUEST_DEADLINE_MS}"
+        )));
+    }
+    validate_params(&request.params).map_err(|error| error.as_core_error())
+}
+
+fn validate_response(response: &ResponseEnvelope) -> Result<(), agentyc_core::CoreError> {
+    if response.protocol != agentyc_core::PROTOCOL_VERSION {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::ProtocolMismatch,
+            "response protocol is unsupported",
+        ));
+    }
+    if response.warnings.len() > MAX_RESPONSE_WARNINGS
+        || response
+            .warnings
+            .iter()
+            .any(|warning| warning.is_empty() || warning.len() > MAX_WARNING_BYTES)
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "response warnings are empty or exceed their bound",
+        ));
+    }
+    match (
+        response.ok,
+        response.result.is_some(),
+        response.error.is_some(),
+    ) {
+        (true, true, false) | (false, false, true) => Ok(()),
+        _ => Err(agentyc_core::CoreError::invalid_argument(
+            "response result and error fields do not match ok",
+        )),
+    }
+}
+
+fn request_fingerprint(
+    request: &RequestEnvelope,
+) -> Result<RequestFingerprint, agentyc_core::CoreError> {
+    let bytes = serde_json::to_vec(request).map_err(|error| {
+        agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::InvalidJson,
+            format!("request cannot be fingerprinted: {error}"),
+        )
+    })?;
+    let context = [
+        request.method.as_str(),
+        request
+            .params
+            .get("space_id")
+            .map(String::as_str)
+            .unwrap_or(""),
+        request
+            .params
+            .get("page_id")
+            .map(String::as_str)
+            .unwrap_or(""),
+        request
+            .params
+            .get("lease_epoch")
+            .map(String::as_str)
+            .unwrap_or(""),
+        request
+            .params
+            .get("action_id")
+            .map(String::as_str)
+            .unwrap_or(""),
+        request
+            .params
+            .get("idempotency_key")
+            .map(String::as_str)
+            .unwrap_or(""),
+        request
+            .params
+            .get("request_hash")
+            .map(String::as_str)
+            .unwrap_or(""),
+        request
+            .params
+            .get("context")
+            .map(String::as_str)
+            .unwrap_or(""),
+    ]
+    .join("\\u{1f}");
+    Ok(RequestFingerprint {
+        hash: ContentHash::from_bytes(&bytes),
+        method: request.method.clone(),
+        context,
+    })
+}
+
+fn cancelled_request_fingerprint(request_id: &RequestId) -> RequestFingerprint {
+    RequestFingerprint {
+        hash: ContentHash::from_bytes(request_id.as_str().as_bytes()),
+        method: "cancel".to_owned(),
+        context: request_id.to_string(),
+    }
+}
+
+fn response_to_wire_value(envelope: &Envelope) -> Result<Value, HostError> {
+    let mut value = serde_json::to_value(envelope)?;
+    if value.get("kind").and_then(Value::as_str) == Some("response")
+        && let Some(result) = value.get_mut("result").and_then(Value::as_object_mut)
+    {
+        for key in ["resume_result", "cursor", "events"] {
+            let Some(Value::String(encoded)) = result.get(key).cloned() else {
+                continue;
+            };
+            if let Ok(decoded) = serde_json::from_str::<Value>(&encoded) {
+                result.insert(key.to_owned(), decoded);
+            }
+        }
+    }
+    validate_wire_envelope(&value)?;
+    Ok(value)
+}
+
+pub(crate) fn legacy_wire_value(mut value: Value) -> Result<Value, HostError> {
+    validate_wire_envelope(&value)?;
+    if value.get("kind").and_then(Value::as_str) == Some("response")
+        && let Some(result) = value.get_mut("result").and_then(Value::as_object_mut)
+    {
+        for child in result.values_mut() {
+            if !child.is_string() {
+                *child = Value::String(serde_json::to_string(child)?);
+            }
+        }
+    }
+    Ok(value)
+}
+
+pub(crate) fn validate_wire_envelope(value: &Value) -> Result<(), HostError> {
+    let object = value.as_object().ok_or_else(|| {
+        agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::InvalidJson,
+            "local protocol envelope must be an object",
+        )
+    })?;
+    let protocol = wire_u64(object, "protocol")?;
+    if protocol != u64::from(agentyc_core::PROTOCOL_VERSION) {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::ProtocolMismatch,
+            "local protocol version is unsupported",
+        )
+        .into());
+    }
+    let kind = wire_string(object, "kind", 32)?;
+    let common = ["protocol", "kind"];
+    let allowed: &[&str] = match kind.as_str() {
+        "hello" => &[
+            "protocol",
+            "kind",
+            "supported_protocols",
+            "principal_id",
+            "resume_from",
+            "client_metadata",
+        ],
+        "hello_ok" => &[
+            "protocol",
+            "kind",
+            "broker_epoch",
+            "connection_epoch",
+            "capabilities",
+            "resume",
+            "host_metadata",
+        ],
+        "request" => &[
+            "protocol",
+            "kind",
+            "request_id",
+            "method",
+            "params",
+            "deadline_ms",
+            "idempotency_key",
+        ],
+        "response" => &[
+            "protocol",
+            "kind",
+            "request_id",
+            "ok",
+            "result",
+            "error",
+            "warnings",
+        ],
+        "event" => &[
+            "protocol",
+            "kind",
+            "event_id",
+            "broker_epoch",
+            "sequence",
+            "scope",
+            "event",
+            "generation",
+            "dirty_reason",
+            "coalesced",
+            "resync_required",
+            "payload",
+        ],
+        "artifact" => &[
+            "protocol",
+            "kind",
+            "artifact_id",
+            "request_id",
+            "artifact_kind",
+            "chunk_sequence",
+            "final_chunk",
+            "bytes",
+        ],
+        "artifact_begin" => &[
+            "protocol",
+            "kind",
+            "artifact_id",
+            "request_id",
+            "artifact_kind",
+            "total_bytes",
+            "chunk_size",
+            "chunk_count",
+            "digest_algorithm",
+            "digest",
+            "redacted",
+        ],
+        "artifact_chunk" => &[
+            "protocol",
+            "kind",
+            "artifact_id",
+            "connection_epoch",
+            "chunk_sequence",
+            "bytes",
+        ],
+        "artifact_end" => &[
+            "protocol",
+            "kind",
+            "artifact_id",
+            "total_bytes",
+            "chunk_count",
+            "digest_algorithm",
+            "digest",
+        ],
+        "cancel" => &["protocol", "kind", "request_id", "reason"],
+        "resume" => &["protocol", "kind", "after"],
+        _ => {
+            return Err(agentyc_core::CoreError::invalid_argument(
+                "unknown local protocol envelope kind",
+            )
+            .into());
+        }
+    };
+    let _ = common;
+    wire_reject_unknown(object, allowed)?;
+    match kind.as_str() {
+        "hello" => {
+            wire_array(object, "supported_protocols", MAX_SUPPORTED_PROTOCOLS)?;
+            wire_string(object, "principal_id", MAX_ID_BYTES)?;
+            if let Some(resume) = wire_optional_object(object, "resume_from")? {
+                validate_resume_watermark_wire(resume)?;
+            }
+            if let Some(metadata) = wire_optional_object(object, "client_metadata")? {
+                validate_client_metadata_wire(metadata)?;
+            }
+        }
+        "hello_ok" => {
+            wire_positive_u64(object, "broker_epoch")?;
+            wire_positive_u64(object, "connection_epoch")?;
+            wire_string_array(object, "capabilities", MAX_CAPABILITIES)?;
+            let resume = wire_object(object, "resume")?;
+            validate_resume_result_wire(resume)?;
+            if let Some(metadata) = wire_optional_object(object, "host_metadata")? {
+                validate_host_metadata_wire(metadata)?;
+            }
+        }
+        "request" => {
+            wire_string(object, "request_id", MAX_ID_BYTES)?;
+            let method = wire_string(object, "method", 128)?;
+            if !valid_wire_method(&method) {
+                return Err(
+                    agentyc_core::CoreError::invalid_argument("request method is invalid").into(),
+                );
+            }
+            let params = wire_object(object, "params")?;
+            if params.len() > MAX_LOGICAL_PARAMS || params.values().any(|value| !value.is_string())
+            {
+                return Err(agentyc_core::CoreError::invalid_argument(
+                    "request params must be a bounded string map",
+                )
+                .into());
+            }
+            if let Some(deadline) = object.get("deadline_ms")
+                && !deadline.is_null()
+                && (!deadline.is_u64()
+                    || deadline.as_u64() == Some(0)
+                    || deadline.as_u64().unwrap_or(0) > MAX_REQUEST_DEADLINE_MS)
+            {
+                return Err(agentyc_core::CoreError::invalid_argument(
+                    "request deadline_ms is outside its bound",
+                )
+                .into());
+            }
+            wire_optional_string_or_null(object, "idempotency_key", MAX_ID_BYTES)?;
+        }
+        "response" => {
+            wire_string(object, "request_id", MAX_ID_BYTES)?;
+            let ok = object.get("ok").and_then(Value::as_bool).ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("response ok is required")
+            })?;
+            let result = object.get("result").ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("response result is required")
+            })?;
+            let error = object.get("error").ok_or_else(|| {
+                agentyc_core::CoreError::invalid_argument("response error is required")
+            })?;
+            if !error.is_null() {
+                let error = error.as_object().ok_or_else(|| {
+                    agentyc_core::CoreError::invalid_argument(
+                        "response error must be an object or null",
+                    )
+                })?;
+                wire_reject_unknown(error, &["code", "retryable", "guidance", "message"])?;
+                wire_string(error, "code", 64)?;
+                wire_bool(error, "retryable")?;
+                wire_string(error, "guidance", 64)?;
+                wire_string(error, "message", MAX_WARNING_BYTES)?;
+            }
+            if (ok && result.is_null())
+                || (!ok && !result.is_null())
+                || (ok && !error.is_null())
+                || (!ok && error.is_null())
+            {
+                return Err(agentyc_core::CoreError::invalid_argument(
+                    "response result and error do not match ok",
+                )
+                .into());
+            }
+            let warnings = wire_array(object, "warnings", MAX_RESPONSE_WARNINGS)?;
+            if warnings.iter().any(|warning| {
+                warning
+                    .as_str()
+                    .is_none_or(|text| text.is_empty() || text.len() > MAX_WARNING_BYTES)
+            }) {
+                return Err(agentyc_core::CoreError::invalid_argument(
+                    "response warnings are invalid",
+                )
+                .into());
+            }
+        }
+        "event" => {
+            wire_string(object, "event_id", MAX_ID_BYTES)?;
+            wire_positive_u64(object, "broker_epoch")?;
+            wire_positive_u64(object, "sequence")?;
+            let scope = wire_object(object, "scope")?;
+            wire_reject_unknown(scope, &["space_id", "page_id"])?;
+            if let Some(space_id) = scope.get("space_id")
+                && !space_id.is_null()
+            {
+                if space_id.as_str().is_none_or(|value| value.is_empty()) {
+                    return Err(agentyc_core::CoreError::invalid_argument(
+                        "event scope space_id is invalid",
+                    )
+                    .into());
+                }
+            }
+            if let Some(page_id) = scope.get("page_id")
+                && !page_id.is_null()
+            {
+                if scope.get("space_id").and_then(Value::as_str).is_none() {
+                    return Err(agentyc_core::CoreError::invalid_argument(
+                        "event scope page_id requires space_id",
+                    )
+                    .into());
+                }
+                if page_id.as_str().is_none_or(|value| value.is_empty()) {
+                    return Err(agentyc_core::CoreError::invalid_argument(
+                        "event scope page_id is invalid",
+                    )
+                    .into());
+                }
+            }
+            wire_string(object, "event", 64)?;
+            let generation = wire_object(object, "generation")?;
+            wire_reject_unknown(
+                generation,
+                &[
+                    "space_generation",
+                    "page_generation",
+                    "navigation_generation",
+                    "document_generation",
+                    "snapshot_version",
+                ],
+            )?;
+            wire_bool(object, "coalesced")?;
+            wire_bool(object, "resync_required")?;
+            wire_object(object, "payload")?;
+        }
+        "artifact" => {
+            wire_string(object, "artifact_id", MAX_ID_BYTES)?;
+            wire_optional_string_or_null(object, "request_id", MAX_ID_BYTES)?;
+            wire_string(object, "artifact_kind", 32)?;
+            wire_u64(object, "chunk_sequence")?;
+            wire_bool(object, "final_chunk")?;
+            wire_bytes(object, "bytes", MAX_ARTIFACT_CHUNK_BYTES)?;
+        }
+        "artifact_begin" => {
+            wire_string(object, "artifact_id", MAX_ID_BYTES)?;
+            wire_optional_string_or_null(object, "request_id", MAX_ID_BYTES)?;
+            wire_string(object, "artifact_kind", 32)?;
+            wire_u64(object, "total_bytes")?;
+            wire_u64(object, "chunk_size")?;
+            wire_u64(object, "chunk_count")?;
+            wire_string(object, "digest_algorithm", 32)?;
+            wire_string(object, "digest", 64)?;
+            wire_bool(object, "redacted")?;
+        }
+        "artifact_chunk" => {
+            wire_string(object, "artifact_id", MAX_ID_BYTES)?;
+            wire_positive_u64(object, "connection_epoch")?;
+            wire_u64(object, "chunk_sequence")?;
+            wire_bytes(object, "bytes", MAX_ARTIFACT_CHUNK_BYTES)?;
+        }
+        "artifact_end" => {
+            wire_string(object, "artifact_id", MAX_ID_BYTES)?;
+            wire_u64(object, "total_bytes")?;
+            wire_u64(object, "chunk_count")?;
+            wire_string(object, "digest_algorithm", 32)?;
+            wire_string(object, "digest", 64)?;
+        }
+        "cancel" => {
+            wire_string(object, "request_id", MAX_ID_BYTES)?;
+            wire_optional_string_or_null(object, "reason", MAX_CANCEL_REASON_BYTES)?;
+        }
+        "resume" => {
+            wire_object(object, "after")?;
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn wire_reject_unknown(object: &Map<String, Value>, allowed: &[&str]) -> Result<(), HostError> {
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "unknown local protocol envelope field {key}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn wire_string(object: &Map<String, Value>, key: &str, max: usize) -> Result<String, HostError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= max)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            agentyc_core::CoreError::invalid_argument(format!("{key} is invalid")).into()
+        })
+}
+
+fn wire_optional_string_or_null(
+    object: &Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<(), HostError> {
+    if let Some(value) = object.get(key)
+        && !value.is_null()
+        && (value
+            .as_str()
+            .is_none_or(|text| text.is_empty() || text.len() > max))
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(format!("{key} is invalid")).into());
+    }
+    Ok(())
+}
+
+fn wire_u64(object: &Map<String, Value>, key: &str) -> Result<u64, HostError> {
+    object.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument(format!("{key} is invalid")).into()
+    })
+}
+
+fn wire_positive_u64(object: &Map<String, Value>, key: &str) -> Result<u64, HostError> {
+    let value = wire_u64(object, key)?;
+    if value == 0 {
+        return Err(
+            agentyc_core::CoreError::invalid_argument(format!("{key} must be positive")).into(),
+        );
+    }
+    Ok(value)
+}
+
+fn wire_bool(object: &Map<String, Value>, key: &str) -> Result<bool, HostError> {
+    object.get(key).and_then(Value::as_bool).ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument(format!("{key} is invalid")).into()
+    })
+}
+
+fn wire_object<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a Map<String, Value>, HostError> {
+    object.get(key).and_then(Value::as_object).ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument(format!("{key} must be an object")).into()
+    })
+}
+
+fn wire_optional_object<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a Map<String, Value>>, HostError> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value.as_object().map(Some).ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument(format!("{key} must be an object or null")).into()
+    })
+}
+
+fn validate_resume_watermark_wire(object: &Map<String, Value>) -> Result<(), HostError> {
+    wire_reject_unknown(object, &["broker_epoch", "sequence"])?;
+    wire_positive_u64(object, "broker_epoch")?;
+    wire_u64(object, "sequence")?;
+    Ok(())
+}
+
+fn validate_resume_result_wire(object: &Map<String, Value>) -> Result<(), HostError> {
+    wire_reject_unknown(object, &["kind"])?;
+    let kind = wire_string(object, "kind", 32)?;
+    if kind != "accepted" && kind != "resync_required" {
+        return Err(
+            agentyc_core::CoreError::invalid_argument("resume result kind is invalid").into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_client_metadata_wire(object: &Map<String, Value>) -> Result<(), HostError> {
+    wire_reject_unknown(
+        object,
+        &[
+            "client_id",
+            "client_name",
+            "client_version",
+            "connection_nonce",
+            "profile_binding_id",
+        ],
+    )?;
+    if let Some(value) = object.get("client_id")
+        && !value.is_null()
+    {
+        wire_string(object, "client_id", MAX_ID_BYTES)?;
+    }
+    if let Some(value) = object.get("client_name")
+        && !value.is_null()
+    {
+        wire_string(object, "client_name", 128)?;
+    }
+    if let Some(value) = object.get("client_version")
+        && !value.is_null()
+    {
+        wire_string(object, "client_version", 128)?;
+    }
+    if let Some(value) = object.get("connection_nonce")
+        && !value.is_null()
+    {
+        wire_string(object, "connection_nonce", MAX_ID_BYTES)?;
+    }
+    if let Some(value) = object.get("profile_binding_id")
+        && !value.is_null()
+    {
+        wire_string(object, "profile_binding_id", MAX_ID_BYTES)?;
+    }
+    Ok(())
+}
+
+fn validate_host_metadata_wire(object: &Map<String, Value>) -> Result<(), HostError> {
+    wire_reject_unknown(
+        object,
+        &[
+            "host_name",
+            "host_version",
+            "connection_nonce",
+            "profile_binding_id",
+        ],
+    )?;
+    if let Some(value) = object.get("host_name")
+        && !value.is_null()
+    {
+        wire_string(object, "host_name", 128)?;
+    }
+    if let Some(value) = object.get("host_version")
+        && !value.is_null()
+    {
+        wire_string(object, "host_version", 128)?;
+    }
+    if let Some(value) = object.get("connection_nonce")
+        && !value.is_null()
+    {
+        wire_string(object, "connection_nonce", MAX_ID_BYTES)?;
+    }
+    if let Some(value) = object.get("profile_binding_id")
+        && !value.is_null()
+    {
+        wire_string(object, "profile_binding_id", MAX_ID_BYTES)?;
+    }
+    Ok(())
+}
+
+fn wire_array<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<&'a Vec<Value>, HostError> {
+    let values = object.get(key).and_then(Value::as_array).ok_or_else(|| {
+        agentyc_core::CoreError::invalid_argument(format!("{key} must be an array"))
+    })?;
+    if values.len() > max {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::MessageTooLarge,
+            format!("{key} exceeds its bound"),
+        )
+        .into());
+    }
+    Ok(values)
+}
+
+fn wire_string_array(object: &Map<String, Value>, key: &str, max: usize) -> Result<(), HostError> {
+    let values = wire_array(object, key, max)?;
+    if values
+        .iter()
+        .any(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "{key} contains an invalid string"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn wire_bytes(object: &Map<String, Value>, key: &str, max: usize) -> Result<(), HostError> {
+    let values = wire_array(object, key, max)?;
+    if values
+        .iter()
+        .any(|value| value.as_u64().is_none_or(|byte| byte > u64::from(u8::MAX)))
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "{key} contains an invalid byte"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn valid_wire_method(method: &str) -> bool {
+    let mut parts = method.split('.');
+    !method.is_empty()
+        && method.len() <= 128
+        && parts.all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'
+                        || byte == b'-'
+                })
+        })
+}
+
 const MAX_LOGICAL_PARAMS: usize = 16;
 const MAX_LOGICAL_PARAM_NAME_BYTES: usize = 64;
+const MAX_REQUEST_DEADLINE_MS: u64 = 24 * 60 * 60 * 1000;
+const MAX_RESPONSE_WARNINGS: usize = 64;
+const MAX_WARNING_BYTES: usize = 4 * 1024;
+const MAX_SUPPORTED_PROTOCOLS: usize = 8;
+const MAX_CAPABILITIES: usize = 32;
+const MAX_ID_BYTES: usize = 256;
+const MAX_ARTIFACT_TRANSFERS: usize = 16;
+const MAX_CANCEL_REASON_BYTES: usize = 256;
 const MAX_LOGICAL_PARAM_VALUE_BYTES: usize = 4 * 1024;
 const MAX_EVENT_LIMIT: usize = 1_024;
 const MAX_WAIT_TIMEOUT_MS: u64 = 60_000;
@@ -782,6 +1728,26 @@ enum RequestState {
     CancelledQueued,
     Dispatched,
     Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestFingerprint {
+    hash: ContentHash,
+    method: String,
+    context: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestRecord {
+    state: RequestState,
+    fingerprint: RequestFingerprint,
+}
+
+#[derive(Debug)]
+struct LocalArtifactTransfer {
+    progress: agentyc_core::ArtifactTransferProgress,
+    begin: ArtifactBeginEnvelope,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -944,6 +1910,39 @@ fn required<'a>(params: &'a BTreeMap<String, String>, key: &str) -> Result<&'a s
     Ok(value)
 }
 
+fn profile_disclosure(params: &BTreeMap<String, String>) -> Result<ProfileDisclosure, HostError> {
+    let disclosure_field = |key: &str| {
+        params
+            .get(key)
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .ok_or_else(|| {
+                agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::PermissionDenied,
+                    "explicit shared-profile disclosure acknowledgement is required",
+                )
+            })
+    };
+    let disclosure = ProfileDisclosure {
+        profile_scope: disclosure_field("profile_scope")?,
+        shared_state_notice: disclosure_field("shared_state_notice")?,
+        isolation_claim: required(params, "isolation_claim")?
+            .parse::<bool>()
+            .map_err(|_| {
+                agentyc_core::CoreError::invalid_argument("isolation_claim must be true or false")
+            })?,
+        acknowledged: required(params, "profile_disclosure_acknowledged")?
+            .parse::<bool>()
+            .map_err(|_| {
+                agentyc_core::CoreError::invalid_argument(
+                    "profile_disclosure_acknowledged must be true or false",
+                )
+            })?,
+    };
+    disclosure.validate()?;
+    Ok(disclosure)
+}
+
 fn parse_control_ticket(params: &BTreeMap<String, String>) -> Result<ControlTicket, HostError> {
     let encoded = required(params, "control_ticket")?;
     let value: serde_json::Value = serde_json::from_str(encoded).map_err(|error| {
@@ -1089,11 +2088,21 @@ fn action_request_from_params(
         .map(|value| serde_json::from_str::<Postcondition>(value))
         .transpose()
         .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    let supplied_hash = params
+        .get("request_hash")
+        .map(|value| {
+            value
+                .parse::<ContentHash>()
+                .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))
+        })
+        .transpose()?;
+    let has_supplied_hash = supplied_hash.is_some();
     let mut request = ActionRequest {
         request_id,
         action_id,
         idempotency_key,
-        request_hash: ContentHash::from_bytes(b"local-protocol-action"),
+        request_hash: supplied_hash
+            .unwrap_or_else(|| ContentHash::from_bytes(b"local-protocol-action")),
         space_id,
         page_id,
         lease_epoch,
@@ -1101,7 +2110,15 @@ fn action_request_from_params(
         payload,
         postcondition,
     };
-    request.request_hash = canonical_action_hash(&request)?;
+    let expected_hash = canonical_action_hash(&request)?;
+    if !has_supplied_hash {
+        request.request_hash = expected_hash;
+    } else if request.request_hash != expected_hash {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "request hash does not match the complete canonical request context",
+        )
+        .into());
+    }
     Ok(request)
 }
 
@@ -1127,8 +2144,13 @@ fn put_optional_json<T: Serialize>(
 
 fn host_lifecycle_name(lifecycle: crate::HostLifecycle) -> &'static str {
     match lifecycle {
+        crate::HostLifecycle::Starting => "starting",
+        crate::HostLifecycle::WaitingForExtension => "waiting_for_extension",
         crate::HostLifecycle::Ready => "ready",
         crate::HostLifecycle::Draining => "draining",
+        crate::HostLifecycle::Degraded(_) => "degraded",
+        crate::HostLifecycle::Recovering => "recovering",
+        crate::HostLifecycle::Orphaned => "orphaned",
         crate::HostLifecycle::Stopped => "stopped",
     }
 }
@@ -1361,7 +2383,22 @@ mod tests {
         let mutation = request_envelope(
             "once-only-mutation",
             "space.create",
-            BTreeMap::from([("label".to_owned(), "created once".to_owned())]),
+            BTreeMap::from([
+                ("label".to_owned(), "created once".to_owned()),
+                (
+                    "profile_scope".to_owned(),
+                    "shared_existing_profile".to_owned(),
+                ),
+                (
+                    "shared_state_notice".to_owned(),
+                    "shared_profile_state".to_owned(),
+                ),
+                ("isolation_claim".to_owned(), "false".to_owned()),
+                (
+                    "profile_disclosure_acknowledged".to_owned(),
+                    "true".to_owned(),
+                ),
+            ]),
         );
         let first = server.dispatch(mutation.clone()).expect("first mutation");
         let second = server.dispatch(mutation).expect("duplicate mutation");
@@ -1515,7 +2552,22 @@ mod tests {
 
         let first_space = request(
             "space.create",
-            BTreeMap::from([("label".to_owned(), "first".to_owned())]),
+            BTreeMap::from([
+                ("label".to_owned(), "first".to_owned()),
+                (
+                    "profile_scope".to_owned(),
+                    "shared_existing_profile".to_owned(),
+                ),
+                (
+                    "shared_state_notice".to_owned(),
+                    "shared_profile_state".to_owned(),
+                ),
+                ("isolation_claim".to_owned(), "false".to_owned()),
+                (
+                    "profile_disclosure_acknowledged".to_owned(),
+                    "true".to_owned(),
+                ),
+            ]),
         );
         let first_space_id = json_field(&first_space, "space_id")
             .as_str()
@@ -1523,7 +2575,22 @@ mod tests {
             .to_owned();
         let second_space = request(
             "space.create",
-            BTreeMap::from([("label".to_owned(), "second".to_owned())]),
+            BTreeMap::from([
+                ("label".to_owned(), "second".to_owned()),
+                (
+                    "profile_scope".to_owned(),
+                    "shared_existing_profile".to_owned(),
+                ),
+                (
+                    "shared_state_notice".to_owned(),
+                    "shared_profile_state".to_owned(),
+                ),
+                ("isolation_claim".to_owned(), "false".to_owned()),
+                (
+                    "profile_disclosure_acknowledged".to_owned(),
+                    "true".to_owned(),
+                ),
+            ]),
         );
         let second_space_id = json_field(&second_space, "space_id")
             .as_str()
@@ -1647,6 +2714,30 @@ mod tests {
     }
 
     #[test]
+    fn external_space_create_requires_profile_disclosure_before_commit() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let mut server = ProtocolServer::new(broker);
+        server.dispatch(hello("profile-disclosure")).expect("hello");
+        let Envelope::Response(response) = server
+            .dispatch(request_envelope(
+                "missing-profile-disclosure",
+                "space.create",
+                BTreeMap::from([("label".to_owned(), "must reject".to_owned())]),
+            ))
+            .expect("dispatch")[0]
+            .clone()
+        else {
+            panic!("expected response");
+        };
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.expect("disclosure error").code,
+            agentyc_core::ErrorCode::PermissionDenied
+        );
+    }
+
+    #[test]
     fn direct_methods_dispatch_bounded_json_results() {
         let directory = tempdir().expect("tempdir");
         let bridge = FakeBridge::new();
@@ -1708,7 +2799,22 @@ mod tests {
 
         let created = request(
             "space.create",
-            BTreeMap::from([("label".to_owned(), "protocol space".to_owned())]),
+            BTreeMap::from([
+                ("label".to_owned(), "protocol space".to_owned()),
+                (
+                    "profile_scope".to_owned(),
+                    "shared_existing_profile".to_owned(),
+                ),
+                (
+                    "shared_state_notice".to_owned(),
+                    "shared_profile_state".to_owned(),
+                ),
+                ("isolation_claim".to_owned(), "false".to_owned()),
+                (
+                    "profile_disclosure_acknowledged".to_owned(),
+                    "true".to_owned(),
+                ),
+            ]),
         );
         assert!(json_field(&created, "space").is_object());
         let space_id = json_field(&created, "space_id")
