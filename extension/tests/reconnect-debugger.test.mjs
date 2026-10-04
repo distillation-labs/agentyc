@@ -114,6 +114,42 @@ test("Native Messaging disconnect requests an immediate reconnect before backoff
   client.stop();
 });
 
+test("default reconnect timers preserve the platform receiver", async () => {
+  const chrome = new FakeChrome();
+  const timers = [];
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = function strictSetTimeout(callback, delay) {
+    assert.equal(this, globalThis);
+    const timer = { callback, delay, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = function strictClearTimeout(timer) {
+    assert.equal(this, globalThis);
+    const index = timers.indexOf(timer);
+    if (index >= 0) timers.splice(index, 1);
+  };
+
+  try {
+    const client = new NativeMessagingClient({
+      chromeApi: chrome,
+      workerInstanceEpoch: 1,
+      browserSessionEpoch: 1,
+      autoReconnect: true,
+    });
+    await client.connect();
+    const port = chrome.lastPort;
+    port.receive(makeHostHelloOk(port.sent[0]));
+    port.disconnect();
+    assert.equal(timers.length, 1);
+    client.stop();
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
 test("debugger bridge routes only attributed events and returns unknown for lost mutation dispatch", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://agent.test/" }],
