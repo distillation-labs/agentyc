@@ -15,7 +15,7 @@ Define the contracts before implementing the broker or extension. The local prot
 
 ## Handoff in
 
-- **Inputs:** Phase 1 architecture/invariants; Phase 0 capability and budget addendum; D-09–D-18.
+- **Inputs:** Phase 1 architecture/invariants; Phase 0 capability and budget addendum; D-09–D-17.
 - **Must already be true:** browser boundary, profile guarantees, user-control states, and host ownership are closed.
 - **Do not reopen:** local host/extension is primary; MCP adapter-only; no automatic Chrome launch/download; task spaces/pages are canonical.
 
