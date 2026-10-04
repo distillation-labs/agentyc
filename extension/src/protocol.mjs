@@ -530,7 +530,11 @@ export function browserHint(rawValue, salt = "") {
 
 export function publicError(error, fallbackCode = "extension_error") {
   if (error instanceof ProtocolError) {
-    return errorResult(error.code, error.message, { details: error.details });
+    return errorResult(error.code, error.message, {
+      retryable: Boolean(error.retryable),
+      outcome: error.outcome,
+      details: error.details,
+    });
   }
   if (error && typeof error === "object" && typeof error.code === "string") {
     return errorResult(
