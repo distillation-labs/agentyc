@@ -11,12 +11,12 @@ depends_on: none
 
 ## Objective
 
-Prove the target product boundary before activating later phases or rollout: a normal user-approved Chrome profile, an installed MV3 extension, a Native Messaging host, one host broker, two independent agent clients, and no copied CDP URL or automatic browser launch. Convert all remaining Chrome, permissions, profile, protocol, token, and performance assumptions into signed parameters.
+Prove the target product boundary before activating later phases and launching the feature: a normal user-approved Chrome profile, an installed MV3 extension, a Native Messaging host, one host broker, two independent agent clients, and no copied CDP URL or automatic browser launch. Convert all remaining Chrome, permissions, profile, protocol, token, and performance assumptions into signed parameters.
 
 ## Handoff in
 
 - **Inputs:** revised README; `research/decision-supersession.md`; S-018–S-025; current crates and tests; read-only ego-lite reference.
-- **Must already be true:** later-phase activation and production rollout remain gated. Core/host/extension/direct-client slices already exist; their presence and deterministic tests are not live proof. This Phase 0 audit does not authorize further production migration.
+- **Must already be true:** later-phase activation and direct launch remain gated. Core/host/extension/direct-client slices already exist; their presence and deterministic tests are not live proof. This Phase 0 audit does not authorize launch.
 - **Do not reopen:** existing Chrome is the default; MCP is adapter-only; no automatic browser launch/download; task spaces/pages are canonical; raw IDs and `[id] name` are forbidden in primary output.
 
 ## Confirmed facts
@@ -54,7 +54,7 @@ None of these blocks writing contracts, but Phase 1 cannot claim a complete Chro
 
 The historical blocker is closed by the current-run artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json`. The artifact was produced through the approved existing-Chrome host-backed direct CLI with no browser launch, download, copied profile, or arbitrary CDP endpoint. It records two managed pages/spaces, two visual groups, an unrelated active user tab, snapshots, allowlisted actions, cross-space/stale-lease rejection, takeover/reclaim, cleanup, and worker/host/browser/extension recovery with zero safety counters. `scripts/check_phase_0_baseline.py research/phase-0-baseline.md` returns `status: pass` across all five gates.
 
-The source audit then hardened same-session recovery, lifecycle invalidation, persistent safety counters, generation reconciliation, cleanup truncation checks, Native Messaging privacy, idempotent fence acknowledgement, and SDK/host method alignment. Deterministic tests cover those changes. OOPIF/flat debugger sessions, full reference-equivalent waits/actionability/retention, Web Store/managed distribution, Linux/Windows registration, deployed tokenizer/resource baselines, and production rollback remain explicitly owned by later phases; they are not silently claimed as Phase 0 support. Owner: Japneet Kalkat. Impact: Phase 0 bounded exit gate passed; Phase 1 is ready to activate.
+The source audit then hardened same-session recovery, lifecycle invalidation, persistent safety counters, generation reconciliation, cleanup truncation checks, Native Messaging privacy, idempotent fence acknowledgement, and SDK/host method alignment. Deterministic tests cover those changes. OOPIF/flat debugger sessions, full reference-equivalent waits/actionability/retention, Web Store/managed distribution, Linux/Windows registration, and deployed tokenizer/resource baselines remain explicitly owned by later phases; they are not silently claimed as Phase 0 support. Owner: Japneet Kalkat. Impact: Phase 0 bounded exit gate passed; Phase 1 is ready to activate.
 
 ## Scope
 
@@ -63,7 +63,7 @@ The source audit then hardened same-session recovery, lifecycle invalidation, pe
 - Test-only extension/host probe and local fixture pages.
 - Native Messaging framing/handshake probe, extension-origin validation, payload-size behavior, reconnect, and host lock behavior.
 - Real Chrome debugger attach/event/frame/OOPIF capability tests.
-- Two-space/two-agent/user-tab coexistence vertical slice with no production default rollout.
+- Two-space/two-agent/user-tab coexistence vertical slice for the direct product.
 - Baselines for current direct CLI, proposed persistent host/SDK, snapshot scans/tokens, action latency, Chrome CPU/RSS, and extension/host recovery.
 - A production-grade test manifest, deterministic clock/scheduler/fake-Chrome harness, replayable fault traces, realistic MCP workflow corpus, and headed-Chrome matrix.
 - Capability matrix for all current default/extended MCP operations mapped to extension-supported, partial, legacy-only, or unsupported.
@@ -81,8 +81,8 @@ The source audit then hardened same-session recovery, lifecycle invalidation, pe
 
 Installation evidence has two separate targets and statuses:
 
-- **Installation preflight:** a read-only registration/origin/host prerequisite check. It is required before the live Native Messaging probe. `--check-install` only checks prerequisites; it does not prove installation, update, uninstall, downgrade, rollback, or user-tab preservation.
-- **Explicit installation drill:** `run_install_lifecycle.py` records staged test-extension load/reload/uninstall in an owned disposable Chrome; `run_install_drill.py` validates that lifecycle record separately from registration. This is P0-T7 evidence, not the P0-T3 preflight. The runner-local ledger, one owned fixture page, and process-liveness kill-switch fields do not prove production ledger rollback, mutation fencing, or existing-user-tab preservation.
+- **Installation preflight:** a read-only registration/origin/host prerequisite check. It is required before the live Native Messaging probe. `--check-install` only checks prerequisites; it does not prove installation, update, uninstall, downgrade, or user-tab preservation.
+- **Explicit installation drill:** `run_install_lifecycle.py` records test-extension load/reload/uninstall in an owned disposable Chrome; `run_install_drill.py` validates that lifecycle record separately from registration. This is P0-T7 evidence, not the P0-T3 preflight. The runner-local ledger, one owned fixture page, and process-liveness fields do not prove production ledger mutation fencing or existing-user-tab preservation.
 
 The test manifest names preflight and drill targets separately. No combined live-probe target may treat `--check-install` as installation evidence. Archived macOS disposable lifecycle/drill artifacts pass the current checker; that result is not proof of the full P0-T7 done-when contract.
 
@@ -151,9 +151,9 @@ The test manifest names preflight and drill targets separately. No combined live
   - **Owner:** Japneet Kalkat.
 
 - [x] P0-T7 — Run the explicit installation drill, separate from installation preflight.
-  - **Files/surfaces:** existing `install/native-messaging/`, extension package metadata, `scripts/register_native_host.py`, `scripts/run_install_lifecycle.py`, `scripts/run_install_drill.py`, and `docs/installation.md`; no default rollout changes. The task must publish macOS/Linux/Windows registration, signing, update, uninstall, and downgrade assumptions even when a platform is deferred.
-  - **Done when:** macOS user-level registration works; Linux/Windows support is either tested or explicitly deferred with an owner; stable/unpacked extension IDs and host manifests are documented; install, update, uninstall, downgrade, and rollback leave user Chrome and tabs unchanged.
-  - **Validation:** `python3 scripts/run_install_lifecycle.py --run --artifact-dir artifacts/p0-installation`, followed by `python3 scripts/run_install_drill.py --drill --required --extension-id hlnmcimoechnbccahemchokemgceaffp --clean-profile --lifecycle-record artifacts/p0-installation/lifecycle-record.json --artifact-dir artifacts/p0-installation`. The archived macOS disposable record/drill passes the current installation checker. The default fixture is `extension/probes/`; version changes are unpacked reloads, preservation checks one owned fixture, and rollback/kill-switch fields use a runner-local ledger and process liveness. This closes the bounded Phase 0 installation feasibility gate. Production Web Store/enterprise distribution, broker kill-switch/durable-ledger rollback, and Linux/Windows registration remain explicit Phase 1/7 follow-ups; no ordinary-user distribution claim is made.
+  - **Files/surfaces:** existing `install/native-messaging/`, extension package metadata, `scripts/register_native_host.py`, `scripts/run_install_lifecycle.py`, `scripts/run_install_drill.py`, and `docs/installation.md`; no changes to product defaults. The task must publish macOS/Linux/Windows registration, signing, update, uninstall, and downgrade assumptions even when a platform is deferred.
+  - **Done when:** macOS user-level registration works; Linux/Windows support is either tested or explicitly deferred with an owner; stable/unpacked extension IDs and host manifests are documented; install, update, uninstall, and downgrade leave user Chrome and tabs unchanged.
+  - **Validation:** `python3 scripts/run_install_lifecycle.py --run --artifact-dir artifacts/p0-installation`, followed by `python3 scripts/run_install_drill.py --drill --required --extension-id hlnmcimoechnbccahemchokemgceaffp --clean-profile --lifecycle-record artifacts/p0-installation/lifecycle-record.json --artifact-dir artifacts/p0-installation`. The archived macOS disposable record/drill passes the current installation checker. The default fixture is `extension/probes/`; version changes are unpacked reloads, preservation checks one owned fixture, and the runner records local ledger and process-liveness evidence. This closes the bounded Phase 0 installation feasibility gate. Production Web Store/enterprise distribution and Linux/Windows registration remain explicit Phase 1/7 follow-ups; no ordinary-user distribution claim is made.
   - **Owner:** Japneet Kalkat.
 
 - [x] P0-T8 — Freeze the baseline addendum and phase gates.
