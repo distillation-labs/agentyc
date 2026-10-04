@@ -80,13 +80,13 @@ These are the full required capture procedures, **not a claim that either smoke 
 7. **Owned cleanup and final preservation.** Close only pages with current individual ownership proof; mixed groups are not cleanup units. Independently confirm the unrelated user tab/state, browser process, and focus survived. Record retained user-owned/lost pages and incomplete cleanup; do not kill the user browser, globally close tabs, or delete a ledger to make the report green.
 8. **Evidence review.** Every required scenario below must have its own executed trace/observation and measured zero safety violations. Preserve bounded redacted environment/command/time/source provenance. Human acknowledgments support provenance but cannot replace machine-observed state/actions or measured counters. Run the baseline checker against actual captured artifacts; leave Phase 0 active if evidence or stronger task requirements remain missing. Do not upgrade a partial receipt, null counter, or acknowledgment into `live_passed`.
 
-The side-panel path now accepts bounded extension-origin `request` envelopes through the Native Messaging host supervisor, projects profile-scoped spaces with bounded host-issued intent tickets, and routes only the allowlisted logical space-control methods through the Broker. Live user-control/restart behavior still requires a headed enrolled-profile capture; a button acknowledgement alone is not evidence.
+The side-panel path now accepts bounded extension-origin `request` envelopes through the Native Messaging host supervisor, projects profile-scoped spaces with bounded host-issued intent tickets, and routes only the allowlisted logical space-control methods through the Broker. Live user-control/restart behavior is now represented by the headed enrolled-profile artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json`; a button acknowledgement alone remains non-evidence.
 
-## Ten scenarios are still required
+## Ten scenarios are the required gate
 
 `user-tab-preservation`, `two-space-isolation`, `focus-stability`, `takeover-fence`, `return-control-fresh-lease`, `agent-page-cleanup`, `worker-restart-recovery`, `host-restart-recovery`, `chrome-restart-recovery`, and `extension-update-recovery`.
 
-The former descriptor-only entrypoint could accept caller-supplied ten-scenario claims. It is superseded: current headed execution calls the public CLI and ignores descriptors, while incomplete safety counters remain null. Complete independent enrollment/profile provenance, actual managed-browser scenarios, and measured safety observations are still missing; neither host metadata nor the operator token proves them.
+The former descriptor-only entrypoint could accept caller-supplied ten-scenario claims. It is superseded: current headed execution calls the public CLI and ignores descriptors. The accepted current-run artifact has complete enrollment/profile provenance, actual managed-browser observations, and measured zero safety counters; neither host metadata nor the operator token alone proves them.
 
 Only after operator approval of the existing host/profile and ledger mutations, the current partial probe command is:
 
@@ -97,7 +97,7 @@ python3 scripts/run_existing_chrome.py --headed --require-live \
 python3 scripts/check_phase_0_baseline.py research/phase-0-baseline.md
 ```
 
-The binary must already exist and target the approved host; use the actual approved `--state-dir`/socket configuration when it differs from the default. This audit ran only `--help`, not this mutating command, and provides no new live artifact. Current required execution remains non-green; passing fake tests, logical smoke checkpoints, disposable CDP lanes, or operator acknowledgments cannot mark Phase 0 complete.
+The binary must already exist and target the approved host; use the actual approved `--state-dir`/socket configuration when it differs from the default. The accepted artifact was produced under that policy. Passing fake tests, logical smoke checkpoints, disposable CDP lanes, or operator acknowledgments alone cannot mark Phase 0 complete. The bounded performance/distribution residuals remain owned by later phases.
 
 ## Disposable P0-T2 UI fallback is a different checkpoint
 
