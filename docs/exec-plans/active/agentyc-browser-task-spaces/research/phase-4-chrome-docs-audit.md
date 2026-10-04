@@ -15,6 +15,9 @@ Audit date: 2026-10-04. This audit uses the current Chrome Developer Documentati
 - Native Messaging uses exact allowlisted extension origins, bounded native-endian frames, independent nonce/sequence/epoch checks, and no page/content-script access to the native port.
 - MV3 worker state is reconstructable from host state plus bounded storage metadata; worker restart reports unknown mutations and does not replay them.
 - Debugger attach now configures `Target.setAutoAttach` with `flatten: true` for Chrome 125+ related targets, recursively configures child iframe sessions, routes child-session events through logical frame bindings, and invalidates child sessions on detach.
+- Root attachment publication is transactional: synchronous related-target events are attributed before auto-attach returns, and setup failure detaches the root before reporting failure.
+- Runtime execution-context and frame lifecycle events now bind logical frame attribution and clean up destroyed/cleared contexts; production Chrome enables the required Page/DOM/Network/Runtime/Accessibility event domains.
+- Enterprise debugger errors including Chrome's `Host access is restricted by policy.` are normalized to the stable policy-denial result.
 - Public debugger commands still reject `Target.setAutoAttach` and raw session/target identifiers. Internal setup is not an agent-facing passthrough.
 - `chrome.tabs.onRemoved`, `onReplaced`, `onUpdated`, `onAttached`, `onDetached`, and activation state remain adapter-private; discarded/frozen state is observed without changing ownership.
 - Side-panel actions now preserve semantics: `pause -> space.pause`, `handoff -> space.handoff`, `stop -> space.return_control`; every sensitive transition remains ticketed.
@@ -22,4 +25,4 @@ Audit date: 2026-10-04. This audit uses the current Chrome Developer Documentati
 
 ## Remaining evidence gates
 
-Headed Chrome 125+ nested-frame/OOPIF behavior, worker/host/browser restart drills, side-panel accessibility and focus workflow, enterprise policy denial, installation/update/uninstall, and existing-profile coexistence remain required live evidence before Phase 4 can be marked complete. No current artifact claims those results.
+Headed Chrome 125+ nested-frame/OOPIF behavior, worker/host/browser restart drills, side-panel accessibility and focus workflow, enterprise policy denial, installation/update/uninstall, and existing-profile coexistence remain required live evidence before Phase 4 can be marked complete. The owned disposable production lifecycle lane now has a source-bound live install/update/downgrade/rollback/uninstall record, but it does not substitute for existing-profile, side-panel, OOPIF, restart, policy, or production-distribution evidence. No current artifact claims those remaining results.
