@@ -4,16 +4,20 @@
 //! [`SnapshotRead`], preserves clean-cache zero-scan metadata, and chooses a
 //! representation only after deterministic coverage and serialized-cost checks.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use agentyc_core::{
     CacheState, ContentHash, DeltaLimits, DeltaOperation, DeltaSequence, ElementKey, ElementKind,
-    Generation, PageId, RefEpoch, ResyncReason, SnapshotBody, SnapshotCoverage, SnapshotDelta,
-    SnapshotDocument, SnapshotEnvelope, SnapshotVersion, SpaceId, TokenBudget,
+    FrameId, FrameVersion, Generation, PageId, RefEpoch, ResyncReason, SnapshotBody,
+    SnapshotCoverage, SnapshotDelta, SnapshotDocument, SnapshotEnvelope, SnapshotMode,
+    SnapshotVersion, SpaceId, TokenBudget, TopologyVersion,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::snapshots::SnapshotRead;
+use crate::snapshots::{PageGeneration, SnapshotRead};
 
 /// Requested context representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +35,182 @@ pub enum ContextMode {
 
 /// Alias used by callers that name the request mode explicitly.
 pub type ContextRequestMode = ContextMode;
+
+/// Error returned by a tokenizer implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenizerError {
+    /// The tokenizer could not represent its count.
+    CountOverflow,
+    /// The tokenizer rejected the serialized input.
+    InvalidInput(String),
+}
+
+impl std::fmt::Display for TokenizerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CountOverflow => formatter.write_str("token count overflow"),
+            Self::InvalidInput(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for TokenizerError {}
+
+/// Tokenizer boundary used for all context token metrics and budgets.
+///
+/// A tokenizer is never inferred from a name. Callers that select a non-default
+/// tokenizer must pass its implementation through [`ContextBuilder::build_with_tokenizer`].
+pub trait Tokenizer: Send + Sync {
+    /// Stable logical tokenizer identifier.
+    fn name(&self) -> &str;
+    /// Count tokens in serialized context text.
+    fn count_tokens(&self, input: &str) -> Result<u64, TokenizerError>;
+    /// Count tokens after the model-context boundary.
+    fn count_model_context_tokens(&self, input: &str) -> Result<u64, TokenizerError> {
+        self.count_tokens(input)
+    }
+}
+
+/// Deterministic fallback tokenizer that counts Unicode scalar values.
+///
+/// This is an actual tokenizer implementation, not a byte-ratio estimate. A
+/// deployed model should provide its tokenizer through [`Tokenizer`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnicodeScalarTokenizer;
+
+impl Tokenizer for UnicodeScalarTokenizer {
+    fn name(&self) -> &str {
+        "unicode_scalars"
+    }
+
+    fn count_tokens(&self, input: &str) -> Result<u64, TokenizerError> {
+        u64::try_from(input.chars().count()).map_err(|_| TokenizerError::CountOverflow)
+    }
+}
+
+/// Logical focus dimensions used to partition context/cache results.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ContextFocus {
+    /// Exact logical frame containing focus, when supplied.
+    pub frame_id: Option<FrameId>,
+    /// Logical element receiving focus, when supplied.
+    pub element_key: Option<ElementKey>,
+}
+
+/// Compatibility alias for callers that use a short focus-key name.
+pub type FocusKey = ContextFocus;
+
+/// Cache key for a context representation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextCacheKey {
+    /// Logical owning space.
+    pub space_id: SpaceId,
+    /// Logical owning page.
+    pub page_id: PageId,
+    /// Exact snapshot version represented by the context read.
+    #[serde(default)]
+    pub snapshot_version: SnapshotVersion,
+    /// Requested context mode.
+    pub mode: ContextMode,
+    /// Logical focus partition.
+    pub focus: ContextFocus,
+    /// Serialized/model token budget.
+    pub budget: Option<TokenBudget>,
+    /// Actual tokenizer identifier.
+    pub tokenizer: Option<String>,
+    /// Logical frame topology version.
+    pub topology_version: TopologyVersion,
+    /// Page generation partition.
+    pub generation: PageGeneration,
+    /// Exact frame-version vector partition.
+    #[serde(default)]
+    pub frame_versions: BTreeMap<FrameId, FrameVersion>,
+    /// Delta base version, when the request is base-scoped.
+    pub base_snapshot_version: Option<SnapshotVersion>,
+    /// Delta base hash, when the request is base-scoped.
+    pub base_hash: Option<ContentHash>,
+}
+
+impl ContextCacheKey {
+    /// Construct a cache key from a broker read, request, and logical focus.
+    pub fn from_read(read: &SnapshotRead, request: &ContextRequest, focus: ContextFocus) -> Self {
+        Self::from_read_with_generation(
+            read,
+            request,
+            focus,
+            PageGeneration {
+                target_generation: Generation::new(0),
+                navigation_generation: read.envelope.navigation_generation,
+                document_generation: read.envelope.document_generation,
+            },
+        )
+    }
+
+    /// Construct a cache key with an exact page generation proof.
+    pub fn from_read_with_generation(
+        read: &SnapshotRead,
+        request: &ContextRequest,
+        focus: ContextFocus,
+        generation: PageGeneration,
+    ) -> Self {
+        Self {
+            space_id: read.envelope.space_id.clone(),
+            page_id: read.envelope.page_id.clone(),
+            snapshot_version: read.envelope.snapshot_version,
+            mode: request.mode,
+            focus,
+            budget: request.token_budget,
+            tokenizer: request
+                .tokenizer
+                .clone()
+                .or_else(|| Some(UnicodeScalarTokenizer.name().to_owned())),
+            topology_version: read.envelope.topology_version,
+            generation,
+            frame_versions: read.envelope.frame_versions.clone(),
+            base_snapshot_version: request.base.as_ref().map(|base| base.snapshot_version),
+            base_hash: request.base.as_ref().map(|base| base.snapshot_hash.clone()),
+        }
+    }
+}
+
+impl Ord for ContextCacheKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.space_id
+            .cmp(&other.space_id)
+            .then_with(|| self.page_id.cmp(&other.page_id))
+            .then_with(|| self.snapshot_version.cmp(&other.snapshot_version))
+            .then_with(|| context_mode_rank(self.mode).cmp(&context_mode_rank(other.mode)))
+            .then_with(|| self.focus.cmp(&other.focus))
+            .then_with(|| budget_key(self.budget).cmp(&budget_key(other.budget)))
+            .then_with(|| self.tokenizer.cmp(&other.tokenizer))
+            .then_with(|| self.topology_version.cmp(&other.topology_version))
+            .then_with(|| self.generation.cmp(&other.generation))
+            .then_with(|| self.frame_versions.cmp(&other.frame_versions))
+            .then_with(|| self.base_snapshot_version.cmp(&other.base_snapshot_version))
+            .then_with(|| self.base_hash.cmp(&other.base_hash))
+    }
+}
+
+impl PartialOrd for ContextCacheKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn context_mode_rank(mode: ContextMode) -> u8 {
+    match mode {
+        ContextMode::Auto => 0,
+        ContextMode::Full => 1,
+        ContextMode::Compact => 2,
+        ContextMode::Delta => 3,
+    }
+}
+
+fn budget_key(budget: Option<TokenBudget>) -> (Option<u64>, Option<u64>) {
+    budget.map_or((None, None), |budget| {
+        (budget.serialized_limit, budget.model_context_limit)
+    })
+}
 
 /// Representation actually returned to the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +346,36 @@ impl ContextRequest {
         self.max_serialized_bytes = limit;
         self
     }
+
+    /// Select a tokenizer identity; the matching implementation must be supplied
+    /// to [`ContextBuilder::build_with_tokenizer`].
+    #[must_use]
+    pub fn with_tokenizer(mut self, tokenizer: impl Into<String>) -> Self {
+        self.tokenizer = Some(tokenizer.into());
+        self
+    }
+
+    /// Set bounded delta chain and operation limits.
+    #[must_use]
+    pub const fn with_delta_limits(mut self, limits: DeltaLimits) -> Self {
+        self.delta_limits = limits;
+        self
+    }
+
+    /// Build the compatibility cache key for this request and broker read.
+    pub fn cache_key(&self, read: &SnapshotRead, focus: ContextFocus) -> ContextCacheKey {
+        ContextCacheKey::from_read(read, self, focus)
+    }
+
+    /// Build a cache key with an exact page generation proof.
+    pub fn cache_key_with_generation(
+        &self,
+        read: &SnapshotRead,
+        focus: ContextFocus,
+        generation: PageGeneration,
+    ) -> ContextCacheKey {
+        ContextCacheKey::from_read_with_generation(read, self, focus, generation)
+    }
 }
 
 impl Default for ContextRequest {
@@ -228,15 +438,15 @@ pub struct ContextMetadata {
 /// Token and byte measurements attached to every context result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenMetrics {
-    /// Bytes in the transport representation estimate.
+    /// Bytes in the transport representation.
     pub transport_bytes: u64,
     /// UTF-8 bytes in serialized metadata/body.
     pub utf8_bytes: u64,
-    /// Deterministic serialized token estimate.
+    /// Deterministic serialized token count returned by the tokenizer.
     pub serialized_tokens: u64,
-    /// Deterministic model-context token estimate.
+    /// Model-context token count returned by the tokenizer.
     pub model_context_tokens: u64,
-    /// Tokenizer identifier used for the estimate.
+    /// Tokenizer identifier used for the counts.
     pub tokenizer: Option<String>,
     /// Applied token budget, if any.
     pub budget: Option<TokenBudget>,
@@ -304,11 +514,23 @@ impl ContextBuilder {
         read: &SnapshotRead,
         request: &ContextRequest,
     ) -> Result<ContextOutput, agentyc_core::CoreError> {
-        self.build_envelope(
+        let tokenizer = UnicodeScalarTokenizer;
+        self.build_with_tokenizer(read, request, &tokenizer)
+    }
+
+    /// Build context with the actual tokenizer implementation used for metrics.
+    pub fn build_with_tokenizer(
+        &self,
+        read: &SnapshotRead,
+        request: &ContextRequest,
+        tokenizer: &dyn Tokenizer,
+    ) -> Result<ContextOutput, agentyc_core::CoreError> {
+        self.build_envelope_with_tokenizer(
             &read.envelope,
             read.cache_state,
             read.scan_performed,
             request,
+            tokenizer,
         )
     }
 
@@ -318,7 +540,18 @@ impl ContextBuilder {
         envelope: &SnapshotEnvelope,
         request: &ContextRequest,
     ) -> Result<ContextOutput, agentyc_core::CoreError> {
-        self.build_envelope(envelope, CacheState::Fresh, true, request)
+        let tokenizer = UnicodeScalarTokenizer;
+        self.build_snapshot_with_tokenizer(envelope, request, &tokenizer)
+    }
+
+    /// Build a snapshot context with an actual tokenizer implementation.
+    pub fn build_snapshot_with_tokenizer(
+        &self,
+        envelope: &SnapshotEnvelope,
+        request: &ContextRequest,
+        tokenizer: &dyn Tokenizer,
+    ) -> Result<ContextOutput, agentyc_core::CoreError> {
+        self.build_envelope_with_tokenizer(envelope, CacheState::Fresh, true, request, tokenizer)
     }
 
     /// Alias for [`Self::build`].
@@ -338,25 +571,96 @@ impl ContextBuilder {
         scan_performed: bool,
         request: &ContextRequest,
     ) -> Result<ContextOutput, agentyc_core::CoreError> {
+        let tokenizer = UnicodeScalarTokenizer;
+        self.build_envelope_with_tokenizer(
+            envelope,
+            cache_state,
+            scan_performed,
+            request,
+            &tokenizer,
+        )
+    }
+
+    fn build_envelope_with_tokenizer(
+        &self,
+        envelope: &SnapshotEnvelope,
+        cache_state: CacheState,
+        scan_performed: bool,
+        request: &ContextRequest,
+        tokenizer: &dyn Tokenizer,
+    ) -> Result<ContextOutput, agentyc_core::CoreError> {
         envelope
             .validate()
             .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
-        if cache_state == CacheState::Cached && !scan_performed {
-            return self.metadata_only(envelope, cache_state, scan_performed, request);
+        validate_tokenizer(request, tokenizer)?;
+        if cache_state == CacheState::Cached
+            && !scan_performed
+            && request.clean_cache_metadata_only
+            && request.mode != ContextMode::Delta
+        {
+            return self.metadata_only(envelope, cache_state, scan_performed, request, tokenizer);
         }
 
-        let current_document =
-            match current_document(envelope, request.base.as_ref(), &request.redaction) {
-                Ok(document) => document,
-                Err(error) => {
-                    let reason = envelope.resync_reason.unwrap_or(ResyncReason::BaseMissing);
-                    return if request.allow_resync {
-                        self.resync_output(envelope, cache_state, scan_performed, request, reason)
-                    } else {
-                        Err(error)
-                    };
-                }
+        if request.mode == ContextMode::Delta {
+            let Some(base) = request.base.as_ref() else {
+                return if request.allow_resync {
+                    self.resync_output(
+                        envelope,
+                        cache_state,
+                        scan_performed,
+                        request,
+                        ResyncReason::BaseMissing,
+                        tokenizer,
+                    )
+                } else {
+                    Err(agentyc_core::CoreError::new(
+                        agentyc_core::ErrorCode::EventLagged,
+                        "delta context requires a retained base",
+                    ))
+                };
             };
+            if let Some(reason) = base_resync_reason(envelope, base, request.delta_limits) {
+                return if request.allow_resync {
+                    self.resync_output(
+                        envelope,
+                        cache_state,
+                        scan_performed,
+                        request,
+                        reason,
+                        tokenizer,
+                    )
+                } else {
+                    Err(agentyc_core::CoreError::new(
+                        agentyc_core::ErrorCode::EventLagged,
+                        format!("snapshot base requires resync: {reason:?}"),
+                    ))
+                };
+            }
+        }
+
+        let current_document = match current_document(
+            envelope,
+            request.base.as_ref(),
+            &request.redaction,
+            request.delta_limits,
+        ) {
+            Ok(document) => document,
+            Err(error) => {
+                let reason = envelope.resync_reason.unwrap_or(ResyncReason::BaseMissing);
+                return if request.allow_resync {
+                    self.resync_output(
+                        envelope,
+                        cache_state,
+                        scan_performed,
+                        request,
+                        reason,
+                        tokenizer,
+                    )
+                } else {
+                    Err(error)
+                };
+            }
+        };
         let (current_elements, redacted_output) = match &envelope.delta_or_elements {
             SnapshotBody::Elements { .. } => {
                 let result = redact_elements_from_envelope(envelope, &request.redaction)?;
@@ -374,23 +678,54 @@ impl ContextBuilder {
         let compact_body = SnapshotBody::Elements {
             elements: compact_elements,
         };
-        let base_document = request
-            .base
-            .as_ref()
-            .and_then(|base| redacted_base_document(base, &request.redaction).ok());
+        let mut delta_failure_reason = None;
+        let base_document = request.base.as_ref().and_then(|base| {
+            match redacted_base_document(base, &request.redaction) {
+                Ok(document) => Some(document),
+                Err(_) => {
+                    delta_failure_reason = Some(ResyncReason::BaseMissing);
+                    None
+                }
+            }
+        });
         let delta_body = base_document.as_ref().and_then(|base| {
             if !base_matches(envelope, request.base.as_ref()?, base) {
+                delta_failure_reason = Some(ResyncReason::Incoherent);
                 return None;
             }
-            build_delta_body(
+            match build_delta_body(
                 envelope,
                 request.base.as_ref()?,
                 base,
                 &current_document,
                 request.delta_limits,
-            )
-            .ok()
+            ) {
+                Ok(body) => Some(body),
+                Err(error) => {
+                    delta_failure_reason = Some(delta_failure_reason_for(&error));
+                    None
+                }
+            }
         });
+
+        if request.mode == ContextMode::Delta && delta_body.is_none() {
+            let reason = delta_failure_reason.unwrap_or(ResyncReason::BaseMissing);
+            return if request.allow_resync {
+                self.resync_output(
+                    envelope,
+                    cache_state,
+                    scan_performed,
+                    request,
+                    reason,
+                    tokenizer,
+                )
+            } else {
+                Err(agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::EventLagged,
+                    format!("delta construction requires resync: {reason:?}"),
+                ))
+            };
+        }
 
         let full_cost = body_cost(&full_body)?;
         let compact_cost = body_cost(&compact_body)?;
@@ -415,7 +750,14 @@ impl ContextBuilder {
                 ResyncReason::CostExceeded
             };
             return if request.allow_resync {
-                self.resync_output(envelope, cache_state, scan_performed, request, reason)
+                self.resync_output(
+                    envelope,
+                    cache_state,
+                    scan_performed,
+                    request,
+                    reason,
+                    tokenizer,
+                )
             } else {
                 Err(agentyc_core::CoreError::new(
                     agentyc_core::ErrorCode::MessageTooLarge,
@@ -454,7 +796,7 @@ impl ContextBuilder {
                 resync_reason,
             },
         );
-        if !fits_budget(&metadata, body.as_ref(), request)?
+        if !fits_budget(&metadata, body.as_ref(), request, tokenizer)?
             && let Some(ContextBody::Elements { elements }) = body.as_mut()
         {
             let original_len = elements.len();
@@ -470,7 +812,7 @@ impl ContextBuilder {
                 metadata.resync_reason = resync_reason;
             }
         }
-        if !fits_budget(&metadata, body.as_ref(), request)? {
+        if !fits_budget(&metadata, body.as_ref(), request, tokenizer)? {
             if request.allow_resync {
                 return self.resync_output(
                     envelope,
@@ -478,6 +820,7 @@ impl ContextBuilder {
                     scan_performed,
                     request,
                     ResyncReason::CostExceeded,
+                    tokenizer,
                 );
             }
             return Err(agentyc_core::CoreError::new(
@@ -488,7 +831,7 @@ impl ContextBuilder {
         metadata.truncated = truncated;
         metadata.resync_required = resync_required;
         metadata.resync_reason = resync_reason;
-        let metrics = measure(&metadata, body.as_ref(), request);
+        let metrics = measure(&metadata, body.as_ref(), request, tokenizer)?;
         Ok(ContextOutput {
             metadata,
             body,
@@ -503,6 +846,7 @@ impl ContextBuilder {
         cache_state: CacheState,
         scan_performed: bool,
         request: &ContextRequest,
+        tokenizer: &dyn Tokenizer,
     ) -> Result<ContextOutput, agentyc_core::CoreError> {
         let metadata = make_metadata(
             envelope,
@@ -518,13 +862,13 @@ impl ContextBuilder {
                 resync_reason: envelope.resync_reason,
             },
         );
-        if !fits_budget(&metadata, None, request)? {
+        if !fits_budget(&metadata, None, request, tokenizer)? {
             return Err(agentyc_core::CoreError::new(
                 agentyc_core::ErrorCode::MessageTooLarge,
                 "clean-cache context metadata exceeds its serialized budget",
             ));
         }
-        let metrics = measure(&metadata, None, request);
+        let metrics = measure(&metadata, None, request, tokenizer)?;
         Ok(ContextOutput {
             metadata,
             body: None,
@@ -539,6 +883,7 @@ impl ContextBuilder {
         scan_performed: bool,
         request: &ContextRequest,
         reason: ResyncReason,
+        tokenizer: &dyn Tokenizer,
     ) -> Result<ContextOutput, agentyc_core::CoreError> {
         let metadata = make_metadata(
             envelope,
@@ -555,13 +900,13 @@ impl ContextBuilder {
             },
         );
         let body = Some(SnapshotBody::Resync { reason });
-        if !fits_budget(&metadata, body.as_ref(), request)? {
+        if !fits_budget(&metadata, body.as_ref(), request, tokenizer)? {
             return Err(agentyc_core::CoreError::new(
                 agentyc_core::ErrorCode::MessageTooLarge,
                 "resynchronization context marker exceeds its serialized budget",
             ));
         }
-        let metrics = measure(&metadata, body.as_ref(), request);
+        let metrics = measure(&metadata, body.as_ref(), request, tokenizer)?;
         Ok(ContextOutput {
             metadata,
             body,
@@ -591,10 +936,95 @@ fn make_metadata(envelope: &SnapshotEnvelope, state: MetadataState) -> ContextMe
     }
 }
 
+fn validate_tokenizer(
+    request: &ContextRequest,
+    tokenizer: &dyn Tokenizer,
+) -> Result<(), agentyc_core::CoreError> {
+    if request
+        .tokenizer
+        .as_deref()
+        .is_some_and(|requested| requested != tokenizer.name())
+    {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "requested tokenizer {:?} does not match supplied tokenizer {:?}",
+            request.tokenizer,
+            tokenizer.name()
+        )));
+    }
+    Ok(())
+}
+
+fn base_resync_reason(
+    current: &SnapshotEnvelope,
+    base: &SnapshotEnvelope,
+    limits: DeltaLimits,
+) -> Option<ResyncReason> {
+    if current.space_id != base.space_id || current.page_id != base.page_id {
+        return Some(ResyncReason::BaseMissing);
+    }
+    if base.validate().is_err()
+        || matches!(
+            base.cache_state,
+            CacheState::Stale | CacheState::Invalidated
+        )
+        || base.resync_required
+        || base.truncated
+        || !base.coherent
+        || base.coverage != SnapshotCoverage::Complete
+    {
+        return Some(base.resync_reason.unwrap_or(ResyncReason::Incoherent));
+    }
+    if !matches!(base.mode, SnapshotMode::Full) {
+        return Some(if matches!(base.mode, SnapshotMode::Delta) {
+            ResyncReason::UnsupportedDelta
+        } else {
+            ResyncReason::Incoherent
+        });
+    }
+    if current.navigation_generation != base.navigation_generation
+        || current.document_generation != base.document_generation
+    {
+        return Some(ResyncReason::NavigationChanged);
+    }
+    if current.topology_version != base.topology_version
+        || current.frame_versions != base.frame_versions
+    {
+        return Some(ResyncReason::Incoherent);
+    }
+    if current.resync_required || current.truncated || !current.coherent {
+        return Some(current.resync_reason.unwrap_or(ResyncReason::Incoherent));
+    }
+    if current.snapshot_version <= base.snapshot_version {
+        return Some(ResyncReason::BaseMissing);
+    }
+    let version_gap = current
+        .snapshot_version
+        .get()
+        .saturating_sub(base.snapshot_version.get());
+    if version_gap > u64::from(limits.max_chain_depth) {
+        return Some(ResyncReason::ChainTooLong);
+    }
+    if limits.max_chain_depth == 0
+        || matches!(&current.delta_or_elements, SnapshotBody::Delta { delta } if delta.chain_depth >= limits.max_chain_depth)
+    {
+        return Some(ResyncReason::ChainTooLong);
+    }
+    None
+}
+
+fn delta_failure_reason_for(error: &agentyc_core::CoreError) -> ResyncReason {
+    match error.code {
+        agentyc_core::ErrorCode::MessageTooLarge => ResyncReason::ChainTooLong,
+        agentyc_core::ErrorCode::StaleRef => ResyncReason::BaseHashMismatch,
+        _ => ResyncReason::Incoherent,
+    }
+}
+
 fn current_document(
     envelope: &SnapshotEnvelope,
     base: Option<&SnapshotEnvelope>,
     redaction: &RedactionPolicy,
+    limits: DeltaLimits,
 ) -> Result<SnapshotDocument, agentyc_core::CoreError> {
     match &envelope.delta_or_elements {
         SnapshotBody::Elements { elements } => SnapshotDocument::new(
@@ -611,7 +1041,7 @@ fn current_document(
             };
             let base_document = redacted_base_document(base, redaction)?;
             delta
-                .apply(&base_document, DeltaLimits::default())
+                .apply(&base_document, limits)
                 .map_err(|error| error.core_error())
         }
         SnapshotBody::Resync { reason } => Err(agentyc_core::CoreError::new(
@@ -720,7 +1150,9 @@ fn base_matches(
         && base_envelope.snapshot_hash == base.snapshot_hash
         && base_envelope.navigation_generation == current.navigation_generation
         && base_envelope.document_generation == current.document_generation
-        && base_envelope.snapshot_version != current.snapshot_version
+        && base_envelope.topology_version == current.topology_version
+        && base_envelope.frame_versions == current.frame_versions
+        && base_envelope.snapshot_version < current.snapshot_version
 }
 
 fn build_delta_body(
@@ -898,7 +1330,7 @@ fn select_body(
         ContextMode::Delta => {
             if !delta_available {
                 None
-            } else if delta_cost.is_some_and(|cost| cost < full_cost && cost < compact_cost) {
+            } else {
                 candidates
                     .iter()
                     .find(|(representation, _, _)| *representation == ContextRepresentation::Delta)
@@ -909,19 +1341,6 @@ fn select_body(
                             SnapshotCoverage::Complete,
                             false,
                         )
-                    })
-            } else {
-                candidates
-                    .iter()
-                    .filter(|(representation, _, _)| {
-                        matches!(
-                            representation,
-                            ContextRepresentation::Compact | ContextRepresentation::Full
-                        )
-                    })
-                    .min_by(|left, right| left.2.cmp(&right.2))
-                    .map(|(representation, body, _)| {
-                        (*representation, body.clone(), envelope.coverage, false)
                     })
             }
         }
@@ -976,32 +1395,51 @@ fn truncate_elements(
     Ok(())
 }
 
+fn serialized_context(
+    metadata: &ContextMetadata,
+    body: Option<&SnapshotBody>,
+) -> Result<(u64, String), agentyc_core::CoreError> {
+    let metadata = serde_json::to_string(metadata)
+        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    let body = body
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
+    let utf8_bytes = metadata
+        .len()
+        .saturating_add(body.as_ref().map_or(0, String::len)) as u64;
+    let mut serialized = metadata;
+    if let Some(body) = body {
+        serialized.push_str(&body);
+    }
+    Ok((utf8_bytes, serialized))
+}
+
+fn tokenizer_count(result: Result<u64, TokenizerError>) -> Result<u64, agentyc_core::CoreError> {
+    result.map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))
+}
+
 fn fits_budget(
     metadata: &ContextMetadata,
     body: Option<&SnapshotBody>,
     request: &ContextRequest,
+    tokenizer: &dyn Tokenizer,
 ) -> Result<bool, agentyc_core::CoreError> {
-    let metadata_bytes = serde_json::to_vec(metadata)
-        .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?
-        .len();
-    let body_bytes = body.map(body_cost).transpose()?.unwrap_or(0);
-    let bytes = metadata_bytes.saturating_add(body_bytes);
+    let metrics = measure(metadata, body, request, tokenizer)?;
     if request
         .max_serialized_bytes
-        .is_some_and(|limit| bytes > limit)
+        .is_some_and(|limit| metrics.utf8_bytes > limit as u64)
     {
         return Ok(false);
     }
-    let serialized_tokens = estimate_tokens(bytes);
-    let model_context_tokens = estimate_tokens(bytes);
     if request.token_budget.is_some_and(|budget| {
         budget
             .serialized_limit
-            .is_some_and(|limit| serialized_tokens > limit)
+            .is_some_and(|limit| metrics.serialized_tokens > limit)
     }) || request.token_budget.is_some_and(|budget| {
         budget
             .model_context_limit
-            .is_some_and(|limit| model_context_tokens > limit)
+            .is_some_and(|limit| metrics.model_context_tokens > limit)
     }) {
         return Ok(false);
     }
@@ -1012,25 +1450,19 @@ fn measure(
     metadata: &ContextMetadata,
     body: Option<&SnapshotBody>,
     request: &ContextRequest,
-) -> TokenMetrics {
-    let metadata_bytes = serde_json::to_vec(metadata).map_or(0, |bytes| bytes.len());
-    let body_bytes = body
-        .and_then(|body| serde_json::to_vec(body).ok())
-        .map_or(0, |bytes| bytes.len());
-    let utf8_bytes = metadata_bytes.saturating_add(body_bytes) as u64;
-    let transport_bytes = utf8_bytes;
-    TokenMetrics {
-        transport_bytes,
+    tokenizer: &dyn Tokenizer,
+) -> Result<TokenMetrics, agentyc_core::CoreError> {
+    let (utf8_bytes, serialized) = serialized_context(metadata, body)?;
+    let serialized_tokens = tokenizer_count(tokenizer.count_tokens(&serialized))?;
+    let model_context_tokens = tokenizer_count(tokenizer.count_model_context_tokens(&serialized))?;
+    Ok(TokenMetrics {
+        transport_bytes: utf8_bytes,
         utf8_bytes,
-        serialized_tokens: estimate_tokens(utf8_bytes as usize),
-        model_context_tokens: estimate_tokens(utf8_bytes as usize),
-        tokenizer: request.tokenizer.clone(),
+        serialized_tokens,
+        model_context_tokens,
+        tokenizer: Some(tokenizer.name().to_owned()),
         budget: request.token_budget,
-    }
-}
-
-fn estimate_tokens(bytes: usize) -> u64 {
-    bytes.div_ceil(4) as u64
+    })
 }
 
 #[cfg(test)]
@@ -1197,6 +1629,152 @@ mod tests {
         );
         assert!(output.metadata.resync_required);
         assert!(output.metrics.serialized_tokens > 0);
+    }
+
+    #[derive(Debug)]
+    struct FixedTokenizer;
+
+    impl Tokenizer for FixedTokenizer {
+        fn name(&self) -> &str {
+            "fixed"
+        }
+
+        fn count_tokens(&self, _input: &str) -> Result<u64, TokenizerError> {
+            Ok(7)
+        }
+
+        fn count_model_context_tokens(&self, _input: &str) -> Result<u64, TokenizerError> {
+            Ok(11)
+        }
+    }
+
+    #[test]
+    fn tokenizer_interface_controls_metrics_and_rejects_mismatched_names() {
+        let envelope = snapshot();
+        let read = SnapshotRead {
+            envelope,
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+        let tokenizer = FixedTokenizer;
+        let request = ContextRequest::full().with_tokenizer("fixed");
+        let output = ContextBuilder::new()
+            .build_with_tokenizer(&read, &request, &tokenizer)
+            .expect("context");
+        assert_eq!(output.metrics.serialized_tokens, 7);
+        assert_eq!(output.metrics.model_context_tokens, 11);
+        assert_eq!(output.metrics.tokenizer.as_deref(), Some("fixed"));
+
+        let mismatch = ContextBuilder::new().build_with_tokenizer(
+            &read,
+            &ContextRequest::full().with_tokenizer("other"),
+            &tokenizer,
+        );
+        assert_eq!(
+            mismatch.expect_err("mismatched tokenizer").code,
+            agentyc_core::ErrorCode::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn delta_mode_resyncs_for_missing_stale_or_lagged_bases() {
+        let base = envelope_with_elements(many_controls(), 1, 1);
+        let current = envelope_with_elements(many_controls(), 100, 1);
+        let read = SnapshotRead {
+            envelope: current.clone(),
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+
+        let missing = ContextBuilder::new()
+            .build(&read, &ContextRequest::delta(base.clone()).with_base(None))
+            .expect("missing-base resync");
+        assert_eq!(
+            missing.metadata.representation,
+            ContextRepresentation::Resync
+        );
+        assert_eq!(
+            missing.metadata.resync_reason,
+            Some(ResyncReason::BaseMissing)
+        );
+
+        let mut stale_base = base.clone();
+        stale_base.cache_state = CacheState::Invalidated;
+        let stale = ContextBuilder::new()
+            .build(
+                &read,
+                &ContextRequest::delta(stale_base).with_delta_limits(DeltaLimits {
+                    max_operations: 128,
+                    max_chain_depth: 128,
+                }),
+            )
+            .expect("stale-base resync");
+        assert_eq!(stale.metadata.representation, ContextRepresentation::Resync);
+
+        let lagged = ContextBuilder::new()
+            .build(
+                &read,
+                &ContextRequest::delta(base).with_delta_limits(DeltaLimits {
+                    max_operations: 128,
+                    max_chain_depth: 8,
+                }),
+            )
+            .expect("lagged-base resync");
+        assert_eq!(
+            lagged.metadata.representation,
+            ContextRepresentation::Resync
+        );
+        assert_eq!(
+            lagged.metadata.resync_reason,
+            Some(ResyncReason::ChainTooLong)
+        );
+    }
+
+    #[test]
+    fn delta_mode_resyncs_when_frame_topology_or_operation_bounds_fail() {
+        let base = envelope_with_elements(many_controls(), 1, 1);
+        let mut topology_changed = envelope_with_elements(many_controls(), 2, 1);
+        topology_changed.topology_version = TopologyVersion::new(2);
+        let topology_read = SnapshotRead {
+            envelope: topology_changed,
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+        let topology = ContextBuilder::new()
+            .build(&topology_read, &ContextRequest::delta(base.clone()))
+            .expect("topology resync");
+        assert_eq!(
+            topology.metadata.representation,
+            ContextRepresentation::Resync
+        );
+        assert_eq!(
+            topology.metadata.resync_reason,
+            Some(ResyncReason::Incoherent)
+        );
+
+        let mut changed_elements = many_controls();
+        changed_elements[0]
+            .attributes
+            .insert("aria-label".to_owned(), "changed".to_owned());
+        let current = envelope_with_elements(changed_elements, 2, 1);
+        let operation_limited = ContextBuilder::new()
+            .build(
+                &SnapshotRead {
+                    envelope: current,
+                    cache_state: CacheState::Fresh,
+                    scan_performed: true,
+                },
+                &ContextRequest::delta(base).with_delta_limits(DeltaLimits {
+                    max_operations: 0,
+                    max_chain_depth: 8,
+                }),
+            )
+            .expect("operation-bound resync");
+        assert_eq!(
+            operation_limited.metadata.representation,
+            ContextRepresentation::Resync
+        );
+        assert!(operation_limited.metadata.resync_required);
     }
 
     #[test]
