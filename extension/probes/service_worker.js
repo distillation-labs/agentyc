@@ -316,6 +316,8 @@ async function runDebuggerProbe(tab, expectedUrl = null) {
   let detachError = false;
   let output = null;
   try {
+    // The disposable probe uses the Chrome 154 debugger protocol revision;
+    // the product bridge uses the documented minimum version in its adapter.
     await chrome.debugger.attach(target, "1.3");
     attached = true;
     await chrome.debugger.sendCommand(target, "Runtime.enable");
