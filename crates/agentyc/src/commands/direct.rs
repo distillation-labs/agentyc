@@ -73,6 +73,8 @@ pub enum SpaceCommand {
     Create(SpaceCreateArgs),
     /// List logical spaces visible to the current principal.
     List,
+    /// Remove bounded, cleanup-proven released spaces owned by this principal.
+    Prune(SpacePruneArgs),
     /// Claim an available logical space with a lease.
     Claim(LeaseArgs),
     /// Renew the current logical lease.
@@ -128,6 +130,14 @@ pub struct SpaceCreateArgs {
     /// User-facing logical label.
     #[arg(long)]
     pub label: String,
+}
+
+/// Arguments for bounded released-space pruning.
+#[derive(Debug, Clone, Args)]
+pub struct SpacePruneArgs {
+    /// Maximum number of released spaces to remove.
+    #[arg(long, default_value_t = 8)]
+    pub max_count: u64,
 }
 
 /// Arguments shared by lease acquisition and takeover.
