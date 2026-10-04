@@ -508,6 +508,10 @@ impl Drop for ClientPermit {
 fn serve_client(mut stream: std::os::unix::net::UnixStream, broker: Broker) {
     let mut decoder = FrameDecoder::new(DEFAULT_MAX_FRAME_PAYLOAD_BYTES);
     let mut server = ProtocolServer::new(broker);
+    let writer = match stream.try_clone() {
+        Ok(writer) => Arc::new(Mutex::new(writer)),
+        Err(_) => return,
+    };
     let mut buffer = vec![0_u8; READ_BUFFER_BYTES];
 
     loop {
@@ -522,6 +526,36 @@ fn serve_client(mut stream: std::os::unix::net::UnixStream, broker: Broker) {
             Err(_) => break,
         };
         for payload in payloads {
+            let wait_request = decode_wait_request(&payload);
+            if let Some(request) = wait_request {
+                let worker = match server.fork_for_connection() {
+                    Ok(worker) => worker,
+                    Err(error) => {
+                        debug_local_log(&format!("local wait worker setup failed: {error}"));
+                        let _ = server.close();
+                        return;
+                    }
+                };
+                let writer_for_worker = Arc::clone(&writer);
+                if thread::Builder::new()
+                    .name("agentyc-local-wait".to_owned())
+                    .spawn(move || {
+                        let mut worker = worker;
+                        let output = worker
+                            .dispatch_typed(Envelope::Request(request))
+                            .and_then(encode_typed_responses);
+                        if let Ok(output) = output {
+                            let _ = write_local_output(&writer_for_worker, &output);
+                        }
+                        drop(worker);
+                    })
+                    .is_err()
+                {
+                    let _ = server.close();
+                    return;
+                }
+                continue;
+            }
             let output = match server.handle_payload(&payload) {
                 Ok(output) => output,
                 Err(error) => {
@@ -536,21 +570,57 @@ fn serve_client(mut stream: std::os::unix::net::UnixStream, broker: Broker) {
                             let _ = writeln!(file, "local protocol error: {error}");
                         }
                     }
+                    server.cancel_all();
                     let _ = server.close();
                     return;
                 }
             };
-            if stream.write_all(&output).is_err() || stream.flush().is_err() {
+            if !write_local_output(&writer, &output) {
+                server.cancel_all();
                 let _ = server.close();
                 return;
             }
         }
     }
+    server.cancel_all();
     if decoder.finish().is_err() {
         let _ = server.close();
         return;
     }
     let _ = server.close();
+}
+
+#[cfg(unix)]
+fn decode_wait_request(payload: &[u8]) -> Option<RequestEnvelope> {
+    let text = std::str::from_utf8(payload).ok()?;
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    crate::protocol::validate_wire_envelope(&value).ok()?;
+    let envelope: Envelope = serde_json::from_value(value).ok()?;
+    match envelope {
+        Envelope::Request(request) if request.method == "wait.for" => Some(request),
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+fn encode_typed_responses(values: Vec<serde_json::Value>) -> Result<Vec<u8>, HostError> {
+    let mut output = Vec::new();
+    for value in values {
+        let json = serde_json::to_vec(&value)?;
+        output.extend_from_slice(&agentyc_core::encode_frame(
+            &json,
+            DEFAULT_MAX_FRAME_PAYLOAD_BYTES,
+        )?);
+    }
+    Ok(output)
+}
+
+#[cfg(unix)]
+fn write_local_output(writer: &Arc<Mutex<std::os::unix::net::UnixStream>>, output: &[u8]) -> bool {
+    let Ok(mut writer) = writer.lock() else {
+        return false;
+    };
+    writer.write_all(output).is_ok() && writer.flush().is_ok()
 }
 
 #[cfg(unix)]
@@ -695,6 +765,92 @@ mod tests {
             .expect("second client survives first disconnect");
         assert!(!read_frame(&mut second).is_empty());
         drop(second);
+        server.stop();
+    }
+
+    #[test]
+    fn local_wait_can_be_cancelled_from_a_concurrent_frame() {
+        let directory = tempdir().expect("directory");
+        let socket_path = directory.path().join("host.sock");
+        let broker =
+            Broker::open(directory.path().join("state"), FakeBridge::new()).expect("broker");
+        let server = LocalHostServer::start(broker, &socket_path).expect("server");
+        let mut client = UnixStream::connect(server.socket_path()).expect("client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("timeout");
+        client
+            .write_all(
+                &agentyc_core::encode_frame(
+                    &serde_json::to_vec(&hello("wait-cancel")).expect("hello"),
+                    DEFAULT_MAX_FRAME_PAYLOAD_BYTES,
+                )
+                .expect("hello frame"),
+            )
+            .expect("hello");
+        let _ = read_frame(&mut client);
+
+        let request_id = RequestId::from_suffix("wait-cancel").expect("request");
+        let wait = RequestEnvelope::<BTreeMap<String, String>> {
+            protocol: PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            method: "wait.for".to_owned(),
+            params: BTreeMap::from([
+                (
+                    "condition".to_owned(),
+                    r#"{"kind":"event_kind","event":"connection.changed"}"#.to_owned(),
+                ),
+                ("timeout_ms".to_owned(), "10000".to_owned()),
+            ]),
+            deadline_ms: None,
+            idempotency_key: None,
+        };
+        client
+            .write_all(
+                &agentyc_core::encode_frame(
+                    &serde_json::to_vec(&Envelope::Request(wait)).expect("wait"),
+                    DEFAULT_MAX_FRAME_PAYLOAD_BYTES,
+                )
+                .expect("wait frame"),
+            )
+            .expect("wait");
+        thread::sleep(Duration::from_millis(75));
+
+        let cancel = Envelope::<BTreeMap<String, String>>::Cancel(agentyc_core::CancelEnvelope {
+            protocol: PROTOCOL_VERSION,
+            request_id,
+            reason: Some("test cancellation".to_owned()),
+        });
+        client
+            .write_all(
+                &agentyc_core::encode_frame(
+                    &serde_json::to_vec(&cancel).expect("cancel"),
+                    DEFAULT_MAX_FRAME_PAYLOAD_BYTES,
+                )
+                .expect("cancel frame"),
+            )
+            .expect("cancel");
+        let first: serde_json::Value =
+            serde_json::from_slice(&read_frame(&mut client)).expect("cancel response");
+        let second: serde_json::Value =
+            serde_json::from_slice(&read_frame(&mut client)).expect("wait response");
+        let values = [first, second];
+
+        assert!(values.iter().any(|value| {
+            value.get("kind").and_then(serde_json::Value::as_str) == Some("response")
+                && value.get("result").is_some_and(|result| {
+                    result.get("cancelled").and_then(serde_json::Value::as_str) == Some("true")
+                })
+        }));
+        assert!(values.iter().any(|value| {
+            value.get("kind").and_then(serde_json::Value::as_str) == Some("response")
+                && value
+                    .get("error")
+                    .and_then(|error| error.get("code"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("cancelled")
+        }));
+        drop(client);
         server.stop();
     }
 }
