@@ -19,7 +19,7 @@
 - **Version/freshness:** commit `0c97698`; retrieved 2026-10-01
 - **Evidence locations:** `tests/mcp_protocol.rs`; `tests/browser_automation.rs`; `tests/e2e_suite.rs`; `tests/benchmark.rs`; `crates/agentyc-tests/src/runner.rs`; `docs/release-gate.md`
 - **Claim:** Current gates cover protocol/tool compatibility, basic browser lifecycle, and MCP transport overhead, but not group isolation, context tokens, concurrent ownership, or scoped event correctness.
-- **Decision impact:** D-01, D-04, D-05; Phase 0 and Phase 7 direct rollout
+- **Decision impact:** D-01, D-04, D-05; Phase 0 and Phase 7 direct-launch validation
 - **Limits:** Some browser tests require Chrome and existing scenario runner has false-green paths.
 - **Confidence:** high
 - **Corroborated by:** S-001
@@ -104,7 +104,7 @@
 - **Evidence locations:** `TargetInfo`, `attachToTarget`, `setAutoAttach`, `createBrowserContext`, `createTarget`, `disposeBrowserContext`, attach/detach/created/destroyed/info-changed events
 - **Claim:** CDP provides browser contexts, context-scoped target creation, attached session IDs, target lifecycle events, and parent/frame metadata; target and session identity must be tracked separately.
 - **Decision impact:** D-01, D-02, D-03, D-05; Phases 1, 3, 4
-- **Limits:** Rolling tip-of-tree source is not a single Chrome milestone; Phase 0/7 direct rollout tests supported versions.
+- **Limits:** Rolling tip-of-tree source is not a single Chrome milestone; Phase 0/7 direct-launch validation tests supported versions.
 - **Confidence:** high
 - **Corroborated by:** S-001, S-013
 
@@ -285,8 +285,8 @@
 - **Version/freshness:** storage page updated 2026-09-11; distribution page retrieved 2026-10-01
 - **Evidence locations:** storage areas/quotas/access levels; Web Store versus unpacked/self-hosted distribution
 - **Claim:** Extension storage persists independently of page cache but has quotas/access levels; ordinary users install extensions signed and hosted by the Chrome Web Store, while self-hosting is for managed environments (including macOS); development can use trusted unpacked extensions only.
-- **Decision impact:** D-13, D-17, D-18; worker metadata strategy, stable extension ID, Native Messaging `allowed_origins`, installer, and rollout.
-- **Limits:** Distribution policy may vary by enterprise management and product cohort.
+- **Decision impact:** D-13, D-17; worker metadata strategy, stable extension ID, Native Messaging `allowed_origins`, and installer.
+- **Limits:** Distribution policy may vary by enterprise management and supported environment.
 - **Confidence:** high
 
 ### S-025 — Superseding independent architecture reviews
@@ -296,7 +296,7 @@
 - **Version/freshness:** retrieved 2026-10-01
 - **Evidence locations:** review outputs summarized in `research/decision-supersession.md` and the revised phase plan
 - **Claim:** Independent reviews converged on an existing-Chrome extension/native-host bridge, host-owned broker below MCP, a persistent local protocol, explicit shared-profile limits, user-visible task-space control, and a primary CLI/SDK.
-- **Decision impact:** D-09–D-18 and all revised phase gates
+- **Decision impact:** D-09–D-17 and all revised phase gates
 - **Limits:** Reviews are design evidence, not runtime proof; Phase 0/7 real-Chrome validation remains authoritative.
 - **Confidence:** medium/high
 
