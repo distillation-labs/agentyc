@@ -1454,6 +1454,61 @@ fn retention_policy_controls_finish_and_release_transitions() {
 }
 
 #[test]
+fn pruning_is_bounded_owner_scoped_and_requires_closed_pages() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    let broker = make_broker(directory.path(), bridge);
+    let owner = authority(&broker, "prune-owner");
+    let other = authority(&broker, "prune-other");
+    let space = broker.create_space(&owner, "prunable").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    broker
+        .finish_space(
+            &space.space_id,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(1),
+        )
+        .expect("finish");
+    broker
+        .release_space(
+            &space.space_id,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(2),
+        )
+        .expect("release");
+
+    assert_eq!(
+        broker
+            .prune_released_spaces(&other, 64)
+            .expect("other prune"),
+        0
+    );
+    assert_eq!(
+        broker
+            .prune_released_spaces(&owner, 0)
+            .expect("no-op prune"),
+        0
+    );
+    assert_eq!(
+        broker
+            .prune_released_spaces(&owner, 1)
+            .expect("owner prune"),
+        1
+    );
+    assert!(
+        broker
+            .list_spaces(&owner)
+            .expect("spaces")
+            .iter()
+            .all(|candidate| candidate.space_id != space.space_id)
+    );
+}
+
+#[test]
 fn unknown_page_cleanup_fails_closed_without_blind_retry() {
     let directory = tempdir().expect("tempdir");
     let bridge = Arc::new(FakeBridge::new());
