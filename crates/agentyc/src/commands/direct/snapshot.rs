@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use agentyc_host::{ContextBuilder, ContextRequest};
 use serde_json::{Value, json};
 
 use super::{
@@ -21,10 +22,12 @@ pub(super) fn run(context: &DirectContext, args: SnapshotArgs) -> DirectResult<V
                 now,
             )
             .map_err(host_error)?;
+        let context = ContextBuilder::new().build(&result, &ContextRequest::auto())?;
         return Ok(json!({
             "space_id": space_id,
             "page_id": page_id,
             "snapshot": result.envelope,
+            "context": context,
             "cache_state": result.cache_state,
             "scan_performed": result.scan_performed,
         }));
@@ -43,6 +46,7 @@ pub(super) fn run(context: &DirectContext, args: SnapshotArgs) -> DirectResult<V
         "space_id": remote_string(&response, "space_id")?,
         "page_id": remote_string(&response, "page_id")?,
         "snapshot": remote_field(&response, "snapshot")?,
+        "context": remote_field(&response, "context")?,
         "cache_state": remote_string(&response, "cache_state")?,
         "scan_performed": remote_field(&response, "scan_performed")?,
     }))
