@@ -74,7 +74,9 @@ test("logical space and lazy page handles never expose browser identities", asyn
     }),
   });
   const client = await connect({ transport });
-  const space = await client.createSpace("alpha");
+  const space = await client.createSpace("alpha", {
+    acceptSharedProfileDisclosure: true,
+  });
   const page = space.page("main");
   assert.equal(space.id, "space_alpha");
   assert.equal(page.id, undefined);
@@ -398,6 +400,7 @@ function frame(envelope) {
 function startProtocolFixture(socketPath) {
   const server = net.createServer((socket) => {
     let buffer = Buffer.alloc(0);
+    const delayedRequests = [];
     socket.on("data", (chunk) => {
       buffer = Buffer.concat([buffer, chunk]);
       while (buffer.length >= 4) {
@@ -430,16 +433,41 @@ function startProtocolFixture(socketPath) {
             }),
           );
         } else if (envelope.kind === "request") {
-          socket.write(
-            frame({
-              kind: "response",
-              protocol: 1,
-              request_id: envelope.request_id,
-              ok: true,
-              result: { method: envelope.method },
-              warnings: [],
-            }),
-          );
+          const outOfOrder = envelope.params?.out_of_order === "yes";
+          const result = outOfOrder
+            ? envelope.method === "space.list"
+              ? {
+                  space_id: JSON.stringify("space_scalar"),
+                  lease_epoch: JSON.stringify(9),
+                  lifecycle: JSON.stringify("agent_owned"),
+                  scan_performed: JSON.stringify(true),
+                  raw_text: "plain_scalar",
+                }
+              : {
+                  broker_epoch: JSON.stringify(4),
+                  profile_bound: JSON.stringify(false),
+                  raw_text: "plain_status",
+                }
+            : { method: envelope.method };
+          const response = {
+            kind: "response",
+            protocol: 1,
+            request_id: envelope.request_id,
+            ok: true,
+            result,
+            warnings: [],
+          };
+          if (outOfOrder) {
+            delayedRequests.push(response);
+            if (delayedRequests.length === 2) {
+              for (const delayed of delayedRequests.toReversed()) {
+                socket.write(frame(delayed));
+              }
+              delayedRequests.length = 0;
+            }
+          } else {
+            socket.write(frame(response));
+          }
         } else if (envelope.kind === "resume") {
           socket.write(
             frame({
@@ -491,6 +519,23 @@ test("local protocol transport uses Rust-compatible framing, handshake, events, 
   try {
     client = await connect({ socketPath, profile: "default" });
     assert.deepEqual(await client.hostStatus(), { method: "host.status" });
+
+    const [scalarResult, statusResult] = await client.batch([
+      { method: "space.list", params: { out_of_order: "yes" } },
+      { method: "host.status", params: { out_of_order: "yes" } },
+    ]);
+    assert.deepEqual(scalarResult, {
+      space_id: "space_scalar",
+      lease_epoch: 9,
+      lifecycle: "agent_owned",
+      scan_performed: true,
+      raw_text: "plain_scalar",
+    });
+    assert.deepEqual(statusResult, {
+      broker_epoch: 4,
+      profile_bound: false,
+      raw_text: "plain_status",
+    });
 
     const received = [];
     const unsubscribe = await client.subscribeEvents(
