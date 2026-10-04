@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">agentyc</title>
+  <desc id="desc">A connected agent path with three nodes</desc>
+  <defs>
+    <linearGradient id="path" x1="18" y1="104" x2="110" y2="20" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#41D9D0" />
+      <stop offset="0.56" stop-color="#7BE8D0" />
+      <stop offset="1" stop-color="#D8F36A" />
+    </linearGradient>
+  </defs>
+
+  <!-- The transparent corners keep the mark legible in Chrome's toolbar mask. -->
+  <rect width="128" height="128" rx="28" fill="#091426" />
+  <rect x="2" y="2" width="124" height="124" rx="26" fill="none" stroke="#1B2C45" stroke-width="2" />
+
+  <!-- Three connected nodes form a control path and a quiet A-shaped silhouette. -->
+  <path d="M22 94 46 39c4-9 11-14 18-14s14 5 18 14l24 55" fill="none" stroke="url(#path)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M38 70h51" fill="none" stroke="#71A8FF" stroke-width="7" stroke-linecap="round" />
+
+  <circle cx="22" cy="94" r="8" fill="#41D9D0" />
+  <circle cx="64" cy="25" r="8" fill="#D8F36A" />
+  <circle cx="106" cy="94" r="8" fill="#FFB454" />
+
+  <!-- A small forward notch gives the path a directional, agent-facing finish. -->
+  <path d="m86 68 9 2-7 6" fill="none" stroke="#091426" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
