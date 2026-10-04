@@ -49,6 +49,41 @@ blocking metric exceeds its signed absolute ceiling or regression budget with a
 non-overlapping confidence interval. Threshold changes require a dated,
 owned decision record.
 
+### P1-T7 threshold decision support
+
+P1-T7 freezes provisional Phase 7 thresholds in the strict versioned record
+[`artifacts/p1-t7-threshold-decision.json`](../artifacts/p1-t7-threshold-decision.json).
+The record has a dated owner signoff (`p1-t7-2026-10-04-v1`, owner Japneet
+Kalkat), a complete metric register, explicit provisional limits and regression
+budgets, methods, owners, and evidence modes. Its production path is direct
+CLI/SDK -> owner-only local IPC -> Rust host/broker -> Chrome Native Messaging
+-> enrolled MV3 extension -> the existing user Chrome profile.
+
+The record's exclusion list rejects disposable CDP, host-only/test-host,
+acknowledgement-only, byte-estimate, source-inspection, and operator-claim-only
+evidence. These sources cannot be promoted to live claims. The sample policy is
+10 warmups, at least 200 valid p95 samples, at least 1,000 valid p99 samples,
+bootstrap 95% confidence intervals, raw samples, complete sample accounting,
+and predeclared exclusions; 30 samples are smoke-only.
+
+Validate the P1-T7 decision contract offline with:
+
+```bash
+python3 scripts/check_release_gate.py \
+  --phase 1 \
+  --decision-record artifacts/p1-t7-threshold-decision.json \
+  --mode offline
+```
+
+Offline validation passes the phase contract but always reports
+`release_eligible=false`; every metric, safety counter, and declared chaos fault
+has a null `not_measured_offline` value/status. Live mode additionally requires
+production-path provenance, raw samples, bootstrap confidence intervals, valid
+counts, central redaction, zero safety counters, and an accounted result for
+every declared fault. Missing or unaccounted chaos faults fail closed. Live
+claims from disposable CDP, host-only, acknowledgement, or byte-estimate
+evidence fail closed. A threshold change requires a reason and a new decision id.
+
 The required production performance suite must compare legacy MCP one-shot, persistent MCP, the local
 protocol, SDK sequential calls, SDK batch calls, full/min/delta snapshots,
 clean/dirty cache, and event-driven waits against polling. Clean snapshots must
@@ -119,6 +154,14 @@ release. A missing source, an offline source in live mode, a skipped/ignored
 scenario, a missing metric, or a redaction/envelope mismatch is a blocker. The
 workflow uploads the report even when the gate fails so the blocker is
 reviewable.
+
+The P1-T7 checker is the earlier threshold-decision contract lane:
+`check_release_gate.py --phase 1 --decision-record <record> --mode offline`.
+It validates the dated owner/signoff, production path, exclusion list, sample
+policy, complete metric register, null `not_measured_offline` values, and
+`release_eligible=false` without claiming live behavior. It is separate from
+the Phase 7 evidence runner; a threshold change without a new decision id is a
+blocker.
 
 Every source artifact is a JSON envelope with `schema_version`, `phase`,
 `kind`, `build_tuple`, UTC timestamp, command provenance, and central
