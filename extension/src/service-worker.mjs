@@ -20,7 +20,6 @@ const FENCE_KEY = "agentyc_space_fences";
 const ACTION_STATE_KEY = "agentyc_action_state";
 const MANAGED_BINDINGS_KEY = "agentyc_managed_bindings";
 const SAFETY_COUNTERS_KEY = "agentyc_safety_counters";
-const SESSION_MARKER_KEY = "agentyc_browser_session_marker";
 const VERSION = (() => {
   try {
     const version = globalThis.chrome?.runtime?.getManifest?.().version;
@@ -337,7 +336,6 @@ export class ServiceWorkerController {
   } = {}) {
     this.chrome = chromeApiOrGlobal(chromeApi);
     this.storage = storageArea ?? this.chrome?.storage?.local;
-    this.sessionStorage = this.chrome?.storage?.session;
     this.hostName = hostName;
     this.now = now;
     this.metadata = {
@@ -363,7 +361,6 @@ export class ServiceWorkerController {
     this.snapshotVersions = new Map();
     this.safetyCounters = { userTabCloses: 0, focusTheft: 0 };
     this.storedSafetyCounters = undefined;
-    this.browserSessionFresh = false;
     this.lifecycleToken = 0;
     this.nativeConnectedOnce = false;
     this.recoveryObserved = false;
@@ -496,25 +493,11 @@ export class ServiceWorkerController {
       stored.browser_session_epoch >= 1
         ? stored.browser_session_epoch
         : 1;
-    let browserSessionEpoch =
+    const browserSessionEpoch =
       Number.isSafeInteger(this.metadata.browserSessionEpoch) &&
       this.metadata.browserSessionEpoch >= 1
         ? this.metadata.browserSessionEpoch
         : previousBrowserSession;
-    let sessionMarker;
-    if (this.sessionStorage?.get) {
-      const sessionValues = await storageGet(this.sessionStorage, [
-        SESSION_MARKER_KEY,
-      ]);
-      sessionMarker = sessionValues[SESSION_MARKER_KEY];
-      this.browserSessionFresh =
-        !isPlainObject(sessionMarker) ||
-        sessionMarker.profile_instance_id !== profileInstanceId;
-      // Keep the prior durable epoch until runtime.onStartup performs the
-      // browser-session transition. Rehydration is disabled while this marker
-      // is absent, so a worker wake during browser startup cannot reclaim an
-      // old tab before the epoch fence is installed.
-    }
     this.metadata = {
       profileInstanceId,
       workerInstanceEpoch,
@@ -550,14 +533,6 @@ export class ServiceWorkerController {
         focus_theft: this.safetyCounters.focusTheft,
       },
     });
-    if (this.sessionStorage?.set) {
-      await storageSet(this.sessionStorage, {
-        [SESSION_MARKER_KEY]: {
-          profile_instance_id: profileInstanceId,
-          browser_session_epoch: browserSessionEpoch,
-        },
-      });
-    }
   }
 
   async persistSafetyCounters() {
@@ -638,12 +613,6 @@ export class ServiceWorkerController {
     await this.tabs.refreshSession().catch(() => {});
     await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
     await this.tabs.refreshSession().catch(() => {});
-    if (this.browserSessionFresh) {
-      this.handleExtensionEvent("browser.session_pending", {
-        reason: "storage.session marker was reset; awaiting runtime.onStartup",
-      });
-      return;
-    }
     const stored = this.storedManagedBindings;
     this.storedManagedBindings = undefined;
     let restored = false;
@@ -1386,14 +1355,6 @@ export class ServiceWorkerController {
         },
       });
       await this.persistSafetyCounters().catch(() => {});
-      if (this.sessionStorage?.set)
-        await storageSet(this.sessionStorage, {
-          [SESSION_MARKER_KEY]: {
-            profile_instance_id: this.metadata.profileInstanceId,
-            browser_session_epoch: nextEpoch,
-          },
-        }).catch(() => {});
-      this.browserSessionFresh = false;
       await this.persistFences().catch(() => {});
       this.handleExtensionEvent("browser.session_changed", {
         browser_session_epoch: nextEpoch,
