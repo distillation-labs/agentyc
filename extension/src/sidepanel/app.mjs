@@ -89,7 +89,7 @@ async function invoke(action, params, space) {
       intentTicket:
         action === "create"
           ? undefined
-          : space?.intent_tickets?.[action] ?? space?.intent_ticket,
+          : (space?.intent_tickets?.[action] ?? space?.intent_ticket),
     });
     if (response?.error)
       state = reduceState(state, {
@@ -112,14 +112,33 @@ async function invoke(action, params, space) {
 function install() {
   document.getElementById("create-space")?.addEventListener("click", () => {
     const input = document.getElementById("space-label");
+    const disclosure = document.getElementById(
+      "profile-disclosure-acknowledged",
+    );
+    if (!(disclosure instanceof HTMLInputElement) || !disclosure.checked) {
+      state = reduceState(state, {
+        type: "agentyc.event",
+        event: "panel.rejected",
+        payload: {
+          code: "profile_disclosure_required",
+          message: "Accept the shared-profile notice before creating a space.",
+        },
+      });
+      render();
+      return;
+    }
     const label = input?.value?.trim() || "Task space";
-    void invoke("create", { label });
+    void invoke("create", {
+      label,
+      profile_scope: "shared_existing_profile",
+      shared_state_notice: "shared_profile_state",
+      isolation_claim: false,
+      profile_disclosure_acknowledged: true,
+    });
     if (input) input.value = "";
   });
   chromeApi?.runtime?.onMessage?.addListener?.((message, sender) => {
-    const expectedUrl = chromeApi?.runtime?.getURL?.(
-      "src/service-worker.mjs",
-    );
+    const expectedUrl = chromeApi?.runtime?.getURL?.("src/service-worker.mjs");
     if (
       !sender ||
       sender.id !== chromeApi?.runtime?.id ||
