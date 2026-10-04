@@ -72,6 +72,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "snapshot".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("create space");
