@@ -47,7 +47,7 @@ export class Page {
   async snapshot(options = {}) {
     await this.create(options);
     return this.space.client.request(
-      "snapshot",
+      "snapshot.read",
       {
         space_id: this.space.id,
         page_id: this._id,
