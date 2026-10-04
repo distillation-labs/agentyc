@@ -11,12 +11,12 @@ use std::{
 };
 
 use agentyc_core::{
-    ActionReceipt, ActionRequest, BrokerEpoch, Capability, CoreError, ErrorCode, LeaseEpoch,
-    PageId, ReconcileToken, SnapshotEnvelope, SpaceId, UnknownReason,
+    ActionId, ActionReceipt, ActionRequest, BrokerEpoch, Capability, CoreError, ErrorCode,
+    LeaseEpoch, PageId, ReconcileToken, SnapshotEnvelope, SpaceId, UnknownReason,
 };
 use serde_json::{Map, Value, json};
 
-use crate::snapshots::empty_snapshot;
+use crate::{actions::ArtifactHandle, snapshots::empty_snapshot};
 
 /// A bounded, logical observation returned by a browser bridge.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -544,6 +544,28 @@ pub trait Bridge: Send + Sync {
         &self,
         request: &ActionRequest<BTreeMap<String, String>>,
     ) -> Result<BridgeDispatchResult, CoreError>;
+
+    /// Return the artifact handle retained for a definitively completed action.
+    ///
+    /// A bridge may retain the handle in memory while its bytes remain pending
+    /// consumption. The default bridge has no artifact consumer path.
+    fn artifact_for_action(
+        &self,
+        _action_id: &ActionId,
+    ) -> Result<Option<ArtifactHandle>, CoreError> {
+        Ok(None)
+    }
+
+    /// Consume one authorized artifact exactly once.
+    ///
+    /// The returned bytes are bounded by the negotiated bridge transfer limits;
+    /// callers must still enforce their response/output bound.
+    fn take_artifact(&self, _handle: &ArtifactHandle) -> Result<Option<Vec<u8>>, CoreError> {
+        Err(CoreError::new(
+            ErrorCode::CapabilityUnavailable,
+            "bridge does not support artifact retrieval",
+        ))
+    }
 
     /// Reconcile an unknown receipt with a read-only proof operation.
     fn reconcile(&self, receipt: &ActionReceipt) -> Result<BridgeReconcileResult, CoreError>;
