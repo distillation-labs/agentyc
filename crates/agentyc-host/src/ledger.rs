@@ -16,6 +16,7 @@ use agentyc_core::{
     SpaceDescriptor, SpaceId, SpaceLifecycle, UnknownReason,
 };
 use serde::{Deserialize, Serialize};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use agentyc_core::states::LeaseState;
 
@@ -1398,6 +1399,10 @@ impl LedgerLock {
         let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if stale_lock_owner(&path)? {
+                    fs::remove_file(&path).map_err(LedgerError::Io)?;
+                    return Self::acquire(path);
+                }
                 return Err(LedgerError::AlreadyOwned);
             }
             Err(error) => return Err(LedgerError::Io(error)),
@@ -1446,6 +1451,28 @@ impl LedgerLock {
         }
         Ok(())
     }
+}
+
+fn stale_lock_owner(path: &Path) -> Result<bool, LedgerError> {
+    let bytes = read_bounded(path, MAX_LOCK_TOKEN_BYTES)?;
+    let text = String::from_utf8(bytes)
+        .map_err(|error| LedgerError::Ownership(format!("lock token is not utf-8: {error}")))?;
+    let Some(pid_text) = text
+        .strip_prefix("pid=")
+        .and_then(|value| value.split(':').next())
+    else {
+        return Ok(false);
+    };
+    let Ok(pid) = pid_text.parse::<u32>() else {
+        return Ok(false);
+    };
+    if pid == 0 {
+        return Ok(false);
+    }
+    let process_id = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes(ProcessesToUpdate::Some(&[process_id]), false);
+    Ok(system.process(process_id).is_none())
 }
 
 impl Drop for LedgerLock {
@@ -1525,6 +1552,16 @@ mod tests {
         ));
         drop(first);
         Ledger::open(directory.path()).expect("lock released");
+    }
+
+    #[test]
+    fn dead_owner_lock_is_recovered_without_removing_a_live_owner() {
+        let directory = tempdir().expect("tempdir");
+        let lock_path = directory.path().join("broker.lock");
+        fs::write(&lock_path, b"pid=4294967295:lock=dead").expect("dead lock");
+        set_private_file(&File::open(&lock_path).expect("dead lock file"))
+            .expect("private dead lock");
+        Ledger::open(directory.path()).expect("recover dead lock");
     }
 
     #[test]
