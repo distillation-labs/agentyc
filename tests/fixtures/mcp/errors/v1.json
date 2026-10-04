@@ -1,0 +1,560 @@
+{
+  "schema_version": 1,
+  "kind": "mcp-error-fixtures",
+  "status": "contract-only",
+  "sanitized": true,
+  "live_claims": false,
+  "errors": [
+    {
+      "code": "extension_not_connected",
+      "retryable": true,
+      "guidance": "retry",
+      "next_step": "retry",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "extension_not_connected"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "profile_not_found",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "profile_not_found"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "space_required",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "space_required"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "space_not_found",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "space_not_found"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "space_forbidden",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "space_forbidden"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "user_control_required",
+      "retryable": false,
+      "guidance": "await_user_control",
+      "next_step": "await_user_control",
+      "cli": {
+        "exit_code": "4",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "user_control_required"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "lease_expired",
+      "retryable": false,
+      "guidance": "refresh_lease",
+      "next_step": "refresh_lease",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "lease_expired"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "stale_lease",
+      "retryable": false,
+      "guidance": "refresh_lease",
+      "next_step": "refresh_lease",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "stale_lease"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "page_not_found",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "page_not_found"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "page_not_owned",
+      "retryable": false,
+      "guidance": "claim",
+      "next_step": "claim",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "page_not_owned"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "unmanaged_page",
+      "retryable": false,
+      "guidance": "claim",
+      "next_step": "claim",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "unmanaged_page"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "stale_ref",
+      "retryable": false,
+      "guidance": "resync",
+      "next_step": "resync",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "stale_ref"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "target_replaced",
+      "retryable": false,
+      "guidance": "resync",
+      "next_step": "resync",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "target_replaced"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "event_lagged",
+      "retryable": true,
+      "guidance": "resync",
+      "next_step": "resync",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "event_lagged"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "unknown_outcome",
+      "retryable": false,
+      "guidance": "reconcile",
+      "next_step": "reconcile",
+      "cli": {
+        "exit_code": "7",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "unknown_outcome"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "reconciliation_required",
+      "retryable": false,
+      "guidance": "reconcile",
+      "next_step": "reconcile",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "reconciliation_required"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "capability_unavailable",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "4",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "capability_unavailable"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "permission_denied",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "4",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "permission_denied"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "native_host_unavailable",
+      "retryable": true,
+      "guidance": "retry",
+      "next_step": "retry",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "native_host_unavailable"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "protocol_mismatch",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "protocol_mismatch"
+      },
+      "mcp": {
+        "classification": "protocol_error",
+        "isError": false,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "message_too_large",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "message_too_large"
+      },
+      "mcp": {
+        "classification": "protocol_error",
+        "isError": false,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "invalid_argument",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "2",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "invalid_argument"
+      },
+      "mcp": {
+        "classification": "protocol_error",
+        "isError": false,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "timeout",
+      "retryable": true,
+      "guidance": "retry",
+      "next_step": "retry",
+      "cli": {
+        "exit_code": "6",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "timeout"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "cancelled",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "6",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "cancelled"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "host_draining",
+      "retryable": true,
+      "guidance": "retry",
+      "next_step": "retry",
+      "cli": {
+        "exit_code": "5",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "host_draining"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "ledger_incompatible",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "ledger_incompatible"
+      },
+      "mcp": {
+        "classification": "tool_error",
+        "isError": true,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "truncated_frame",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "truncated_frame"
+      },
+      "mcp": {
+        "classification": "protocol_error",
+        "isError": false,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "invalid_utf8",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "invalid_utf8"
+      },
+      "mcp": {
+        "classification": "protocol_error",
+        "isError": false,
+        "mapping": "structuredContent.error"
+      }
+    },
+    {
+      "code": "invalid_json",
+      "retryable": false,
+      "guidance": "none",
+      "next_step": "none",
+      "cli": {
+        "exit_code": "3",
+        "mapping": "structured_json_error"
+      },
+      "sdk": {
+        "error_class": "AgentycError",
+        "stable_code": "invalid_json"
+      },
+      "mcp": {
+        "classification": "protocol_error",
+        "isError": false,
+        "mapping": "structuredContent.error"
+      }
+    }
+  ]
+}
