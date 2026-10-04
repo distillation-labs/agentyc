@@ -8,6 +8,8 @@
 //! set_extra_headers, set_user_agent, set_timezone, set_locale, emulate_media,
 //! save_state, load_state, list_sessions, close_session, close_all.
 
+use agentyc_host::TextMatcher;
+use agentyc_runtime::WaitOptions;
 use anyhow::{Result, anyhow};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
@@ -27,7 +29,16 @@ async fn cdp_session(state: &SharedState, method: &str, params: Value) -> Result
 
 pub async fn browser_new_tab(state: &SharedState, url: Option<String>) -> Result<CallToolResult> {
     let runtime = runtime_handle(state).await?;
-    let page = runtime.new_tab(url.as_deref()).await?;
+    if let Some(url) = url {
+        let result = runtime
+            .navigate_with_options(&url, true, WaitOptions::default())
+            .await?;
+        return Ok(ok_text(format!(
+            "New tab created: {} ({})",
+            result.tab_id, result.url
+        )));
+    }
+    let page = runtime.new_tab(None).await?;
     Ok(ok_text(format!("New tab created: {}", page.tab_id)))
 }
 
@@ -48,6 +59,53 @@ pub async fn browser_close_tab(state: &SharedState, tab_id: String) -> Result<Ca
     Ok(ok_text(format!("Closed tab {tab_id}")))
 }
 
+async fn wait_for_tab_regex(
+    state: &SharedState,
+    regex: &regex::Regex,
+    timeout: std::time::Duration,
+) -> Result<(String, String)> {
+    let cdp = browser_client(state).await?;
+    let mut created_rx = cdp.subscribe("Target.targetCreated").await;
+    let mut changed_rx = cdp.subscribe("Target.targetInfoChanged").await;
+    let deadline = tokio::time::Instant::now() + timeout;
+    let initial = cdp_root(state, "Target.getTargets", json!({})).await?;
+    let initial_ids: std::collections::HashSet<String> = initial["targetInfos"]
+        .as_array()
+        .map_or(&[][..], |targets| targets.as_slice())
+        .iter()
+        .filter(|target| target["type"].as_str() == Some("page"))
+        .filter_map(|target| target["targetId"].as_str().map(str::to_owned))
+        .collect();
+    let mut created_ids = std::collections::HashSet::new();
+    let mut closed = Box::pin(cdp.wait_closed());
+    let mut deadline_sleep = Box::pin(tokio::time::sleep_until(deadline));
+
+    loop {
+        tokio::select! {
+            _ = &mut deadline_sleep => return Err(anyhow!("Timeout waiting for new tab")),
+            _ = &mut closed => return Err(anyhow!("Browser disconnected while waiting for new tab")),
+            event = created_rx.recv() => {
+                let event = event.map_err(|error| anyhow!("Target event stream closed: {error}"))?;
+                let info = &event["targetInfo"];
+                if info["type"].as_str() != Some("page") { continue; }
+                let target_id = info["targetId"].as_str().unwrap_or_default().to_owned();
+                created_ids.insert(target_id.clone());
+                let url = info["url"].as_str().unwrap_or_default();
+                if regex.is_match(url) { return Ok((target_id, url.to_owned())); }
+            }
+            event = changed_rx.recv() => {
+                let event = event.map_err(|error| anyhow!("Target info stream closed: {error}"))?;
+                let info = &event["targetInfo"];
+                if info["type"].as_str() != Some("page") { continue; }
+                let target_id = info["targetId"].as_str().unwrap_or_default().to_owned();
+                if initial_ids.contains(&target_id) && !created_ids.contains(&target_id) { continue; }
+                let url = info["url"].as_str().unwrap_or_default();
+                if regex.is_match(url) { return Ok((target_id, url.to_owned())); }
+            }
+        }
+    }
+}
+
 pub async fn browser_wait_for_tab(
     state: &SharedState,
     url_substring: Option<String>,
@@ -56,57 +114,25 @@ pub async fn browser_wait_for_tab(
     switch_focus: Option<bool>,
 ) -> Result<CallToolResult> {
     let timeout = std::time::Duration::from_secs_f64(timeout_seconds.unwrap_or(10.0));
-    let re = url_regex
-        .as_ref()
-        .map(|r| regex::Regex::new(r))
-        .transpose()?;
-    let deadline = tokio::time::Instant::now() + timeout;
-    let initial_tabs: Vec<String> = {
-        let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-        resp["targetInfos"]
-            .as_array()
-            .map_or(&[][..], |targets| targets.as_slice())
-            .iter()
-            .filter(|t| t["type"].as_str() == Some("page"))
-            .filter_map(|t| t["targetId"].as_str().map(str::to_string))
-            .collect()
+    let (target_id, url) = if let Some(pattern) = url_regex {
+        wait_for_tab_regex(state, &regex::Regex::new(&pattern)?, timeout).await?
+    } else {
+        let tab = runtime_handle(state)
+            .await?
+            .wait_for_new_tab(
+                url_substring.map(TextMatcher::Contains),
+                WaitOptions::with_timeout(timeout),
+            )
+            .await?;
+        (tab.target_id, tab.url)
     };
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let resp = cdp_root(state, "Target.getTargets", json!({})).await?;
-        for target in resp["targetInfos"]
-            .as_array()
-            .map_or(&[][..], |targets| targets.as_slice())
-        {
-            if target["type"].as_str() != Some("page") {
-                continue;
-            }
-            let target_id = target["targetId"].as_str().unwrap_or("").to_string();
-            if initial_tabs.contains(&target_id) {
-                continue;
-            }
-            let url = target["url"].as_str().unwrap_or("");
-            let matches = if let Some(sub) = &url_substring {
-                url.contains(sub.as_str())
-            } else if let Some(regex) = &re {
-                regex.is_match(url)
-            } else {
-                true
-            };
-            if matches {
-                if switch_focus.unwrap_or(true) {
-                    runtime_handle(state)
-                        .await?
-                        .switch_tab(&tab_id_from(&target_id))
-                        .await?;
-                }
-                return Ok(ok_text(format!("New tab found: {url}")));
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow!("Timeout waiting for new tab"));
-        }
+    if switch_focus.unwrap_or(true) {
+        runtime_handle(state)
+            .await?
+            .switch_tab(&tab_id_from(&target_id))
+            .await?;
     }
+    Ok(ok_text(format!("New tab found: {url}")))
 }
 
 pub async fn browser_get_cookies(state: &SharedState) -> Result<CallToolResult> {
