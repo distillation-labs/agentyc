@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Cursor trail</title>
+  <desc id="desc">A cursor following a routed trail to a task node</desc>
+  <rect width="128" height="128" rx="28" fill="#0D918B" />
+  <path d="M50 82c9-9 11-22 5-31 11-9 23-15 37-19" fill="none" stroke="#FFF6E8" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 12" />
+  <circle cx="96" cy="28" r="10" fill="#FFF6E8" />
+  <path d="m28 93 9-43 31 25-17 2-8 16Z" fill="#FFF6E8" />
+</svg>
