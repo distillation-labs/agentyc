@@ -153,9 +153,16 @@ export interface WireResponse {
 }
 export interface TransportRequestOptions {
   signal?: AbortSignal;
+  /**
+   * Called once, after the first request frame has been written. Never called
+   * when encoding or the first write fails.
+   */
+  onDispatch?: () => void;
 }
 export interface LocalTransport<R = WireRequest, S = WireResponse> {
   readonly connected?: boolean;
+  /** True when the transport reports dispatch through `onDispatch`. */
+  readonly dispatchAware?: boolean;
   request(payload: R, options?: TransportRequestOptions): Promise<S>;
   reconnect?(): Promise<void>;
   close?(): Promise<void>;
@@ -182,6 +189,8 @@ export class LocalProtocolTransport implements LocalTransport<
 > {
   constructor(options?: LocalProtocolOptions);
   readonly connected: boolean;
+  readonly closed: boolean;
+  readonly dispatchAware: true;
   connect(): Promise<void>;
   request(
     payload: WireRequest,
@@ -293,13 +302,76 @@ export interface SubmitActionRequest {
   page_id?: LogicalPageId;
   lease_epoch?: number;
   operation: ActionOperation;
-  payload?: Record<string, string>;
+  payload?: ActionPayload;
   postcondition?: unknown;
   now?: number;
   deadline_ms?: number;
   deadlineMs?: number;
   signal?: AbortSignal;
 }
+
+export type ActionPayload = Record<string, string>;
+export type ActionFieldValue = string | number | boolean;
+/** Element reference object returned by a snapshot; sent as a JSON-encoded field. */
+export type ElementRefObject = Record<string, unknown>;
+export interface ActionTargetFields {
+  selector?: string;
+  elementRef?: ElementRefObject | string;
+  element_ref?: ElementRefObject | string;
+  ref?: ElementRefObject | string;
+  evidence?: ElementRefObject | string;
+  actionabilityEvidence?: ElementRefObject | string;
+  actionability_evidence?: ElementRefObject | string;
+  provenance?: ElementRefObject | string;
+  [field: string]: ActionFieldValue | ElementRefObject | undefined;
+}
+/** A string is a selector; an object is forwarded field by field. */
+export type ActionTarget = string | ActionTargetFields;
+export type ScrollDelta = ActionTargetFields & {
+  x?: ActionFieldValue;
+  y?: ActionFieldValue;
+  deltaX?: ActionFieldValue;
+  deltaY?: ActionFieldValue;
+};
+export type PageHelperName =
+  | "goto"
+  | "click"
+  | "type"
+  | "fill"
+  | "press"
+  | "scroll"
+  | "select"
+  | "upload"
+  | "evaluate";
+export const PAGE_HELPER_OPERATIONS: Readonly<
+  Record<PageHelperName, ActionOperation>
+>;
+export type SnapshotMode =
+  "auto" | "full" | "min" | "compact" | "focus" | "delta";
+/** Options forwarded to the host's `snapshot.read` context builder. */
+export interface SnapshotOptions extends PageOptions {
+  mode?: SnapshotMode;
+  focus?: string | Record<string, unknown>;
+  focusRef?: string | Record<string, unknown>;
+  focusElement?: string | Record<string, unknown>;
+  frameId?: string;
+  elementKey?: string;
+  maxSerializedBytes?: number;
+  tokenBudget?: Record<string, unknown>;
+  base?: Record<string, unknown>;
+  tokenizer?: "unicode_scalars";
+  metadataOnly?: boolean;
+  sinceHash?: string;
+}
+export interface PressOptions extends ActionOptions {
+  target?: ActionTarget;
+}
+export type UrlMatcher =
+  | string
+  | { exact: string }
+  | { contains: string }
+  | { prefix: string }
+  | { suffix: string };
 
 export class Page {
   private constructor();
@@ -308,12 +380,47 @@ export class Page {
   readonly label?: string;
   readonly record?: PageRecord;
   create(options?: PageOptions): Promise<this>;
-  snapshot(options?: PageOptions): Promise<unknown>;
+  snapshot(options?: SnapshotOptions): Promise<unknown>;
   action(
     operation: ActionOperation,
-    payload?: Record<string, string>,
+    payload?: ActionPayload,
     options?: ActionOptions,
   ): Promise<ActionReceipt | unknown>;
+  goto(url: string, options?: ActionOptions): Promise<ActionReceipt | unknown>;
+  click(
+    target?: ActionTarget,
+    options?: ActionOptions,
+  ): Promise<ActionReceipt | unknown>;
+  type(
+    target: ActionTarget | null | undefined,
+    text: string,
+    options?: ActionOptions,
+  ): Promise<ActionReceipt | unknown>;
+  fill(
+    target: ActionTarget | null | undefined,
+    text: string,
+    options?: ActionOptions,
+  ): Promise<ActionReceipt | unknown>;
+  press(key: string, options?: PressOptions): Promise<ActionReceipt | unknown>;
+  scroll(
+    delta?: ScrollDelta,
+    options?: ActionOptions,
+  ): Promise<ActionReceipt | unknown>;
+  select(
+    target: ActionTarget | null | undefined,
+    value: string,
+    options?: ActionOptions,
+  ): Promise<ActionReceipt | unknown>;
+  upload(
+    target: ActionTarget | null | undefined,
+    fields?: ActionTargetFields,
+    options?: ActionOptions,
+  ): Promise<ActionReceipt | unknown>;
+  evaluate(
+    expression: string,
+    options?: ActionOptions,
+  ): Promise<ActionReceipt | unknown>;
+  waitForURL(url: UrlMatcher, options?: WaitOptions): Promise<unknown>;
   close(options?: PageOptions): Promise<unknown>;
   events(options?: EventsOptions): Promise<unknown>;
   waitFor(condition: unknown, options?: WaitOptions): Promise<unknown>;
@@ -326,12 +433,27 @@ export interface EventsOptions extends RequestOptions {
   pageId?: LogicalPageId;
   limit?: number;
 }
+/**
+ * Event cursor for `after`. A bare number is an event sequence in the host's
+ * current broker epoch. Mapped to the host's `after_epoch`/`after_sequence`.
+ */
+export type WaitAfter =
+  | number
+  | { broker_epoch?: number; sequence?: number }
+  | { brokerEpoch?: number; sequence?: number }
+  | { afterEpoch?: number; afterSequence?: number }
+  | { after_epoch?: number; after_sequence?: number }
+  | { cursor: { broker_epoch?: number; sequence?: number } };
 export interface WaitOptions extends RequestOptions {
   timeoutMs?: number;
-  after?: unknown;
+  after?: WaitAfter;
   spaceId?: LogicalSpaceId;
   pageId?: LogicalPageId;
 }
+export function waitAfterParams(after?: WaitAfter): {
+  after_epoch?: number;
+  after_sequence?: number;
+};
 export class TaskSpace {
   private constructor();
   readonly id: LogicalSpaceId;
@@ -365,6 +487,8 @@ export class TaskSpace {
 export class BrowserClient {
   readonly transport: LocalTransport;
   readonly connected: boolean;
+  /** True after close(); requests fail until reconnect() is called. */
+  readonly closed: boolean;
   taskSpace(spaceId: LogicalSpaceId): TaskSpace;
   createSpace(label: string, options: CreateSpaceOptions): Promise<TaskSpace>;
   listSpaces(options?: RequestOptions): Promise<TaskSpace[]>;
