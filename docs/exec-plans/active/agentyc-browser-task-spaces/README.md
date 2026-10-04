@@ -65,7 +65,7 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 
 **Current evidence:**
 
-- The fresh headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` proves the two-space/two-agent current-run coexistence gate, user-tab/focus preservation, isolation, fencing, cleanup, and restart/update observations through the product host-backed direct CLI.
+- The accepted headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` proves the two-space/two-agent current-run coexistence gate, user-tab/focus preservation, isolation, fencing, cleanup, and restart/update observations through the product host-backed direct CLI. The source-identical smoke `artifacts/p0-coexistence/live-hardening-basic-3/` additionally passes current-source browser inventory, snapshots, actions, focus, isolation, and cleanup; disruptive restart/update actions remain operator-approved checkpoints.
 - The current checker returns `status: pass` with coexistence, installation, live Chrome, live Native Messaging, and performance gates passed.
 - Deterministic validation now covers 52 extension tests, 37 host tests, 34 host-core integration tests, 10 direct CLI tests, and 13 SDK tests. The hardening audit added same-session proof-bound recovery, persistent safety counters, lifecycle invalidation, monotonic generation reconciliation, cleanup truncation rejection, and protocol-name alignment.
 
