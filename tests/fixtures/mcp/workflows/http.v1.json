@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "mcp-workflow",
+  "name": "sanitized-http-session-compatibility",
+  "transport": "http",
+  "status": "contract-only",
+  "sanitized": true,
+  "live_claims": false,
+  "steps": [
+    {"direction": "client_to_server", "method": "POST", "endpoint": "local-loopback:/mcp", "headers": {"Accept": "application/json, text/event-stream", "Mcp-Protocol-Version": "2024-11-05"}, "body": {"method": "initialize"}},
+    {"direction": "server_to_client", "method": "SSE", "headers": {"Mcp-Session-Id": "<redacted session id>"}, "body": {"event": "message", "protocolVersion": "2024-11-05"}},
+    {"direction": "client_to_server", "method": "GET", "endpoint": "local-loopback:/mcp", "headers": {"Mcp-Session-Id": "<redacted session id>", "Last-Event-ID": "<redacted event id>"}},
+    {"direction": "client_to_server", "method": "POST", "endpoint": "local-loopback:/mcp", "headers": {"Mcp-Session-Id": "<redacted session id>"}, "body": {"method": "tools/call", "params": {"name": "host_space_list"}}},
+    {"direction": "client_to_server", "method": "DELETE", "endpoint": "local-loopback:/mcp", "headers": {"Mcp-Session-Id": "<redacted session id>"}}
+  ],
+  "nonclaims": [
+    "The endpoint label is a local-loopback placeholder, not an external URL or live service address.",
+    "Session identifiers and event identifiers are redacted transport values, not authentication or logical identity."
+  ]
+}
