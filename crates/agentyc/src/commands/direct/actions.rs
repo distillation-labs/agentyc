@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use agentyc_core::{
     ActionOperation, ActionRequest, ContentHash, IdempotencyKey, Postcondition, RequestId,
 };
-use agentyc_host::canonical_action_hash;
+use agentyc_host::{
+    ACTIONABILITY_PAYLOAD_KEY, ELEMENT_REF_PAYLOAD_KEY, EVIDENCE_PAYLOAD_KEY,
+    PROVENANCE_PAYLOAD_KEY, REF_PAYLOAD_KEY, canonical_action_hash,
+};
 use serde_json::{Value, json};
 
 use super::{
@@ -182,15 +185,36 @@ fn parse_payload(value: Option<&str>) -> DirectResult<BTreeMap<String, String>> 
                     "payload contains an unsafe field name",
                 ));
             }
-            let value = value.as_str().ok_or_else(|| {
-                agentyc_core::CoreError::invalid_argument("payload values must be JSON strings")
-            })?;
+            let value = match value {
+                Value::String(value) => value,
+                value
+                    if matches!(
+                        key.as_str(),
+                        ELEMENT_REF_PAYLOAD_KEY
+                            | REF_PAYLOAD_KEY
+                            | PROVENANCE_PAYLOAD_KEY
+                            | ACTIONABILITY_PAYLOAD_KEY
+                            | EVIDENCE_PAYLOAD_KEY
+                    ) =>
+                {
+                    serde_json::to_string(&value).map_err(|error| {
+                        agentyc_core::CoreError::invalid_argument(format!(
+                            "typed actionability field cannot be serialized: {error}"
+                        ))
+                    })?
+                }
+                _ => {
+                    return Err(agentyc_core::CoreError::invalid_argument(
+                        "payload values must be JSON strings",
+                    ));
+                }
+            };
             if value.len() > MAX_ACTION_VALUE_BYTES {
                 return Err(agentyc_core::CoreError::invalid_argument(
                     "payload value exceeds the 65536-byte limit",
                 ));
             }
-            payload.insert(key, value.to_owned());
+            payload.insert(key, value);
             Ok(payload)
         })
 }
@@ -351,6 +375,33 @@ mod tests {
         )
         .expect_err("navigation URL must stay within the host bound");
         assert_eq!(error.code, agentyc_core::ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn typed_actionability_payload_fields_accept_json_objects() {
+        let payload = parse_payload(Some(
+            r#"{
+                "element_ref":{"ref_id":"ref_element","space_id":"space_test","page_id":"page_test","frame_id":"frame_main","snapshot_version":1,"document_generation":1,"navigation_generation":1,"refs_epoch":1},
+                "provenance":{"space_id":"space_test","page_id":"page_test","snapshot_version":1,"snapshot_hash":"sha256:0000000000000000000000000000000000000000000000000000000000000000","document_generation":1,"navigation_generation":1,"refs_epoch":1,"coherent":true,"coverage":"complete"},
+                "actionability_evidence":{"connected":true,"visible":true,"disabled":false,"readonly":false,"covered":false,"overlay_present":false,"hit_target":true,"moving":false,"offscreen":false,"user_control":false,"target_generation":1,"navigation_generation":1,"document_generation":1}
+            }"#,
+        ))
+        .expect("typed actionability payload");
+        assert!(
+            payload
+                .get(ELEMENT_REF_PAYLOAD_KEY)
+                .is_some_and(|value| value.starts_with('{'))
+        );
+        assert!(
+            payload
+                .get(PROVENANCE_PAYLOAD_KEY)
+                .is_some_and(|value| value.starts_with('{'))
+        );
+        assert!(
+            payload
+                .get(ACTIONABILITY_PAYLOAD_KEY)
+                .is_some_and(|value| value.starts_with('{'))
+        );
     }
 
     #[test]
