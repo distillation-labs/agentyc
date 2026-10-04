@@ -3,15 +3,16 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::{
-    DirectContext, DirectResult, PageCommand, PageCreateArgs, PageCreateManagedArgs,
-    PageInventoryArgs, PageListArgs, host_error, lease_epoch, parse_space, remote_field,
-    remote_string, timestamp,
+    DirectContext, DirectResult, PageCloseArgs, PageCommand, PageCreateArgs, PageCreateManagedArgs,
+    PageInventoryArgs, PageListArgs, host_error, lease_epoch, parse_page, parse_space,
+    remote_field, remote_string, timestamp,
 };
 
 pub(super) fn run(context: &DirectContext, command: PageCommand) -> DirectResult<Value> {
     match command {
         PageCommand::Create(args) => create(context, args),
         PageCommand::CreateManaged(args) => create_managed(context, args),
+        PageCommand::Close(args) => close(context, args),
         PageCommand::List(args) => list(context, args),
         PageCommand::Inventory(args) => inventory(context, args),
     }
@@ -95,6 +96,43 @@ fn create_managed(context: &DirectContext, args: PageCreateManagedArgs) -> Direc
     }))
 }
 
+fn close(context: &DirectContext, args: PageCloseArgs) -> DirectResult<Value> {
+    let space_id = parse_space(&args.space_id)?;
+    let page_id = parse_page(&args.page_id)?;
+    let now = timestamp(args.now);
+    if let Some((broker, authority)) = context.local() {
+        let page = broker
+            .close_page(
+                &space_id,
+                &page_id,
+                authority,
+                lease_epoch(args.lease_epoch),
+                now,
+            )
+            .map_err(host_error)?;
+        return Ok(json!({
+            "page": page,
+            "page_id": page.page_id,
+            "space_id": page.space_id
+        }));
+    }
+
+    let response = context.request(
+        "page.close",
+        BTreeMap::from([
+            ("space_id".to_owned(), space_id.to_string()),
+            ("page_id".to_owned(), page_id.to_string()),
+            ("lease_epoch".to_owned(), args.lease_epoch.to_string()),
+            ("now".to_owned(), now.get().to_string()),
+        ]),
+    )?;
+    Ok(json!({
+        "page": remote_field(&response, "page")?,
+        "page_id": remote_string(&response, "page_id")?,
+        "space_id": remote_string(&response, "space_id")?,
+    }))
+}
+
 fn list(context: &DirectContext, args: PageListArgs) -> DirectResult<Value> {
     let space_id = parse_space(&args.space_id)?;
     if let Some((broker, authority)) = context.local() {
@@ -152,8 +190,8 @@ fn inventory(context: &DirectContext, args: PageInventoryArgs) -> DirectResult<V
 mod tests {
     use super::*;
     use crate::commands::direct::{
-        DEFAULT_TTL, DirectCommand, DirectOptions, LeaseArgs, PageCommand, PageCreateArgs,
-        PageListArgs, SpaceCommand, SpaceCreateArgs, execute,
+        DEFAULT_TTL, DirectCommand, DirectOptions, LeaseArgs, PageCloseArgs, PageCommand,
+        PageCreateArgs, PageListArgs, SpaceCommand, SpaceCreateArgs, execute,
     };
     use tempfile::tempdir;
 
@@ -172,6 +210,7 @@ mod tests {
             &context,
             DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
                 label: "pages".to_owned(),
+                accept_shared_profile_disclosure: true,
             })),
         )
         .expect("create space");
@@ -208,10 +247,43 @@ mod tests {
 
         let listed = execute(
             &context,
-            DirectCommand::Page(PageCommand::List(PageListArgs { space_id })),
+            DirectCommand::Page(PageCommand::List(PageListArgs {
+                space_id: space_id.clone(),
+            })),
         )
         .expect("list pages");
         assert_eq!(listed["pages"].as_array().expect("page list").len(), 1);
         assert_eq!(listed["pages"][0]["page_id"], page["page_id"]);
+
+        let (broker, authority) = context.local().expect("offline broker");
+        let logical_space = parse_space(&space_id).expect("space id");
+        broker
+            .bind_page(
+                &logical_space,
+                &page["page_id"]
+                    .as_str()
+                    .expect("page id")
+                    .parse::<agentyc_core::PageId>()
+                    .expect("page id"),
+                authority,
+                agentyc_core::LeaseEpoch::new(lease_epoch),
+                timestamp(Some(2)),
+                Some("https://example.test".to_owned()),
+                Some("main".to_owned()),
+                1,
+            )
+            .expect("bind page");
+        let closed = execute(
+            &context,
+            DirectCommand::Page(PageCommand::Close(PageCloseArgs {
+                space_id,
+                page_id: page["page_id"].as_str().expect("page id").to_owned(),
+                lease_epoch,
+                now: Some(3),
+            })),
+        )
+        .expect("close page");
+        assert_eq!(closed["page_id"], page["page_id"]);
+        assert_eq!(closed["page"]["lifecycle"], "closed");
     }
 }
