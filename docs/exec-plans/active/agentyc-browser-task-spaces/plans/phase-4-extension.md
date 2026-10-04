@@ -1,7 +1,7 @@
 ---
 phase: 4
 name: Chrome extension, Native Messaging bridge, and task-space UI
-status: pending
+status: active
 owner: Japneet Kalkat
 primary_outcome: A production-shaped MV3 extension connects the host broker to existing Chrome tabs, maps agent pages to visual tab groups, routes debugger/content events, and exposes safe task-space user control.
 depends_on: phase-3
