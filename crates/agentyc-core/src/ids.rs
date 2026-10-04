@@ -185,6 +185,9 @@ opaque_id!(ConnectionNonce, "nonce_");
 opaque_id!(ProfileBindingId, "profile_");
 opaque_id!(SpaceId, "space_");
 opaque_id!(PageId, "page_");
+opaque_id!(DocumentId, "document_");
+opaque_id!(NavigationId, "navigation_");
+opaque_id!(SnapshotId, "snapshot_");
 opaque_id!(FrameId, "frame_");
 opaque_id!(RequestId, "req_");
 opaque_id!(ActionId, "action_");
@@ -336,6 +339,73 @@ mod tests {
         assert!(SpaceId::new("page_alpha-1").is_err());
         assert!(SpaceId::new("space_").is_err());
         assert!(SpaceId::new("space_Alpha").is_err());
+    }
+
+    #[test]
+    fn document_navigation_and_snapshot_ids_are_validated_and_round_trip() {
+        let cases = [
+            (DocumentId::PREFIX, "document_doc-1"),
+            (NavigationId::PREFIX, "navigation_nav-1"),
+            (SnapshotId::PREFIX, "snapshot_snap-1"),
+        ];
+
+        for (prefix, value) in cases {
+            assert!(validate_identifier(value, prefix).is_ok());
+            assert!(validate_identifier(&format!("{prefix}raw.target"), prefix).is_err());
+            assert!(validate_identifier(prefix, prefix).is_err());
+            let max_suffix_length = MAX_ID_LENGTH - prefix.len();
+            assert!(
+                validate_identifier(
+                    &format!("{prefix}{}", "a".repeat(max_suffix_length)),
+                    prefix
+                )
+                .is_ok()
+            );
+            assert!(
+                validate_identifier(
+                    &format!("{prefix}{}", "a".repeat(max_suffix_length + 1)),
+                    prefix
+                )
+                .is_err()
+            );
+        }
+
+        let document = DocumentId::from_suffix("doc-1").expect("document");
+        let navigation = NavigationId::from_suffix("nav-1").expect("navigation");
+        let snapshot = SnapshotId::from_suffix("snap-1").expect("snapshot");
+        assert!(DocumentId::new("target_123").is_err());
+        assert!(DocumentId::new("document_é").is_err());
+        assert!(NavigationId::new("navigation_").is_err());
+        assert!(SnapshotId::new("document_snap-1").is_err());
+
+        assert_eq!(
+            serde_json::to_string(&document).expect("serialize"),
+            r#""document_doc-1""#
+        );
+        assert_eq!(
+            serde_json::from_str::<DocumentId>(r#""document_doc-1""#).expect("deserialize"),
+            document
+        );
+        assert_eq!(
+            serde_json::to_string(&navigation).expect("serialize"),
+            r#""navigation_nav-1""#
+        );
+        assert_eq!(
+            serde_json::from_str::<NavigationId>(r#""navigation_nav-1""#).expect("deserialize"),
+            navigation
+        );
+        assert_eq!(
+            serde_json::to_string(&snapshot).expect("serialize"),
+            r#""snapshot_snap-1""#
+        );
+        assert_eq!(
+            serde_json::from_str::<SnapshotId>(r#""snapshot_snap-1""#).expect("deserialize"),
+            snapshot
+        );
+
+        assert!(serde_json::from_str::<DocumentId>(r#""target_123""#).is_err());
+        assert!(serde_json::from_str::<NavigationId>(r#""session_123""#).is_err());
+        assert!(serde_json::from_str::<SnapshotId>(r#""snapshot_raw.target""#).is_err());
     }
 
     #[test]
