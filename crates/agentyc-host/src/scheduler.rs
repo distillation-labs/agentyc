@@ -3,9 +3,12 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Condvar, Mutex, MutexGuard},
+    time::{Duration, Instant},
 };
 
 use agentyc_core::SpaceId;
+
+use crate::waits::CancellationToken;
 
 /// Concurrency and queue bounds for a [`Scheduler`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +62,17 @@ pub enum BackpressureKind {
 pub struct Backpressure {
     /// Queue that reached its configured bound.
     pub kind: BackpressureKind,
+}
+
+/// A bounded scheduler wait can be rejected without acquiring a permit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulerWaitError {
+    /// The corresponding queue has reached its configured bound.
+    Backpressure(Backpressure),
+    /// The caller cancelled while waiting.
+    Cancelled,
+    /// The caller's absolute deadline elapsed while waiting.
+    DeadlineExceeded,
 }
 
 /// A point-in-time view of scheduler occupancy.
@@ -131,6 +145,39 @@ impl Scheduler {
     /// Mutations in different spaces do not block each other. If the per-space
     /// wait queue is full, this returns immediately with explicit backpressure.
     pub fn acquire_mutation(&self, space_id: SpaceId) -> Result<MutationPermit, Backpressure> {
+        self.acquire_mutation_inner(space_id, None, None)
+            .map_err(|error| match error {
+                SchedulerWaitError::Backpressure(backpressure) => backpressure,
+                SchedulerWaitError::Cancelled | SchedulerWaitError::DeadlineExceeded => {
+                    unreachable!("uncancellable scheduler wait cannot be cancelled")
+                }
+            })
+    }
+
+    /// Wait for a mutation permit while honoring cooperative cancellation.
+    pub fn acquire_mutation_cancelable(
+        &self,
+        space_id: SpaceId,
+        cancellation: &CancellationToken,
+    ) -> Result<MutationPermit, SchedulerWaitError> {
+        self.acquire_mutation_inner(space_id, None, Some(cancellation))
+    }
+
+    /// Wait for a mutation permit until an absolute deadline.
+    pub fn acquire_mutation_until(
+        &self,
+        space_id: SpaceId,
+        deadline: Instant,
+    ) -> Result<MutationPermit, SchedulerWaitError> {
+        self.acquire_mutation_inner(space_id, Some(deadline), None)
+    }
+
+    fn acquire_mutation_inner(
+        &self,
+        space_id: SpaceId,
+        deadline: Option<Instant>,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<MutationPermit, SchedulerWaitError> {
         let mut state = lock(&self.inner.state);
         let queue = state.mutations.entry(space_id.clone()).or_default();
         if !queue.active && queue.waiting.is_empty() {
@@ -142,9 +189,9 @@ impl Scheduler {
             });
         }
         if queue.waiting.len() >= self.inner.limits.max_queued_mutations_per_space {
-            return Err(Backpressure {
+            return Err(SchedulerWaitError::Backpressure(Backpressure {
                 kind: BackpressureKind::MutationQueueFull,
-            });
+            }));
         }
         if state
             .mutations
@@ -153,9 +200,9 @@ impl Scheduler {
             .sum::<usize>()
             >= self.inner.limits.max_queued_mutations
         {
-            return Err(Backpressure {
+            return Err(SchedulerWaitError::Backpressure(Backpressure {
                 kind: BackpressureKind::GlobalMutationQueueFull,
-            });
+            }));
         }
 
         let token = Arc::new(());
@@ -166,6 +213,16 @@ impl Scheduler {
             .waiting
             .push_back(Arc::clone(&token));
         loop {
+            if cancellation.is_some_and(CancellationToken::is_cancelled) {
+                remove_mutation_waiter(&mut state, &space_id, &token);
+                self.inner.changed.notify_all();
+                return Err(SchedulerWaitError::Cancelled);
+            }
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                remove_mutation_waiter(&mut state, &space_id, &token);
+                self.inner.changed.notify_all();
+                return Err(SchedulerWaitError::DeadlineExceeded);
+            }
             let is_next = state
                 .mutations
                 .get(&space_id)
@@ -185,7 +242,7 @@ impl Scheduler {
                     released: false,
                 });
             }
-            state = wait(&self.inner.changed, state);
+            state = wait_for(&self.inner.changed, state, deadline);
         }
     }
 
@@ -193,6 +250,33 @@ impl Scheduler {
     ///
     /// Returns immediately with backpressure when all read wait slots are full.
     pub fn acquire_read(&self) -> Result<ReadPermit, Backpressure> {
+        self.acquire_read_inner(None, None)
+            .map_err(|error| match error {
+                SchedulerWaitError::Backpressure(backpressure) => backpressure,
+                SchedulerWaitError::Cancelled | SchedulerWaitError::DeadlineExceeded => {
+                    unreachable!("uncancellable scheduler wait cannot be cancelled")
+                }
+            })
+    }
+
+    /// Wait for a read permit while honoring cooperative cancellation.
+    pub fn acquire_read_cancelable(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<ReadPermit, SchedulerWaitError> {
+        self.acquire_read_inner(None, Some(cancellation))
+    }
+
+    /// Wait for a read permit until an absolute deadline.
+    pub fn acquire_read_until(&self, deadline: Instant) -> Result<ReadPermit, SchedulerWaitError> {
+        self.acquire_read_inner(Some(deadline), None)
+    }
+
+    fn acquire_read_inner(
+        &self,
+        deadline: Option<Instant>,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<ReadPermit, SchedulerWaitError> {
         let mut state = lock(&self.inner.state);
         if state.active_reads < self.inner.limits.max_concurrent_reads
             && state.read_queue.is_empty()
@@ -204,14 +288,24 @@ impl Scheduler {
             });
         }
         if state.read_queue.len() >= self.inner.limits.max_queued_reads {
-            return Err(Backpressure {
+            return Err(SchedulerWaitError::Backpressure(Backpressure {
                 kind: BackpressureKind::ReadQueueFull,
-            });
+            }));
         }
 
         let token = Arc::new(());
         state.read_queue.push_back(Arc::clone(&token));
         loop {
+            if cancellation.is_some_and(CancellationToken::is_cancelled) {
+                remove_read_waiter(&mut state, &token);
+                self.inner.changed.notify_all();
+                return Err(SchedulerWaitError::Cancelled);
+            }
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                remove_read_waiter(&mut state, &token);
+                self.inner.changed.notify_all();
+                return Err(SchedulerWaitError::DeadlineExceeded);
+            }
             let is_next = state
                 .read_queue
                 .front()
@@ -225,7 +319,7 @@ impl Scheduler {
                     released: false,
                 });
             }
-            state = wait(&self.inner.changed, state);
+            state = wait_for(&self.inner.changed, state, deadline);
         }
     }
 
@@ -305,10 +399,47 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn wait<'a, T>(changed: &Condvar, state: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+fn wait_for<'a, T>(
+    changed: &Condvar,
+    state: MutexGuard<'a, T>,
+    deadline: Option<Instant>,
+) -> MutexGuard<'a, T> {
+    let wait_duration = deadline
+        .map(|limit| limit.saturating_duration_since(Instant::now()))
+        .unwrap_or(Duration::from_millis(25))
+        .min(Duration::from_millis(25));
+    if wait_duration.is_zero() {
+        return state;
+    }
     changed
-        .wait(state)
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .wait_timeout(state, wait_duration)
+        .map(|(state, _)| state)
+        .unwrap_or_else(|poisoned| poisoned.into_inner().0)
+}
+
+fn remove_mutation_waiter(state: &mut State, space_id: &SpaceId, token: &Arc<()>) {
+    if let Some(queue) = state.mutations.get_mut(space_id) {
+        if let Some(index) = queue
+            .waiting
+            .iter()
+            .position(|candidate| Arc::ptr_eq(candidate, token))
+        {
+            queue.waiting.remove(index);
+        }
+        if !queue.active && queue.waiting.is_empty() {
+            state.mutations.remove(space_id);
+        }
+    }
+}
+
+fn remove_read_waiter(state: &mut State, token: &Arc<()>) {
+    if let Some(index) = state
+        .read_queue
+        .iter()
+        .position(|candidate| Arc::ptr_eq(candidate, token))
+    {
+        state.read_queue.remove(index);
+    }
 }
 
 #[cfg(test)]
@@ -449,6 +580,44 @@ mod tests {
         drop(held);
         rx.recv_timeout(Duration::from_secs(2)).unwrap();
         queued.join().unwrap();
+        assert_eq!(scheduler.snapshot().active_reads, 0);
+    }
+
+    #[test]
+    fn cancelled_mutation_waiter_is_removed_and_next_waiter_progresses() {
+        let scheduler = scheduler(1, 0, 2);
+        let key = space("space-cancel-mutation");
+        let held = scheduler.acquire_mutation(key.clone()).unwrap();
+        let cancellation = CancellationToken::new();
+        let waiting_scheduler = scheduler.clone();
+        let waiting_cancellation = cancellation.clone();
+        let waiting_key = key.clone();
+        let cancelled = thread::spawn(move || {
+            waiting_scheduler.acquire_mutation_cancelable(waiting_key, &waiting_cancellation)
+        });
+        wait_for(
+            || scheduler.snapshot(),
+            |current| current.queued_mutations == 1,
+        );
+        cancellation.cancel();
+        assert!(matches!(
+            cancelled.join().unwrap(),
+            Err(SchedulerWaitError::Cancelled)
+        ));
+        assert_eq!(scheduler.snapshot().queued_mutations, 0);
+        drop(held);
+        let permit = scheduler.acquire_mutation(key).unwrap();
+        drop(permit);
+    }
+
+    #[test]
+    fn deadline_expires_a_read_waiter_without_leaking_a_permit() {
+        let scheduler = scheduler(1, 1, 0);
+        let held = scheduler.acquire_read().unwrap();
+        let result = scheduler.acquire_read_until(Instant::now() + Duration::from_millis(30));
+        assert!(matches!(result, Err(SchedulerWaitError::DeadlineExceeded)));
+        assert_eq!(scheduler.snapshot().queued_reads, 0);
+        drop(held);
         assert_eq!(scheduler.snapshot().active_reads, 0);
     }
 
