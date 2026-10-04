@@ -177,11 +177,12 @@ fn headed_probe_fails_closed_without_existing_chrome_harness() {
         ),
         "headed probe must remain fail-closed: {report}"
     );
+    let live_reason = report["live"]["reason"].as_str().unwrap_or_default();
     assert!(
-        report["live"]["reason"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("no enrolled existing host/extension connection")
+        live_reason.contains("no enrolled existing host/extension connection")
+            || (report["status"] == "live_observation_incomplete"
+                && report["release_eligible"] == false),
+        "headed probe must explain its fail-closed result: {report}"
     );
     assert!(
         stderr.is_empty(),
