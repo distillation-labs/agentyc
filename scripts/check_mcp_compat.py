@@ -12,11 +12,14 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
-import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = "artifacts/p8-mcp-compatibility"
@@ -160,7 +163,87 @@ def _add_check(checks: list[dict[str, Any]], check_id: str, passed: bool, detail
     checks.append({"id": check_id, "status": "pass" if passed else "fail", "detail": detail})
 
 
-def inspect_repository(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _report_reference(root: Path, requested: str | Path) -> str:
+    candidate = Path(requested).expanduser()
+    if not candidate.is_absolute():
+        return candidate.as_posix()
+    try:
+        return candidate.resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return DEFAULT_REPORT
+
+
+def _add_common_artifact_envelope(
+    manifest: dict[str, Any],
+    report: dict[str, Any],
+    *,
+    root: Path,
+    report_reference: str | Path,
+) -> None:
+    """Attach the shared bounded envelope without recursively redacting IDs."""
+    timestamp = _utc_timestamp()
+    nonce = secrets.token_hex(16)
+    command = [
+        "python3",
+        "scripts/check_mcp_compat.py",
+        "--report",
+        _report_reference(root, report_reference),
+    ]
+    build_tuple = {
+        "phase": 0,
+        "artifact_kind": "mcp-compatibility",
+        "producer": "scripts/check_mcp_compat.py",
+        "producer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    environment = {
+        "platform": sys.platform,
+        "python": sys.version.split()[0],
+        "cwd": "repository-relative",
+        "network": "forbidden",
+        "browser_launch": False,
+        "browser_download": False,
+        "browser_attach": False,
+    }
+    redaction_status = {
+        "status": "applied",
+        "policy": "bounded-static-source-envelope; compatibility identifiers preserved",
+        "raw_browser_ids": False,
+        "secrets": False,
+        "absolute_paths": False,
+        "page_bodies": False,
+        "errors": False,
+        "recursive_identifier_redaction": False,
+    }
+    provenance = {
+        "nonce": nonce,
+        "timestamp": timestamp,
+        "command": command,
+        "build_tuple": build_tuple,
+    }
+    common = {
+        "schema_version": 1,
+        "build_tuple": build_tuple,
+        "environment": environment,
+        "timestamp": timestamp,
+        "nonce": nonce,
+        "command": command,
+        "provenance": provenance,
+        "redaction_status": redaction_status,
+    }
+    manifest.update(common)
+    manifest["result"] = {"status": report["status"], "kind": "manifest"}
+    report.update(common)
+    report["result"] = {"status": report["status"], "kind": "report"}
+
+
+def inspect_repository(
+    root: Path,
+    report_reference: str | Path = DEFAULT_REPORT,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Inspect source evidence and return a versioned manifest and report."""
     root = root.resolve()
     checks: list[dict[str, Any]] = []
@@ -405,6 +488,12 @@ def inspect_repository(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         "live_chrome": {"status": "not_run", "claim": False},
         "artifacts": {"manifest": "manifest.v1.json", "report": "report.v1.json"},
     }
+    _add_common_artifact_envelope(
+        manifest,
+        report,
+        root=root,
+        report_reference=report_reference,
+    )
     return manifest, report
 
 
@@ -478,7 +567,10 @@ def main(argv: list[str] | None = None) -> int:
         if not root.is_dir():
             raise CompatibilityError("repository root is not a directory")
         artifact_dir = resolve_artifact_dir(root, args.report)
-        manifest, report = inspect_repository(root)
+        manifest, report = inspect_repository(
+            root,
+            artifact_dir.relative_to(root).as_posix(),
+        )
         _atomic_write(artifact_dir / "manifest.v1.json", manifest)
         _atomic_write(artifact_dir / "report.v1.json", report)
     except (CompatibilityError, OSError) as exc:
