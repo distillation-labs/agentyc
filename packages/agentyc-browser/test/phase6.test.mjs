@@ -269,9 +269,12 @@ test("onDispatch fires once, only after the first successful write", async (t) =
   assert.ok(!transport.ignoredRequestIds.has("req_p_b"));
 
   transport._writeFrame = original;
-  await transport.request({ requests: [make("req_ok_a"), make("req_ok_b")] }, {
-    onDispatch,
-  });
+  await transport.request(
+    { requests: [make("req_ok_a"), make("req_ok_b")] },
+    {
+      onDispatch,
+    },
+  );
   assert.equal(dispatches, 2);
   assert.equal(transport.ignoredRequestIds.size, 0);
   assert.equal(transport.connected, true);
@@ -357,7 +360,10 @@ test("cancelled request IDs stay reserved and late responses are ignored", async
   );
   await until(() => held.length === 1, "held wait");
   controller.abort(new Error("stop waiting"));
-  await assert.rejects(() => wait, (error) => error instanceof CancelledError);
+  await assert.rejects(
+    () => wait,
+    (error) => error instanceof CancelledError,
+  );
   await until(
     () =>
       fixture.received.some(
@@ -376,7 +382,10 @@ test("cancelled request IDs stay reserved and late responses are ignored", async
   assert.equal(fixture.requests().length, before);
 
   // A late response arrives during a resume; neither fails the connection.
-  const resumed = await client.resumeEvents({ afterEpoch: 4, afterSequence: 6 });
+  const resumed = await client.resumeEvents({
+    afterEpoch: 4,
+    afterSequence: 6,
+  });
   assert.deepEqual(resumed.cursor, { broker_epoch: 4, sequence: 7 });
   await client.hostStatus();
   assert.equal(fixture.hellos.length, 1);
@@ -415,7 +424,10 @@ test("a cancelled batch only reserves IDs that have not been answered", async (t
     "fast response",
   );
   controller.abort(new Error("stop"));
-  await assert.rejects(() => batch, (error) => error.cancelled === true);
+  await assert.rejects(
+    () => batch,
+    (error) => error.cancelled === true,
+  );
   assert.deepEqual([...transport.ignoredRequestIds], ["req_slow"]);
 });
 
@@ -435,7 +447,9 @@ test("events from a replaced socket never disturb the active connection", async 
   const active = transport.socket;
 
   const pending = transport.request({
-    requests: [{ request_id: "req_stale_wait", method: "wait.for", params: {} }],
+    requests: [
+      { request_id: "req_stale_wait", method: "wait.for", params: {} },
+    ],
   });
   await until(() => held.length === 1, "held request");
 
@@ -646,7 +660,10 @@ test("wait `after` maps to after_epoch and after_sequence", async () => {
   assert.equal("after" in paramsOf(0), false);
 
   await client.waitFor({}, { after: { broker_epoch: 4, sequence: 7 } });
-  await client.waitFor({}, { after: { cursor: { broker_epoch: 5, sequence: 1 } } });
+  await client.waitFor(
+    {},
+    { after: { cursor: { broker_epoch: 5, sequence: 1 } } },
+  );
   await client.waitFor({}, { after: { afterEpoch: 6, afterSequence: 2 } });
   await client.waitFor({}, { after: 9 });
   await client.waitFor({}, { after: { sequence: 0 } });
@@ -700,11 +717,8 @@ test("page helpers map only to registered canonical action operations", () => {
     "evaluate",
     "fill",
     "goto",
-    "press",
     "scroll",
-    "select",
     "type",
-    "upload",
   ]);
   assert.ok(Object.isFrozen(PAGE_HELPER_OPERATIONS));
 });
@@ -712,26 +726,34 @@ test("page helpers map only to registered canonical action operations", () => {
 test("page helpers build canonical action.execute requests", async () => {
   const { transport, page } = await pageFixture();
   const cases = [
-    [() => page.goto("https://example.test/"), "navigate", { url: "https://example.test/" }],
+    [
+      () => page.goto("https://example.test/"),
+      "navigate",
+      { url: "https://example.test/" },
+    ],
     [() => page.click("#go"), "click", { selector: "#go" }],
     [
       () => page.click({ elementRef: { ref_id: "ref_1" }, x: 1, y: 2.5 }),
       "click",
       { element_ref: '{"ref_id":"ref_1"}', x: "1", y: "2.5" },
     ],
-    [() => page.type("#name", "agent"), "input", { selector: "#name", text: "agent" }],
+    [
+      () => page.type("#name", "agent"),
+      "input",
+      { selector: "#name", text: "agent" },
+    ],
     [() => page.fill("#name", ""), "input", { selector: "#name", text: "" }],
     [() => page.fill(null, "focused"), "input", { text: "focused" }],
-    [() => page.press("Enter"), "input", { key: "Enter" }],
     [
-      () => page.press("Tab", { target: "#name" }),
-      "input",
-      { selector: "#name", key: "Tab" },
+      () => page.scroll({ deltaY: 400, x: 1, y: 2 }),
+      "scroll",
+      { deltaY: "400", x: "1", y: "2" },
     ],
-    [() => page.scroll({ deltaY: 400, x: 1, y: 2 }), "scroll", { deltaY: "400", x: "1", y: "2" }],
-    [() => page.select("#choice", "b"), "input", { selector: "#choice", value: "b" }],
-    [() => page.upload("#file", { name: "report.txt" }), "upload", { selector: "#file", name: "report.txt" }],
-    [() => page.evaluate("document.title"), "evaluate", { expression: "document.title" }],
+    [
+      () => page.evaluate("document.title"),
+      "evaluate",
+      { expression: "document.title" },
+    ],
   ];
   for (const [invoke, operation, payload] of cases) {
     transport.handler = (request) => ({
@@ -785,8 +807,7 @@ test("page helpers reject invalid input before creating a page or dispatching", 
     () => lazy.click({ x: Number.NaN }),
     () => lazy.type("#a", 5),
     () => lazy.fill("#a"),
-    () => lazy.press(""),
-    () => lazy.select("#a", undefined),
+
     () => lazy.evaluate(""),
     () => lazy.scroll("down"),
     () => lazy.waitForURL(/example/),
@@ -801,11 +822,92 @@ test("page helpers reject invalid input before creating a page or dispatching", 
   for (const [index, invoke] of invalid.entries()) {
     await assert.rejects(
       invoke,
-      (error) => error instanceof AgentycError && error.code === "invalid_argument",
+      (error) =>
+        error instanceof AgentycError && error.code === "invalid_argument",
       `case ${index}`,
     );
   }
   assert.equal(transport.calls.length, 0);
+});
+
+test("unsupported key, select, and upload helpers fail before dispatch", async () => {
+  const transport = new FakeTransport();
+  const client = await connect({ transport });
+  const page = client.taskSpace("space_unsupported").page("page_unsupported");
+
+  for (const invoke of [
+    () => page.press("Enter"),
+    () => page.select("#choice", "b"),
+    () => page.upload("#file", { name: "report.txt" }),
+  ]) {
+    await assert.rejects(
+      invoke,
+      (error) => error.code === "capability_unavailable",
+    );
+  }
+  assert.equal(transport.calls.length, 0);
+});
+
+test("page labels resolve existing records and do not create duplicates", async () => {
+  const transport = new FakeTransport();
+  transport.handler = (request) => ({
+    responses: request.requests.map((entry) => ({
+      request_id: entry.request_id,
+      ok: true,
+      result:
+        entry.method === "page.list"
+          ? {
+              pages: [
+                {
+                  page_id: "page_existing",
+                  space_id: "space_lookup",
+                  label: "main",
+                },
+              ],
+            }
+          : { snapshot: { ok: true } },
+    })),
+  });
+  const client = await connect({ transport });
+  const space = client.taskSpace("space_lookup");
+  space.leaseEpoch = 2;
+  const page = space.page("main");
+
+  const [snapshot] = await Promise.all([
+    page.snapshot(),
+    page.click({ elementRef: { ref_id: "ref_existing" } }),
+  ]);
+  assert.deepEqual(snapshot, { snapshot: { ok: true } });
+  assert.equal(page.id, "page_existing");
+  assert.equal(
+    transport.calls.filter((call) => call.requests[0].method === "page.list")
+      .length,
+    1,
+  );
+  assert.equal(
+    transport.calls.some((call) => call.requests[0].method === "page.create"),
+    false,
+  );
+});
+
+test("page creation is single-flight and requires a claimed lease", async () => {
+  const transport = new FakeTransport();
+  const client = await connect({ transport });
+  const unclaimed = client.taskSpace("space_unclaimed").page("main");
+  await assert.rejects(
+    () => unclaimed.create(),
+    (error) => error.code === "invalid_argument",
+  );
+  assert.equal(transport.calls.length, 0);
+
+  const space = client.taskSpace("space_claimed");
+  space.leaseEpoch = 3;
+  const page = space.page("main");
+  const [left, right] = await Promise.all([page.create(), page.create()]);
+  assert.equal(left, page);
+  assert.equal(right, page);
+  assert.equal(transport.calls.length, 1);
+  assert.equal(transport.calls[0].requests[0].method, "page.create");
 });
 
 test("waitForURL builds a url wait condition scoped to the page", async () => {
