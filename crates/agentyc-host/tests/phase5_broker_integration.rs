@@ -6,9 +6,10 @@ use agentyc_core::{
     PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId, RequestId, SpaceId, Timestamp,
 };
 use agentyc_host::{
-    ActionabilityEvidence, AuthorityTicket, Broker, FakeBridge, Ledger, SnapshotRead,
-    canonical_action_hash, empty_snapshot,
+    ActionabilityEvidence, AuthorityTicket, Broker, FakeBridge, Ledger, ObservationScope,
+    SnapshotRead, canonical_action_hash, empty_snapshot,
 };
+use serde_json::json;
 use tempfile::tempdir;
 
 fn authority(broker: &Broker, suffix: &str) -> AuthorityTicket {
@@ -266,4 +267,76 @@ fn clean_snapshot_hit_does_not_observe_live_inventory() {
         .expect("clean snapshot");
     assert!(!second.scan_performed);
     assert_eq!(bridge.observe_count(), 1);
+}
+
+#[test]
+fn scoped_side_state_routes_and_redacts_observability_events() {
+    let directory = tempdir().expect("tempdir");
+    let broker = Broker::with_shared_bridge(
+        Ledger::open(directory.path()).expect("ledger"),
+        Arc::new(FakeBridge::new()),
+    );
+    let authority = authority(&broker, "side-state");
+    let first = broker.create_space(&authority, "first").expect("space");
+    let first_lease = broker
+        .acquire_lease(&first.space_id, &authority, Timestamp::new(0), 100)
+        .expect("lease");
+    let first_page = managed_page(
+        &broker,
+        &authority,
+        &first.space_id,
+        first_lease.lease.lease_epoch,
+    );
+    let second = broker.create_space(&authority, "second").expect("space");
+    let second_lease = broker
+        .acquire_lease(&second.space_id, &authority, Timestamp::new(0), 100)
+        .expect("lease");
+    let second_page = managed_page(
+        &broker,
+        &authority,
+        &second.space_id,
+        second_lease.lease.lease_epoch,
+    );
+
+    for (space_id, page_id, message) in [
+        (&first.space_id, &first_page, "first secret=do-not-retain"),
+        (&second.space_id, &second_page, "second token=do-not-retain"),
+    ] {
+        broker
+            .apply_bridge_event(
+                &authority,
+                &json!({
+                    "event": "log.console",
+                    "broker_epoch": authority.broker_epoch().get(),
+                    "connection_epoch": authority.connection_epoch().get(),
+                    "payload": {
+                        "space_id": space_id,
+                        "page_id": page_id,
+                        "level": "warn",
+                        "message": message,
+                    }
+                }),
+                Timestamp::new(2),
+            )
+            .expect("side-state event");
+    }
+
+    let first_logs = broker
+        .observability_logs(
+            &authority,
+            &ObservationScope::page(first.space_id.clone(), first_page.clone()),
+        )
+        .expect("first logs");
+    assert_eq!(first_logs.len(), 1);
+    assert!(first_logs[0].message.contains("first"));
+    assert!(!first_logs[0].message.contains("do-not-retain"));
+    assert!(
+        broker
+            .observability_logs(
+                &authority,
+                &ObservationScope::page(first.space_id, second_page),
+            )
+            .expect("cross-page logs")
+            .is_empty()
+    );
 }
