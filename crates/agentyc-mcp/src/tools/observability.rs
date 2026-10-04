@@ -6,13 +6,17 @@
 )]
 //! replay, debug bundle, downloads, trace, inspect_network_entry.
 
+use agentyc_host::{DownloadState, TextMatcher};
+use agentyc_runtime::WaitOptions;
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::tools::{NetworkMock, SharedState, browser_client, ok_json, ok_text, page_send};
+use crate::tools::{
+    NetworkMock, SharedState, browser_client, ok_json, ok_text, page_send, runtime_handle,
+};
 
 async fn cdp_root(state: &SharedState, method: &str, params: Value) -> Result<Value> {
     browser_client(state)
@@ -589,28 +593,30 @@ pub async fn browser_wait_for_download(
     timeout_seconds: Option<f64>,
 ) -> Result<CallToolResult> {
     let timeout = std::time::Duration::from_secs_f64(timeout_seconds.unwrap_or(10.0));
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        {
-            let g = state.lock().await;
-            let dl = g.downloads.iter().find(|d| {
-                d.completed
-                    && expected_name
-                        .as_ref()
-                        .map(|n| &d.filename == n)
-                        .unwrap_or(true)
-            });
-            if let Some(d) = dl {
-                return Ok(ok_json(
-                    &json!({"filename": d.filename, "path": d.path, "size": d.size}),
-                ));
-            }
+    {
+        let g = state.lock().await;
+        if let Some(download) = g.downloads.iter().find(|download| {
+            download.completed
+                && expected_name
+                    .as_ref()
+                    .is_none_or(|name| &download.filename == name)
+        }) {
+            return Ok(ok_json(&json!({
+                "filename": download.filename,
+                "path": download.path,
+                "size": download.size,
+            })));
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow!("Timeout waiting for download"));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+    let result = runtime_handle(state)
+        .await?
+        .wait_for_download(
+            expected_name.map(TextMatcher::Exact),
+            DownloadState::Completed,
+            WaitOptions::with_timeout(timeout),
+        )
+        .await?;
+    Ok(ok_json(&serde_json::to_value(result)?))
 }
 
 #[allow(unused_variables)]
