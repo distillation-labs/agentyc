@@ -16,8 +16,8 @@ use std::{
 };
 
 use agentyc_core::{
-    CoreError, ErrorCode, LeaseEpoch, PrincipalId, ProfileBindingId, ProfileDisclosure, SpaceId,
-    Timestamp,
+    ActionId, ActionStatus, CoreError, ErrorCode, EventKind, EventScope, LeaseEpoch, PrincipalId,
+    ProfileBindingId, ProfileDisclosure, SpaceId, Timestamp,
 };
 use agentyc_host::native_messaging::NativeRequest;
 use agentyc_host::{
@@ -237,6 +237,50 @@ fn send_control_spaces(
     Ok(registry)
 }
 
+fn reconcile_inventory_unknown_actions(
+    broker: &Broker,
+    authority: &AuthorityTicket,
+    bridge: &NativeMessagingBridge,
+) -> Result<(), String> {
+    let (action_ids, overflow) = bridge.inventory_unknown_actions();
+    for raw_action_id in &action_ids {
+        let Ok(action_id) = raw_action_id.parse::<ActionId>() else {
+            continue;
+        };
+        let Ok(receipt) = broker.action_status(authority, &action_id) else {
+            continue;
+        };
+        if receipt.status != ActionStatus::Unknown {
+            continue;
+        }
+        let _ = broker.reconcile_action(
+            &action_id,
+            authority,
+            receipt.lease_epoch,
+            Timestamp::new(current_millis()),
+        );
+    }
+    if overflow {
+        let _ = broker.publish_event(
+            authority,
+            EventScope {
+                space_id: None,
+                page_id: None,
+            },
+            EventKind::ConnectionChanged,
+            BTreeMap::from([
+                (
+                    "reason".to_owned(),
+                    "unknown_action_inventory_overflow".to_owned(),
+                ),
+                ("resync_required".to_owned(), "true".to_owned()),
+            ]),
+        );
+    }
+    bridge.acknowledge_inventory_unknown_actions(&action_ids, overflow);
+    Ok(())
+}
+
 fn supervise_native_requests(
     broker: &Broker,
     authority: AuthorityTicket,
@@ -280,6 +324,7 @@ fn supervise_native_requests(
                     bridge = next_bridge;
                     authority = next_connection.authority().clone();
                     *tickets = send_control_spaces(broker, &authority, &bridge)?;
+                    reconcile_inventory_unknown_actions(broker, &authority, &bridge)?;
                     degraded_since = None;
                     continue;
                 }
@@ -303,9 +348,27 @@ fn supervise_native_requests(
         for event in bridge.drain_events() {
             // Lifecycle events are advisory browser observations. Reduce the
             // bounded queue into the broker before accepting more requests;
-            // never replay browser commands from an event.
-            let _ = broker.apply_bridge_event(&authority, &event, Timestamp::new(current_millis()));
+            // never replay browser commands from an event. Rejected ingress is
+            // itself a visible resync signal; it must not disappear silently.
+            if broker
+                .apply_bridge_event(&authority, &event, Timestamp::new(current_millis()))
+                .is_err()
+            {
+                let mut payload = BTreeMap::new();
+                payload.insert("reason".to_owned(), "bridge_event_rejected".to_owned());
+                payload.insert("resync_required".to_owned(), "true".to_owned());
+                let _ = broker.publish_event(
+                    &authority,
+                    EventScope {
+                        space_id: None,
+                        page_id: None,
+                    },
+                    EventKind::ConnectionChanged,
+                    payload,
+                );
+            }
         }
+        reconcile_inventory_unknown_actions(broker, &authority, &bridge)?;
         for request in bridge.drain_requests() {
             if bridge.is_closed() {
                 break;
