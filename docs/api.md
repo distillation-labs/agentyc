@@ -7,6 +7,14 @@ its CLI and MCP compatibility surfaces. For existing-Chrome task automation, the
 
 The binary is `agentyc`. It is built with `clap` and exposes four subcommands.
 
+### Host-backed direct space creation
+
+```bash
+agentyc space create --label Research --accept-shared-profile-disclosure
+```
+
+Existing-Chrome spaces share the enrolled Chrome profile state: cookies, storage, history, permissions, and installed extensions. `--accept-shared-profile-disclosure` is required; the host rejects creation without the explicit non-isolation acknowledgement before committing the ledger record. The side panel presents and records the same acknowledgement fields.
+
 ### `agentyc` / `agentyc mcp` — host-backed MCP adapter (stdio)
 
 ```bash
