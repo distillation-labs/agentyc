@@ -135,6 +135,18 @@ pub enum LeaseState {
     Released,
 }
 
+/// Lifecycle of a host-issued, single-use user-intent confirmation ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserIntentTicketState {
+    /// The ticket may authorize its exact bound operation before expiry.
+    Issued,
+    /// The ticket has authorized one operation and cannot be replayed.
+    Consumed,
+    /// The host revoked the ticket before use.
+    Revoked,
+}
+
 /// Durable action outcome state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
