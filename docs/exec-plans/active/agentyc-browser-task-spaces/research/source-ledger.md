@@ -300,6 +300,38 @@
 - **Limits:** Reviews are design evidence, not runtime proof; Phase 0/7 real-Chrome validation remains authoritative.
 - **Confidence:** medium/high
 
+### S-026 — Current official Chrome contract refresh
+
+- **Canonical URLs:** <https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging>, <https://developer.chrome.com/docs/extensions/reference/api/debugger>, <https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle>, <https://developer.chrome.com/docs/extensions/reference/api/tabs>, <https://developer.chrome.com/docs/extensions/reference/api/tabGroups>, <https://developer.chrome.com/docs/extensions/reference/api/sidePanel>, <https://developer.chrome.com/docs/extensions/reference/api/storage>, <https://developer.chrome.com/docs/extensions/develop/concepts/extensions-update-lifecycle>, <https://developer.chrome.com/blog/remote-debugging-port>, <https://developer.chrome.com/docs/extensions/how-to/distribute>
+- **Source class:** official Chrome documentation and security guidance
+- **Version/freshness:** directly fetched 2026-10-03; Context7 fallback resolved `/websites/developer_chrome_extensions` and `/websites/developer_chrome_extensions_reference_api` and returned the same official sources. Firecrawl MCP was unavailable (`ECONNREFUSED 127.0.0.1:3002`).
+- **Claim:** Native Messaging requires exact origins/native-endian framing and bounded host-to-extension messages; MV3 storage/session state and `onStartup` govern worker/browser recovery; debugger attach/detach, flat child sessions, tab active/focus, group window/session scope, side-panel gestures, update-idle behavior, remote-debugging restrictions, permissions, and distribution limits are explicit.
+- **Decision impact:** current Phase 0 hardening and Phase 1 residuals: same-session exact-hint recovery, session markers, focus fingerprint, lifecycle invalidation, event reduction, OOPIF partial status, and distribution scope.
+- **Limits:** Official docs do not prove installed Chrome/enterprise policy behavior; headed artifacts and deterministic tests are required.
+- **Confidence:** high for documented contracts; runtime confidence is bounded by the accepted artifact and test matrix.
+
+### S-027 — Current ego-lite implementation comparison
+
+- **Canonical repository:** `reference/ego-lite-main/`
+- **Source class:** local comparable implementation and skill guidance
+- **Version/freshness:** current checkout inspected 2026-10-03
+- **Evidence locations:** `AGENTS.md`, `skills/ego-browser/SKILL.md`, `page-ledger.ts`, `page-ref-registry.ts`, `native-gate.ts`, `browser-runtime.ts`, `taskspace-e2e.test.mjs`
+- **Claim:** Durable page labels, unmanaged-tab protection, browser-instance reconciliation, target/frame/document provenance, bounded queues, whole-operation serialization, explicit unknown outcomes, and cleanup/focus patterns were compared and carried forward where compatible.
+- **Decision impact:** Phase 0 hardening and Phase 1 architecture boundaries.
+- **Limits:** The reference's proprietary browser host and isolated BrowserContext are not product dependencies; selected-page retention, full OOPIF graph, and full actionability/waits remain later-phase work.
+- **Confidence:** high for local source observations.
+
+### S-028 — Current runtime and regression evidence
+
+- **Canonical artifacts:** `artifacts/p0-coexistence/live-checkpoints-auto12/report.json`, extension/host/SDK tests, and `research/phase-0-*` audits
+- **Source class:** current repository/runtime evidence
+- **Version/freshness:** current checker/test runs 2026-10-03
+- **Evidence locations:** Phase 0 checker report; 52 extension tests; 38 host tests including bridge event loss; 34 host-core integration tests; 10 direct CLI tests; 13 SDK tests; fmt/diff/compile checks.
+- **Claim:** The bounded Phase 0 checker returns `status: pass`; hardening regressions are covered; primary changed files have no diagnostics.
+- **Decision impact:** Phase 0 closure and Phase 1 activation.
+- **Limits:** The accepted headed artifact predates the final source hardening; deterministic regressions cover the changed code, and a new approved headed capture is required before claiming that artifact as a binary/source-identical release artifact.
+- **Confidence:** high for deterministic code paths; medium for source-identical live runtime evidence.
+
 ## Superseding research limit
 
-The direct official Chrome sources above were retrieved successfully. Firecrawl search remained HTTP 400, so no search-index result was treated as evidence. Real Chrome, extension installation, enterprise-policy, and profile-coexistence measurements remain explicit Phase 0/7 work; the revised plan is bounded rather than claiming internet-wide or runtime saturation.
+The direct official Chrome sources above were retrieved successfully. Firecrawl search remained unavailable, so no search-index result was treated as evidence. The accepted headed artifact closes the bounded Phase 0 coexistence gate; OOPIF/enterprise/distribution/deployed-tokenizer/selected-retention claims remain explicitly scoped to later phases rather than inferred from docs or disposable probes.
