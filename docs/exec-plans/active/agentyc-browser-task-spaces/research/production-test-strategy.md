@@ -89,9 +89,9 @@ Release is an automatic no-go for any authorization bypass, cross-space mutation
 
 ## CI and artifacts
 
-The test manifest records layer, command, required/optional status, environment, fixture, timeout, artifact path, owner, and quarantine status. Required PR lanes are deterministic unit/component/process/MCP contract/redaction suites. Nightly lanes add headed Chrome matrices, load, soak, chaos, fuzz corpus, and install/update drills. Release adds the supported OS/Chrome/policy matrix and rollback drill. Manual lanes cover real user-approved Chrome and managed distribution.
+The test manifest records layer, command, required/optional status, environment, fixture, timeout, artifact path, owner, and quarantine status. Required PR lanes are deterministic unit/component/process/MCP contract/redaction suites. Nightly lanes add headed Chrome matrices, load, soak, chaos, fuzz corpus, and install/update drills. Launch adds the supported OS/Chrome/policy matrix. Manual lanes cover real user-approved Chrome and managed distribution.
 
-Each failure uploads sanitized logs, wire transcripts, redacted event traces, environment/build manifests, seeds, and a replay command. Quarantine entries require an issue, owner, reason, first-seen commit, expiry, and replacement test; they cannot cover security, data-loss, cross-space, or rollback gates.
+Each failure uploads sanitized logs, wire transcripts, redacted event traces, environment/build manifests, seeds, and a replay command. Quarantine entries require an issue, owner, reason, first-seen commit, expiry, and replacement test; they cannot cover security, data-loss, or cross-space gates.
 
 ## Source of truth
 
