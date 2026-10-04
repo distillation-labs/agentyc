@@ -2051,6 +2051,11 @@ def orchestrate_live(
             ("research", LIVE_PRINCIPALS[0], "results", "Agentyc research"),
             ("testing", LIVE_PRINCIPALS[1], "app", "Agentyc testing"),
         ):
+            prune = cli.call(
+                ["space", "prune", "--max-count", "8"],
+                principal=principal,
+            )
+            _append_receipt(transport_receipts, f"space.prune.{label}", prune)
             create = cli.call(["space", "create", "--label", label], principal=principal)
             _append_receipt(transport_receipts, f"space.create.{label}", create)
             space_id = _space_create_result(create)
