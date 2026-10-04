@@ -6,6 +6,10 @@
 
 The extension is a browser adapter, not an authority store. Chrome permission grants are necessary but never sufficient for a mutation: the host must admit the enrolled profile binding, principal, space/page, lease epoch, capability, policy, generation, and user-intent ticket where required. A successful Chrome API call does not authenticate the caller.
 
+### Direct manifest check
+
+The permission checker parses `extension/manifest.json` directly; it does not infer permissions from this document. It requires Manifest V3, a string-list `permissions` field with exactly one required `debugger` entry, and `incognito: "not_allowed"`. It rejects `optional_permissions`, `host_permissions`, `optional_host_permissions`, and `scripting`, and recursively rejects every `world: "MAIN"` declaration. The current manifest therefore has no optional, host, scripting, or MAIN-world capability.
+
 ## 1. Manifest and host-access policy
 
 ### Required baseline permissions
@@ -39,28 +43,32 @@ Optional capabilities are explicit, separately disclosed, and denied by default:
 | exact origin host access | requested only for a content/page bridge that needs it       | user-approved origin pattern, capability profile, frame/document generation, and host lease                                                       |
 | `activeTab`              | only for a user-gesture-bound, short-lived content operation | the gesture is the grant; it cannot authorize background work or a different page                                                                 |
 
-The default manifest has no broad hidden host grant. `optional_host_permissions` may contain only documented, user-approved origin patterns. The extension MUST NOT use a wildcard host grant as a substitute for policy, and it MUST NOT treat a URL, title, focus state, label, or group membership as permission. `debugger` permission is not a host-authentication mechanism.
+The current manifest has no broad hidden host grant and no optional host permissions. A future reviewed capability may request exact, user-approved origin patterns, but the extension MUST NOT use a wildcard host grant as a substitute for policy, and it MUST NOT treat a URL, title, focus state, label, or group membership as permission. `debugger` permission is not a host-authentication mechanism.
 
-No permission permits automatic browser download, browser launch, profile switching, or silent attachment to a debugger endpoint. Existing-Chrome mode requires a user-approved running Chrome and the enrolled extension/host binding.
+No permission permits automatic browser download, browser launch, profile switching, or silent attachment to a debugger endpoint. Unsupported upload/download flows return typed `upload_denied`/`download_denied` and do not retry or fall back. Existing-Chrome mode requires a user-approved running Chrome and the enrolled extension/host binding.
 
 ## 2. Debugger domain allowlist
 
-The bridge sends only the smallest domain/method set required by the capability matrix. The allowlist is versioned and enforced before dispatch:
+The bridge sends only the smallest domain/method set required by the capability matrix. It calls `chrome.debugger.attach` with the official documented minimum required protocol version `0.1`; the disposable P0 probe's separate `1.3` revision is test-fixture evidence only and is not the product adapter contract. The allowlist is versioned and enforced before dispatch:
 
-| Domain          | Phase 1 use                                                                                | Boundary                                                                                               |
-| --------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `Accessibility` | bounded accessibility snapshot data                                                        | read; page data remains untrusted                                                                      |
-| `DOM`           | bounded DOM topology and node reads; typed actions use approved input/content paths        | generation and lease checks; arbitrary DOM mutation and `DOM.setFileInputFiles` are denied             |
-| `DOMSnapshot`   | compact snapshot acquisition                                                               | bounded size and scan budget                                                                           |
-| `Input`         | click/type/fill/key/scroll actions                                                         | mutation policy, actionability, and postcondition                                                      |
-| `IO`            | bounded artifact/stream reads                                                              | chunk and aggregate limits                                                                             |
-| `Log`           | bounded diagnostic events                                                                  | redaction; no secret/page-body persistence                                                             |
-| `Network`       | request/response events and waits                                                          | no unrestricted body persistence; global cache/cookie/blocking mutations are denied                    |
-| `Page`          | navigation, lifecycle, dialogs, and page events                                            | lease, deadline, and unknown outcome rules                                                             |
-| `Runtime`       | approved evaluation and bridge calls                                                       | evaluate policy below; no unrestricted string execution                                                |
-| `Target`        | reserved for a future internal related-target adapter; not exposed in the current baseline | no public target control; related-target execution is unavailable until separately observed and tested |
+| Domain          | Phase 1 use                                                                         | Boundary                                                                                               |
+| --------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Accessibility` | bounded accessibility snapshot data                                                 | read; page data remains untrusted                                                                      |
+| `DOM`           | bounded DOM topology and node reads; typed actions use approved input/content paths | generation and lease checks; arbitrary DOM mutation and `DOM.setFileInputFiles` are denied             |
+| `DOMSnapshot`   | compact snapshot acquisition                                                        | bounded size and scan budget                                                                           |
+| `Input`         | click/type/fill/key/scroll actions                                                  | mutation policy, actionability, and postcondition                                                      |
+| `IO`            | bounded artifact/stream reads                                                       | chunk and aggregate limits                                                                             |
+| `Log`           | bounded diagnostic events                                                           | redaction; no secret/page-body persistence                                                             |
+| `Network`       | request/response events and waits                                                   | no unrestricted body persistence; global cache/cookie/blocking mutations are denied                    |
+| `Page`          | navigation, lifecycle, dialogs, and page events                                     | lease, deadline, and unknown outcome rules                                                             |
+| `Runtime`       | approved evaluation and bridge calls                                                | evaluate policy below; no unrestricted string execution                                                |
+| `Target`        | not in the current command or event allowlists                                      | no public target control; related-target execution is unavailable until separately observed and tested |
 
-`Browser`, `Target` control, unrestricted `Storage`, arbitrary CDP command passthrough, arbitrary runtime script compilation/calls, file-input CDP injection, and unreviewed domains are not in the baseline allowlist. An unsupported domain or method returns `capability_unavailable` with the required Chrome/policy reason. It never falls back to a second browser or direct client-side CDP.
+`Browser`, `Target` control/events, unrestricted `Storage`, arbitrary CDP command passthrough, arbitrary runtime script compilation/calls, file-input CDP injection, and unreviewed domains are not in the baseline allowlist. An unsupported domain or method returns `capability_unavailable` with the required Chrome/policy reason. It never falls back to a second browser or direct client-side CDP.
+
+### Separate debugger event allowlist
+
+Command authorization and event routing are separate allowlists. `DEBUGGER_EVENT_ALLOWLIST` admits only the documented Accessibility, DOM, Log, Network, Page, and Runtime event names; `Target` events are not allowed and unsupported events are dropped before attribution or forwarding. Event payloads remain bounded and redacted, and an event never grants command authority.
 
 ## 3. Content-script and page worlds
 
@@ -97,6 +105,10 @@ The matrix distinguishes a permission grant from a product capability. A capabil
 
 ## 5. Denial, revocation, and special Chrome states
 
+### Stable Chrome error classifier
+
+The Chrome error classifier consumes only bounded error text and explicit test/adapter codes. It emits only codes from the extension's closed public error registry. Chrome access failures are classified as `restricted_url`, `incognito_not_supported`, `policy_denied`, `artifact_denied`, `permission_denied`, or `unknown`; reviewed unsupported file flows return `upload_denied` or `download_denied`. Raw Chrome messages, URLs, and policy details are not returned across the protocol. `unknown` is fail-closed and is never silently converted into success.
+
 ### Live revocation and enterprise policy
 
 Every mutating dispatch rechecks the effective permission/capability state. If Chrome revokes a permission, an enterprise policy denies it, or the debugger detaches, the extension:
@@ -119,7 +131,7 @@ Incognito is not enrolled or mutated by default. An incognito tab/window without
 
 ### User gestures
 
-The following require an explicit side-panel or browser user gesture and a single-use, expiring host ticket bound to profile, space/page, generation, action hash, and lease epoch:
+The following require an explicit side-panel or browser user gesture and a single-use, expiring host ticket bound to profile, space/page, generation, action hash, and lease epoch where required:
 
 - adoption of an unmanaged page;
 - takeover, return, release, or destructive cleanup;
@@ -129,9 +141,23 @@ The following require an explicit side-panel or browser user gesture and a singl
 
 A payload boolean, page message, label, tab-group action, or client-supplied principal cannot manufacture a ticket.
 
+### Runtime evaluation approval binding
+
+`Runtime.evaluate` requires an exact `purpose: "runtime.evaluate"`, a host-issued approval, a matching script hash, and the current `space_id`, `page_id`, `lease_epoch`, `target_generation`, `navigation_generation`, `document_generation`, origin, and logical `frame_scope`. The approval is bounded and single-use. A navigation, document change, origin change, or frame-scope change invalidates it; the extension does not dispatch a subframe evaluation unless a current logical frame binding proves that scope. This is separate from screenshot/PDF artifact approval.
+
 ### Screenshot and DLP denial
 
 Screenshot/PDF/artifact capabilities are subject to page policy, enterprise/DLP policy, artifact size, redaction, and retention. If any check denies capture, return `artifact_denied`/`policy_denied`, persist only the typed outcome, and do not send a partial or unredacted artifact. A denied screenshot is never represented as a successful empty screenshot.
+
+No `Page.captureScreenshot` or `Page.printToPDF` dispatch is permitted without a current, host-issued, expiring, single-use artifact approval. The canonical approval fields are:
+
+- `issued_by_host: true`, a bounded `approval_id`, and `purpose: "screenshot"` or `"pdf"` matching the exact debugger method;
+- `expires_at` (or the compatible `expires_at_ms` spelling), bounded to the short approval lifetime;
+- exact `space_id`, `page_id`, `lease_epoch`, `target_generation`, `navigation_generation`, and `document_generation`;
+- the current page/frame `origin` and logical `frame_scope` (`"main"` is the supported capture scope); and
+- `user_gesture: true` (the compatible `gesture: true` spelling is accepted).
+
+The approval is checked before attachment and again immediately before dispatch, then consumed once even if the browser result becomes unknown. The origin/frame/navigation/document scope is exact and must describe the current target. Missing, malformed, expired, replayed, cross-origin, cross-frame, stale-generation, or wrong-purpose approvals return `artifact_denied`; a missing current gesture returns `user_confirmation_required`. Chrome or DLP capture failures classify as `artifact_denied`, and no successful artifact is emitted.
 
 ## 6. Profile binding and worker state
 
@@ -151,4 +177,4 @@ The Phase 1 checker and later extension tests MUST cover:
 - tab-group deletion/rename/regrouping without logical space loss;
 - attempted automatic browser launch, copied debugger endpoint, raw browser-ID authorization, and cleanup of an unmanaged/user tab.
 
-A checker pass confirms that this policy is written and that an input matrix is structurally valid. It does not claim live Chrome permission evidence.
+A checker pass confirms that the direct manifest, policy markers, and input matrix are structurally valid. It does not claim live Chrome permission evidence. Live Chrome grants, revocation, enterprise policy, restricted-page, incognito, DLP, screenshot, and PDF behavior remain separate evidence requirements.
