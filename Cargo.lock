@@ -143,9 +143,11 @@ name = "agentyc-runtime"
 version = "2.0.0"
 dependencies = [
  "agentyc-browser",
+ "agentyc-host",
  "anyhow",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "url",
 ]
