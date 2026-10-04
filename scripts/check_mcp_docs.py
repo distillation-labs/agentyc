@@ -23,6 +23,11 @@ MAX_TOTAL_BYTES = 8 * 1024 * 1024
 MAX_FILES = 256
 
 LEGACY_HEADING_RE = re.compile(r"\b(?:legacy|compatibility|adapter)\b", re.IGNORECASE)
+EXPLICIT_COMPATIBILITY_PREFIX_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?\*\*(?:legacy\s+compatibility\s+only|"
+    r"compatibility-only|adapter-only)\b",
+    re.IGNORECASE,
+)
 NEGATION_RE = re.compile(
     r"\b(?:not|never|no|don't|doesn't|do not|does not|must not|should not|"
     r"cannot|can't|without|avoid|instead of|rather than|not the default|"
@@ -44,7 +49,7 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "raw_tab_or_target_id_recommendation",
         re.compile(
-            r"\b(?:use|pass|provide|select|switch|close|target|identify|address|"
+            r"\b(?:use|pass|provide|select|switch|close|identify|address|"
             r"choose|enter|supply)\b[^\n]{0,100}\b(?:raw\s+)?(?:tab_id|target_id|tab\s+id|target\s+id)\b|"
             r"\b(?:tab_id|target_id|tab\s+id|target\s+id)\b[^\n]{0,80}"
             r"\b(?:is|are|as)\s+(?:the\s+)?(?:primary|canonical|public)\s+(?:identity|handle|identifier)\b",
@@ -138,7 +143,7 @@ def _violations_for_text(relative: str, text: str) -> list[str]:
         if (
             not line.strip()
             or _is_legacy_section(number, headings)
-            or re.match(r"^\s*(?:[-*]\s*)?(?:legacy|compatibility-only|adapter-only)\b", line, re.IGNORECASE)
+            or EXPLICIT_COMPATIBILITY_PREFIX_RE.match(line)
         ):
             continue
         clauses = re.split(r"(?<=[.!?])\s+|[;|]", line)
