@@ -256,6 +256,11 @@ impl ProtocolServer {
                 put_json(&mut result, "space_id", &space.space_id)?;
                 put_json(&mut result, "lifecycle", &space.lifecycle)?;
             }
+            "space.prune" => {
+                let max_count = parse_u64(&request.params, "max_count")?.unwrap_or(0) as usize;
+                let pruned = self.broker.prune_released_spaces(authority, max_count)?;
+                put_json(&mut result, "pruned", &pruned)?;
+            }
             "lease.acquire" | "space.claim" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
                 let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
