@@ -831,7 +831,13 @@ def _user_focus_observation(result: dict[str, Any]) -> dict[str, Any] | None:
             if record.get("active") is not True or record.get("incognito") is True:
                 continue
             tab_hint = record.get("tab_hint")
-            if isinstance(tab_hint, str) and 1 < len(tab_hint) <= 128:
+            focus_hint = record.get("focus_hint")
+            if (
+                isinstance(tab_hint, str)
+                and 1 < len(tab_hint) <= 128
+                and isinstance(focus_hint, str)
+                and 1 < len(focus_hint) <= 128
+            ):
                 candidates.append(record)
     if not candidates:
         return None
@@ -859,6 +865,7 @@ def _user_focus_observation(result: dict[str, Any]) -> dict[str, Any] | None:
         "unmanaged": True,
         "active": True,
         "tab_hint": selected["tab_hint"],
+        "focus_hint": selected["focus_hint"],
         "active_focus_hint": focus_hint or selected["tab_hint"],
     }
 
@@ -960,11 +967,16 @@ def _managed_inventory_observation(
     if groups is None:
         return None
     safety = result.get("safety")
+    safety_counts = {
+        key: safety.get(key) if isinstance(safety, dict) else None
+        for key in ("user_tab_closes", "focus_theft")
+    }
     safety_measured = (
         isinstance(safety, dict)
         and safety.get("measurement_status") == "measured_live"
         and safety.get("current_run") is True
-        and all(type(safety.get(key)) is int for key in ("user_tab_closes", "focus_theft"))
+        and all(type(safety_counts[key]) is int for key in safety_counts)
+        and all(safety_counts[key] == 0 for key in safety_counts)
     )
     return {
         "managed_count": len(records),
@@ -972,6 +984,7 @@ def _managed_inventory_observation(
         "visual_groups": groups,
         "user_focus": focus,
         "epochs": _inventory_epochs(result, records),
+        "safety": safety_counts,
         "safety_measured": safety_measured,
         "recovery_observed": result.get("recovery_observed") is True,
     }
@@ -987,6 +1000,13 @@ def _cleanup_inventory_observation(
     result = response.result
     pages = result.get("pages")
     if result.get("space_id") != expected_space or not isinstance(pages, list) or len(pages) > 256:
+        return None
+    if result.get("truncated") is True:
+        return None
+    if (
+        isinstance(result.get("omitted_page_count"), int)
+        and result.get("omitted_page_count") != 0
+    ):
         return None
     if any(isinstance(page, dict) and page.get("page_id") in expected_page_ids for page in pages):
         return None
@@ -1090,7 +1110,12 @@ def _append_browser_receipt(
         receipts.append(_browser_receipt(operation, response, expected_rejection=expected_rejection))
 
 
-def _focus_is_unchanged(before: dict[str, Any] | None, after: dict[str, Any] | None) -> bool:
+def _focus_is_unchanged(
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    *,
+    allow_session_hint_change: bool = False,
+) -> bool:
     return bool(
         isinstance(before, dict)
         and isinstance(after, dict)
@@ -1100,9 +1125,29 @@ def _focus_is_unchanged(before: dict[str, Any] | None, after: dict[str, Any] | N
         and after.get("unmanaged") is True
         and before.get("active") is True
         and after.get("active") is True
-        and before.get("tab_hint") == after.get("tab_hint")
-        and before.get("active_focus_hint") == after.get("active_focus_hint")
+        and (
+            (
+                isinstance(before.get("focus_hint"), str)
+                and isinstance(after.get("focus_hint"), str)
+                and before.get("focus_hint") == after.get("focus_hint")
+            )
+            if allow_session_hint_change
+            else before.get("tab_hint") == after.get("tab_hint")
+        )
+        and (
+            allow_session_hint_change
+            or before.get("active_focus_hint") == after.get("active_focus_hint")
+        )
     )
+
+
+def _inventory_session_changed(
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> bool:
+    before_epoch = before.get("epochs", {}).get("browser_session_epoch") if isinstance(before, dict) else None
+    after_epoch = after.get("epochs", {}).get("browser_session_epoch") if isinstance(after, dict) else None
+    return _positive_integer(before_epoch) and _positive_integer(after_epoch) and before_epoch != after_epoch
 
 
 def _set_browser_scenario(
@@ -1167,7 +1212,7 @@ def _checkpoint_epoch_transition(
             and _positive_integer(after.get("worker_instance_epoch"))
             and after["worker_instance_epoch"] > before["worker_instance_epoch"]
         )
-        return bool(version_changed or worker_changed) and _positive_integer(after.get("browser_session_epoch"))
+        return version_changed and worker_changed and _positive_integer(after.get("browser_session_epoch"))
     return False
 
 
@@ -1468,7 +1513,12 @@ def _observed_host_enrollment(
     evidence = _empty_enrollment(source=source, current_run=False)
     if current_run:
         for component in ("host", "extension"):
-            evidence[component].update({"observed": True, "current_run": True, "status": "connected"})
+            evidence[component].update({
+                "enrolled": profile_bound,
+                "observed": True,
+                "current_run": True,
+                "status": "connected",
+            })
         if profile_bound:
             evidence["profile"].update({
                 "enrolled": True,
@@ -2360,7 +2410,16 @@ def orchestrate_live(
                             )
 
             if initial_inventory and latest_inventory:
-                focus_checks.append(_focus_is_unchanged(baseline_focus, latest_inventory.get("user_focus")))
+                focus_checks.append(
+                    _focus_is_unchanged(
+                        baseline_focus,
+                        latest_inventory.get("user_focus"),
+                        allow_session_hint_change=_inventory_session_changed(
+                            initial_inventory,
+                            latest_inventory,
+                        ),
+                    )
+                )
 
             if operator_checkpoint:
                 def renew_live_leases() -> None:
@@ -2486,7 +2545,18 @@ def orchestrate_live(
                         )
                     )
                     if after_inventory.get("observed"):
-                        focus_checks.append(_focus_is_unchanged(baseline_focus, after_inventory.get("user_focus")))
+                        checkpoint_focus = (
+                            checkpoint_before_inventory.get("user_focus")
+                            if isinstance(checkpoint_before_inventory, dict)
+                            else baseline_focus
+                        )
+                        focus_checks.append(
+                            _focus_is_unchanged(
+                                checkpoint_focus,
+                                after_inventory.get("user_focus"),
+                                allow_session_hint_change=name == "chrome-restart-recovery",
+                            )
+                        )
                     recovery_observed = after_inventory.get("recovery_observed") is True
                     checkpoint_record["post_observation"] = {
                         "host": True,
@@ -2540,7 +2610,17 @@ def orchestrate_live(
             )
             space["cleanup_inventory_ok"] = cleanup_inventory.get("observed") is True
             if cleanup_inventory.get("observed"):
-                focus_checks.append(_focus_is_unchanged(baseline_focus, cleanup_inventory.get("user_focus")))
+                cleanup_session_changed = _inventory_session_changed(
+                    initial_inventory,
+                    latest_inventory,
+                )
+                focus_checks.append(
+                    _focus_is_unchanged(
+                        baseline_focus,
+                        cleanup_inventory.get("user_focus"),
+                        allow_session_hint_change=cleanup_session_changed,
+                    )
+                )
             if not space["cleanup_inventory_ok"]:
                 failures.append(f"{space['label']}_managed_page_cleanup_observation_invalid")
             release = cli.call(
@@ -2608,8 +2688,17 @@ def orchestrate_live(
         "focus_unchanged": all_focus_stable,
         "current_run": True,
     }
-    latest_safety_measured = bool(
-        isinstance(latest_inventory, dict) and latest_inventory.get("safety_measured") is True
+    latest_safety = {}
+    if isinstance(latest_inventory, dict):
+        for observation in latest_inventory.get("observations", {}).values():
+            if isinstance(observation, dict) and isinstance(observation.get("safety"), dict):
+                for key in ("user_tab_closes", "focus_theft"):
+                    value = observation["safety"].get(key)
+                    if type(value) is int:
+                        latest_safety[key] = max(latest_safety.get(key, 0), value)
+    latest_safety_measured = (
+        latest_safety.get("user_tab_closes") == 0
+        and latest_safety.get("focus_theft") == 0
     )
     safety_measured = (
         browser_observed
@@ -2621,8 +2710,8 @@ def orchestrate_live(
     live["safety"] = {
         "measurement_status": "measured_live" if safety_measured and cross_space_rejected and stale_rejected else "not_measured_live_incomplete",
         "current_run": True,
-        "user_tab_closes": 0 if safety_measured else None,
-        "focus_theft": 0 if safety_measured else None,
+        "user_tab_closes": latest_safety.get("user_tab_closes"),
+        "focus_theft": latest_safety.get("focus_theft"),
         "cross_space_mutations": 0 if cross_space_rejected else None,
         "stale_agent_mutations": 0 if stale_rejected else None,
     }
@@ -2963,6 +3052,7 @@ def safe_report(*, mode: str, manifest: dict[str, Any], contract: dict[str, Any]
             "evidence_mode": evidence_mode,
             "status": reported_status,
             "release_eligible": executed,
+            "current_run": executed,
             "spaces": len(contract["spaces"]),
             "agents": len({item["agent"] for item in contract["spaces"]}),
             "result": {
