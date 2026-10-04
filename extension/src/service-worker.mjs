@@ -17,6 +17,11 @@ import { TabsRegistry, unknownDispatch } from "./tabs-registry.mjs";
 import { GroupsRegistry } from "./groups.mjs";
 import { FramesRegistry } from "./frames.mjs";
 import { PAGE_OPERATIONS } from "./page-bridge.mjs";
+import {
+  ScopedEventAdapter,
+  SidePanelConfirmationAdapter,
+  boundaryForHostMethod,
+} from "./scoped-events.mjs";
 
 const METADATA_KEY = "agentyc_extension_metadata";
 const FENCE_KEY = "agentyc_space_fences";
@@ -55,6 +60,8 @@ const ACTION_CONTROL_KEYS = new Set([
   "action_id",
   "approval",
   "artifact_approval",
+  "actionability",
+  "actionability_evidence",
   "capability",
   "cleanup_proof",
   "command_id",
@@ -63,13 +70,18 @@ const ACTION_CONTROL_KEYS = new Set([
   "frame_scope",
   "expected_navigation_generation",
   "expected_target_generation",
+  "element_ref",
+  "evidence",
   "operation",
   "page_id",
   "lease_epoch",
   "method",
   "ownership_proof",
   "postcondition",
+  "provenance",
+  "ref",
   "request_id",
+  "selector",
   "space_id",
   "user_intent",
 ]);
@@ -207,6 +219,30 @@ function snapshotElementsHash(elements) {
   return `fnv1a64:${hash.toString(16).padStart(16, "0")}`;
 }
 
+function artifactBytesFromBase64(value) {
+  if (typeof value !== "string" || value.length > 64 * 1024 * 1024)
+    throw new ProtocolError("schema_invalid", "artifact data is invalid");
+  let binary;
+  try {
+    binary = globalThis.atob(value);
+  } catch {
+    throw new ProtocolError("schema_invalid", "artifact data is not base64");
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1)
+    bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function artifactDigest(bytes) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `fnv1a64:${hash.toString(16).padStart(16, "0")}`;
+}
+
 function parseJsonObject(value, field) {
   if (isPlainObject(value)) return value;
   if (typeof value === "string" && value.length <= 16 * 1024) {
@@ -330,6 +366,78 @@ function normalizedParams(message) {
   return params;
 }
 
+function actionabilityFrom(params = {}) {
+  const payload = isPlainObject(params.payload) ? params.payload : {};
+  const value =
+    params.actionability_evidence ??
+    params.actionability ??
+    params.evidence ??
+    payload.actionability_evidence ??
+    payload.actionability ??
+    payload.evidence;
+  if (value === undefined || value === null) return undefined;
+  return parseJsonObject(value, "actionability_evidence");
+}
+
+function actionabilityTargetRequested(operation, command = {}, params = {}) {
+  return (
+    ["click", "input", "type", "fill"].includes(operation) &&
+    (typeof command.selector === "string" ||
+      typeof command.element_ref === "string" ||
+      typeof command.ref === "string" ||
+      actionabilityFrom(params) !== undefined)
+  );
+}
+
+function assertActionabilityEvidence({
+  operation,
+  evidence,
+  record,
+  frameScope,
+  command = {},
+  params = {},
+} = {}) {
+  if (!evidence) {
+    if (
+      operation === "click" ||
+      actionabilityTargetRequested(operation, command, params)
+    )
+      throw new ProtocolError(
+        "stale_ref",
+        "element actions require actionability evidence",
+      );
+    return undefined;
+  }
+  const require = (condition, message, code = "permission_denied") => {
+    if (!condition) throw new ProtocolError(code, message);
+  };
+  require(evidence.connected === true, "element is not connected");
+  require(evidence.visible === true, "element is not visible");
+  require(evidence.disabled === false, "element is disabled");
+  if (["input", "type", "fill"].includes(operation))
+    require(evidence.readonly === false, "element is readonly");
+  if (operation === "click") {
+    require(evidence.covered === false, "element is covered");
+    require(evidence.overlay_present === false, "element has an overlay");
+    require(evidence.hit_target === true, "element is not the hit target");
+  }
+  require(evidence.moving === false, "element layout is moving");
+  require(evidence.offscreen === false, "element is offscreen");
+  require(evidence.user_control ===
+    false, "user control currently owns the target", "user_control_required");
+  require(Number.isSafeInteger(evidence.target_generation) &&
+    evidence.target_generation ===
+      record.targetGeneration, "actionability target generation is stale", "stale_generation");
+  require(evidence.navigation_generation ===
+    record.navigationGeneration, "actionability navigation generation is stale", "stale_generation");
+  require(evidence.document_generation ===
+    record.documentGeneration, "actionability document generation is stale", "stale_generation");
+  if (frameScope !== undefined)
+    require(typeof frameScope === "string" &&
+      frameScope.length > 0, "logical frame scope is invalid", "stale_ref");
+  return evidence;
+}
+
 function valueOf(message, params, snake, camel = undefined) {
   return (
     message[snake] ??
@@ -353,6 +461,7 @@ export class ServiceWorkerController {
     profileInstanceId,
     workerInstanceEpoch,
     browserSessionEpoch,
+    enableEventDomains = false,
     autoReconnect = true,
     now = () => Date.now(),
   } = {}) {
@@ -375,6 +484,8 @@ export class ServiceWorkerController {
     this.contentPending = new Map();
     this.contentDocuments = new Map();
     this.usedSidePanelTickets = new Map();
+    this.scopedEvents = new ScopedEventAdapter();
+    this.confirmations = new SidePanelConfirmationAdapter({ now });
     this.sessionAdvancePromise = null;
     this.sidePanelListeners = [];
     this.unreportedUnknownActions = new Set();
@@ -425,6 +536,7 @@ export class ServiceWorkerController {
       now,
       profileInstanceId,
       browserSessionEpoch,
+      enableEventDomains,
     });
     this.native =
       nativeClient ??
@@ -1409,6 +1521,10 @@ export class ServiceWorkerController {
     this.contentDocuments.clear();
     this.snapshotVersions.clear();
     this.usedSidePanelTickets.clear();
+    this.scopedEvents.records.clear();
+    this.confirmations.used.clear();
+    this.confirmations.cancelled.clear();
+    this.confirmations.pausedSpaces.clear();
     this.started = false;
   }
 
@@ -1714,6 +1830,15 @@ export class ServiceWorkerController {
         this.forwardHostEvent(message);
         return { ok: true };
       }
+      if (message.kind === "cancel") {
+        const requestId = message.request_id;
+        if (typeof requestId !== "string")
+          throw new ProtocolError(
+            "schema_invalid",
+            "cancel requires request_id",
+          );
+        return { ok: this.scopedEvents.cancelWait(requestId) };
+      }
       if (message.kind === "request" || message.kind === "fence") {
         return await this.handleHostRequest(message);
       }
@@ -1968,8 +2093,30 @@ export class ServiceWorkerController {
     leaseEpoch,
     requestId,
     actionId,
+    message,
     operationToken = this.lifecycleToken,
   }) {
+    const boundary = boundaryForHostMethod(method, params);
+    if (
+      boundary &&
+      method !== "page.upload" &&
+      method !== "page.download" &&
+      method !== "storage.write" &&
+      method !== "cookies.write" &&
+      !(
+        method === "action.execute" &&
+        (params.operation ?? params.action) === "upload"
+      )
+    ) {
+      this.requireSensitiveIntent({
+        boundary,
+        spaceId,
+        pageId,
+        leaseEpoch,
+        params,
+        message,
+      });
+    }
     switch (method) {
       case "snapshot.read":
         return this.readSnapshot({
@@ -2102,11 +2249,27 @@ export class ServiceWorkerController {
           requestId,
           onDispatch: () => this.markActionDispatched(actionId),
         });
-      case "event.wait":
-        throw new ProtocolError(
-          "capability_unavailable",
-          `extension method is not implemented: ${method}`,
-        );
+      case "event.wait": {
+        assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
+        const encodedCondition =
+          params.condition ?? params.payload?.condition ?? params.payload;
+        const condition = parseJsonObject(encodedCondition, "condition");
+        const timeoutMs =
+          params.timeout_ms ?? params.timeoutMs ?? params.deadline_ms ?? 60000;
+        const event = await this.scopedEvents.waitFor({
+          requestId,
+          spaceId,
+          pageId,
+          condition,
+          timeoutMs,
+        });
+        return {
+          event: event.event,
+          payload: event.payload,
+          space_id: event.space_id,
+          page_id: event.page_id,
+        };
+      }
       case "storage.write":
       case "cookies.write":
         throw new ProtocolError(
@@ -2131,6 +2294,116 @@ export class ServiceWorkerController {
     }
   }
 
+  requireSensitiveIntent({
+    boundary,
+    spaceId,
+    pageId,
+    leaseEpoch,
+    params = {},
+    message = {},
+  }) {
+    const record = pageId ? this.tabs.getInternalByPage(pageId) : undefined;
+    const ticket =
+      params.intent_ticket ??
+      params.user_intent ??
+      params.payload?.intent_ticket ??
+      params.payload?.user_intent;
+    const actionHash =
+      params.action_hash ??
+      params.request_hash ??
+      message.request_hash ??
+      params.payload?.action_hash ??
+      params.payload?.request_hash;
+    const documentGeneration =
+      params.document_generation ??
+      params.expected_document_generation ??
+      record?.documentGeneration;
+    if (typeof actionHash !== "string" || actionHash.length === 0)
+      throw new ProtocolError(
+        "user_confirmation_required",
+        "sensitive boundary requires a canonical action hash",
+      );
+    return this.confirmations.authorize({
+      boundary,
+      ticket,
+      spaceId,
+      pageId,
+      leaseEpoch,
+      documentGeneration,
+      actionHash,
+      profileInstanceId: this.metadata.profileInstanceId,
+      connectionEpoch: this.native.connectionEpoch,
+    });
+  }
+
+  async streamArtifactResult(result, { artifactKind, requestId } = {}) {
+    const data = result?.result?.data;
+    if (typeof data !== "string") return result;
+    const bytes = artifactBytesFromBase64(data);
+    const limits = this.native.limits ?? {};
+    const chunkSize = Math.max(
+      1,
+      Math.min(
+        Number.isSafeInteger(limits.max_artifact_chunk_bytes)
+          ? limits.max_artifact_chunk_bytes
+          : 256 * 1024,
+        256 * 1024,
+      ),
+    );
+    const chunkCount = Math.ceil(bytes.length / chunkSize);
+    if (
+      bytes.length >
+        (Number.isSafeInteger(limits.max_artifact_bytes)
+          ? limits.max_artifact_bytes
+          : 32 * 1024 * 1024) ||
+      chunkCount >
+        (Number.isSafeInteger(limits.max_artifact_chunks)
+          ? limits.max_artifact_chunks
+          : 256)
+    )
+      throw new ProtocolError(
+        "message_too_large",
+        "artifact exceeds negotiated Native Messaging limits",
+      );
+    const artifactId = createLogicalId("artifact");
+    const digest = artifactDigest(bytes);
+    this.native.sendArtifactBegin({
+      artifactId,
+      requestId,
+      artifactKind,
+      totalBytes: bytes.length,
+      chunkSize,
+      chunkCount,
+      digest,
+      redacted: true,
+    });
+    for (let sequence = 0; sequence < chunkCount; sequence += 1) {
+      const start = sequence * chunkSize;
+      this.native.sendArtifactChunk({
+        artifactId,
+        chunkSequence: sequence,
+        bytes: Array.from(bytes.subarray(start, start + chunkSize)),
+      });
+    }
+    this.native.sendArtifactEnd({
+      artifactId,
+      totalBytes: bytes.length,
+      chunkCount,
+      digest,
+    });
+    return {
+      ...result,
+      result: {
+        artifact_handle: artifactId,
+        artifact_kind: artifactKind,
+        total_bytes: bytes.length,
+        chunk_count: chunkCount,
+        digest,
+        redacted: true,
+      },
+    };
+  }
+
   async executeDebuggerCommand({
     spaceId,
     pageId,
@@ -2152,7 +2425,7 @@ export class ServiceWorkerController {
       });
     }
     await this.debugger.attach({ spaceId, pageId, leaseEpoch });
-    return this.debugger.sendCommand({
+    const result = await this.debugger.sendCommand({
       spaceId,
       pageId,
       leaseEpoch,
@@ -2166,8 +2439,16 @@ export class ServiceWorkerController {
       commandId: params.command_id ?? actionId ?? requestId,
       capability: params.capability ?? params.payload?.capability,
       approval,
+      allowLargeResult: isArtifactDebuggerCommand(debuggerMethod),
       onDispatch: () => this.markActionDispatched(actionId),
     });
+    return isArtifactDebuggerCommand(debuggerMethod)
+      ? this.streamArtifactResult(result, {
+          artifactKind:
+            debuggerMethod === "Page.printToPDF" ? "pdf" : "screenshot",
+          requestId,
+        })
+      : result;
   }
 
   actionRoute(params) {
@@ -2283,6 +2564,41 @@ export class ServiceWorkerController {
       });
     }
     const approval = approvalFor(params);
+    let actionability = actionabilityFrom(params);
+    if (!actionability && typeof route.commandParams.selector === "string") {
+      const observed = await this.readContentOperation({
+        spaceId,
+        pageId,
+        leaseEpoch,
+        operation: "element.actionability",
+        payload: { selector: route.commandParams.selector },
+        requestId,
+      });
+      actionability = {
+        ...observed,
+        ...this.observedPageGeneration(pageId),
+      };
+    }
+    const record = this.tabs.getInternalByPage(pageId);
+    if (actionability && !record)
+      throw new ProtocolError("page_not_found", "logical page is not bound");
+    assertActionabilityEvidence({
+      operation: route.operation,
+      evidence: actionability,
+      record,
+      frameScope: params.frame_scope ?? params.payload?.frame_scope,
+      command: route.commandParams,
+      params,
+    });
+    delete route.commandParams.selector;
+    const actionabilityGenerations =
+      actionability && record
+        ? {
+            target: record.targetGeneration,
+            navigation: record.navigationGeneration,
+            document: record.documentGeneration,
+          }
+        : undefined;
     if (isArtifactDebuggerCommand(route.method)) {
       this.debugger.assertArtifactApproval({
         spaceId,
@@ -2293,22 +2609,51 @@ export class ServiceWorkerController {
       });
     }
     await this.debugger.attach({ spaceId, pageId, leaseEpoch });
-    return this.debugger.sendCommand({
+    let result = await this.debugger.sendCommand({
       spaceId,
       pageId,
       leaseEpoch,
       method: route.method,
       params: route.commandParams,
       expectedGeneration: params.expected_generation,
-      expectedTargetGeneration: params.expected_target_generation,
-      expectedNavigationGeneration: params.expected_navigation_generation,
-      expectedDocumentGeneration: params.expected_document_generation,
+      expectedTargetGeneration:
+        params.expected_target_generation ?? actionabilityGenerations?.target,
+      expectedNavigationGeneration:
+        params.expected_navigation_generation ??
+        actionabilityGenerations?.navigation,
+      expectedDocumentGeneration:
+        params.expected_document_generation ??
+        actionabilityGenerations?.document,
       frameScope: params.frame_scope ?? params.payload?.frame_scope,
       commandId: params.command_id ?? actionId ?? requestId,
       capability: params.capability ?? params.payload?.capability,
       approval,
+      allowLargeResult: isArtifactDebuggerCommand(route.method),
       onDispatch: () => this.markActionDispatched(actionId),
     });
+    if (isArtifactDebuggerCommand(route.method)) {
+      result = await this.streamArtifactResult(result, {
+        artifactKind: route.method === "Page.printToPDF" ? "pdf" : "screenshot",
+        requestId,
+      });
+    }
+    if (
+      route.operation === "evaluate" &&
+      result?.result?.exceptionDetails !== undefined
+    ) {
+      throw new ProtocolError(
+        "evaluate_denied",
+        "runtime evaluation returned an exception",
+      );
+    }
+    return {
+      ...result,
+      action_proof: {
+        kind: route.operation,
+        outcome: "succeeded",
+        ...(actionability ? { actionability: "verified" } : {}),
+      },
+    };
   }
 
   async readContentOperation({
@@ -3096,6 +3441,26 @@ export class ServiceWorkerController {
   handleExtensionEvent(event, payload = {}) {
     const sourcePayload =
       payload && typeof payload === "object" ? payload : { value: payload };
+    let normalized;
+    try {
+      normalized = this.scopedEvents.admit(event, sourcePayload, {
+        source: sourcePayload.source === "page" ? "page" : "host",
+      });
+      if (
+        sourcePayload.source !== "page" &&
+        normalized.space_id &&
+        event === "space.paused"
+      )
+        this.confirmations.setPaused(normalized.space_id, true);
+      if (
+        sourcePayload.source !== "page" &&
+        normalized.space_id &&
+        event === "space.resumed"
+      )
+        this.confirmations.setPaused(normalized.space_id, false);
+    } catch {
+      return;
+    }
     if (event === "tab.closed" && sourcePayload.ownership === "unmanaged") {
       this.safetyCounters.userTabCloses += 1;
       this.queueSafetyCountersPersist();
@@ -3108,10 +3473,7 @@ export class ServiceWorkerController {
       this.safetyCounters.focusTheft += 1;
       this.queueSafetyCountersPersist();
     }
-    let safePayload =
-      payload && typeof payload === "object"
-        ? { ...payload }
-        : { value: payload };
+    let safePayload = normalized.payload;
     if (safePayload.ownership === "unmanaged") {
       // User-tab URLs and titles are not needed for safety receipts and must
       // not cross the Native Messaging/UI boundary.
@@ -3142,20 +3504,46 @@ export class ServiceWorkerController {
 
   handleDebuggerEvent(payload) {
     if (!payload) return;
-    this.handleExtensionEvent(payload.event ?? "debugger.event", payload);
+    const safePayload = { ...payload };
+    if (
+      typeof safePayload.frame_id === "string" &&
+      safePayload.logical_frame_id === undefined
+    ) {
+      safePayload.logical_frame_id = safePayload.frame_id;
+      delete safePayload.frame_id;
+    }
+    this.handleExtensionEvent(
+      safePayload.event ?? "debugger.event",
+      safePayload,
+    );
   }
 
   forwardHostEvent(message) {
-    const payload = message.payload ?? message;
+    const event = message.event ?? "host.event";
+    const sourcePayload = message.payload ?? message;
+    const payload = isPlainObject(sourcePayload)
+      ? {
+          ...sourcePayload,
+          ...(sourcePayload.space_id === undefined &&
+          message.space_id !== undefined
+            ? { space_id: message.space_id }
+            : {}),
+          ...(sourcePayload.page_id === undefined &&
+          message.page_id !== undefined
+            ? { page_id: message.page_id }
+            : {}),
+        }
+      : sourcePayload;
+    let normalized;
     try {
-      assertNoRawBrowserIdentifiers(payload);
+      normalized = this.scopedEvents.admit(event, payload, { source: "host" });
     } catch {
       return;
     }
     this.forwardToSidePanel({
       type: "agentyc.host_event",
-      event: message.event ?? "host.event",
-      payload,
+      event,
+      payload: normalized.payload,
     });
   }
 
@@ -3547,7 +3935,10 @@ export function createServiceWorker(options = {}) {
 }
 
 export async function installServiceWorker(chromeApi = globalThis.chrome) {
-  const controller = createServiceWorker({ chromeApi });
+  const controller = createServiceWorker({
+    chromeApi,
+    enableEventDomains: true,
+  });
   await controller.start();
   return controller;
 }
@@ -3558,7 +3949,10 @@ if (
   globalThis.location?.protocol === "chrome-extension:" &&
   globalThis.chrome?.runtime?.connectNative
 ) {
-  const controller = createServiceWorker({ chromeApi: globalThis.chrome });
+  const controller = createServiceWorker({
+    chromeApi: globalThis.chrome,
+    enableEventDomains: true,
+  });
   globalThis.__agentycServiceWorker = controller;
   void controller.start();
 }
