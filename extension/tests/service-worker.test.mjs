@@ -313,6 +313,49 @@ test("worker restart rehydrates metadata, preserves browser session epoch, and d
   second.worker.stop();
 });
 
+test("worker restart never reclaims a different inactive tab by matching only its URL", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://user.test/" }],
+  });
+  const first = await boot(chrome);
+  const created = await sendRequest(first.port, first.hello, 2, {
+    kind: "request",
+    request_id: "req_rehydrate_create",
+    action_id: "action_rehydrate_create",
+    method: "page.create",
+    space_id: "space_rehydrate",
+    page_id: "page_rehydrate",
+    lease_epoch: 1,
+    params: {
+      url: "https://same-url.test/",
+      ownership_proof: proof(
+        "claim",
+        "space_rehydrate",
+        "page_rehydrate",
+        1,
+        "rehydrate",
+      ),
+    },
+  });
+  assert.equal(created.ok, true);
+  const rawTabId =
+    first.worker.tabs.getInternalByPage("page_rehydrate").rawTabId;
+  first.worker.stop();
+  await chrome.tabs.remove(rawTabId);
+  await chrome.tabs.create({ active: false, url: "https://same-url.test/" });
+
+  const second = await boot(chrome);
+  assert.equal(
+    second.worker.tabs.getInternalByPage("page_rehydrate"),
+    undefined,
+  );
+  assert.equal(
+    second.worker.tabs.inventory().some((tab) => tab.ownership === "unmanaged"),
+    true,
+  );
+  second.worker.stop();
+});
+
 test("runtime listeners register before metadata await, onMessage uses literal true/sendResponse, and onStartup advances browser session", async () => {
   const chrome = new FakeChrome();
   let resolveMetadata;
