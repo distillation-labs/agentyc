@@ -12,15 +12,15 @@ on:
     branches:
       - main
       - stable
-      - 'releases/**'
+      - "releases/**"
     tags:
-      - '*'
+      - "*"
   pull_request:
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
-  AGENTYC_HEADLESS: '1'
+  AGENTYC_HEADLESS: "1"
 
 jobs:
   build:
@@ -49,6 +49,18 @@ jobs:
 
       # Build the binary the integration tests spawn over stdio.
       - run: cargo build -p agentyc --locked
+
+      - name: Check Phase 5 manifest and offline evidence contract
+        run: |
+          python3 scripts/check_phase_5.py
+          python3 scripts/check_p5_performance.py --mode offline --artifact-dir artifacts/p5-performance-smoke-final
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.test_check_phase_5 scripts.test_p5_performance
+
+      - name: Check extension production paths
+        run: |
+          npm ci --prefix extension
+          npm test --prefix extension
+          npm run check --prefix extension
 
       # Default run skips #[ignore] tests (live network + headed/display).
       - name: Run tests
