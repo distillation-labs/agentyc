@@ -3,19 +3,22 @@
 //! The owner-only Unix socket transport uses this dispatcher for agent and MCP
 //! clients. Native Messaging remains a separate little-endian transport.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use agentyc_core::{
     ActionId, ActionOperation, ActionRequest, ArtifactEnvelope, BrokerEpoch, ContentHash,
-    DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventScope, EventSequence,
-    FrameDecoder, HelloEnvelope, IdempotencyKey, LeaseEpoch, MAX_ARTIFACT_CHUNK_BYTES,
-    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition, ReconcileToken, RequestEnvelope,
-    RequestId, ResponseEnvelope, ResumeEnvelope, SpaceId, Timestamp, decode_frame, decode_utf8,
-    encode_frame,
+    DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventKind, EventScope, EventSequence,
+    FrameDecoder, GenerationWatermark, HelloEnvelope, IdempotencyKey, LeaseEpoch,
+    MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition,
+    ReconcileToken, RequestEnvelope, RequestId, ResponseEnvelope, ResumeEnvelope, SpaceId,
+    Timestamp, decode_frame, decode_utf8, encode_frame,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     broker::{Broker, Connection, canonical_action_hash},
@@ -30,6 +33,7 @@ pub struct ProtocolServer {
     max_payload_bytes: usize,
     max_artifact_chunk_bytes: usize,
     connection: Option<Connection>,
+    request_states: BTreeMap<RequestId, RequestState>,
 }
 
 impl std::fmt::Debug for ProtocolServer {
@@ -68,6 +72,7 @@ impl ProtocolServer {
             max_payload_bytes,
             max_artifact_chunk_bytes,
             connection: None,
+            request_states: BTreeMap::new(),
         })
     }
 
@@ -89,19 +94,21 @@ impl ProtocolServer {
             Envelope::Request(request) => Ok(vec![self.handle_request(request)]),
             Envelope::Resume(resume) => self.handle_resume(resume),
             Envelope::Cancel(cancel) => {
-                let request_id = cancel.request_id;
-                Ok(vec![Envelope::Response(ResponseEnvelope::failure(
-                    request_id,
-                    agentyc_core::CoreError::new(
-                        agentyc_core::ErrorCode::InvalidArgument,
-                        "cancellation is reserved for the transport adapter",
-                    ),
-                ))])
+                if let Err(error) = cancel.validate() {
+                    return Ok(vec![Envelope::Response(ResponseEnvelope::failure(
+                        cancel.request_id,
+                        error,
+                    ))]);
+                }
+                Ok(vec![self.handle_cancel(cancel)])
             }
             Envelope::HelloOk(_)
             | Envelope::Response(_)
             | Envelope::Event(_)
-            | Envelope::Artifact(_) => Err(agentyc_core::CoreError::invalid_argument(
+            | Envelope::Artifact(_)
+            | Envelope::ArtifactBegin(_)
+            | Envelope::ArtifactChunk(_)
+            | Envelope::ArtifactEnd(_) => Err(agentyc_core::CoreError::invalid_argument(
                 "envelope kind is not client-admissible",
             )
             .into()),
@@ -152,13 +159,72 @@ impl ProtocolServer {
 
     fn handle_request(&mut self, request: RequestEnvelope) -> Envelope {
         let request_id = request.request_id.clone();
+        if let Some(state) = self.request_states.get(&request_id) {
+            let error = match state {
+                RequestState::CancelledQueued => agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::Cancelled,
+                    "request was cancelled before dispatch",
+                ),
+                RequestState::Dispatched | RequestState::Completed => agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::InvalidArgument,
+                    "duplicate request_id; dispatched requests are never replayed",
+                ),
+            };
+            self.request_states
+                .insert(request_id.clone(), RequestState::Completed);
+            return Envelope::Response(ResponseEnvelope::failure(request_id, error));
+        }
+        if self.request_states.len() >= MAX_TRACKED_REQUESTS {
+            return Envelope::Response(ResponseEnvelope::failure(
+                request_id,
+                agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::MessageTooLarge,
+                    "connection request tracking limit reached",
+                ),
+            ));
+        }
+        self.request_states
+            .insert(request_id.clone(), RequestState::Dispatched);
         let result = self.execute_request(request);
+        self.request_states
+            .insert(request_id.clone(), RequestState::Completed);
         match result {
             Ok(result) => Envelope::Response(ResponseEnvelope::success(request_id, result)),
             Err(error) => {
                 Envelope::Response(ResponseEnvelope::failure(request_id, error.as_core_error()))
             }
         }
+    }
+
+    fn handle_cancel(&mut self, cancel: agentyc_core::CancelEnvelope) -> Envelope {
+        let request_id = cancel.request_id;
+        let result = match self.request_states.get(&request_id) {
+            Some(RequestState::CancelledQueued) => Ok("true"),
+            Some(RequestState::Dispatched) => Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::UnknownOutcome,
+                "request has already been dispatched and cannot be safely cancelled",
+            )),
+            Some(RequestState::Completed) => Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::InvalidArgument,
+                "request has already completed",
+            )),
+            None if self.request_states.len() < MAX_TRACKED_REQUESTS => {
+                self.request_states
+                    .insert(request_id.clone(), RequestState::CancelledQueued);
+                Ok("true")
+            }
+            None => Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::MessageTooLarge,
+                "connection request tracking limit reached",
+            )),
+        };
+        Envelope::Response(match result {
+            Ok(cancelled) => ResponseEnvelope::success(
+                request_id,
+                BTreeMap::from([("cancelled".to_owned(), cancelled.to_owned())]),
+            ),
+            Err(error) => ResponseEnvelope::failure(request_id, error),
+        })
     }
 
     fn execute_request(
@@ -442,11 +508,55 @@ impl ProtocolServer {
                 put_json(&mut result, "events", &events)?;
             }
             "wait.for" => {
-                return Err(agentyc_core::CoreError::new(
-                    agentyc_core::ErrorCode::CapabilityUnavailable,
-                    "wait.for requires the event-driven wait adapter; use events.resume in the local protocol",
-                )
-                .into());
+                let condition = parse_wait_condition(required(&request.params, "condition")?)?;
+                let timeout_ms = required_u64(&request.params, "timeout_ms")?;
+                if timeout_ms == 0 || timeout_ms > MAX_WAIT_TIMEOUT_MS {
+                    return Err(agentyc_core::CoreError::invalid_argument(format!(
+                        "timeout_ms must be between 1 and {MAX_WAIT_TIMEOUT_MS}"
+                    ))
+                    .into());
+                }
+                let scope = request_scope(&request.params)?;
+                let authority = connection.authority();
+                let cursor = self.broker.event_cursor(authority)?;
+                let mut router =
+                    crate::EventRouter::new_at(cursor, crate::RouterLimits::new(MAX_EVENT_LIMIT));
+                let mut engine = crate::WaitEngine::new(ProtocolClock::new());
+                let mut registration = engine.register_scoped(
+                    &router,
+                    condition,
+                    scope.clone(),
+                    Timestamp::new(engine.now().get().saturating_add(timeout_ms)),
+                    crate::CancellationToken::new(),
+                );
+                loop {
+                    let batch = self.broker.resume_events(
+                        authority,
+                        EventQuery {
+                            after: registration.cursor,
+                            scope: scope.clone(),
+                        },
+                    )?;
+                    router.ingest_batch(batch)?;
+                    match engine.poll(&mut registration, &router) {
+                        crate::WaitOutcome::Matched { event, cursor } => {
+                            put_json(&mut result, "wait", &"matched")?;
+                            put_json(&mut result, "event", &event)?;
+                            put_json(&mut result, "cursor", &cursor)?;
+                            break;
+                        }
+                        crate::WaitOutcome::Pending { .. } => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        outcome => {
+                            return Err(crate::WaitEngine::<ProtocolClock>::outcome_error(
+                                &outcome,
+                            )
+                            .expect("terminal wait outcomes have errors")
+                            .into());
+                        }
+                    }
+                }
             }
             "host.status" => {
                 let lifecycle = self.broker.lifecycle()?;
@@ -653,6 +763,144 @@ const MAX_LOGICAL_PARAMS: usize = 16;
 const MAX_LOGICAL_PARAM_NAME_BYTES: usize = 64;
 const MAX_LOGICAL_PARAM_VALUE_BYTES: usize = 4 * 1024;
 const MAX_EVENT_LIMIT: usize = 1_024;
+const MAX_WAIT_TIMEOUT_MS: u64 = 60_000;
+const MAX_WAIT_CONDITION_DEPTH: usize = 8;
+const MAX_WAIT_CONDITION_NODES: usize = 32;
+const MAX_TRACKED_REQUESTS: usize = 4_096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestState {
+    CancelledQueued,
+    Dispatched,
+    Completed,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WireWaitCondition {
+    EventKind {
+        event: EventKind,
+    },
+    Event {
+        event: Option<EventKind>,
+        #[serde(default)]
+        payload: BTreeMap<String, String>,
+    },
+    Payload {
+        key: String,
+        value: String,
+    },
+    GenerationAtLeast {
+        generation: GenerationWatermark,
+    },
+    Any {
+        conditions: Vec<WireWaitCondition>,
+    },
+    All {
+        conditions: Vec<WireWaitCondition>,
+    },
+}
+
+struct ProtocolClock {
+    started: Instant,
+}
+
+impl ProtocolClock {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+        }
+    }
+}
+
+impl crate::Clock for ProtocolClock {
+    fn now(&self) -> Timestamp {
+        Timestamp::new(self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+    }
+}
+
+fn parse_wait_condition(encoded: &str) -> Result<crate::WaitCondition, HostError> {
+    let wire: WireWaitCondition = serde_json::from_str(encoded).map_err(|error| {
+        agentyc_core::CoreError::invalid_argument(format!("invalid wait condition: {error}"))
+    })?;
+    let mut nodes = 0;
+    wire.into_condition(0, &mut nodes)
+}
+
+impl WireWaitCondition {
+    fn into_condition(
+        self,
+        depth: usize,
+        nodes: &mut usize,
+    ) -> Result<crate::WaitCondition, HostError> {
+        *nodes += 1;
+        if depth > MAX_WAIT_CONDITION_DEPTH || *nodes > MAX_WAIT_CONDITION_NODES {
+            return Err(agentyc_core::CoreError::new(
+                agentyc_core::ErrorCode::MessageTooLarge,
+                "wait condition exceeds its depth or node bound",
+            )
+            .into());
+        }
+        let bounded_key =
+            |value: &str| !value.is_empty() && value.len() <= MAX_LOGICAL_PARAM_NAME_BYTES;
+        let bounded_value =
+            |value: &str| !value.is_empty() && value.len() <= MAX_LOGICAL_PARAM_VALUE_BYTES;
+        Ok(match self {
+            Self::EventKind { event } => crate::WaitCondition::EventKind(event),
+            Self::Event { event, payload } => {
+                if payload.len() > MAX_LOGICAL_PARAMS
+                    || payload
+                        .iter()
+                        .any(|(key, value)| !bounded_key(key) || !bounded_value(value))
+                {
+                    return Err(agentyc_core::CoreError::invalid_argument(
+                        "wait event payload keys and values must be non-empty and bounded",
+                    )
+                    .into());
+                }
+                crate::WaitCondition::Event {
+                    kind: event,
+                    payload,
+                }
+            }
+            Self::Payload { key, value } => {
+                if !bounded_key(&key) || !bounded_value(&value) {
+                    return Err(agentyc_core::CoreError::invalid_argument(
+                        "wait payload key and value must be non-empty and bounded",
+                    )
+                    .into());
+                }
+                crate::WaitCondition::Payload { key, value }
+            }
+            Self::GenerationAtLeast { generation } => {
+                crate::WaitCondition::GenerationAtLeast(generation)
+            }
+            Self::Any { conditions } => {
+                crate::WaitCondition::Any(convert_wait_children(conditions, depth, nodes)?)
+            }
+            Self::All { conditions } => {
+                crate::WaitCondition::All(convert_wait_children(conditions, depth, nodes)?)
+            }
+        })
+    }
+}
+
+fn convert_wait_children(
+    conditions: Vec<WireWaitCondition>,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<Vec<crate::WaitCondition>, HostError> {
+    if conditions.is_empty() || conditions.len() > MAX_WAIT_CONDITION_NODES {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "wait composite condition must contain 1 to 32 children",
+        )
+        .into());
+    }
+    conditions
+        .into_iter()
+        .map(|condition| condition.into_condition(depth + 1, nodes))
+        .collect()
+}
 
 fn validate_params(params: &BTreeMap<String, String>) -> Result<(), HostError> {
     if params.len() > MAX_LOGICAL_PARAMS {
@@ -904,6 +1152,241 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::tempdir;
+
+    fn hello(suffix: &str) -> Envelope {
+        Envelope::Hello(HelloEnvelope {
+            protocol: PROTOCOL_VERSION,
+            supported_protocols: vec![PROTOCOL_VERSION],
+            principal_id: PrincipalId::from_suffix(suffix).expect("principal"),
+            resume_from: None,
+            client_metadata: Some(ClientMetadata {
+                client_id: None,
+                client_name: Some("protocol-test".to_owned()),
+                client_version: Some("1".to_owned()),
+                connection_nonce: Some(ConnectionNonce::from_suffix(suffix).expect("nonce")),
+                profile_binding_id: None,
+            }),
+        })
+    }
+
+    fn request_envelope(id: &str, method: &str, params: BTreeMap<String, String>) -> Envelope {
+        Envelope::Request(RequestEnvelope {
+            protocol: PROTOCOL_VERSION,
+            request_id: RequestId::from_suffix(id).expect("request id"),
+            method: method.to_owned(),
+            params,
+            deadline_ms: None,
+            idempotency_key: None,
+        })
+    }
+
+    #[test]
+    fn wait_condition_wire_adapter_accepts_bounded_recursive_conditions() {
+        let condition = parse_wait_condition(
+            r#"{"kind":"all","conditions":[{"kind":"event_kind","event":"page.changed"},{"kind":"payload","key":"reason","value":"navigation"}]}"#,
+        )
+        .expect("condition");
+        assert!(matches!(condition, crate::WaitCondition::All(children) if children.len() == 2));
+        assert!(parse_wait_condition(
+            r#"{"kind":"any","conditions":[{"kind":"event_kind","event":"page.changed"}],"unexpected":true}"#
+        )
+        .is_err());
+        let deep = format!(
+            "{{\"kind\":\"any\",\"conditions\":[{}]}}",
+            (0..MAX_WAIT_CONDITION_DEPTH + 1).fold(
+                r#"{"kind":"event_kind","event":"page.changed"}"#.to_owned(),
+                |condition, _| format!("{{\"kind\":\"any\",\"conditions\":[{condition}]}}"),
+            )
+        );
+        assert!(parse_wait_condition(&deep).is_err());
+    }
+
+    #[test]
+    fn wait_for_matches_a_broker_event_after_registration() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let mut server = ProtocolServer::new(broker.clone());
+        server.dispatch(hello("wait-match")).expect("hello");
+        let authority = server.connection().expect("connection").authority().clone();
+        let event_broker = broker.clone();
+        let event_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            event_broker
+                .publish_event(
+                    &authority,
+                    EventScope {
+                        space_id: None,
+                        page_id: None,
+                    },
+                    EventKind::ConnectionChanged,
+                    BTreeMap::from([("state".to_owned(), "ready".to_owned())]),
+                )
+                .expect("publish event");
+        });
+        let Envelope::Response(response) = server
+            .dispatch(request_envelope(
+                "wait-match-request",
+                "wait.for",
+                BTreeMap::from([
+                    (
+                        "condition".to_owned(),
+                        r#"{"kind":"payload","key":"state","value":"ready"}"#.to_owned(),
+                    ),
+                    ("timeout_ms".to_owned(), "1000".to_owned()),
+                ]),
+            ))
+            .expect("wait dispatch")[0]
+            .clone()
+        else {
+            panic!("expected response");
+        };
+        event_thread.join().expect("event thread");
+        assert!(response.ok, "{:?}", response.error);
+        let result = response.result.expect("result");
+        assert_eq!(result.get("wait").map(String::as_str), Some("\"matched\""));
+        let event: agentyc_core::EventRecord =
+            serde_json::from_str(result.get("event").expect("event")).expect("event json");
+        assert_eq!(event.event, EventKind::ConnectionChanged);
+    }
+
+    #[test]
+    fn wait_for_timeout_is_bounded_and_returns_timeout_error() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let mut server = ProtocolServer::new(broker);
+        server.dispatch(hello("wait-timeout")).expect("hello");
+        let Envelope::Response(response) = server
+            .dispatch(request_envelope(
+                "wait-timeout-request",
+                "wait.for",
+                BTreeMap::from([
+                    (
+                        "condition".to_owned(),
+                        r#"{"kind":"event_kind","event":"page.changed"}"#.to_owned(),
+                    ),
+                    ("timeout_ms".to_owned(), "1".to_owned()),
+                ]),
+            ))
+            .expect("wait dispatch")[0]
+            .clone()
+        else {
+            panic!("expected response");
+        };
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.expect("timeout error").code,
+            agentyc_core::ErrorCode::Timeout
+        );
+
+        let Envelope::Response(invalid) = server
+            .dispatch(request_envelope(
+                "wait-too-long",
+                "wait.for",
+                BTreeMap::from([
+                    (
+                        "condition".to_owned(),
+                        r#"{"kind":"event_kind","event":"page.changed"}"#.to_owned(),
+                    ),
+                    (
+                        "timeout_ms".to_owned(),
+                        (MAX_WAIT_TIMEOUT_MS + 1).to_string(),
+                    ),
+                ]),
+            ))
+            .expect("invalid wait dispatch")[0]
+            .clone()
+        else {
+            panic!("expected response");
+        };
+        assert_eq!(
+            invalid.error.expect("invalid timeout").code,
+            agentyc_core::ErrorCode::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn cancel_before_dispatch_prevents_request_and_duplicate_mutation_replay() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let mut server = ProtocolServer::new(broker);
+        server.dispatch(hello("cancel-queued")).expect("hello");
+        let request_id = RequestId::from_suffix("queued-space-create").expect("request id");
+        let Envelope::Response(cancel_response) = server
+            .dispatch(Envelope::Cancel(agentyc_core::CancelEnvelope {
+                protocol: PROTOCOL_VERSION,
+                request_id: request_id.clone(),
+                reason: None,
+            }))
+            .expect("cancel dispatch")[0]
+            .clone()
+        else {
+            panic!("expected cancel response");
+        };
+        assert!(cancel_response.ok);
+        let Envelope::Response(cancelled_request) = server
+            .dispatch(Envelope::Request(RequestEnvelope {
+                protocol: PROTOCOL_VERSION,
+                request_id,
+                method: "space.create".to_owned(),
+                params: BTreeMap::from([("label".to_owned(), "must not exist".to_owned())]),
+                deadline_ms: None,
+                idempotency_key: None,
+            }))
+            .expect("cancelled request dispatch")[0]
+            .clone()
+        else {
+            panic!("expected cancelled request response");
+        };
+        assert_eq!(
+            cancelled_request.error.expect("cancel error").code,
+            agentyc_core::ErrorCode::Cancelled
+        );
+
+        let mutation = request_envelope(
+            "once-only-mutation",
+            "space.create",
+            BTreeMap::from([("label".to_owned(), "created once".to_owned())]),
+        );
+        let first = server.dispatch(mutation.clone()).expect("first mutation");
+        let second = server.dispatch(mutation).expect("duplicate mutation");
+        assert!(matches!(&first[0], Envelope::Response(response) if response.ok));
+        assert!(matches!(&second[0], Envelope::Response(response) if !response.ok));
+        let Envelope::Response(cancel_after_dispatch) = server
+            .dispatch(Envelope::Cancel(agentyc_core::CancelEnvelope {
+                protocol: PROTOCOL_VERSION,
+                request_id: RequestId::from_suffix("once-only-mutation").expect("request id"),
+                reason: Some("too late".to_owned()),
+            }))
+            .expect("late cancel dispatch")[0]
+            .clone()
+        else {
+            panic!("expected cancel response");
+        };
+        assert_eq!(
+            cancel_after_dispatch.error.expect("late cancel error").code,
+            agentyc_core::ErrorCode::InvalidArgument
+        );
+        let Envelope::Response(spaces) = server
+            .dispatch(request_envelope(
+                "list-after-cancel",
+                "space.list",
+                BTreeMap::new(),
+            ))
+            .expect("list dispatch")[0]
+            .clone()
+        else {
+            panic!("expected list response");
+        };
+        let listed: Vec<serde_json::Value> = serde_json::from_str(
+            spaces
+                .result
+                .expect("list result")
+                .get("spaces")
+                .expect("spaces field"),
+        )
+        .expect("spaces json");
+        assert_eq!(listed.len(), 1);
+    }
 
     #[test]
     fn duplicate_hello_does_not_replace_or_leak_connection_authority() {
