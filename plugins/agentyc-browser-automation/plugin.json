@@ -1,16 +1,19 @@
 {
   "name": "agentyc-browser-automation",
   "version": "2.0.0",
-  "description": "Deterministic browser task-space automation for coding agents via direct CLI and SDK, with MCP compatibility adapter.",
+  "description": "Deterministic browser task-space automation for coding agents via direct CLI and Node SDK; MCP is compatibility-only.",
   "license": "MIT",
+  "primary_interface": {
+    "type": "direct",
+    "cli": "agentyc",
+    "sdk": "@agentyc/browser",
+    "object_model": ["space", "page"]
+  },
   "mcp": {
     "name": "agentyc",
     "transport": "stdio",
     "command": "agentyc",
-    "args": ["mcp"],
-    "environment": {
-      "AGENTYC_HEADLESS": "1"
-    }
+    "args": ["mcp"]
   },
   "skills": [".agents/skills/agentyc-browser-automation/SKILL.md"],
   "install": {
