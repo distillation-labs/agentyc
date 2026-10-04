@@ -10,7 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  AGENTYC_HEADLESS: '1'
+  AGENTYC_HEADLESS: "1"
 
 jobs:
   release-gate:
@@ -36,8 +36,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run rollout unit checks
-        run: python3 -m unittest discover -s tests/rollout -p 'test_*.py'
+      - name: Run rollout and Phase 5 structural checks
+        run: |
+          python3 -m unittest discover -s tests/rollout -p 'test_*.py'
+          python3 scripts/check_phase_5.py
+          python3 scripts/check_p5_performance.py --mode offline --artifact-dir artifacts/p5-performance-smoke-final
       - name: Run fail-closed direct release gate
         run: python3 scripts/run_release_gate.py --require-live --artifact-dir artifacts/p7-release-gate
       - name: Upload direct gate artifacts after failure
