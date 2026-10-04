@@ -1,8 +1,8 @@
 # agentyc
 
 <p align="center">
-  <em>Deterministic, MCP-first browser automation for coding agents.</em><br>
-  No API key needed. No LLM fallback. Just CDP, stdio MCP, and 61 tools.
+  <em>Deterministic, host-backed browser task spaces for coding agents.</em><br>
+  No API key needed. No LLM fallback. Direct CLI/SDK first, with MCP compatibility.
 </p>
 
 <p align="center">
@@ -16,13 +16,13 @@
 
 ## What It Is
 
-`agentyc` is a single native binary with a host-backed stdio MCP adapter for logical browser task spaces. The existing-Chrome product path uses the enrolled MV3 extension and Native Messaging bridge; it does not launch Chrome or attach to a copied CDP URL. The direct-CDP server remains an explicit legacy compatibility mode. Every tool is deterministic, every response is compact, and no API key is required.
+`agentyc` is a single native binary for direct host-backed CLI/SDK access to logical browser task spaces, with an MCP adapter available for compatibility. The existing-Chrome product path uses the enrolled MV3 extension and Native Messaging bridge; it does not launch Chrome or attach to a copied CDP URL. The direct-CDP server remains an explicit legacy compatibility mode. Every operation is deterministic, every response is compact, and no API key is required.
 
 Cold start: **~5ms**. Binary: **~8MB**. Idle RSS: **~3MB**.
 
 ```bash
 # Download the binary for your platform, then:
-agentyc           # starts the host-backed MCP adapter
+agentyc           # starts the direct host-backed CLI
 agentyc init      # writes agentyc-skill.md — point your agent at it
 # Or install the portable agent plugin bundle:
 # plugins/agentyc-browser-automation/plugin.json
@@ -41,8 +41,9 @@ curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/ag
 curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/agentyc-x86_64-apple-darwin.tar.gz | tar xz
 # Linux x86_64
 curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/agentyc-x86_64-unknown-linux-gnu.tar.gz | tar xz
-# Then move the binary onto your PATH and start the server:
-agentyc mcp
+# Then move the binary onto your PATH and use the direct host-backed CLI:
+agentyc host status
+agentyc space list
 ```
 
 **Or build from source:**
@@ -51,7 +52,7 @@ agentyc mcp
 cargo install --git https://github.com/distillation-labs/agentyc agentyc
 ```
 
-**Cursor / Claude Code / any MCP client:**
+**Optional MCP compatibility (for MCP clients):**
 
 ```json
 {
@@ -64,7 +65,7 @@ cargo install --git https://github.com/distillation-labs/agentyc agentyc
 }
 ```
 
-Add `"--extended"` to `args` to expose 15 additional observability tools (console/network logs, mocks, debug bundle, trace). Omit it for the lean 61-tool default.
+Direct host-backed CLI/SDK is the primary interface for task-space workflows. Select the MCP compatibility adapter explicitly with `agentyc mcp`; add `"--extended"` only for its optional observability profile.
 
 **Bootstrap your agent with the skills guide:**
 
@@ -79,7 +80,7 @@ Point your agent at that file. It explains the read→ref→act→verify loop, t
 
 ## Existing-Chrome task spaces
 
-The host/core contracts, production MV3 extension package, production Native Messaging host, direct CLI/SDK, context/reliability modules, rollout gates, and host-backed MCP adapter exist behind explicit opt-in paths. Each logical space owns its managed pages and one visual Chrome tab group; leases and epochs, not group membership, authorize mutations. Phase 0 remains active only because independently enrolled existing-Chrome coexistence evidence is still missing; the live extension, Native Messaging fault suite, performance, and macOS lifecycle gates pass. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md) and [release gate](docs/release-gate.md).
+The host/core contracts, production-shaped MV3 extension package, Native Messaging host, direct CLI/SDK, context/reliability modules, rollout gates, and MCP compatibility adapter are present. Each logical space owns its managed pages and one visual Chrome tab group; leases and epochs, not group membership, authorize mutations. Phase 0 is registered complete; live product and release gates remain tracked in later phases. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md) and [release gate](docs/release-gate.md).
 
 ---
 
@@ -87,15 +88,15 @@ The host/core contracts, production MV3 extension package, production Native Mes
 
 |                       | agentyc                                    | browser-use                 | Playwright MCP           |
 | --------------------- | ------------------------------------------ | --------------------------- | ------------------------ |
-| **Protocol**          | stdio MCP (native)                         | Python script + custom loop | MCP wrapper over library |
+| **Interface**         | Direct host-backed CLI / Node SDK          | Python script + custom loop | MCP wrapper over library |
 | **LLM required**      | No                                         | Yes (planner)               | No                       |
 | **Extraction**        | Deterministic (7 route families)           | LLM-based                   | Raw page access          |
 | **State snapshots**   | Token-aware, compact, `since_hash` polling | Full DOM dump               | Full DOM or AX tree      |
 | **Element targeting** | Stable refs (`e123`) survive re-renders    | XPath/CSS selectors         | Playwright locators      |
-| **Browser backend**   | CDP direct                                 | Playwright                  | Playwright               |
+| **Browser backend**   | Enrolled Chrome extension                  | Playwright                  | Playwright               |
 | **Runtime**           | Native binary (~8MB)                       | Python + many deps          | Node + Playwright        |
 | **Cold start**        | ~5ms                                       | ~300ms+                     | ~200ms+                  |
-| **Tool count**        | 61 default / 76 extended                   | ~15–20                      | ~20                      |
+| **Legacy MCP tools**  | 61 default / 76 extended                   | ~15–20                      | ~20                      |
 
 ---
 
