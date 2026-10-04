@@ -79,12 +79,14 @@ const ACTION_METHODS = Object.freeze({
   evaluate: "Runtime.evaluate",
   screenshot: "Page.captureScreenshot",
 });
-const DESTRUCTIVE_SIDE_PANEL_ACTIONS = new Set([
+const SENSITIVE_SIDE_PANEL_ACTIONS = new Set([
+  "pause",
   "stop",
   "takeover",
   "return_control",
   "handoff",
   "finish",
+  "retain",
   "release",
 ]);
 
@@ -837,6 +839,9 @@ export class ServiceWorkerController {
         ...(receipt.postcondition
           ? { postcondition: receipt.postcondition }
           : {}),
+        ...(receipt.postcondition_observed
+          ? { postcondition_observed: receipt.postcondition_observed }
+          : {}),
         ...(receipt.navigation_url !== undefined
           ? { navigation_url: receipt.navigation_url }
           : {}),
@@ -900,6 +905,44 @@ export class ServiceWorkerController {
         ? entry.outcome
         : "unknown";
       const postcondition = normalizePostcondition(entry.postcondition);
+      const postconditionObserved = isPlainObject(entry.postcondition_observed)
+        ? {
+            ...(Number.isSafeInteger(
+              entry.postcondition_observed.document_generation,
+            )
+              ? {
+                  document_generation:
+                    entry.postcondition_observed.document_generation,
+                }
+              : {}),
+            ...(Number.isSafeInteger(
+              entry.postcondition_observed.target_generation,
+            )
+              ? {
+                  target_generation:
+                    entry.postcondition_observed.target_generation,
+                }
+              : {}),
+            ...(Number.isSafeInteger(
+              entry.postcondition_observed.navigation_generation,
+            )
+              ? {
+                  navigation_generation:
+                    entry.postcondition_observed.navigation_generation,
+                }
+              : {}),
+            ...(typeof entry.postcondition_observed.snapshot_hash ===
+              "string" &&
+            /^fnv1a64:[0-9a-f]{16}$/i.test(
+              entry.postcondition_observed.snapshot_hash,
+            )
+              ? {
+                  snapshot_hash:
+                    entry.postcondition_observed.snapshot_hash.toLowerCase(),
+                }
+              : {}),
+          }
+        : undefined;
       const navigationUrl =
         typeof entry.navigation_url === "string"
           ? boundedText(entry.navigation_url, 4096)
@@ -925,6 +968,9 @@ export class ServiceWorkerController {
           ? { document_generation: entry.document_generation }
           : {}),
         ...(postcondition ? { postcondition } : {}),
+        ...(postconditionObserved
+          ? { postcondition_observed: postconditionObserved }
+          : {}),
         ...(navigationUrl !== undefined
           ? { navigation_url: navigationUrl }
           : {}),
@@ -1025,11 +1071,43 @@ export class ServiceWorkerController {
 
   postconditionSatisfied(condition, observed, snapshotHash = undefined) {
     if (!condition) return undefined;
-    if (condition.kind === "page_generation")
+    if (condition.kind === "page_generation") {
+      if (!Number.isSafeInteger(observed?.document_generation))
+        return undefined;
       return observed?.document_generation === condition.document_generation;
-    if (condition.kind === "snapshot_hash")
+    }
+    if (condition.kind === "snapshot_hash") {
+      if (typeof snapshotHash !== "string") return undefined;
       return snapshotHash === condition.snapshot_hash;
+    }
     return false;
+  }
+
+  isSidePanelSender(sender) {
+    const extensionId = this.chrome?.runtime?.id;
+    if (
+      typeof extensionId !== "string" ||
+      sender?.id !== extensionId ||
+      sender.tab !== undefined ||
+      sender.frameId !== 0
+    )
+      return false;
+    const expected = this.chrome?.runtime?.getURL?.(
+      "src/sidepanel/index.html",
+    ) ?? `chrome-extension://${extensionId}/src/sidepanel/index.html`;
+    try {
+      const expectedUrl = new URL(expected);
+      const senderUrl = new URL(sender.url);
+      const expectedOrigin = `${expectedUrl.protocol}//${expectedUrl.host}`;
+      const senderOrigin = `${senderUrl.protocol}//${senderUrl.host}`;
+      return (
+        senderOrigin === expectedOrigin &&
+        senderUrl.pathname === expectedUrl.pathname &&
+        (sender.origin === undefined || sender.origin === expectedOrigin)
+      );
+    } catch {
+      return false;
+    }
   }
 
   actionReceiptFor(actionId, overrides = {}) {
@@ -1061,13 +1139,22 @@ export class ServiceWorkerController {
       ...(context.code ? { code: context.code } : {}),
       ...(context.reason ? { reason: boundedText(context.reason, 512) } : {}),
     };
-    output.postcondition_observed = observed ?? null;
+    const postconditionObserved = {
+      ...(observed ?? {}),
+      ...(context.postcondition_observed ?? {}),
+    };
+    output.postcondition_observed =
+      Object.keys(postconditionObserved).length > 0
+        ? postconditionObserved
+        : null;
     if (context.postcondition) {
       output.postcondition = context.postcondition;
-      output.postcondition_satisfied = this.postconditionSatisfied(
+      const satisfied = this.postconditionSatisfied(
         context.postcondition,
-        observed,
+        postconditionObserved,
+        postconditionObserved.snapshot_hash,
       );
+      output.postcondition_satisfied = satisfied ?? null;
     }
     return output;
   }
@@ -1082,6 +1169,49 @@ export class ServiceWorkerController {
     });
     this.handleExtensionEvent("action.receipt", receipt);
     return receipt;
+  }
+
+  async evaluateActionPostcondition(context, requestId) {
+    const condition = context?.postcondition;
+    if (!condition) return { outcome: "succeeded" };
+    const pageId = context.page_id ?? context.pageId;
+    const spaceId = context.space_id ?? context.spaceId;
+    const leaseEpoch = context.lease_epoch ?? context.leaseEpoch;
+    if (condition.kind === "page_generation") {
+      const observed = this.observedPageGeneration(pageId);
+      if (!observed)
+        return { outcome: "unknown", code: "unknown_outcome" };
+      context.postcondition_observed = observed;
+      return observed.document_generation === condition.document_generation
+        ? { outcome: "succeeded" }
+        : { outcome: "failed", code: "postcondition_failed" };
+    }
+    if (condition.kind === "snapshot_hash") {
+      try {
+        const observed = this.observedPageGeneration(pageId);
+        if (!observed)
+          return { outcome: "unknown", code: "unknown_outcome" };
+        const snapshot = await this.readSnapshot({
+          spaceId,
+          pageId,
+          leaseEpoch,
+          params: {
+            source: "debugger",
+          },
+          requestId,
+        });
+        context.postcondition_observed = {
+          ...observed,
+          snapshot_hash: snapshot.snapshot_hash,
+        };
+        return snapshot.snapshot_hash === condition.snapshot_hash
+          ? { outcome: "succeeded" }
+          : { outcome: "failed", code: "postcondition_failed" };
+      } catch {
+        return { outcome: "unknown", code: "unknown_outcome" };
+      }
+    }
+    return { outcome: "unknown", code: "unknown_outcome" };
   }
 
   withActionReceipt(result, receipt) {
@@ -1759,9 +1889,28 @@ export class ServiceWorkerController {
         error.retryable = false;
         throw error;
       }
+      let receiptOutcome = "succeeded";
+      let receiptError;
+      if (mutation && actionContext?.postcondition) {
+        const evaluation = await this.evaluateActionPostcondition(
+          actionContext,
+          requestId,
+        );
+        receiptOutcome = evaluation.outcome;
+        if (evaluation.code)
+          receiptError = {
+            code: evaluation.code,
+            message: evaluation.code,
+          };
+      }
       const receipt =
         mutation && actionId
-          ? this.emitActionReceipt(actionId, actionContext, "succeeded")
+          ? this.emitActionReceipt(
+              actionId,
+              actionContext,
+              receiptOutcome,
+              receiptError,
+            )
           : undefined;
       const resultWithReceipt =
         receipt === undefined
@@ -2494,9 +2643,23 @@ export class ServiceWorkerController {
     };
     const finish = (outcome, code = undefined, evidence = undefined) => {
       const error = code ? { code, message: code } : undefined;
-      this.rememberActionReceipt(context, outcome, error);
-      const receipt = this.actionReceiptFor(reconciledActionId, {
+      const postconditionObserved = evidence
+        ? {
+            ...(evidence.generation ?? {}),
+            ...(typeof evidence.snapshot_hash === "string"
+              ? { snapshot_hash: evidence.snapshot_hash }
+              : {}),
+          }
+        : context.postcondition_observed;
+      const receiptContext = {
         ...context,
+        ...(postconditionObserved
+          ? { postcondition_observed: postconditionObserved }
+          : {}),
+      };
+      this.rememberActionReceipt(receiptContext, outcome, error);
+      const receipt = this.actionReceiptFor(reconciledActionId, {
+        ...receiptContext,
         outcome,
         ...(code ? { code } : {}),
       });
@@ -2921,8 +3084,17 @@ export class ServiceWorkerController {
       return this.handleContentResult(message, sender);
     if (message.type === "agentyc.content.closed")
       return this.handleContentClosed(message, sender);
-    if (message.type === "agentyc.sidepanel.request")
-      return this.handleSidePanelRequest(message);
+    if (message.type === "agentyc.sidepanel.request") {
+      if (!this.isSidePanelSender(sender))
+        return {
+          ok: false,
+          error: errorResult(
+            "permission_denied",
+            "side-panel request did not originate from the extension side panel",
+          ),
+        };
+      return this.handleSidePanelRequest(message, sender);
+    }
     return undefined;
   }
 
@@ -3155,7 +3327,7 @@ export class ServiceWorkerController {
         "destructive side-panel action requires a host intent ticket",
       );
     }
-    const expiresAt = ticket.expires_at ?? ticket.expires_at_ms;
+    const expiresAt = ticket.expires_at;
     if (
       !Number.isSafeInteger(expiresAt) ||
       expiresAt <= this.now() ||
@@ -3168,11 +3340,12 @@ export class ServiceWorkerController {
     }
     const spaceId = params.space_id ?? params.spaceId;
     if (
+      typeof spaceId !== "string" ||
       ticket.space_id !== spaceId ||
-      (ticket.profile_instance_id !== undefined &&
-        ticket.profile_instance_id !== this.metadata.profileInstanceId) ||
-      (ticket.browser_session_epoch !== undefined &&
-        ticket.browser_session_epoch !== this.metadata.browserSessionEpoch)
+      ticket.profile_instance_id !== this.metadata.profileInstanceId ||
+      ticket.browser_session_epoch !== this.metadata.browserSessionEpoch ||
+      (ticket.lease_epoch !== undefined &&
+        ticket.lease_epoch !== (params.lease_epoch ?? params.leaseEpoch))
     ) {
       throw new ProtocolError(
         "permission_denied",
@@ -3193,7 +3366,15 @@ export class ServiceWorkerController {
     this.usedSidePanelTickets.set(ticket.ticket_id, expiresAt);
   }
 
-  async handleSidePanelRequest(message) {
+  async handleSidePanelRequest(message, sender) {
+    if (!this.isSidePanelSender(sender))
+      return {
+        ok: false,
+        error: errorResult(
+          "permission_denied",
+          "side-panel request did not originate from the extension side panel",
+        ),
+      };
     const action = message.action;
     const allowed = new Set([
       "create",
@@ -3220,7 +3401,7 @@ export class ServiceWorkerController {
         : {};
     try {
       assertNoRawBrowserIdentifiers(params);
-      if (DESTRUCTIVE_SIDE_PANEL_ACTIONS.has(action))
+      if (action !== "create" && SENSITIVE_SIDE_PANEL_ACTIONS.has(action))
         this.validateSidePanelTicket(message.intent_ticket, action, params);
       const requestId = createLogicalId("req");
       const method =
