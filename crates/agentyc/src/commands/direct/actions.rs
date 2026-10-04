@@ -34,6 +34,7 @@ fn execute(context: &DirectContext, args: ActionExecuteArgs) -> DirectResult<Val
     let operation = parse_operation(&args.operation)?;
     let payload_supplied = args.payload.is_some();
     let payload = parse_payload(args.payload.as_deref())?;
+    validate_page_operation(operation, page_id.as_ref(), &payload)?;
     let postcondition = parse_postcondition(args.postcondition.as_deref())?;
     let now = timestamp(args.now);
 
@@ -105,6 +106,32 @@ fn parse_operation(value: &str) -> DirectResult<ActionOperation> {
     serde_json::from_value(Value::String(value.to_owned())).map_err(|error| {
         agentyc_core::CoreError::invalid_argument(format!("invalid operation: {error}"))
     })
+}
+
+fn validate_page_operation(
+    operation: ActionOperation,
+    page_id: Option<&agentyc_core::PageId>,
+    payload: &BTreeMap<String, String>,
+) -> DirectResult<()> {
+    let requires_page = matches!(
+        operation,
+        ActionOperation::Navigate | ActionOperation::Close
+    );
+    if requires_page && page_id.is_none() {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "navigate and close actions require --page-id",
+        ));
+    }
+
+    if operation == ActionOperation::Navigate {
+        let url = payload.get("url").map(String::as_str).unwrap_or_default();
+        if url.is_empty() || url.len() > 4_096 {
+            return Err(agentyc_core::CoreError::invalid_argument(
+                "navigate action requires a non-empty URL up to 4096 bytes",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn operation_name(operation: ActionOperation) -> &'static str {
@@ -252,4 +279,90 @@ fn reconcile(context: &DirectContext, args: ActionReconcileArgs) -> DirectResult
         "action_id": remote_string(&response, "action_id")?,
         "receipt": remote_field(&response, "receipt")?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::direct::{DirectOptions, exit_code_for, failure, serialize_response};
+    use tempfile::tempdir;
+
+    fn context() -> (tempfile::TempDir, DirectContext) {
+        let directory = tempdir().expect("temporary state directory");
+        let context = DirectContext::open(&DirectOptions {
+            state_dir: Some(directory.path().display().to_string()),
+            principal: Some("principal_action_test".to_owned()),
+            profile_binding_id: None,
+            offline: true,
+            json: true,
+        })
+        .expect("offline direct context");
+        (directory, context)
+    }
+
+    fn execute_args(
+        operation: &str,
+        page_id: Option<String>,
+        payload: Option<String>,
+    ) -> ActionExecuteArgs {
+        ActionExecuteArgs {
+            request_id: "req_action_test".to_owned(),
+            action_id: "action_test".to_owned(),
+            idempotency_key: "idem_action_test".to_owned(),
+            space_id: "space_test".to_owned(),
+            page_id,
+            lease_epoch: 1,
+            operation: operation.to_owned(),
+            payload,
+            postcondition: None,
+            now: Some(1),
+        }
+    }
+
+    #[test]
+    fn navigation_and_close_validate_logical_page_and_navigation_url() {
+        let (_directory, context) = context();
+        for (operation, payload) in [
+            (
+                "navigate",
+                Some(r#"{"url":"https://example.test"}"#.to_owned()),
+            ),
+            ("close", None),
+        ] {
+            let error = execute(&context, execute_args(operation, None, payload))
+                .expect_err("page-mutating operation needs a logical page");
+            assert_eq!(error.code, agentyc_core::ErrorCode::InvalidArgument);
+        }
+
+        let error = execute(
+            &context,
+            execute_args("navigate", Some("page_test".to_owned()), None),
+        )
+        .expect_err("navigation needs a URL");
+        assert_eq!(error.code, agentyc_core::ErrorCode::InvalidArgument);
+
+        let error = execute(
+            &context,
+            execute_args(
+                "navigate",
+                Some("page_test".to_owned()),
+                Some(format!(r#"{{"url":"{}"}}"#, "x".repeat(4_097))),
+            ),
+        )
+        .expect_err("navigation URL must stay within the host bound");
+        assert_eq!(error.code, agentyc_core::ErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn action_error_serialization_and_exit_code_remain_stable() {
+        let (_directory, context) = context();
+        let error = execute(&context, execute_args("navigate", None, None))
+            .expect_err("navigation without page must fail");
+        let response = failure(&error);
+        let encoded = serialize_response(&response, true).expect("compact JSON error");
+        let decoded: Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(decoded["ok"], false);
+        assert_eq!(decoded["error"]["code"], "invalid_argument");
+        assert_eq!(exit_code_for(error.code), 2);
+    }
 }
