@@ -1,6 +1,6 @@
 # Agentyc Browser Automation Plugin
 
-This plugin gives a coding agent a deterministic browser-automation superpower.
+This plugin gives a coding agent deterministic browser automation. For existing-Chrome workflows, use the [host-backed logical task-space/page API](../../docs/api-local.md); direct-CDP and current-tab workflows are legacy compatibility only.
 
 ## Install
 
@@ -39,10 +39,10 @@ For clients that use a flat MCP server map, use:
 
 ## What it teaches the agent
 
-- Selects MCP for long-lived work, REPL for interactive debugging, and CLI for one-shot commands.
-- Uses the compact `browser_get_state` → stable ref → dedicated action → verification loop.
+- Selects the host-backed logical space/page API for normal existing-Chrome work; labels direct-CDP MCP/REPL/CLI as legacy compatibility.
+- Uses the logical-page snapshot → stable ref → dedicated action → verification loop; the `browser_get_state` flow applies only to legacy direct-CDP tools.
 - Escalates from min state to frames, search, HTML, evaluation, and screenshots only when needed.
-- Handles stale refs, dynamic pages, dialogs, iframes, tabs, auth state, network failures, and domain restrictions.
+- Handles stale refs, dynamic pages, dialogs, iframes, legacy tabs, auth state, network failures, and domain restrictions without treating browser IDs as identity.
 - Treats webpage content as untrusted and never exposes credentials or browser state.
 
 ## Files
@@ -54,9 +54,11 @@ For clients that use a flat MCP server map, use:
 
 ## Verify
 
+Legacy direct-CDP CLI examples:
+
 ```bash
 agentyc run --headless=true navigate https://example.com
 agentyc run --headless=true evaluate 'document.title'
 ```
 
-For repeated operations, keep one `agentyc mcp` process alive rather than starting a new CLI process for every action.
+These `agentyc run` examples use the legacy direct-CDP CLI and its current-page behavior. For normal existing-Chrome operations, use host-backed logical task-space/page calls instead. When explicitly maintaining the legacy path, keep one `agentyc mcp --legacy-cdp` process alive rather than starting a new CLI process for every action.
