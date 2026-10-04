@@ -21,6 +21,7 @@ pub mod local_ipc;
 pub mod native_messaging;
 pub mod protocol;
 pub mod refs;
+pub mod scheduler;
 pub mod snapshots;
 pub mod waits;
 
@@ -46,7 +47,9 @@ pub use event_router::{
 };
 pub use events::{EventBatch, EventQuery};
 pub use host::Host;
-pub use leases::{AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult};
+pub use leases::{
+    AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult, UserIntentTicket,
+};
 pub use ledger::{
     FencePurpose, LEDGER_SCHEMA_VERSION, Ledger, LedgerLimits, LedgerState, PendingFenceRecord,
     TakeoverProofRecord,
@@ -61,6 +64,10 @@ pub use native_messaging::{
 };
 pub use protocol::{LocalProtocolClient, LocalProtocolServer, ProtocolClient, ProtocolServer};
 pub use refs::{RefInvalidationReason, RefRecord, RefRegistry, RefRegistryLimits, RefTombstone};
+pub use scheduler::{
+    Backpressure, BackpressureKind, MutationPermit, ReadPermit, Scheduler, SchedulerLimits,
+    SchedulerSnapshot,
+};
 pub use snapshots::{
     CachedSnapshot, PageGeneration, SnapshotCache, SnapshotCacheError, SnapshotCacheRecord,
     SnapshotMetadata, SnapshotMetadataRead, SnapshotRead, empty_snapshot,
