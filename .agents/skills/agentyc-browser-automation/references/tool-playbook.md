@@ -1,6 +1,12 @@
 # Agentyc Tool Playbook
 
-Use this as a routing table, not as a checklist. Pick the narrowest deterministic tool that can answer the current question.
+Use this as a routing table, not as a checklist. For existing-Chrome work, first scope the request to a logical task space and page with the host-backed API; raw browser/tab/target identifiers and current-tab selection are not canonical identity. The `browser_*` direct-CDP recipes below are legacy compatibility guidance, not recommendations for the host-backed path. Pick the narrowest deterministic operation available in the selected API.
+
+## Canonical host-backed routing
+
+Use logical space/page operations for normal work: create or select a task space, then address a logical page for snapshots and actions. See [`docs/api-local.md`](../../../../docs/api-local.md) for the host-backed API and handle model. Do not use focus, the currently active page, a URL/title, or a raw tab/target ID to select identity or authority.
+
+Legacy direct-CDP compatibility routing only:
 
 | Goal | First choice | Escalate when |
 |---|---|---|
@@ -66,25 +72,26 @@ next = browser_get_state(mode="min", since_hash=first.state_hash)
 # changed=false means no new action is required
 ```
 
-### Multi-tab handoff
+### Legacy direct-CDP compatibility: multi-tab handoff
 
 ```text
+# Legacy only: these tab tools select a CDP tab, not a logical page.
 browser_new_tab(url="https://example.com")
 browser_list_tabs()
 browser_switch_tab(tab_id="...")
-# act only after confirming the active tab's URL/title
+# Compatibility verification only; URL/title do not establish identity or ownership.
 ```
 
 ## CLI and REPL parity
 
-Use the CLI for one-shot commands:
+Use the legacy direct-CDP CLI for one-shot compatibility commands only:
 
 ```bash
 agentyc run --headless=true navigate https://example.com
 agentyc run --headless=true evaluate 'document.title'
 ```
 
-Use REPL when several commands should share one runtime:
+Use the legacy direct-CDP REPL when several compatibility commands should share one runtime:
 
 ```text
 agentyc repl --headless=true
@@ -94,4 +101,4 @@ state
 exit
 ```
 
-The CLI opens and closes a runtime per invocation. The REPL keeps one runtime alive until `exit`; MCP is the preferred long-lived interface for coding agents.
+These direct-CDP commands retain legacy current-page behavior and are not the recommended existing-Chrome API. Use host-backed logical space/page operations for normal work. The CLI opens and closes a runtime per invocation; the REPL keeps one legacy runtime alive until `exit`.
