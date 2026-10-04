@@ -1,5 +1,11 @@
 import { Page } from "./page.mjs";
 import { assertLogicalId } from "./errors.mjs";
+import {
+  invalidArgument,
+  normalizeLeaseTtl,
+  normalizeNow,
+  transportOptions,
+} from "./constants.mjs";
 
 function logicalSpace(result) {
   const record = result?.space ?? result;
@@ -44,9 +50,25 @@ export class TaskSpace {
         space_id: this.id,
         lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
         label,
-        now: options.now,
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
+    );
+    return this._pageFromResult(result, label);
+  }
+
+  async newManagedPage(label, options = {}) {
+    const result = await this.client.request(
+      "page.create_managed",
+      {
+        space_id: this.id,
+        lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
+        label,
+        url: options.url,
+        title: options.title,
+        now: normalizeNow(options.now),
+      },
+      transportOptions(options),
     );
     return this._pageFromResult(result, label);
   }
@@ -55,7 +77,7 @@ export class TaskSpace {
     const result = await this.client.request(
       "page.list",
       { space_id: this.id },
-      { signal: options.signal },
+      transportOptions(options),
     );
     return (result?.pages ?? []).map(
       (page) =>
@@ -67,15 +89,23 @@ export class TaskSpace {
     );
   }
 
+  async inventory(options = {}) {
+    return this.client.request(
+      "page.inventory",
+      { space_id: this.id },
+      transportOptions(options),
+    );
+  }
+
   async claim(options = {}) {
     const result = await this.client.request(
       "space.claim",
       {
         space_id: this.id,
-        ttl: options.ttl,
-        now: options.now,
+        ttl: normalizeLeaseTtl(options.ttl),
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
     this.leaseEpoch =
       result?.lease?.lease_epoch ?? result?.lease_epoch ?? this.leaseEpoch;
@@ -89,10 +119,10 @@ export class TaskSpace {
       {
         space_id: this.id,
         lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
-        ttl: options.ttl,
-        now: options.now,
+        ttl: normalizeLeaseTtl(options.ttl),
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
     this.leaseEpoch = result?.lease?.lease_epoch ?? this.leaseEpoch;
     return result;
@@ -103,12 +133,31 @@ export class TaskSpace {
       "space.takeover",
       {
         space_id: this.id,
-        ttl: options.ttl,
-        now: options.now,
+        ttl: normalizeLeaseTtl(options.ttl),
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
     this.leaseEpoch = result?.lease_epoch ?? this.leaseEpoch;
+    return result;
+  }
+
+  async reclaim(options = {}) {
+    if (options.controlTicket === undefined) {
+      throw invalidArgument("controlTicket is required to reclaim a space");
+    }
+    const result = await this.client.request(
+      "space.takeover_with_control_ticket",
+      {
+        space_id: this.id,
+        control_ticket: options.controlTicket,
+        ttl: normalizeLeaseTtl(options.ttl),
+        now: normalizeNow(options.now),
+      },
+      transportOptions(options),
+    );
+    this.leaseEpoch =
+      result?.lease_epoch ?? result?.lease?.lease_epoch ?? this.leaseEpoch;
     return result;
   }
 
@@ -118,9 +167,9 @@ export class TaskSpace {
       {
         space_id: this.id,
         lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
-        now: options.now,
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
   }
 
@@ -130,9 +179,9 @@ export class TaskSpace {
       {
         space_id: this.id,
         lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
-        now: options.now,
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
   }
 
@@ -142,9 +191,9 @@ export class TaskSpace {
       {
         space_id: this.id,
         lease_epoch: options.leaseEpoch ?? this.leaseEpoch,
-        now: options.now,
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
   }
 
@@ -153,9 +202,10 @@ export class TaskSpace {
   }
 
   async reconcileAction(actionId, options = {}) {
+    const leaseEpoch = options.leaseEpoch ?? this.leaseEpoch;
     return this.client.reconcileAction(
       actionId,
-      options.leaseEpoch ?? this.leaseEpoch,
+      leaseEpoch,
       options.now,
       options,
     );
@@ -166,7 +216,7 @@ export class TaskSpace {
   }
 
   async waitFor(condition, options = {}) {
-    return this.client.waitFor(condition, options);
+    return this.client.waitFor(condition, { ...options, spaceId: this.id });
   }
 
   _pageFromResult(result, fallbackLabel) {
