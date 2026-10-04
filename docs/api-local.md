@@ -1,6 +1,6 @@
 # Local browser SDK
 
-`packages/agentyc-browser` is the typed Node SDK for the logical host interface. It does not contain a browser launcher, evaluator, CDP client, or copied browser endpoint path.
+`packages/agentyc-browser` is the typed Node SDK for the logical host interface. The direct CLI and SDK is the primary interface; MCP is compatibility-only. It does not contain a browser launcher, evaluator, CDP client, or copied browser endpoint path.
 
 ## Connect through a local transport
 
@@ -8,23 +8,55 @@ The SDK accepts an injected transport or a real framed local host socket. An inj
 
 The built-in `LocalProtocolTransport` uses the Rust envelope contract: one UTF-8 JSON `Envelope` per four-byte big-endian length frame, with the bounded one MiB control-payload default. It performs `hello`/`hello_ok`, request/response correlation, cancellation, event delivery, and cursor-based resume. The Rust host dispatcher remains the authority for method support and canonical errors.
 
+No browser is implicitly launched or downloaded. Live automation requires an enrolled extension and Native Messaging host. For deterministic testing and CI, an injected transport provides an offline test seam.
+
+### Runnable tested example (using fake transport seam)
+
+The SDK can be tested deterministically without live Chrome by providing an injected transport handler (as verified by the package test suite):
+
 ```js
 import { connect, createLocalTransport } from "@agentyc/browser";
 
+// Runnable test harness with simulated host responses:
 const transport = createLocalTransport({
   async request(batch) {
-    return localHost.send(batch);
-  },
-  async reconnect() {
-    await localHost.reconnect();
+    return {
+      responses: batch.requests.map((entry) => {
+        if (entry.method === "space.create") {
+          return {
+            request_id: entry.request_id,
+            ok: true,
+            result: {
+              space: { space_id: "space_research", label: entry.params.label },
+            },
+          };
+        }
+        if (entry.method === "page.create") {
+          return {
+            request_id: entry.request_id,
+            ok: true,
+            result: {
+              page: {
+                page_id: "page_main",
+                space_id: "space_research",
+                label: entry.params.label,
+              },
+            },
+          };
+        }
+        return { request_id: entry.request_id, ok: true, result: {} };
+      }),
+    };
   },
 });
 
 const client = await connect({ transport });
-// Or: const client = await connect({ profile: "default", socketPath });
-const space = client.taskSpace("space_research");
+// Create a space with explicit shared-profile disclosure:
+const space = await client.createSpace("research", {
+  acceptSharedProfileDisclosure: true,
+});
 const page = space.page("main"); // lazy logical handle
-const snapshot = await page.snapshot(); // creates the logical page on first use
+await page.create(); // sends logical page.create
 ```
 
 The public handles are `TaskSpace` and `Page`. Their public identities are logical values only. There are no browser target, tab, session, debugger, or process IDs in the SDK API.
@@ -32,16 +64,40 @@ The public handles are `TaskSpace` and `Page`. Their public identities are logic
 ## Creating and leasing spaces
 
 ```js
-const space = await client.createSpace("research");
+const space = await client.createSpace("research", {
+  acceptSharedProfileDisclosure: true,
+});
 await space.claim({ ttl: 60_000 });
 const page = await space.newPage("main");
 await space.renew({ ttl: 60_000 });
 await space.returnControl();
 ```
 
+### Explicit shared-profile disclosure
+
+Task spaces share the user's existing browser profile state. Calling `client.createSpace(label, options)` requires `{ acceptSharedProfileDisclosure: true }`. Omission throws an `AgentycError` with code `invalid_argument`.
+
 `TaskSpace.page(label)` is lazy. `TaskSpace.newPage(label)` sends a logical page-create request immediately. Lease epochs are retained on the handle after claim/renew/takeover and can be supplied explicitly when a caller is recovering state.
 
 The SDK exposes host-backed `finish(options?)` and `release(options?)` transitions. Both accept `{ leaseEpoch, now }` and send those authorization values to the host; the SDK never simulates lifecycle transitions locally.
+
+## Snapshots, actions, waits, and events
+
+```js
+const snapshot = await page.snapshot();
+const receipt = await page.action("click", { ref: "ref_button" });
+const events = await space.events({ afterSequence: 0 });
+await space.waitFor({ kind: "page_changed" }, { timeoutMs: 10_000 });
+```
+
+### Supported operations vs. planned convenience methods
+
+Actions are dispatched via `page.action(operation, payload?, options?)`. The supported operations are:
+`navigate`, `click`, `input`, `evaluate`, `scroll`, `wait`, `screenshot`, `storage_write`, `cookie_write`, `upload`, `close`.
+
+Planned convenience helper methods (such as `page.goto()`, `page.click()`, or `page.type()`) are planned contract wrappers and are not currently implemented on `Page`. Always use `page.action(operation, payload)` directly.
+
+Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` resumes retained events and preserves the latest cursor across reconnects; callers must resync when the host reports a lagged or invalid cursor.
 
 ## Batching
 
@@ -72,17 +128,6 @@ try {
 
 Host error codes map to typed errors, including `ExtensionNotConnectedError`, `CapabilityUnavailableError`, `UnknownOutcomeError`, `ReconciliationRequiredError`, `StaleLeaseError`, and `StaleReferenceError`. Error objects retain `code`, `retryable`, `guidance`, and wire `details`.
 
-## Snapshots, actions, waits, and events
-
-```js
-const snapshot = await page.snapshot();
-const receipt = await page.action("click", { ref: "ref_button" });
-const events = await space.events({ afterSequence: 0 });
-await space.waitFor({ kind: "page_changed" }, { timeoutMs: 10_000 });
-```
-
-Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` resumes retained events and preserves the latest cursor across reconnects; callers must resync when the host reports a lagged or invalid cursor.
-
 ## Phase 2 wire contract mapping
 
 The transport-neutral source of truth is `crates/agentyc-core/src/`. The following mappings describe current core records and local host dispatch; they do not assert that a live host, extension, or browser produced the examples. The JSON files under `crates/agentyc-core/tests/fixtures/` are deterministic contract examples, not live evidence.
@@ -91,26 +136,26 @@ The transport-neutral source of truth is `crates/agentyc-core/src/`. The followi
 
 `crates/agentyc-core/src/ids.rs` defines validated string identities. Each identity has its own prefix, a non-empty suffix, a maximum encoded length of 128 bytes, and a suffix alphabet of lowercase ASCII letters, digits, `_`, and `-` (the first suffix character is a lowercase letter or digit):
 
-| Logical value | Wire prefix |
-| --- | --- |
-| principal | `principal_` |
-| client | `client_` |
-| connection nonce | `nonce_` |
-| profile binding | `profile_` |
-| task space | `space_` |
-| page | `page_` |
-| document | `document_` |
-| navigation | `navigation_` |
-| snapshot | `snapshot_` |
-| frame | `frame_` |
-| request | `req_` |
-| action | `action_` |
-| event | `evt_` |
-| element ref | `ref_` |
-| idempotency key | `idem_` |
-| reconciliation token | `reconcile_` |
-| artifact | `artifact_` |
-| snapshot element key | `element_` |
+| Logical value        | Wire prefix   |
+| -------------------- | ------------- |
+| principal            | `principal_`  |
+| client               | `client_`     |
+| connection nonce     | `nonce_`      |
+| profile binding      | `profile_`    |
+| task space           | `space_`      |
+| page                 | `page_`       |
+| document             | `document_`   |
+| navigation           | `navigation_` |
+| snapshot             | `snapshot_`   |
+| frame                | `frame_`      |
+| request              | `req_`        |
+| action               | `action_`     |
+| event                | `evt_`        |
+| element ref          | `ref_`        |
+| idempotency key      | `idem_`       |
+| reconciliation token | `reconcile_`  |
+| artifact             | `artifact_`   |
+| snapshot element key | `element_`    |
 
 These values identify logical records, not browser handles. Generations, epochs, versions, sequences, and timestamps serialize as unsigned integers. `ContentHash` is the fixed-width `fnv1a64:` plus 16 hexadecimal digits; it is a deterministic corruption/fingerprint check, not an authentication signature. Labels and visual-group hints are descriptive only and confer no authority.
 
