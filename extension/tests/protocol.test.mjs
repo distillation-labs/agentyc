@@ -20,6 +20,8 @@ function basicEnvelope(fields = {}) {
     kind: "event",
     nonce: createNonce(),
     sequence: 1,
+    event: "connection.changed",
+    payload: {},
     ...fields,
   };
 }
@@ -66,6 +68,8 @@ test("bounded envelopes reject malformed, raw-id, and oversized messages", () =>
     makeEnvelope("event", {
       nonce: createNonce(),
       sequence: 1,
+      event: "connection.changed",
+      payload: {},
       optional: undefined,
     }).optional,
     undefined,
@@ -138,6 +142,73 @@ test("logical request correlation fields are allowed on Native Messaging envelop
   assert.equal(request.request_id, "req_logical_1");
   assert.equal(request.action_id, "action_logical_1");
   assert.equal(port.sent.at(-1).kind, "request");
+});
+
+test("hello_ok negotiates only requested capabilities and bounded profile limits", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    profileInstanceId: "profile_test",
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const port = chrome.lastPort;
+  const hello = port.sent[0];
+  port.receive({
+    ...makeHostHelloOk(hello),
+    capabilities: ["not_requested"],
+  });
+  assert.equal(client.state, "rejected");
+  assert.equal(port.disconnected, true);
+});
+
+test("Native Messaging artifact helpers enforce begin/chunk/end order and digest", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    profileInstanceId: "profile_artifact",
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const port = chrome.lastPort;
+  const hello = port.sent[0];
+  port.receive(makeHostHelloOk(hello));
+  assert.throws(
+    () =>
+      client.sendArtifactChunk({
+        artifactId: "artifact_missing",
+        chunkSequence: 0,
+        bytes: [1],
+      }),
+    (error) => error.code === "schema_invalid",
+  );
+  client.sendArtifactBegin({
+    artifactId: "artifact_ordered",
+    artifactKind: "binary",
+    totalBytes: 2,
+    chunkSize: 2,
+    chunkCount: 1,
+    digest: "fnv1a64:082f2407b4e8902a",
+  });
+  client.sendArtifactChunk({
+    artifactId: "artifact_ordered",
+    chunkSequence: 0,
+    bytes: [1, 2],
+  });
+  client.sendArtifactEnd({
+    artifactId: "artifact_ordered",
+    totalBytes: 2,
+    chunkCount: 1,
+    digest: "fnv1a64:082f2407b4e8902a",
+  });
+  assert.deepEqual(
+    port.sent.slice(-3).map((message) => message.kind),
+    ["artifact_begin", "artifact_chunk", "artifact_end"],
+  );
 });
 
 test("Native Messaging handshake validates nonce and sequence independently", async () => {
