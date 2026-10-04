@@ -207,7 +207,9 @@ test("browser session advancement retires old bindings and raw tab identities", 
   const oldEpoch = worker.metadata.browserSessionEpoch;
   await worker.advanceBrowserSession("test");
   assert.equal(worker.metadata.browserSessionEpoch, oldEpoch + 1);
-  assert.equal(worker.tabs.getInternalByPage("page_session"), undefined);
+  const reboundRecord = worker.tabs.getInternalByPage("page_session");
+  assert.equal(reboundRecord?.sessionEpoch, oldEpoch + 1);
+  assert.equal(reboundRecord?.bindingState, "bound");
   assert.equal(chrome.tabsData.has(oldRecord.rawTabId), true);
   assert.equal(worker.tabs.retiredRawTabIds.has(oldRecord.rawTabId), true);
   assert.throws(
