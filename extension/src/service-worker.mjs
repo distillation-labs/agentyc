@@ -9,7 +9,10 @@ import {
   publicError,
 } from "./protocol.mjs";
 import { NativeMessagingClient } from "./native-messaging.mjs";
-import { DebuggerBridge } from "./debugger-bridge.mjs";
+import {
+  DebuggerBridge,
+  isArtifactDebuggerCommand,
+} from "./debugger-bridge.mjs";
 import { TabsRegistry, unknownDispatch } from "./tabs-registry.mjs";
 import { GroupsRegistry } from "./groups.mjs";
 import { FramesRegistry } from "./frames.mjs";
@@ -51,11 +54,13 @@ const ACTION_CONTROL_KEYS = new Set([
   "action",
   "action_id",
   "approval",
+  "artifact_approval",
   "capability",
   "cleanup_proof",
   "command_id",
   "expected_document_generation",
   "expected_generation",
+  "frame_scope",
   "expected_navigation_generation",
   "expected_target_generation",
   "operation",
@@ -276,6 +281,21 @@ function commandParams(params) {
       : payload;
   if (typeof source === "string") source = parseJsonObject(source, "params");
   return stripActionControls(source ?? {});
+}
+
+function approvalFor(params) {
+  const payload = isPlainObject(params?.payload) ? params.payload : undefined;
+  const payloadParams = isPlainObject(payload?.params)
+    ? payload.params
+    : undefined;
+  return (
+    params?.approval ??
+    params?.artifact_approval ??
+    payload?.approval ??
+    payload?.artifact_approval ??
+    payloadParams?.approval ??
+    payloadParams?.artifact_approval
+  );
 }
 
 function coerceDebuggerParams(method, value) {
@@ -1092,9 +1112,9 @@ export class ServiceWorkerController {
       sender.frameId !== 0
     )
       return false;
-    const expected = this.chrome?.runtime?.getURL?.(
-      "src/sidepanel/index.html",
-    ) ?? `chrome-extension://${extensionId}/src/sidepanel/index.html`;
+    const expected =
+      this.chrome?.runtime?.getURL?.("src/sidepanel/index.html") ??
+      `chrome-extension://${extensionId}/src/sidepanel/index.html`;
     try {
       const expectedUrl = new URL(expected);
       const senderUrl = new URL(sender.url);
@@ -1179,8 +1199,7 @@ export class ServiceWorkerController {
     const leaseEpoch = context.lease_epoch ?? context.leaseEpoch;
     if (condition.kind === "page_generation") {
       const observed = this.observedPageGeneration(pageId);
-      if (!observed)
-        return { outcome: "unknown", code: "unknown_outcome" };
+      if (!observed) return { outcome: "unknown", code: "unknown_outcome" };
       context.postcondition_observed = observed;
       return observed.document_generation === condition.document_generation
         ? { outcome: "succeeded" }
@@ -1189,8 +1208,7 @@ export class ServiceWorkerController {
     if (condition.kind === "snapshot_hash") {
       try {
         const observed = this.observedPageGeneration(pageId);
-        if (!observed)
-          return { outcome: "unknown", code: "unknown_outcome" };
+        if (!observed) return { outcome: "unknown", code: "unknown_outcome" };
         const snapshot = await this.readSnapshot({
           spaceId,
           pageId,
@@ -2085,12 +2103,25 @@ export class ServiceWorkerController {
           onDispatch: () => this.markActionDispatched(actionId),
         });
       case "event.wait":
-      case "storage.write":
-      case "cookies.write":
-      case "page.upload":
         throw new ProtocolError(
           "capability_unavailable",
           `extension method is not implemented: ${method}`,
+        );
+      case "storage.write":
+      case "cookies.write":
+        throw new ProtocolError(
+          "policy_denied",
+          `extension method is not permitted: ${method}`,
+        );
+      case "page.upload":
+        throw new ProtocolError(
+          "upload_denied",
+          "file upload requires an explicit reviewed user-controlled flow",
+        );
+      case "page.download":
+        throw new ProtocolError(
+          "download_denied",
+          "file download requires an explicit reviewed policy and user intent",
         );
       default:
         throw new ProtocolError(
@@ -2109,7 +2140,17 @@ export class ServiceWorkerController {
     actionId,
   }) {
     const debuggerMethod = params.method;
+    const approval = approvalFor(params);
     this.assertFence(spaceId, leaseEpoch);
+    if (isArtifactDebuggerCommand(debuggerMethod)) {
+      this.debugger.assertArtifactApproval({
+        spaceId,
+        pageId,
+        leaseEpoch,
+        method: debuggerMethod,
+        approval,
+      });
+    }
     await this.debugger.attach({ spaceId, pageId, leaseEpoch });
     return this.debugger.sendCommand({
       spaceId,
@@ -2121,9 +2162,10 @@ export class ServiceWorkerController {
       expectedTargetGeneration: params.expected_target_generation,
       expectedNavigationGeneration: params.expected_navigation_generation,
       expectedDocumentGeneration: params.expected_document_generation,
+      frameScope: params.frame_scope ?? params.payload?.frame_scope,
       commandId: params.command_id ?? actionId ?? requestId,
       capability: params.capability ?? params.payload?.capability,
-      approval: params.approval ?? params.payload?.approval,
+      approval,
       onDispatch: () => this.markActionDispatched(actionId),
     });
   }
@@ -2141,6 +2183,16 @@ export class ServiceWorkerController {
       operation = methodToOperation[params.method];
     if (operation === "close")
       return { operation, method: "page.close", commandParams: {} };
+    if (operation === "upload")
+      throw new ProtocolError(
+        "upload_denied",
+        "file upload requires an explicit reviewed user-controlled flow",
+      );
+    if (operation === "download")
+      throw new ProtocolError(
+        "download_denied",
+        "file download requires an explicit reviewed policy and user intent",
+      );
     const method = ACTION_METHODS[operation];
     if (!method || (params.method !== undefined && params.method !== method))
       throw new ProtocolError(
@@ -2230,6 +2282,16 @@ export class ServiceWorkerController {
         onDispatch: () => this.markActionDispatched(actionId),
       });
     }
+    const approval = approvalFor(params);
+    if (isArtifactDebuggerCommand(route.method)) {
+      this.debugger.assertArtifactApproval({
+        spaceId,
+        pageId,
+        leaseEpoch,
+        method: route.method,
+        approval,
+      });
+    }
     await this.debugger.attach({ spaceId, pageId, leaseEpoch });
     return this.debugger.sendCommand({
       spaceId,
@@ -2241,9 +2303,10 @@ export class ServiceWorkerController {
       expectedTargetGeneration: params.expected_target_generation,
       expectedNavigationGeneration: params.expected_navigation_generation,
       expectedDocumentGeneration: params.expected_document_generation,
+      frameScope: params.frame_scope ?? params.payload?.frame_scope,
       commandId: params.command_id ?? actionId ?? requestId,
       capability: params.capability ?? params.payload?.capability,
-      approval: params.approval ?? params.payload?.approval,
+      approval,
       onDispatch: () => this.markActionDispatched(actionId),
     });
   }
@@ -2893,6 +2956,23 @@ export class ServiceWorkerController {
   }) {
     assertLogicalScope({ spaceId });
     positiveEpoch(leaseEpoch, "lease_epoch");
+    const requestToken = params.request_token ?? message.request_token;
+    if (
+      typeof requestToken !== "string" ||
+      !/^reconcile_[a-z0-9][a-z0-9_-]{1,127}$/.test(requestToken)
+    )
+      throw new ProtocolError(
+        "schema_invalid",
+        "fence request_token is required and must be logical",
+      );
+    const brokerEpoch = positiveEpoch(
+      message.broker_epoch ?? params.broker_epoch,
+      "broker_epoch",
+    );
+    const connectionEpoch = positiveEpoch(
+      message.connection_epoch ?? params.connection_epoch,
+      "connection_epoch",
+    );
     const fenceEpoch = positiveEpoch(
       params.fence_epoch ?? message.fence_epoch ?? leaseEpoch,
       "fence_epoch",
@@ -2907,13 +2987,22 @@ export class ServiceWorkerController {
       return { ok: false, error };
     }
     if (fenceEpoch === current) {
+      let durable = true;
+      try {
+        await this.persistFences();
+      } catch {
+        durable = false;
+      }
       const result = {
+        request_token: requestToken,
         space_id: spaceId,
         fence_epoch: fenceEpoch,
+        broker_epoch: brokerEpoch,
+        connection_epoch: connectionEpoch,
         drained_request_ids: [],
         unknown_action_ids: [],
         affected_page_count: this.tabs.pagesForSpace(spaceId).length,
-        durable: true,
+        durable,
         idempotent: true,
       };
       try {
@@ -2951,8 +3040,11 @@ export class ServiceWorkerController {
       durable = false;
     }
     const result = {
+      request_token: requestToken,
       space_id: spaceId,
       fence_epoch: fenceEpoch,
+      broker_epoch: brokerEpoch,
+      connection_epoch: connectionEpoch,
       drained_request_ids: [],
       unknown_action_ids: unknownActionIds,
       affected_page_count: drain.affected_page_ids.length,
@@ -3405,7 +3497,7 @@ export class ServiceWorkerController {
         this.validateSidePanelTicket(message.intent_ticket, action, params);
       const requestId = createLogicalId("req");
       const method =
-        action === "stop" || action === "pause" || action === "handoff"
+        action === "stop"
           ? "space.return_control"
           : action === "retain"
             ? "space.takeover"
