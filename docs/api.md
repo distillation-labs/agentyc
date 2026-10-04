@@ -1,13 +1,13 @@
 # Public API Reference
 
 This document describes the public contract implemented by the `agentyc` binary:
-its CLI and its 61 MCP tools.
+its CLI and MCP compatibility surfaces. For existing-Chrome task automation, the recommended API is host-backed and uses logical task-space/page handles; raw browser IDs and current-tab selection are not canonical identity.
 
 ## CLI
 
 The binary is `agentyc`. It is built with `clap` and exposes four subcommands.
 
-### `agentyc` / `agentyc mcp` — run the MCP server (stdio)
+### `agentyc` / `agentyc mcp` — host-backed MCP adapter (stdio)
 
 ```bash
 agentyc           # no-subcommand form, alias for `agentyc mcp`
@@ -16,9 +16,9 @@ agentyc mcp
 
 | Argument | Description |
 |----------|-------------|
-| `--cdp-url` | Attach to an existing Chrome/Chromium instance over CDP instead of launching a local browser. Accepts a `ws://`/`wss://` debugger URL or an HTTP endpoint. |
+| `--cdp-url` | Legacy direct-CDP compatibility only: attach to an existing Chrome/Chromium instance. Not the host-backed logical space/page API. Accepts a `ws://`/`wss://` debugger URL or an HTTP endpoint. |
 
-### `agentyc serve` — run the MCP server (Streamable HTTP)
+### `agentyc serve` — legacy direct-CDP MCP compatibility (Streamable HTTP)
 
 ```bash
 agentyc serve --host 127.0.0.1 --port 8765
@@ -28,7 +28,7 @@ agentyc serve --host 127.0.0.1 --port 8765
 |----------|---------|-------------|
 | `--host` | `127.0.0.1` | Bind address. |
 | `--port` | `8765` | Bind port. The server is mounted at `/mcp`. |
-| `--cdp-url` | — | Attach to an existing browser over CDP. |
+| `--cdp-url` | — | Legacy direct-CDP compatibility only: attach to an existing browser over CDP. |
 
 ### `agentyc init` — write the skills guide
 
@@ -50,14 +50,13 @@ are documented in [`docs/skills-and-plugins.md`](skills-and-plugins.md).
 | `--print` | — | Print to stdout instead of writing a file. |
 | `--force` | — | Overwrite the destination if it already exists. |
 
-### `agentyc browser` — launch a shared browser
+### `agentyc browser` — launch a legacy shared browser
 
 ```bash
 agentyc browser --port 9222 --detach
 ```
 
-Launches Chrome with remote debugging and prints its CDP WebSocket URL, for use
-with `--cdp-url`.
+Legacy compatibility utility: launches Chrome with remote debugging and prints its CDP WebSocket URL for use with `--cdp-url`. This is not the recommended path for the existing-Chrome host-backed API.
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -78,7 +77,9 @@ Startup paths:
 5. rmcp routes each tools/call to the matching handler.
 
 
-## MCP Tools
+## MCP Compatibility Tools
+
+The direct-CDP tool list below documents the legacy compatibility adapter and its raw-tab/current-page semantics. It is not the canonical existing-Chrome API; use host-backed logical space/page operations instead. Raw `tab_id` values are adapter compatibility fields only and never establish identity, ownership, or authorization.
 
 ### Navigation And Waits
 
@@ -150,11 +151,11 @@ Startup paths:
 
 | Tool | Arguments |
 |------|-----------|
-| `browser_new_tab` | optional `url` |
-| `browser_list_tabs` | none |
-| `browser_switch_tab` | `tab_id` |
-| `browser_close_tab` | `tab_id` |
-| `browser_wait_for_tab` | optional `url_substring`, `url_regex`, `timeout_seconds`, `switch_focus` |
+| `browser_new_tab` (legacy) | optional `url` |
+| `browser_list_tabs` (legacy) | none |
+| `browser_switch_tab` (legacy) | `tab_id` (legacy compatibility field) |
+| `browser_close_tab` (legacy) | `tab_id` (legacy compatibility field) |
+| `browser_wait_for_tab` (legacy) | optional `url_substring`, `url_regex`, `timeout_seconds`, `switch_focus` |
 | `browser_get_cookies` | none |
 | `browser_set_cookies` | `cookies` |
 | `browser_clear_cookies` | optional `name` |
@@ -182,9 +183,9 @@ structured code and a recovery hint: `[stale_ref]`, `[element_not_interactable]`
 
 ### `browser_get_state`
 
-Returns a JSON text payload. When `include_screenshot=true`, an MCP image
+Legacy direct-CDP response. Returns a JSON text payload. When `include_screenshot=true`, an MCP image
 content item is also returned. Key fields: `url`, `title`, `tabs`,
-`current_tab_id`, `mode`, `state_hash`, `changed`, `interactive_element_count`,
+`current_tab_id` (legacy only; not canonical identity), `mode`, `state_hash`, `changed`, `interactive_element_count`,
 `interactive_elements`, and `viewport`. Compact ranked payloads may add
 `interactive_elements_truncated`, `interactive_elements_remaining`, and
 `compaction_strategy`.
@@ -206,7 +207,7 @@ return an explicit deterministic-route error. There is no LLM fallback.
 
 ### `browser_evaluate`
 
-Executes JavaScript in the current page and returns the result as text. For
+Legacy direct-CDP only: executes JavaScript in the selected current page and returns the result as text. For
 multi-statement logic, wrap in an IIFE: `(function(){ ... })()`.
 
 ## Deterministic Extraction Contract
