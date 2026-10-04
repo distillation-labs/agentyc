@@ -35,9 +35,22 @@ pub enum SpaceLifecycle {
 }
 
 impl SpaceLifecycle {
-    /// Whether new mutations should be admitted in this state.
+    /// Whether ordinary caller mutations should be admitted in this state.
+    ///
+    /// Recovery is deliberately excluded: a recovering space may only accept
+    /// explicit recovery/reconciliation operations, never a normal action.
     pub const fn admits_mutations(self) -> bool {
-        matches!(self, Self::AgentOwned | Self::Recovering)
+        matches!(self, Self::AgentOwned)
+    }
+
+    /// Whether a state may accept an explicitly typed recovery operation.
+    pub const fn admits_recovery_operations(self) -> bool {
+        matches!(self, Self::Recovering)
+    }
+
+    /// Return whether this state is terminal for new caller work.
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Finished | Self::Released)
     }
 }
 
@@ -133,6 +146,13 @@ pub enum LeaseState {
     Fenced,
     /// The lease was explicitly returned.
     Released,
+}
+
+impl LeaseState {
+    /// Whether this durable state is eligible for ordinary mutation admission.
+    pub const fn admits_mutations(self) -> bool {
+        matches!(self, Self::Active)
+    }
 }
 
 /// Lifecycle of a host-issued, single-use user-intent confirmation ticket.
@@ -338,7 +358,8 @@ mod tests {
     #[test]
     fn mutation_admission_is_fenced_for_user_and_recovery_states() {
         assert!(SpaceLifecycle::AgentOwned.admits_mutations());
-        assert!(SpaceLifecycle::Recovering.admits_mutations());
+        assert!(!SpaceLifecycle::Recovering.admits_mutations());
+        assert!(SpaceLifecycle::Recovering.admits_recovery_operations());
         assert!(!SpaceLifecycle::UserOwned.admits_mutations());
         assert!(!SpaceLifecycle::FencePending.admits_mutations());
     }
