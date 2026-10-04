@@ -44,6 +44,18 @@ user-approved existing Chrome pages
 
 The local client boundary and the Chrome Native Messaging boundary are different protocols and MUST have separate framing, limits, handshake fields, and failure handling. See [`docs/security/host-protocol.md`](security/host-protocol.md) and [`docs/security/extension-permissions.md`](security/extension-permissions.md).
 
+### Phase 3 topology decision — U3-1 closed
+
+The selected macOS-first topology is **one broker owner plus Native Messaging shims**:
+
+1. The first Chrome-launched `agentyc-native-host` acquires the profile-scoped ledger lock before reading Native Messaging bytes, owns the broker, local IPC socket, endpoint metadata, and `native-forward.sock`, then accepts the extension handshake.
+2. A later Chrome-launched shim validates Chrome's exact transport origin, observes the existing ledger owner, and forwards its raw Native Messaging stream to the owner's private Unix forwarding socket. It never opens a second ledger, starts a second broker, or authenticates a profile from extension JSON.
+3. The owner admits a forwarded stream only after the same-OS-user peer check and a fresh Native Messaging/core handshake. `BridgeRouter` swaps the live extension adapter while the broker, logical records, scheduler, leases, and ledger remain unchanged; pending mutations are not replayed.
+4. Endpoint metadata is atomically published as owner-readable `broker.endpoint.json` and is fenced by broker epoch/process ownership. Stale metadata is replaceable; symlinks, active endpoint replacement, wrong peer credentials, malformed metadata, and incompatible epochs fail closed.
+5. The owner retains local clients and logical records across an extension disconnect for a bounded recovery window; it marks the bridge degraded and accepts a fresh forwarded handshake without granting authority until admission completes. Chrome/host process lifetime and actual profile reconnect remain live Phase 4 evidence, not a deterministic test claim.
+
+This closes U3-1 for the supported macOS topology. Windows named-pipe registration and cross-platform supervision remain U3-2/later evidence.
+
 ### Ownership matrix
 
 | Concern                              | Canonical owner                                   | Extension role                                        | CLI/SDK role              | MCP role                          |
@@ -113,7 +125,7 @@ The default product mode is `extension_existing_chrome`. It provides logical spa
 | Chrome tab groups                                               | visual mapping only; scoped to one Chrome window and may be absent, renamed, regrouped, or changed by the user |
 | incognito                                                       | not enrolled by default; return a typed unsupported/binding error rather than silently sharing authority       |
 
-The extension, host, and client MUST disclose shared profile state before a space is created. A future isolated-profile mode is a separate product decision and is not implied by this architecture.
+The extension, host, and client MUST disclose shared profile state before a space is created. The external `space.create` contract requires `profile_scope: "shared_existing_profile"`, `shared_state_notice: "shared_profile_state"`, `isolation_claim: false`, and an explicit `profile_disclosure_acknowledged: true`; missing or mismatched disclosure is rejected before the ledger commit. A future isolated-profile mode is a separate product decision and is not implied by this architecture.
 
 Chrome tab groups cannot span windows. The adapter therefore treats one group per space as a best-effort presentation within a single window; moving a page or group across windows, regrouping, renaming, collapsing, or deleting it creates visual drift only and never changes logical ownership. A space with pages in multiple windows may have no single visual group.
 
