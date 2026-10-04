@@ -19,23 +19,12 @@ import {
   mapWireError,
   withRequestIdentity,
 } from "./errors.mjs";
-
-const SIDE_EFFECTING_METHODS = new Set([
-  "space.create",
-  "space.claim",
-  "space.renew",
-  "space.takeover",
-  "space.return",
-  "space.finish",
-  "space.release",
-  "page.create",
-  "page.close",
-  "action.execute",
-  "action.cancel",
-  "action.reconcile",
-  "page.navigate",
-  "page.adopt",
-]);
+import {
+  PROFILE_DISCLOSURE,
+  invalidArgument,
+  transportOptions,
+} from "./constants.mjs";
+import { methodMayHaveSideEffects as registryMethodMayHaveSideEffects } from "./operations.mjs";
 
 function responseItems(response) {
   if (Array.isArray(response)) return response;
@@ -174,7 +163,7 @@ function bindSubscription(unsubscribe, signal) {
   };
 }
 
-function abortable(promise, signal, onAbort) {
+function abortable(promise, signal, onAbort, isDispatched = () => true) {
   if (!signal) return promise;
   if (signal.aborted) {
     onAbort?.();
@@ -182,6 +171,7 @@ function abortable(promise, signal, onAbort) {
       Object.assign(new Error("the request was cancelled"), {
         name: "AbortError",
         cancelled: true,
+        dispatched: isDispatched(),
       }),
     );
   }
@@ -201,6 +191,7 @@ function abortable(promise, signal, onAbort) {
         Object.assign(new Error("the request was cancelled"), {
           name: "AbortError",
           cancelled: true,
+          dispatched: isDispatched(),
         }),
       );
     };
@@ -214,7 +205,7 @@ function abortable(promise, signal, onAbort) {
 
 /** Return whether a method is conservatively treated as side-effecting. */
 export function methodMayHaveSideEffects(method, requested = false) {
-  return Boolean(requested) || SIDE_EFFECTING_METHODS.has(method);
+  return registryMethodMayHaveSideEffects(method, requested);
 }
 
 /** Typed client over one generic local transport. */
@@ -234,10 +225,30 @@ export class BrowserClient {
   }
 
   async createSpace(label, options = {}) {
+    const normalizedOptions = options ?? {};
+    if (normalizedOptions.acceptSharedProfileDisclosure !== true) {
+      throw new AgentycError({
+        code: "permission_denied",
+        message:
+          "explicit shared-profile disclosure acknowledgement is required before space creation",
+        retryable: false,
+        guidance: "none",
+      });
+    }
     const result = await this.request(
       "space.create",
-      { label, retention: options.retention },
-      { signal: options.signal },
+      {
+        label,
+        ...(normalizedOptions.retention !== undefined
+          ? { retention: normalizedOptions.retention }
+          : {}),
+        profile_scope: PROFILE_DISCLOSURE.profileScope,
+        shared_state_notice: PROFILE_DISCLOSURE.sharedStateNotice,
+        isolation_claim: PROFILE_DISCLOSURE.isolationClaim,
+        profile_disclosure_acknowledged:
+          PROFILE_DISCLOSURE.profileDisclosureAcknowledged,
+      },
+      transportOptions(normalizedOptions),
     );
     const record = result?.space ?? result;
     return new TaskSpace(
@@ -252,7 +263,34 @@ export class BrowserClient {
   }
 
   async hostStatus(options = {}) {
-    return this.request("host.status", {}, { signal: options.signal });
+    return this.request("host.status", {}, transportOptions(options));
+  }
+
+  async listSpaces(options = {}) {
+    const result = await this.request(
+      "space.list",
+      {},
+      transportOptions(options),
+    );
+    return (result?.spaces ?? []).map(
+      (record) =>
+        new TaskSpace(
+          this,
+          assertLogicalId(record?.space_id, "space_", "space_id"),
+          record,
+        ),
+    );
+  }
+
+  async pruneSpaces(maxCount = 8, options = {}) {
+    if (!Number.isSafeInteger(maxCount) || maxCount < 0) {
+      throw invalidArgument("maxCount must be a non-negative safe integer");
+    }
+    return this.request(
+      "space.prune",
+      { max_count: maxCount },
+      transportOptions(options),
+    );
   }
 
   async events(options = {}) {
@@ -419,12 +457,19 @@ export class BrowserClient {
     }
     let reconnects = 0;
     while (true) {
+      let dispatched = this.transport.dispatchAware !== true;
       try {
         const responsePromise = this.transport.request(payload, {
           signal: requestSignal,
+          onDispatch: () => {
+            dispatched = true;
+          },
         });
-        const response = await abortable(responsePromise, requestSignal, () =>
-          this._cancelTransport(entries, requestSignal?.reason?.message),
+        const response = await abortable(
+          responsePromise,
+          requestSignal,
+          () => this._cancelTransport(entries, requestSignal?.reason?.message),
+          () => dispatched,
         );
         this.connected = true;
         const correlated = correlateResponses(response, requestIds);
@@ -452,7 +497,8 @@ export class BrowserClient {
         if (error instanceof BatchError) throw error;
         if (isAbortError(error) || signal?.aborted) {
           this.connected = this.transport.connected !== false;
-          if (hasSideEffects) {
+          const wasDispatched = error?.dispatched ?? dispatched;
+          if (hasSideEffects && wasDispatched) {
             throw new UnknownOutcomeError(
               "a side-effecting request was cancelled after dispatch",
               { ...sideEffectDetails(entries), cause: error.message },
