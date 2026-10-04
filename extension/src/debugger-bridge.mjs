@@ -127,6 +127,13 @@ const RUNTIME_EVALUATE_PARAMETER_ALLOWLIST = new Set([
 
 const INTERNAL_RELATED_TARGET_METHOD = "Target.setAutoAttach";
 const RELATED_TARGET_TYPES = new Set(["iframe"]);
+const INTERNAL_EVENT_DOMAIN_METHODS = Object.freeze([
+  "Accessibility.enable",
+  "DOM.enable",
+  "Network.enable",
+  "Page.enable",
+  "Runtime.enable",
+]);
 
 const ARTIFACT_METHOD_PURPOSES = Object.freeze({
   "Page.captureScreenshot": "screenshot",
@@ -242,6 +249,7 @@ export class DebuggerBridge {
     now = () => Date.now(),
     profileInstanceId,
     browserSessionEpoch,
+    enableEventDomains = false,
   } = {}) {
     this.chrome = chromeApiOrGlobal(chromeApi);
     this.tabs = tabs;
@@ -251,6 +259,7 @@ export class DebuggerBridge {
     this.now = now;
     this.profileInstanceId = profileInstanceId;
     this.browserSessionEpoch = browserSessionEpoch;
+    this.enableEventDomains = enableEventDomains === true;
     this.attached = new Map();
     this.relatedSessions = new Map();
     this.usedEvaluationApprovals = new Map();
@@ -537,6 +546,14 @@ export class DebuggerBridge {
     return attachment;
   }
 
+  clearAttachmentState(tabId, reason = "attachment_setup_failed") {
+    this.attached.delete(tabId);
+    this.relatedSessions.delete(tabId);
+    if (typeof this.frames?.clearTab === "function")
+      this.frames.clearTab(tabId);
+    else this.frames?.invalidateTab?.(tabId, reason);
+  }
+
   invalidateTab(tabId, reason = "target_lost") {
     const attachment = this.attached.get(tabId);
     this.attached.delete(tabId);
@@ -580,18 +597,20 @@ export class DebuggerBridge {
         "capability_unavailable",
         "Chrome debugger.sendCommand is unavailable",
       );
-    const target = { tabId, ...(sessionId ? { sessionId } : {}) };
-    await chromeCall(
+    const send = chromeCall.bind(
+      null,
       sendCommandFn.bind(this.chrome.debugger),
-      target,
-      INTERNAL_RELATED_TARGET_METHOD,
-      {
-        autoAttach: true,
-        waitForDebuggerOnStart: false,
-        flatten: true,
-        filter: [{ type: "iframe", exclude: false }],
-      },
     );
+    const target = { tabId, ...(sessionId ? { sessionId } : {}) };
+    if (this.enableEventDomains)
+      for (const method of INTERNAL_EVENT_DOMAIN_METHODS)
+        await send(target, method);
+    await send(target, INTERNAL_RELATED_TARGET_METHOD, {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: "iframe", exclude: false }],
+    });
   }
 
   handleRelatedTargetAttached(source = {}, params = {}) {
@@ -684,24 +703,6 @@ export class DebuggerBridge {
         "capability_unavailable",
         "Chrome debugger.attach is unavailable",
       );
-    try {
-      onDispatch();
-      await chromeCall(
-        attachFn.bind(this.chrome.debugger),
-        { tabId: record.rawTabId },
-        REQUIRED_DEBUGGER_PROTOCOL_VERSION,
-      );
-      await this.configureRelatedTargets(record.rawTabId);
-    } catch (error) {
-      const classified = chromeProtocolError(error, "debugger.attach", {
-        url: record.url,
-        incognito: record.incognito === true,
-      });
-      if (classified) throw classified;
-      throw unknownDispatch("debugger attachment result was not confirmed", {
-        chrome_error: "unknown",
-      });
-    }
     const attachment = {
       rawTabId: record.rawTabId,
       spaceId,
@@ -713,7 +714,17 @@ export class DebuggerBridge {
       browserSessionEpoch: this.browserSessionEpoch,
       attachedAt: this.now(),
     };
+    let rootAttached = false;
+    let rootProvisioned = false;
     try {
+      onDispatch();
+      await chromeCall(
+        attachFn.bind(this.chrome.debugger),
+        { tabId: record.rawTabId },
+        REQUIRED_DEBUGGER_PROTOCOL_VERSION,
+      );
+      rootAttached = true;
+
       const current = this.tabs.assertPageDispatch({
         spaceId,
         pageId,
@@ -726,7 +737,9 @@ export class DebuggerBridge {
           "stale_generation",
           "page changed during attachment",
         );
-      this.attached.set(record.rawTabId, attachment);
+
+      // Publish the root mapping before Target.setAutoAttach: Chrome may emit
+      // Target.attachedToTarget synchronously while that command is in flight.
       this.frames.bindTab({
         tabId: record.rawTabId,
         spaceId,
@@ -736,27 +749,60 @@ export class DebuggerBridge {
         navigationGeneration: record.navigationGeneration,
         documentGeneration: record.documentGeneration,
       });
+      rootProvisioned = true;
+      this.attached.set(record.rawTabId, attachment);
+      await this.configureRelatedTargets(record.rawTabId);
+
+      const stillCurrent = this.tabs.assertPageDispatch({
+        spaceId,
+        pageId,
+        leaseEpoch,
+        expectedTargetGeneration: record.targetGeneration,
+        mutation: false,
+      });
+      if (stillCurrent !== record)
+        throw new ProtocolError(
+          "stale_generation",
+          "page changed during attachment",
+        );
     } catch (error) {
-      this.invalidateTab(record.rawTabId, "attachment_commit_rejected");
-      try {
-        if (typeof this.chrome?.debugger?.detach === "function")
-          await this.chrome.debugger.detach({ tabId: record.rawTabId });
-      } catch (cleanupError) {
-        const classified = chromeProtocolError(
-          cleanupError,
-          "debugger.detach",
-          {
-            url: record.url,
-            incognito: record.incognito === true,
-          },
-        );
-        if (classified) throw classified;
-        throw unknownDispatch(
-          "debugger attachment rollback was not confirmed",
-          { chrome_error: "unknown" },
-        );
+      if (rootProvisioned) this.clearAttachmentState(record.rawTabId);
+      if (rootAttached) {
+        try {
+          if (typeof this.chrome?.debugger?.detach !== "function")
+            throw new ProtocolError(
+              "capability_unavailable",
+              "Chrome debugger.detach is unavailable",
+            );
+          await chromeCall(
+            this.chrome.debugger.detach.bind(this.chrome.debugger),
+            { tabId: record.rawTabId },
+          );
+        } catch (cleanupError) {
+          const classified = chromeProtocolError(
+            cleanupError,
+            "debugger.detach",
+            {
+              url: record.url,
+              incognito: record.incognito === true,
+            },
+          );
+          if (classified) throw classified;
+          throw unknownDispatch(
+            "debugger attachment rollback was not confirmed",
+            { chrome_error: "unknown" },
+          );
+        }
       }
-      throw error;
+      if (error instanceof ProtocolError) throw error;
+      const classified = chromeProtocolError(error, "debugger.attach", {
+        url: record.url,
+        incognito: record.incognito === true,
+      });
+      if (classified) throw classified;
+      throw unknownDispatch("debugger attachment result was not confirmed", {
+        chrome_error: "unknown",
+      });
     }
     this.onStateChange("attached", this.publicAttachment(attachment));
     return this.publicAttachment(attachment);
@@ -827,6 +873,7 @@ export class DebuggerBridge {
     commandId,
     capability,
     approval,
+    allowLargeResult = false,
     onDispatch = () => {},
   } = {}) {
     assertAllowedDebuggerCommand(method);
@@ -1020,6 +1067,7 @@ export class DebuggerBridge {
       const safeResult = redactBrowserIdentifiers(result ?? {});
       const serialized = JSON.stringify(safeResult);
       if (
+        !allowLargeResult &&
         typeof serialized === "string" &&
         new TextEncoder().encode(serialized).byteLength > 1024 * 1024
       ) {
