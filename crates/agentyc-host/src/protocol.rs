@@ -12,10 +12,10 @@ use agentyc_core::{
     ActionId, ActionOperation, ActionRequest, ArtifactBeginEnvelope, ArtifactChunkEnvelope,
     ArtifactEndEnvelope, ArtifactEnvelope, ArtifactTransferBudget, BrokerEpoch, ContentHash,
     DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventCursor, EventKind, EventScope, EventSequence,
-    FrameDecoder, GenerationWatermark, HelloEnvelope, IdempotencyKey, LeaseEpoch,
+    FrameDecoder, FrameId, GenerationWatermark, HelloEnvelope, IdempotencyKey, LeaseEpoch,
     MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PageId, Postcondition,
     ProfileDisclosure, ReconcileToken, RequestEnvelope, RequestId, ResponseEnvelope,
-    ResumeEnvelope, SpaceId, Timestamp, decode_frame, decode_utf8, encode_frame,
+    ResumeEnvelope, SpaceId, Timestamp, TokenBudget, decode_frame, decode_utf8, encode_frame,
 };
 
 use agentyc_core::protocol::ResumeWatermark;
@@ -620,6 +620,27 @@ impl ProtocolServer {
                 put_json(&mut result, "action_id", &action.receipt.action_id)?;
                 put_json(&mut result, "receipt", &action.receipt)?;
             }
+            "refs.issue" => {
+                let space_id = parse_space(required(&request.params, "space_id")?)?;
+                let page_id = parse_page(required(&request.params, "page_id")?)?;
+                let frame_id = required(&request.params, "frame_id")?
+                    .parse::<FrameId>()
+                    .map_err(|error| {
+                        agentyc_core::CoreError::invalid_argument(error.to_string())
+                    })?;
+                let lease_epoch =
+                    agentyc_core::LeaseEpoch::new(required_u64(&request.params, "lease_epoch")?);
+                let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
+                let element_ref = self.broker.issue_ref(
+                    &space_id,
+                    &page_id,
+                    frame_id,
+                    authority,
+                    lease_epoch,
+                    now,
+                )?;
+                put_json(&mut result, "element_ref", &element_ref)?;
+            }
             "snapshot" | "snapshot.read" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
                 let page_id = parse_page(required(&request.params, "page_id")?)?;
@@ -631,7 +652,12 @@ impl ProtocolServer {
                         .read_snapshot(&space_id, &page_id, authority, lease_epoch, now)?;
                 put_json(&mut result, "space_id", &space_id)?;
                 put_json(&mut result, "page_id", &page_id)?;
+                let context_request =
+                    context_request_from_params(&request.params, &snapshot.envelope)?;
+                let context =
+                    crate::context::ContextBuilder::new().build(&snapshot, &context_request)?;
                 put_json(&mut result, "snapshot", &snapshot.envelope)?;
+                put_json(&mut result, "context", &context)?;
                 put_json(&mut result, "cache_state", &snapshot.cache_state)?;
                 put_json(&mut result, "scan_performed", &snapshot.scan_performed)?;
             }
@@ -703,9 +729,26 @@ impl ProtocolServer {
                 let deadline = deadline.map_or(operation_deadline, |request_deadline| {
                     request_deadline.min(operation_deadline)
                 });
-                let cursor = self.broker.event_cursor(authority)?;
-                let mut router =
-                    crate::EventRouter::new_at(cursor, crate::RouterLimits::new(MAX_EVENT_LIMIT));
+                let current_cursor = self.broker.event_cursor(authority)?;
+                let registration_cursor = if request.params.contains_key("after_epoch")
+                    || request.params.contains_key("after_sequence")
+                {
+                    EventCursor {
+                        broker_epoch: agentyc_core::BrokerEpoch::new(
+                            parse_u64(&request.params, "after_epoch")?
+                                .unwrap_or_else(|| current_cursor.broker_epoch.get()),
+                        ),
+                        sequence: EventSequence::new(
+                            parse_u64(&request.params, "after_sequence")?.unwrap_or(0),
+                        ),
+                    }
+                } else {
+                    current_cursor
+                };
+                let mut router = crate::EventRouter::new_at(
+                    registration_cursor,
+                    crate::RouterLimits::new(MAX_EVENT_LIMIT),
+                );
                 let effective_timeout_ms = deadline
                     .checked_duration_since(started)
                     .map_or(0, |duration| {
@@ -1388,13 +1431,12 @@ pub(crate) fn validate_wire_envelope(value: &Value) -> Result<(), HostError> {
             wire_reject_unknown(scope, &["space_id", "page_id"])?;
             if let Some(space_id) = scope.get("space_id")
                 && !space_id.is_null()
+                && space_id.as_str().is_none_or(|value| value.is_empty())
             {
-                if space_id.as_str().is_none_or(|value| value.is_empty()) {
-                    return Err(agentyc_core::CoreError::invalid_argument(
-                        "event scope space_id is invalid",
-                    )
-                    .into());
-                }
+                return Err(agentyc_core::CoreError::invalid_argument(
+                    "event scope space_id is invalid",
+                )
+                .into());
             }
             if let Some(page_id) = scope.get("page_id")
                 && !page_id.is_null()
@@ -1751,6 +1793,20 @@ struct LocalArtifactTransfer {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+enum WireTextMatcher {
+    Exact(String),
+    Contains(String),
+    Prefix(String),
+    Suffix(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WireWaitCondition {
     EventKind {
@@ -1767,6 +1823,69 @@ enum WireWaitCondition {
     },
     GenerationAtLeast {
         generation: GenerationWatermark,
+    },
+    Url {
+        matcher: WireTextMatcher,
+        #[serde(default)]
+        navigation: Option<String>,
+        #[serde(default)]
+        generation: Option<GenerationWatermark>,
+    },
+    History {
+        direction: String,
+        #[serde(default)]
+        generation: Option<GenerationWatermark>,
+    },
+    Reload {
+        #[serde(default)]
+        generation: Option<GenerationWatermark>,
+    },
+    NetworkIdle {
+        quiet_for: u64,
+    },
+    Request {
+        #[serde(default)]
+        url: Option<WireTextMatcher>,
+        #[serde(default)]
+        method: Option<String>,
+        #[serde(default)]
+        resource_type: Option<String>,
+    },
+    Response {
+        #[serde(default)]
+        url: Option<WireTextMatcher>,
+        #[serde(default)]
+        method: Option<String>,
+        #[serde(default)]
+        resource_type: Option<String>,
+        #[serde(default)]
+        status: Option<u16>,
+    },
+    StableDom {
+        quiet_for: u64,
+        geometry_quiet_for: u64,
+    },
+    Element {
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        text: Option<WireTextMatcher>,
+        state: String,
+        #[serde(default)]
+        generation: Option<GenerationWatermark>,
+    },
+    Page {
+        #[serde(default)]
+        page_id: Option<String>,
+        #[serde(default)]
+        lifecycle: Option<String>,
+        #[serde(default)]
+        generation: Option<GenerationWatermark>,
+    },
+    Download {
+        #[serde(default)]
+        name: Option<WireTextMatcher>,
+        state: String,
     },
     Any {
         conditions: Vec<WireWaitCondition>,
@@ -1842,6 +1961,97 @@ impl WireWaitCondition {
             Self::GenerationAtLeast { generation } => {
                 crate::WaitCondition::GenerationAtLeast(generation)
             }
+            Self::Url {
+                matcher,
+                navigation,
+                generation,
+            } => crate::WaitCondition::Url(crate::UrlWait {
+                matcher: matcher.into_matcher()?,
+                navigation: navigation
+                    .map(|value| parse_navigation_kind(&value))
+                    .transpose()?,
+                generation,
+            }),
+            Self::History {
+                direction,
+                generation,
+            } => crate::WaitCondition::History(crate::HistoryWait {
+                direction: parse_history_direction(&direction)?,
+                generation,
+            }),
+            Self::Reload { generation } => {
+                crate::WaitCondition::Reload(crate::ReloadWait { generation })
+            }
+            Self::NetworkIdle { quiet_for } => {
+                validate_wait_interval(quiet_for)?;
+                crate::WaitCondition::NetworkIdle(crate::NetworkIdleWait { quiet_for })
+            }
+            Self::Request {
+                url,
+                method,
+                resource_type,
+            } => crate::WaitCondition::Request(crate::RequestWait {
+                url: url.map(WireTextMatcher::into_matcher).transpose()?,
+                method: bounded_optional_wait_text(method, "request method")?,
+                resource_type: bounded_optional_wait_text(resource_type, "request resource type")?,
+            }),
+            Self::Response {
+                url,
+                method,
+                resource_type,
+                status,
+            } => {
+                if status.is_some_and(|status| !(100..=599).contains(&status)) {
+                    return Err(agentyc_core::CoreError::invalid_argument(
+                        "response status must be between 100 and 599",
+                    )
+                    .into());
+                }
+                crate::WaitCondition::Response(crate::ResponseWait {
+                    url: url.map(WireTextMatcher::into_matcher).transpose()?,
+                    method: bounded_optional_wait_text(method, "response method")?,
+                    resource_type: bounded_optional_wait_text(
+                        resource_type,
+                        "response resource type",
+                    )?,
+                    status,
+                })
+            }
+            Self::StableDom {
+                quiet_for,
+                geometry_quiet_for,
+            } => {
+                validate_wait_interval(quiet_for)?;
+                validate_wait_interval(geometry_quiet_for)?;
+                crate::WaitCondition::StableDom(crate::StableDomWait {
+                    quiet_for,
+                    geometry_quiet_for,
+                })
+            }
+            Self::Element {
+                selector,
+                text,
+                state,
+                generation,
+            } => crate::WaitCondition::Element(crate::ElementWait {
+                selector: bounded_optional_wait_text(selector, "element selector")?,
+                text: text.map(WireTextMatcher::into_matcher).transpose()?,
+                state: parse_element_state(&state)?,
+                generation,
+            }),
+            Self::Page {
+                page_id,
+                lifecycle,
+                generation,
+            } => crate::WaitCondition::Page(crate::PageWait {
+                page_id: bounded_optional_wait_text(page_id, "page id")?,
+                lifecycle: bounded_optional_wait_text(lifecycle, "page lifecycle")?,
+                generation,
+            }),
+            Self::Download { name, state } => crate::WaitCondition::Download(crate::DownloadWait {
+                name: name.map(WireTextMatcher::into_matcher).transpose()?,
+                state: parse_download_state(&state)?,
+            }),
             Self::Any { conditions } => {
                 crate::WaitCondition::Any(convert_wait_children(conditions, depth, nodes)?)
             }
@@ -1849,6 +2059,104 @@ impl WireWaitCondition {
                 crate::WaitCondition::All(convert_wait_children(conditions, depth, nodes)?)
             }
         })
+    }
+}
+
+impl WireTextMatcher {
+    fn into_matcher(self) -> Result<crate::TextMatcher, HostError> {
+        let (kind, value) = match self {
+            Self::Exact(value) => ("exact", value),
+            Self::Contains(value) => ("contains", value),
+            Self::Prefix(value) => ("prefix", value),
+            Self::Suffix(value) => ("suffix", value),
+        };
+        let value = bounded_wait_text(value, kind)?;
+        Ok(match kind {
+            "exact" => crate::TextMatcher::Exact(value),
+            "contains" => crate::TextMatcher::Contains(value),
+            "prefix" => crate::TextMatcher::Prefix(value),
+            "suffix" => crate::TextMatcher::Suffix(value),
+            _ => unreachable!("all wire text matcher variants are covered"),
+        })
+    }
+}
+
+fn bounded_wait_text(value: String, field: &str) -> Result<String, HostError> {
+    if value.is_empty() || value.len() > MAX_LOGICAL_PARAM_VALUE_BYTES {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "{field} must be non-empty and bounded"
+        ))
+        .into());
+    }
+    Ok(value)
+}
+
+fn bounded_optional_wait_text(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<String>, HostError> {
+    value
+        .map(|value| bounded_wait_text(value, field))
+        .transpose()
+}
+
+fn validate_wait_interval(value: u64) -> Result<(), HostError> {
+    if value == 0 || value > MAX_WAIT_TIMEOUT_MS {
+        return Err(agentyc_core::CoreError::invalid_argument(format!(
+            "wait interval must be between 1 and {MAX_WAIT_TIMEOUT_MS}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+fn parse_navigation_kind(value: &str) -> Result<crate::NavigationKind, HostError> {
+    match value {
+        "url" | "navigate" => Ok(crate::NavigationKind::Url),
+        "history" | "same_document" => Ok(crate::NavigationKind::History),
+        "reload" => Ok(crate::NavigationKind::Reload),
+        "any" => Ok(crate::NavigationKind::Any),
+        _ => Err(agentyc_core::CoreError::invalid_argument(
+            "navigation must be url, history, reload, or any",
+        )
+        .into()),
+    }
+}
+
+fn parse_history_direction(value: &str) -> Result<crate::HistoryDirection, HostError> {
+    match value {
+        "back" => Ok(crate::HistoryDirection::Back),
+        "forward" => Ok(crate::HistoryDirection::Forward),
+        "any" => Ok(crate::HistoryDirection::Any),
+        _ => Err(agentyc_core::CoreError::invalid_argument(
+            "history direction must be back, forward, or any",
+        )
+        .into()),
+    }
+}
+
+fn parse_element_state(value: &str) -> Result<crate::ElementState, HostError> {
+    match value {
+        "present" => Ok(crate::ElementState::Present),
+        "absent" => Ok(crate::ElementState::Absent),
+        "visible" => Ok(crate::ElementState::Visible),
+        "hidden" => Ok(crate::ElementState::Hidden),
+        _ => Err(agentyc_core::CoreError::invalid_argument(
+            "element state must be present, absent, visible, or hidden",
+        )
+        .into()),
+    }
+}
+
+fn parse_download_state(value: &str) -> Result<crate::DownloadState, HostError> {
+    match value {
+        "started" | "in_progress" => Ok(crate::DownloadState::Started),
+        "completed" | "complete" => Ok(crate::DownloadState::Completed),
+        "failed" | "cancelled" => Ok(crate::DownloadState::Failed),
+        _ => Err(agentyc_core::CoreError::invalid_argument(
+            "download state must be started, completed, or failed",
+        )
+        .into()),
     }
 }
 
@@ -2007,6 +2315,70 @@ fn parse_action(value: &str) -> Result<ActionId, HostError> {
     value
         .parse::<ActionId>()
         .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()).into())
+}
+
+fn context_request_from_params(
+    params: &BTreeMap<String, String>,
+    current: &agentyc_core::SnapshotEnvelope,
+) -> Result<crate::ContextRequest, HostError> {
+    let mode = match params.get("mode").map(String::as_str).unwrap_or("auto") {
+        "auto" => crate::ContextMode::Auto,
+        "full" => crate::ContextMode::Full,
+        "compact" | "min" | "focus" => crate::ContextMode::Compact,
+        "delta" => crate::ContextMode::Delta,
+        _ => {
+            return Err(agentyc_core::CoreError::invalid_argument(
+                "snapshot mode must be auto, full, min, focus, compact, or delta",
+            )
+            .into());
+        }
+    };
+    let mut request = crate::ContextRequest {
+        mode,
+        ..crate::ContextRequest::auto()
+    };
+    if let Some(value) = params.get("max_serialized_bytes") {
+        let limit = value.parse::<usize>().map_err(|error| {
+            agentyc_core::CoreError::invalid_argument(format!(
+                "invalid max_serialized_bytes: {error}"
+            ))
+        })?;
+        request.max_serialized_bytes = Some(limit);
+    }
+    if let Some(value) = params.get("token_budget") {
+        request.token_budget =
+            Some(serde_json::from_str::<TokenBudget>(value).map_err(|error| {
+                agentyc_core::CoreError::invalid_argument(format!("invalid token_budget: {error}"))
+            })?);
+    }
+    if let Some(value) = params.get("base") {
+        request.base = Some(
+            serde_json::from_str::<agentyc_core::SnapshotEnvelope>(value).map_err(|error| {
+                agentyc_core::CoreError::invalid_argument(format!("invalid snapshot base: {error}"))
+            })?,
+        );
+    }
+    if let Some(value) = params.get("tokenizer") {
+        if value != "unicode_scalars" {
+            return Err(agentyc_core::CoreError::invalid_argument(
+                "the local protocol only exposes the deployed unicode_scalars tokenizer",
+            )
+            .into());
+        }
+        request.tokenizer = Some(value.clone());
+    }
+    if params
+        .get("metadata_only")
+        .is_some_and(|value| value == "true")
+        || params
+            .get("since_hash")
+            .is_some_and(|value| value == &current.snapshot_hash.to_string())
+    {
+        request.clean_cache_metadata_only = true;
+    } else if params.get("metadata_only").is_some() {
+        request.clean_cache_metadata_only = false;
+    }
+    Ok(request)
 }
 
 fn parse_u64(params: &BTreeMap<String, String>, key: &str) -> Result<Option<u64>, HostError> {
