@@ -1087,6 +1087,7 @@ mod tests {
             .expect("remote host status");
         assert_eq!(status["bridge"]["test_seam"], false);
         assert_eq!(status["bridge"]["connected"], true);
+        assert_eq!(status["lifecycle"], "ready");
 
         let finished = execute(
             &context,
