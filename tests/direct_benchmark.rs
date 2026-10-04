@@ -201,3 +201,100 @@ fn offline_action_metrics_and_baseline_metadata_are_labeled() {
     assert_eq!(report["baseline_manifest"]["schema_version"], 1);
     let _ = fs::remove_dir_all(artifact);
 }
+
+#[test]
+fn phase5_evidence_contract_covers_required_matrix_and_artifacts() {
+    let root = repository_root();
+    let run_id = RUN_ID.fetch_add(1, Ordering::Relaxed);
+    let artifact_name = format!("p5-performance-rust-{run_id}");
+    let artifact = root.join("artifacts").join(&artifact_name);
+    let _ = fs::remove_dir_all(&artifact);
+    let output = Command::new("python3")
+        .current_dir(&root)
+        .args([
+            "scripts/run_p5_performance.py",
+            "--mode",
+            "offline",
+            "--smoke",
+            "--fixtures",
+            "small-form,nested-frame,oopif-shell",
+            "--spaces",
+            "1,2,4,8",
+            "--warmups",
+            "10",
+            "--samples",
+            "30",
+            "--bootstrap-resamples",
+            "10",
+            "--artifact-dir",
+        ])
+        .arg(format!("artifacts/{artifact_name}"))
+        .output()
+        .expect("python3 is required for the Phase 5 evidence contract");
+    assert!(
+        output.status.success(),
+        "Phase 5 benchmark failed: {output:?}"
+    );
+
+    let report: Value = serde_json::from_slice(
+        &fs::read(artifact.join("baseline.json")).expect("Phase 5 baseline artifact"),
+    )
+    .expect("Phase 5 baseline must be valid JSON");
+    assert_eq!(report["phase"], 5);
+    assert_eq!(report["kind"], "p5-performance-baseline");
+    assert_eq!(report["evidence_mode"], "offline");
+    assert_eq!(report["release_eligible"], false);
+    assert_eq!(
+        report["matrix"]["temperatures"],
+        serde_json::json!(["cold", "warm"])
+    );
+    assert_eq!(
+        report["matrix"]["cache_states"],
+        serde_json::json!(["clean", "dirty", "resync"])
+    );
+    assert_eq!(
+        report["matrix"]["snapshot_modes"],
+        serde_json::json!(["full", "min", "focus", "delta"])
+    );
+    assert_eq!(report["matrix"]["spaces"], serde_json::json!([1, 2, 4, 8]));
+    assert_eq!(report["baseline_manifest"]["sample_policy"]["warmups"], 10);
+    assert_eq!(
+        report["baseline_manifest"]["sample_policy"]["p95_min_valid_samples"],
+        200
+    );
+    assert_eq!(
+        report["baseline_manifest"]["sample_policy"]["p99_min_valid_samples"],
+        1_000
+    );
+    assert_eq!(
+        report["baseline_manifest"]["statistical_method"]["name"],
+        "bootstrap_percentile"
+    );
+    assert_eq!(
+        report["coverage"]["required_scenarios"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert!(report["scenario_probes"].as_array().unwrap().len() >= 4);
+    assert!(report["redaction_status"]["status"] == "applied");
+    assert!(fs::metadata(artifact.join("baseline-manifest.json")).is_ok());
+    assert!(fs::metadata(artifact.join("raw_samples.jsonl")).is_ok());
+    assert!(fs::metadata(artifact.join("generation-manifest.json")).is_ok());
+    assert!(fs::metadata(artifact.join("COMMIT")).is_ok());
+
+    let check = Command::new("python3")
+        .current_dir(&root)
+        .args([
+            "scripts/check_p5_performance.py",
+            "--mode",
+            "offline",
+            "--artifact-dir",
+        ])
+        .arg(format!("artifacts/{artifact_name}"))
+        .output()
+        .expect("Phase 5 artifact checker");
+    assert!(check.status.success(), "Phase 5 checker failed: {check:?}");
+    let _ = fs::remove_dir_all(artifact);
+}
