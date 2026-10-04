@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Browser control</title>
+  <desc id="desc">A browser window with an active automation cursor</desc>
+  <rect width="128" height="128" rx="28" fill="#FE5A1F" />
+  <rect x="21" y="21" width="86" height="84" rx="12" fill="none" stroke="#FFF6E8" stroke-width="9" />
+  <path d="M25 45h78" stroke="#FFF6E8" stroke-width="8" />
+  <circle cx="37" cy="33" r="4" fill="#FE5A1F" />
+  <circle cx="51" cy="33" r="4" fill="#FE5A1F" />
+  <circle cx="65" cy="33" r="4" fill="#FE5A1F" />
+  <path d="m51 57 30 25-15 2-7 15Z" fill="#FFF6E8" />
+</svg>
