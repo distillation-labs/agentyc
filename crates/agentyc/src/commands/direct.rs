@@ -28,10 +28,12 @@ use uuid::Uuid;
 
 mod actions;
 mod events;
+mod extension;
 mod host;
 mod pages;
 mod snapshot;
 mod spaces;
+mod waits;
 
 /// Options shared by every direct command.
 #[derive(Debug, Clone, Default)]
@@ -64,6 +66,10 @@ pub enum DirectCommand {
     Events(EventsArgs),
     /// Inspect direct host state and bridge capabilities.
     Host(HostCommand),
+    /// Wait for a host-observed logical condition.
+    Wait(WaitArgs),
+    /// Inspect extension state observed by the host.
+    Extension(ExtensionCommand),
 }
 
 /// Logical task-space operations.
@@ -86,6 +92,10 @@ pub enum SpaceCommand {
     /// Return the current lease to explicit user control.
     #[command(name = "return")]
     Return(LeaseReturnArgs),
+    /// Pause an agent-owned space through the host lifecycle transition.
+    Pause(LeaseArgs),
+    /// Request user handoff through the host lifecycle transition.
+    Handoff(LeaseArgs),
     /// Mark an agent-owned space finished through the host lifecycle transition.
     Finish(SpaceTransitionArgs),
     /// Release a finished space through the host lifecycle transition.
@@ -124,6 +134,36 @@ pub enum ActionCommand {
 pub enum HostCommand {
     /// Show host lifecycle, broker epoch, and bridge capabilities.
     Status,
+}
+
+/// Extension observations exposed by the host status protocol.
+#[derive(Debug, Clone, Subcommand)]
+pub enum ExtensionCommand {
+    /// Show extension connection and version data observed by the host.
+    Status,
+}
+
+/// Arguments for `wait`.
+#[derive(Debug, Clone, Args)]
+pub struct WaitArgs {
+    /// Bounded JSON wait condition accepted by the host `wait.for` method.
+    #[arg(long, value_name = "JSON")]
+    pub condition: String,
+    /// Maximum wait duration in milliseconds.
+    #[arg(long, default_value_t = DEFAULT_WAIT_TIMEOUT_MS)]
+    pub timeout_ms: u64,
+    /// Broker epoch of the last processed cursor.
+    #[arg(long)]
+    pub after_epoch: Option<u64>,
+    /// Event sequence of the last processed cursor.
+    #[arg(long, default_value_t = 0)]
+    pub after_sequence: u64,
+    /// Optional logical space scope.
+    #[arg(long)]
+    pub space_id: Option<String>,
+    /// Optional logical page scope; requires `--space-id`.
+    #[arg(long)]
+    pub page_id: Option<String>,
 }
 
 /// Arguments for `space create`.
@@ -389,6 +429,7 @@ pub struct EventsArgs {
 }
 
 const DEFAULT_TTL: u64 = 60_000;
+const DEFAULT_WAIT_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_EVENT_LIMIT: usize = 256;
 
 /// The host-backed direct client used by command modules.
@@ -640,6 +681,8 @@ fn execute(context: &DirectContext, command: DirectCommand) -> DirectResult<Valu
         DirectCommand::Action(command) => actions::run(context, command),
         DirectCommand::Events(args) => events::run(context, args),
         DirectCommand::Host(command) => host::run(context, command),
+        DirectCommand::Wait(args) => waits::run(context, args),
+        DirectCommand::Extension(command) => extension::run(context, command),
     }
 }
 
@@ -1118,6 +1161,20 @@ mod tests {
         assert_eq!(action["action_id"], "action_remote_wait");
         assert_eq!(action["receipt"]["status"], "succeeded");
 
+        let wait_error = execute(
+            &context,
+            DirectCommand::Wait(WaitArgs {
+                condition: r#"{"kind":"event_kind","event":"page.changed"}"#.to_owned(),
+                timeout_ms: 1,
+                after_epoch: None,
+                after_sequence: 0,
+                space_id: Some(space_id.clone()),
+                page_id: None,
+            }),
+        )
+        .expect_err("wait.for should time out without a matching event");
+        assert_eq!(wait_error.code, ErrorCode::Timeout);
+
         let events = execute(
             &context,
             DirectCommand::Events(EventsArgs {
@@ -1134,8 +1191,57 @@ mod tests {
         let status = execute(&context, DirectCommand::Host(HostCommand::Status))
             .expect("remote host status");
         assert_eq!(status["bridge"]["test_seam"], false);
+        let extension = execute(&context, DirectCommand::Extension(ExtensionCommand::Status))
+            .expect("remote extension status");
+        assert_eq!(extension["observed_connected"], true);
         assert_eq!(status["bridge"]["connected"], true);
         assert_eq!(status["lifecycle"], "ready");
+
+        let create_remote_space = |label: &str| {
+            let created = execute(
+                &context,
+                DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
+                    label: label.to_owned(),
+                    accept_shared_profile_disclosure: true,
+                })),
+            )
+            .expect("remote create");
+            let created_id = created["space_id"].as_str().expect("space id").to_owned();
+            execute(
+                &context,
+                DirectCommand::Space(SpaceCommand::Claim(LeaseArgs {
+                    space_id: created_id,
+                    ttl: DEFAULT_TTL,
+                    now: Some(4),
+                })),
+            )
+            .expect("remote claim")["space_id"]
+                .as_str()
+                .expect("space id")
+                .to_owned()
+        };
+        let paused_id = create_remote_space("remote-paused");
+        let paused = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Pause(LeaseArgs {
+                space_id: paused_id,
+                ttl: DEFAULT_TTL,
+                now: Some(5),
+            })),
+        )
+        .expect("remote pause");
+        assert_eq!(paused["lifecycle"], "paused");
+        let handoff_id = create_remote_space("remote-handoff");
+        let handoff = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Handoff(LeaseArgs {
+                space_id: handoff_id,
+                ttl: DEFAULT_TTL,
+                now: Some(5),
+            })),
+        )
+        .expect("remote handoff");
+        assert_eq!(handoff["lifecycle"], "handoff_requested");
 
         let finished = execute(
             &context,
@@ -1214,6 +1320,93 @@ mod tests {
 
         let listed = execute(&context, DirectCommand::Space(SpaceCommand::List)).expect("list");
         assert_eq!(listed["spaces"][0]["lifecycle"], "released");
+    }
+
+    #[test]
+    fn pause_and_handoff_wrappers_use_host_lifecycle_transitions() {
+        let directory = tempdir().expect("tempdir");
+        let context = DirectContext::open(&options(directory.path())).expect("context");
+
+        let create_and_claim = |label: &str| {
+            let created = execute(
+                &context,
+                DirectCommand::Space(SpaceCommand::Create(SpaceCreateArgs {
+                    label: label.to_owned(),
+                    accept_shared_profile_disclosure: true,
+                })),
+            )
+            .expect("create");
+            let space_id = created["space_id"].as_str().expect("space id").to_owned();
+            let claimed = execute(
+                &context,
+                DirectCommand::Space(SpaceCommand::Claim(LeaseArgs {
+                    space_id,
+                    ttl: DEFAULT_TTL,
+                    now: Some(1),
+                })),
+            )
+            .expect("claim");
+            (
+                claimed["space_id"].as_str().expect("space id").to_owned(),
+                claimed["lease"]["lease_epoch"]
+                    .as_u64()
+                    .expect("lease epoch"),
+            )
+        };
+
+        let (paused_id, _) = create_and_claim("paused");
+        let (handoff_id, _) = create_and_claim("handoff");
+        let paused = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Pause(LeaseArgs {
+                space_id: paused_id,
+                ttl: DEFAULT_TTL,
+                now: Some(2),
+            })),
+        )
+        .expect("pause");
+        assert_eq!(paused["lifecycle"], "paused");
+
+        let handoff = execute(
+            &context,
+            DirectCommand::Space(SpaceCommand::Handoff(LeaseArgs {
+                space_id: handoff_id,
+                ttl: DEFAULT_TTL,
+                now: Some(2),
+            })),
+        )
+        .expect("handoff");
+        assert_eq!(handoff["lifecycle"], "handoff_requested");
+    }
+
+    #[test]
+    fn extension_status_reports_observed_host_data_without_install_claims() {
+        let directory = tempdir().expect("tempdir");
+        let context = DirectContext::open(&options(directory.path())).expect("context");
+        let status = execute(&context, DirectCommand::Extension(ExtensionCommand::Status))
+            .expect("extension status");
+        assert_eq!(status["observed_connected"], false);
+        assert!(status.get("installed").is_none());
+        assert!(status.get("extension_id").is_none());
+    }
+
+    #[test]
+    fn wait_wrapper_rejects_non_object_conditions_before_transport() {
+        let directory = tempdir().expect("tempdir");
+        let context = DirectContext::open(&options(directory.path())).expect("context");
+        let error = execute(
+            &context,
+            DirectCommand::Wait(WaitArgs {
+                condition: "[]".to_owned(),
+                timeout_ms: 1,
+                after_epoch: None,
+                after_sequence: 0,
+                space_id: None,
+                page_id: None,
+            }),
+        )
+        .expect_err("non-object wait condition");
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
     }
 
     #[test]
