@@ -204,7 +204,7 @@ function abortable(promise, signal, onAbort, isDispatched = () => true) {
 }
 
 /** Return whether a method is conservatively treated as side-effecting. */
-export function methodMayHaveSideEffects(method, requested = false) {
+export function methodMayHaveSideEffects(method, requested = undefined) {
   return registryMethodMayHaveSideEffects(method, requested);
 }
 
@@ -218,6 +218,7 @@ export class BrowserClient {
     this.reconnectEnabled = reconnect;
     this.maxReconnects = Math.max(0, maxReconnects);
     this.connected = transport.connected !== false;
+    this.closed = false;
   }
 
   taskSpace(spaceId) {
@@ -418,10 +419,14 @@ export class BrowserClient {
       });
     }
     await this.transport.reconnect();
+    this.closed = false;
     this.connected = true;
   }
 
   async close() {
+    // Mark closed first so in-flight failures caused by close() are never
+    // retried through an automatic reconnect.
+    this.closed = true;
     if (typeof this.transport.close === "function")
       await this.transport.close();
     this.connected = false;
@@ -444,6 +449,15 @@ export class BrowserClient {
     if (new Set(requestIds).size !== requestIds.length) {
       throw protocolError("request IDs must be unique before dispatch", {
         request_ids: requestIds,
+      });
+    }
+    if (this.closed) {
+      throw new AgentycError({
+        code: "native_host_unavailable",
+        message: "the client is closed; call reconnect() to open it again",
+        retryable: false,
+        guidance: "none",
+        details: { requests: entries.map(requestIdentity) },
       });
     }
     const payload = makeBatch(entries.map((entry) => entry.request));
@@ -521,10 +535,15 @@ export class BrowserClient {
           !knownResponseError &&
           !protocolFailure &&
           (error instanceof AgentycError ? error.transportFailure : true);
+        // A dispatch-aware transport reports whether any frame was written.
+        // Nothing written means nothing can have happened, so the request is
+        // safe to retry and must not be reported as an unknown outcome.
+        const mayHaveEffects = hasSideEffects && dispatched;
         if (
           transportFailure &&
           this.reconnectEnabled &&
-          !hasSideEffects &&
+          !this.closed &&
+          !mayHaveEffects &&
           reconnects < this.maxReconnects &&
           typeof this.transport.reconnect === "function"
         ) {
@@ -543,10 +562,10 @@ export class BrowserClient {
           }
         }
         if (knownResponseError) throw error;
-        if (protocolFailure && !hasSideEffects) throw error;
+        if (protocolFailure && !mayHaveEffects) throw error;
         this.connected = this.transport.connected !== false;
         throw mapTransportError(error, {
-          mayHaveSideEffects: hasSideEffects,
+          mayHaveSideEffects: mayHaveEffects,
           details: sideEffectDetails(entries),
           transportFailure: true,
         });
