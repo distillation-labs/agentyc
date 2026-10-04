@@ -361,6 +361,48 @@ test("discarded and frozen tab updates remain logical state and never imply owne
   assert.deepEqual(chrome.removedTabIds, []);
 });
 
+test("tabs.onReplaced keeps distinct added and removed tab identities", async () => {
+  const chrome = new FakeChrome({
+    tabs: [
+      { id: 1, url: "https://agent.test/" },
+      { id: 2, url: "https://replacement.test/" },
+    ],
+  });
+  const lifecycle = [];
+  const events = [];
+  const tabs = new TabsRegistry({
+    chromeApi: chrome,
+    groups: new GroupsRegistry({ chromeApi: chrome }),
+    onLifecycle: (kind, tabId) => lifecycle.push([kind, tabId]),
+    onEvent: (event) => events.push(event),
+  });
+  await tabs.start();
+  await managedPage(tabs, "space_replace", "page_replace", 1);
+
+  chrome.replaceTab(1, {
+    id: 2,
+    windowId: 1,
+    groupId: -1,
+    active: false,
+    status: "complete",
+    url: "https://replacement.test/",
+    title: "Replacement",
+    incognito: false,
+    discarded: false,
+    frozen: false,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(lifecycle, [
+    ["replacement_existing", 2],
+    ["replaced", 1],
+    ["replacement", 2],
+  ]);
+  assert.equal(tabs.getInternalByPage("page_replace"), undefined);
+  assert.equal(tabs.getInternalByTab(2)?.rawTabId, 2);
+  assert.equal(events.includes("page.replaced"), true);
+});
+
 test("production manifest keeps only isolated content bridge and no broad host/scripting permissions", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("../manifest.json", import.meta.url), "utf8"),
