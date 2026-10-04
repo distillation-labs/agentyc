@@ -71,11 +71,23 @@ Every benchmark reports separately:
 - browser scan time, host queue time, bridge time, Chrome command time, serialization time, and response delivery time;
 - cache state, snapshot mode, frame topology, fixture/data hash, concurrency, and seed.
 
+P5-T8 persists this contract as `artifacts/p5-performance/`: `baseline.json`,
+`baseline-manifest.json`, one or more redacted `raw_samples*.jsonl` files,
+`generation-manifest.json`, and `COMMIT`. The Phase 5 checker validates the
+whole generation, not just summary numbers: every required matrix cell must be
+present, raw counts must reconcile, bootstrap seeds must be deterministic, file
+hashes must match the commit marker, provenance must identify the source path,
+and the timestamp must be fresh. It refuses the Phase 0/direct-benchmark
+schema, guessed/legacy/byte-estimate/operator-claim metrics, missing provenance,
+and artifacts that are not stable after central redaction.
+
 Snapshot comparisons preserve equivalent actionable-control/ref coverage. The host chooses delta only when measured final serialized cost is below the valid full/min alternative; otherwise it returns full/min or `resync_required`. Partial multi-frame snapshots cannot issue refs.
 
-Blocking benchmark cells include cold/warm host, clean/dirty/resync cache, full/min/focus/delta, 1/2/4/8 spaces, 1/2/4 agents, static/dynamic pages, nested/OOPIF frames, mutation bursts, event gaps, extension restart, and unrelated user-tab activity.
+Blocking benchmark cells include cold/warm host, clean/dirty/resync cache, full/min/focus/delta, 1/2/4/8 spaces, static/dynamic pages, nested/OOPIF frames, mutation bursts, event gaps, extension restart, reconnect, and unrelated user-tab activity.
 
-Use at least 200 valid samples for p95 and 1,000 for p99, with 10 warmups or warmup-until-stable. Every attempted sample is accounted for as success, timeout, error, invalid measurement, or infrastructure failure; exclusions require a predeclared rule and are reported. Timeouts, errors, missing measurements, and discarded samples count against the cell and fail it when the signed error/coverage budget is exceeded. Report bootstrap 95% CIs, raw samples, timeout/error rates, p50/p95/p99, actionable-control coverage, stale-ref rate, unknown outcomes, event lag, CPU, RSS, queue depth, and human-tab responsiveness. Thirty samples are smoke-only and never gate tail latency.
+Use at least 200 valid samples for p95 and 1,000 for p99, with 10 warmups or warmup-until-stable. Every attempted sample is accounted for as success, timeout, error, invalid measurement, or infrastructure failure; exclusions require a predeclared rule and are reported. Timeouts, errors, missing measurements, and discarded samples count against the cell and fail it when the signed error/coverage budget is exceeded. Report bootstrap 95% CIs, raw samples, timeout/error rates, p50/p95/p99, actionable-control coverage, stale-ref rate, unknown outcomes, event lag, native-artifact throughput, CPU, RSS, queue depth, and human-tab responsiveness. Thirty samples are smoke-only and never gate tail latency.
+
+Evidence mode is explicit. Offline P5 runs are deterministic fixture-model/schema evidence and must leave stale-ref, unknown-outcome, user-tab, and RSS values `not_measured_offline`; they are never release eligible. Live claims require `production_path` provenance, production-observed samples, a measured tokenizer, the deployed host/extension/browser tuple, and applied central redaction. A direct disposable-CDP run or a byte/token estimate cannot be promoted to live evidence.
 
 A committed baseline manifest includes commit, build mode, OS/CPU, Chrome build, extension/host tuple, fixture/data hash, tokenizer, concurrency, cache state, sample count, and statistical method. Absolute ceilings and relative regression budgets are signed in Phase 0. Threshold changes require a dated decision record and owner.
 
