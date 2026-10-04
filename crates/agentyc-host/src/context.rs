@@ -719,6 +719,7 @@ fn base_matches(
         && base_envelope.page_id == current.page_id
         && base_envelope.snapshot_hash == base.snapshot_hash
         && base_envelope.navigation_generation == current.navigation_generation
+        && base_envelope.document_generation == current.document_generation
         && base_envelope.snapshot_version != current.snapshot_version
 }
 
@@ -1111,7 +1112,7 @@ mod tests {
             }
             SnapshotBody::Delta { .. } | SnapshotBody::Resync { .. } => unreachable!(),
         };
-        let current = envelope_with_elements(current_elements, 2, 2);
+        let current = envelope_with_elements(current_elements, 2, 1);
         let read = SnapshotRead {
             envelope: current,
             cache_state: CacheState::Fresh,
@@ -1126,6 +1127,30 @@ mod tests {
             .expect("context");
         assert_eq!(output.metadata.representation, ContextRepresentation::Delta);
         assert!(matches!(output.body, Some(SnapshotBody::Delta { .. })));
+    }
+
+    #[test]
+    fn document_generation_change_requires_resync() {
+        let base = envelope_with_elements(many_controls(), 1, 1);
+        let current = envelope_with_elements(many_controls(), 2, 2);
+        let read = SnapshotRead {
+            envelope: current,
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+        let request = ContextRequest {
+            mode: ContextMode::Delta,
+            base: Some(base),
+            ..ContextRequest::default()
+        };
+        let output = ContextBuilder::new()
+            .build(&read, &request)
+            .expect("resync context");
+        assert_eq!(
+            output.metadata.representation,
+            ContextRepresentation::Resync
+        );
+        assert!(output.metadata.resync_required);
     }
 
     #[test]
