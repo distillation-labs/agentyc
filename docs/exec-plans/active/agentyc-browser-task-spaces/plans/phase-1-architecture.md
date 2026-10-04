@@ -1,7 +1,7 @@
 ---
 phase: 1
 name: Core architecture, security, and invariants
-status: pending
+status: active
 owner: Japneet Kalkat
 primary_outcome: A transport-neutral architecture and executable state/ownership/security model for the host broker, Chrome extension, direct clients, and MCP adapter.
 depends_on: phase-0
@@ -21,11 +21,11 @@ Turn the Phase 0 evidence into normative component boundaries, state machines, c
 
 ## Confirmed facts
 
-- `agentyc-core` and `agentyc-host` do not exist and must be added to the workspace.
-- `agentyc-runtime` currently owns a `BrowserRuntime` facade over one `BrowserSession`; `agentyc-browser` owns direct CDP/process lifecycle.
-- `agentyc-mcp` currently owns state and tool dispatch; it must become a client/adapter.
-- MV3 service workers can terminate; host persistence must be authoritative (S-021).
-- Chrome debugger target/session/frame identity is distinct from durable product identity (S-019).
+- `agentyc-core`, `agentyc-host`, the MV3 extension, the direct CLI, and the thin Node SDK now exist and passed their Phase 0 deterministic gates.
+- The legacy `agentyc-runtime`/`agentyc-browser` CDP/process path remains explicit compatibility/test-only; the existing-Chrome product path is the extension/native host/local socket.
+- `agentyc-mcp` remains a compatibility adapter over the host broker; it is not the canonical state owner.
+- MV3 service workers can terminate; host persistence is authoritative, while same-session exact-tab recovery is bounded and browser-session changes require host rebind (S-021).
+- Chrome debugger target/session/frame identity remains distinct from durable product identity; root-target support is proven, while flat related-target/OOPIF routing is a Phase 1 capability decision (S-019).
 
 ## Working assumptions
 
