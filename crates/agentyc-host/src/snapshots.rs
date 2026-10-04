@@ -151,6 +151,9 @@ pub struct SnapshotCacheKey {
     pub mode: SnapshotMode,
     /// Logical focused element, if the request is focus-scoped.
     pub focus: Option<ElementKey>,
+    /// Logical focused frame, if the request is frame-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_frame_id: Option<FrameId>,
     /// Token budget used to select or truncate the representation.
     pub budget: Option<TokenBudget>,
     /// Actual tokenizer identity used for metrics and selection.
@@ -173,6 +176,7 @@ impl SnapshotCacheKey {
             snapshot_version: SnapshotVersion::new(0),
             mode: SnapshotMode::Full,
             focus: None,
+            focus_frame_id: None,
             budget: None,
             tokenizer: None,
             topology_version: TopologyVersion::new(0),
@@ -189,6 +193,7 @@ impl SnapshotCacheKey {
             snapshot_version: envelope.snapshot_version,
             mode: envelope.mode,
             focus: None,
+            focus_frame_id: None,
             budget: envelope.budget,
             tokenizer: envelope.tokenizer.clone(),
             topology_version: envelope.topology_version,
@@ -221,6 +226,7 @@ impl SnapshotCacheKey {
             snapshot_version: SnapshotVersion::new(0),
             mode,
             focus,
+            focus_frame_id: None,
             budget,
             tokenizer,
             topology_version,
@@ -236,9 +242,29 @@ impl SnapshotCacheKey {
         self
     }
 
-    /// Return a key with a different logical focus.
+    /// Return a key with a different logical element focus.
     #[must_use]
     pub fn with_focus(mut self, focus: Option<ElementKey>) -> Self {
+        self.focus = focus;
+        self.focus_frame_id = None;
+        self
+    }
+
+    /// Return a key with a logical frame focus.
+    #[must_use]
+    pub fn with_frame_focus(mut self, focus_frame_id: Option<FrameId>) -> Self {
+        self.focus_frame_id = focus_frame_id;
+        self
+    }
+
+    /// Return a key with both logical focus dimensions.
+    #[must_use]
+    pub fn with_focus_dimensions(
+        mut self,
+        focus_frame_id: Option<FrameId>,
+        focus: Option<ElementKey>,
+    ) -> Self {
+        self.focus_frame_id = focus_frame_id;
         self.focus = focus;
         self
     }
@@ -252,6 +278,7 @@ impl Ord for SnapshotCacheKey {
             .then_with(|| self.snapshot_version.cmp(&other.snapshot_version))
             .then_with(|| snapshot_mode_rank(self.mode).cmp(&snapshot_mode_rank(other.mode)))
             .then_with(|| self.focus.cmp(&other.focus))
+            .then_with(|| self.focus_frame_id.cmp(&other.focus_frame_id))
             .then_with(|| budget_key(self.budget).cmp(&budget_key(other.budget)))
             .then_with(|| self.tokenizer.cmp(&other.tokenizer))
             .then_with(|| self.topology_version.cmp(&other.topology_version))
@@ -1259,6 +1286,18 @@ mod tests {
             FrameVersion::new(3),
         );
         assert_ne!(key, focused);
+
+        let frame_focused = key
+            .clone()
+            .with_frame_focus(Some(FrameId::from_suffix("child").expect("frame key")));
+        assert_ne!(key, frame_focused);
+        assert_ne!(focused, frame_focused);
+
+        let both_focused = key.with_focus_dimensions(
+            Some(FrameId::from_suffix("child").expect("frame key")),
+            Some(ElementKey::from_suffix("focused").expect("element key")),
+        );
+        assert_ne!(frame_focused, both_focused);
     }
 
     #[test]
