@@ -284,6 +284,7 @@ class ExistingChromeHostLaneTests(unittest.TestCase):
                     "lifecycle": "unmanaged",
                     "binding_state": "unbound",
                     "tab_hint": "user-tab-hint",
+                    "focus_hint": "user-focus-hint",
                     "active": True,
                     "incognito": False,
                 }
