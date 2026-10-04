@@ -49,6 +49,48 @@ blocking metric exceeds its signed absolute ceiling or regression budget with a
 non-overlapping confidence interval. Threshold changes require a dated,
 owned decision record.
 
+### Phase 5 performance evidence contract
+
+P5-T8 owns the context/performance evidence artifact at
+`artifacts/p5-performance/`. Generate the deterministic offline contract with:
+
+```bash
+python3 scripts/run_p5_performance.py \
+  --mode offline \
+  --smoke \
+  --warmups 10 \
+  --samples 30 \
+  --artifact-dir artifacts/p5-performance
+python3 scripts/check_p5_performance.py \
+  --mode offline \
+  --artifact-dir artifacts/p5-performance
+```
+
+The smoke lane is non-blocking and `release_eligible:false`. A blocking run
+must use at least 10 warmups and at least 200 valid samples for p95 and 1,000
+valid samples for p99 in every declared blocking cell. Its matrix includes cold
+and warm temperatures, clean/dirty/resync cache states, full/min/focus/delta
+snapshot modes, 1/2/4/8 spaces, nested and OOPIF fixture topology, mutation
+bursts, event gaps, reconnects, and active unrelated-user-tab probes. Reports
+include the tokenizer contract, warm action/wait latency, separate versus batch
+round trips, native-artifact throughput, event lag, stale-reference and unknown
+outcome rates, user-tab responsiveness, host/browser RSS, bootstrap 95% CIs,
+raw samples, and a baseline manifest.
+
+`--mode offline` is explicit deterministic fixture-model evidence. It may report
+modeled context/latency dimensions, but user-tab, RSS, stale-reference, and
+unknown-outcome observations remain `not_measured_offline`; it cannot close a
+release. `--mode live` accepts only an external package whose provenance is
+`production_path`, whose samples are marked `production_observation`, and whose
+redaction status is applied. The checker rejects legacy/direct-benchmark,
+guessed, byte-estimate, operator-claim, missing-cell, missing-sample, stale, or
+unredacted artifacts. Live input must be supplied with `--live-input`; the P5
+runner does not launch Chrome or attach to CDP.
+
+The older `scripts/run_direct_benchmark.py` output is a Phase 0/direct-CDP
+scaffold and is not P5-T8 evidence. It must not be promoted to a Phase 5 live
+claim.
+
 ### P1-T7 threshold decision support
 
 P1-T7 freezes provisional Phase 7 thresholds in the strict versioned record
