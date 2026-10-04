@@ -1,8 +1,8 @@
-//! Frontend-neutral browser operations built on the canonical `BrowserSession`.
+//! Explicit runtime facades for the host-backed and legacy browser paths.
 //!
-//! MCP, the command-line interface, and the REPL all use this facade for their
-//! shared lifecycle and common agent-facing operations. It intentionally
-//! returns typed/JSON values rather than frontend-specific result objects.
+//! [`HostClient`] is the Phase 3 canonical local-broker path. The direct
+//! [`LegacyBrowserRuntime`] facade remains only for explicit legacy/test CDP
+//! compatibility and is not a fallback when the host bridge is unavailable.
 
 pub mod host_client;
 pub use host_client::HostClient;
@@ -41,23 +41,27 @@ pub struct PageInfo {
     pub tabs: Vec<TabInfo>,
 }
 
-/// Shared browser runtime used by all public frontends.
+/// Explicit legacy direct-CDP runtime.
+///
+/// This facade is retained for compatibility and test harnesses. It may launch
+/// or connect to a managed browser only when a caller explicitly selects this
+/// legacy API; it is not the existing-Chrome host path.
 #[derive(Clone)]
-pub struct BrowserRuntime {
+pub struct LegacyBrowserRuntime {
     session: Arc<BrowserSession>,
     allowed_domains: Option<Vec<String>>,
 }
 
-impl std::fmt::Debug for BrowserRuntime {
+impl std::fmt::Debug for LegacyBrowserRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BrowserRuntime")
+        f.debug_struct("LegacyBrowserRuntime")
             .field("session", &self.session)
             .field("allowed_domains", &self.allowed_domains)
             .finish()
     }
 }
 
-impl BrowserRuntime {
+impl LegacyBrowserRuntime {
     /// Launch a local browser using the supplied profile.
     pub async fn launch(profile: BrowserProfile) -> Result<Self> {
         let allowed_domains = profile.allowed_domains.clone();
@@ -220,3 +224,8 @@ impl BrowserRuntime {
         ))
     }
 }
+
+/// Compatibility alias for callers that have not migrated to [`HostClient`].
+/// New code must use [`HostClient`] for the existing-Chrome path or name the
+/// legacy mode explicitly with [`LegacyBrowserRuntime`].
+pub type BrowserRuntime = LegacyBrowserRuntime;
