@@ -500,50 +500,11 @@ impl Broker {
             inner.ledger.update(|state| {
                 authorize_ticket(state, authority)?;
                 if event_name == "browser.session_changed" {
-                    let profile = authority.profile_binding_id().cloned();
-                    let space_ids: Vec<_> = state
-                        .spaces
-                        .iter()
-                        .filter_map(|(space_id, _space)| {
-                            (profile.is_some()
-                                && state.profile_bindings.get(space_id) == profile.as_ref())
-                            .then_some(space_id.clone())
-                        })
-                        .collect();
-                    for space_id in space_ids {
-                        let mut changed = false;
-                        if let Some(space) = state.spaces.get_mut(&space_id) {
-                            for page in &mut space.pages {
-                                if matches!(
-                                    page.lifecycle,
-                                    PageLifecycle::Closed | PageLifecycle::Closing
-                                ) {
-                                    continue;
-                                }
-                                bump_page_generations(page)?;
-                                page.lifecycle = PageLifecycle::TargetLost;
-                                page.binding = PageBindingState::Lost;
-                                changed = true;
-                            }
-                            if changed {
-                                space.lifecycle = SpaceLifecycle::Orphaned;
-                                state.snapshots.remove(&space_id);
-                            }
-                        }
-                        if changed {
-                            append_event(
-                                state,
-                                EventScope::space(space_id),
-                                EventKind::PageChanged,
-                                payload([
-                                    ("lifecycle", "target_lost".to_owned()),
-                                    ("reason", event_name.to_owned()),
-                                ]),
-                                None,
-                                true,
-                            )?;
-                        }
-                    }
+                    // The Native Messaging hello carries the authoritative
+                    // browser-session epoch. Do not orphan every space from a
+                    // late/replayed UI event; the host applies recovery only
+                    // after the new epoch is admitted and a fresh lease/rebind
+                    // path is used.
                     return Ok(());
                 }
                 let (Some(space_text), Some(page_text)) = (space_text, page_text) else {
@@ -2199,6 +2160,8 @@ impl Broker {
     ) -> Result<SpaceDescriptor, HostError> {
         let bridge = self.bridge()?;
         require_capability(&*bridge, Capability::Action)?;
+        let observation = bridge.observe().map_err(HostError::Bridge)?;
+        self.reconcile_missing_cleanup_pages(space_id, authority, lease_epoch, now, &observation)?;
         let cleanup = self.with_inner(|inner| {
             ensure_ready(inner)?;
             inner.ledger.update(|state| {
@@ -2280,24 +2243,31 @@ impl Broker {
                     // response was lost. A fresh bridge inventory is the only
                     // accepted proof for completing that already-Closing page;
                     // never infer absence from the error alone.
-                    if error.code == ErrorCode::PageNotFound {
-                        let observation = bridge.observe().map_err(HostError::Bridge)?;
-                        let still_present = observation.pages.iter().any(|record| {
-                            record.get("space_id").and_then(Value::as_str)
-                                == Some(space_id.as_str())
-                                && record.get("page_id").and_then(Value::as_str)
-                                    == Some(proof.page_id.as_str())
-                        });
-                        if !still_present {
-                            self.finish_page_cleanup(
-                                space_id,
-                                &proof,
-                                authority,
-                                lease_epoch,
-                                now,
-                            )?;
-                            continue;
-                        }
+                    if matches!(
+                        error.code,
+                        ErrorCode::Timeout
+                            | ErrorCode::UnknownOutcome
+                            | ErrorCode::NativeHostUnavailable
+                    ) {
+                        self.record_cleanup_failure(
+                            space_id,
+                            &proof,
+                            authority,
+                            lease_epoch,
+                            now,
+                            &error,
+                        )?;
+                        return Err(HostError::Bridge(error));
+                    }
+                    let observation = bridge.observe().map_err(HostError::Bridge)?;
+                    let still_present = observation.pages.iter().any(|record| {
+                        record.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
+                            && record.get("page_id").and_then(Value::as_str)
+                                == Some(proof.page_id.as_str())
+                    });
+                    if !still_present {
+                        self.finish_page_cleanup(space_id, &proof, authority, lease_epoch, now)?;
+                        continue;
                     }
                     self.record_cleanup_failure(
                         space_id,
@@ -2313,6 +2283,45 @@ impl Broker {
         }
 
         self.complete_finish(space_id, authority, lease_epoch, now, retention)
+    }
+
+    fn reconcile_missing_cleanup_pages(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        now: Timestamp,
+        observation: &ObservationSnapshot,
+    ) -> Result<(), HostError> {
+        let proofs = self.with_inner(|inner| {
+            inner.ledger.update(|state| {
+                authorize_finish_claim(state, space_id, authority, lease_epoch, now, true)?;
+                let descriptor = state.spaces.get(space_id).ok_or_else(|| {
+                    CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
+                })?;
+                Ok(descriptor
+                    .pages
+                    .iter()
+                    .filter(|page| page.lifecycle == PageLifecycle::Closing)
+                    .filter(|page| {
+                        !observation.pages.iter().any(|record| {
+                            record.get("space_id").and_then(Value::as_str)
+                                == Some(space_id.as_str())
+                                && record.get("page_id").and_then(Value::as_str)
+                                    == Some(page.page_id.as_str())
+                        })
+                    })
+                    .map(|page| CleanupProof {
+                        page_id: page.page_id.clone(),
+                        generation: PageGeneration::from_page(page),
+                    })
+                    .collect::<Vec<_>>())
+            })
+        })?;
+        for proof in proofs {
+            self.finish_page_cleanup(space_id, &proof, authority, lease_epoch, now)?;
+        }
+        Ok(())
     }
 
     /// Release a finished space after checking the current authority and lease.
