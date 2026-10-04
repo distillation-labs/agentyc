@@ -184,7 +184,12 @@ pub struct LedgerState {
     pub action_queues: BTreeMap<SpaceId, Vec<ActionId>>,
     /// Retained broker events in sequence order.
     pub events: Vec<EventRecord>,
-    /// Logical snapshot cache partitioned by space and page.
+    /// Memory-only logical snapshot cache partitioned by space and page.
+    ///
+    /// Snapshot bodies may contain page text or secrets, so they are never
+    /// serialized into the durable ledger. Restart/reconnect invalidates this
+    /// cache and forces a fresh bridge read.
+    #[serde(skip, default)]
     pub snapshots: BTreeMap<SpaceId, BTreeMap<PageId, SnapshotCacheRecord>>,
     /// One-time control proofs retained for user-owned spaces.
     #[serde(default)]
