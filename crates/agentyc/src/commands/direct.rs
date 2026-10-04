@@ -1032,7 +1032,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
         let server =
-            agentyc_host::LocalHostServer::start(broker, directory.path().join("host.sock"))
+            agentyc_host::LocalHostServer::start(broker, configured_socket_path(directory.path()))
                 .expect("local host server");
         let options = DirectOptions {
             state_dir: Some(directory.path().display().to_string()),
