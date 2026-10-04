@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 
 use super::{
     DirectContext, DirectResult, LeaseArgs, LeaseRenewArgs, LeaseReturnArgs, SpaceCommand,
-    SpaceCreateArgs, SpaceReclaimArgs, SpaceTransitionArgs, host_error, lease_epoch, parse_space,
-    parse_value, remote_field, remote_string, timestamp,
+    SpaceCreateArgs, SpacePruneArgs, SpaceReclaimArgs, SpaceTransitionArgs, host_error,
+    lease_epoch, parse_space, parse_value, remote_field, remote_string, timestamp,
 };
 
 const MAX_CONTROL_TICKET_JSON_BYTES: usize = 8 * 1024;
@@ -24,6 +24,7 @@ pub(super) fn run(context: &DirectContext, command: SpaceCommand) -> DirectResul
     match command {
         SpaceCommand::Create(args) => create(context, args),
         SpaceCommand::List => list(context),
+        SpaceCommand::Prune(args) => prune(context, args),
         SpaceCommand::Claim(args) => claim(context, args),
         SpaceCommand::Renew(args) => renew(context, args),
         SpaceCommand::Takeover(args) => takeover(context, args),
@@ -32,6 +33,23 @@ pub(super) fn run(context: &DirectContext, command: SpaceCommand) -> DirectResul
         SpaceCommand::Finish(args) => finish(context, args),
         SpaceCommand::Release(args) => release(context, args),
     }
+}
+
+fn prune(context: &DirectContext, args: SpacePruneArgs) -> DirectResult<Value> {
+    if args.max_count == 0 {
+        return Ok(json!({"pruned": 0}));
+    }
+    if let Some((broker, authority)) = context.local() {
+        let pruned = broker
+            .prune_released_spaces(authority, args.max_count as usize)
+            .map_err(host_error)?;
+        return Ok(json!({"pruned": pruned}));
+    }
+    let response = context.request(
+        "space.prune",
+        BTreeMap::from([("max_count".to_owned(), args.max_count.to_string())]),
+    )?;
+    Ok(json!({"pruned": remote_field(&response, "pruned")?}))
 }
 
 fn create(context: &DirectContext, args: SpaceCreateArgs) -> DirectResult<Value> {
