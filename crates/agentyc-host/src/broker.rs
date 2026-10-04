@@ -2456,6 +2456,71 @@ impl Broker {
         })
     }
 
+    /// Remove released spaces owned by the current principal after cleanup is proven.
+    ///
+    /// Pruning is explicitly bounded and ownership-scoped. Only pages whose
+    /// broker-owned close is durable may be removed; target-lost, unknown,
+    /// unmanaged, and user-owned records remain addressable for recovery.
+    pub fn prune_released_spaces(
+        &self,
+        authority: &AuthorityTicket,
+        max_count: usize,
+    ) -> Result<usize, HostError> {
+        if max_count == 0 {
+            return Ok(0);
+        }
+        let max_count = max_count.min(64);
+        self.with_inner(|inner| {
+            ensure_ready(inner)?;
+            inner.ledger.update(|state| {
+                authorize_ticket(state, authority)?;
+                let mut candidates: Vec<SpaceId> = state
+                    .spaces
+                    .values()
+                    .filter(|space| {
+                        space.owner == *authority.principal_id()
+                            && space.lifecycle == SpaceLifecycle::Released
+                            && space.pages.iter().all(|page| {
+                                page.lifecycle == PageLifecycle::Closed
+                                    && page.ownership == PageOwnership::Broker
+                                    && page.binding == PageBindingState::Closed
+                            })
+                    })
+                    .map(|space| space.space_id.clone())
+                    .collect();
+                candidates.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+                candidates.truncate(max_count);
+                let mut pruned = 0;
+                for space_id in candidates {
+                    state.spaces.remove(&space_id);
+                    state.profile_bindings.remove(&space_id);
+                    state.snapshots.remove(&space_id);
+                    state.takeover_proofs.remove(&space_id);
+                    state
+                        .events
+                        .retain(|event| event.scope.space_id.as_ref() != Some(&space_id));
+                    append_event(
+                        state,
+                        EventScope {
+                            space_id: None,
+                            page_id: None,
+                        },
+                        EventKind::SpaceChanged,
+                        payload([
+                            ("space_id", space_id.to_string()),
+                            ("lifecycle", "pruned".to_owned()),
+                        ]),
+                        None,
+                        false,
+                    )?;
+                    state.space_generations.remove(&space_id);
+                    pruned += 1;
+                }
+                Ok(pruned)
+            })
+        })
+    }
+
     fn finish_page_cleanup(
         &self,
         space_id: &SpaceId,
