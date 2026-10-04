@@ -2,6 +2,12 @@
 
 This repository has a **macOS-first test-only preflight**, not a production installer. Linux and Windows are currently unsupported by this drill. The script never launches Chrome, downloads Chrome, opens Chrome UI, installs an extension, or changes a Chrome profile during a preflight.
 
+The direct CLI and SDK is the primary interface; MCP is compatibility-only. Key product and security boundaries:
+
+- **Explicit shared-profile disclosure:** Existing-Chrome task spaces operate inside the user's existing Chrome profile, sharing cookies, sessions, and storage. Isolation is not claimed; callers must provide `--accept-shared-profile-disclosure` (CLI) or `acceptSharedProfileDisclosure: true` (SDK).
+- **No implicit Chrome launch or download:** Neither the preflight, the drill, the Native Messaging installer, nor the direct CLI/SDK will ever download Chrome or launch Chrome automatically. Live automation connects to an already-running Chrome profile with the enrolled Agentyc MV3 extension and host.
+- **Current per-invocation CLI and live validation limits:** The CLI currently runs per invocation. Live browser validation requires a running Chrome with the enrolled extension and Native Messaging host on macOS; commands fail with `extension_not_connected` or `native_host_unavailable` when absent. Offline mode (`--offline`) provides a deterministic fake-host seam for testing and CI. Planned convenience methods are not implemented as direct commands.
+
 ## Safe default
 
 Run the read-only preflight with no action flag:
