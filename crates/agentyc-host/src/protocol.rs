@@ -518,18 +518,21 @@ impl ProtocolServer {
                 }
                 let scope = request_scope(&request.params)?;
                 let authority = connection.authority();
+                let started = Instant::now();
+                let deadline = started + Duration::from_millis(timeout_ms);
                 let cursor = self.broker.event_cursor(authority)?;
                 let mut router =
                     crate::EventRouter::new_at(cursor, crate::RouterLimits::new(MAX_EVENT_LIMIT));
-                let mut engine = crate::WaitEngine::new(ProtocolClock::new());
+                let mut engine = crate::WaitEngine::new(ProtocolClock { started });
                 let mut registration = engine.register_scoped(
                     &router,
                     condition,
                     scope.clone(),
-                    Timestamp::new(engine.now().get().saturating_add(timeout_ms)),
+                    Timestamp::new(timeout_ms),
                     crate::CancellationToken::new(),
                 );
                 loop {
+                    let notification_generation = self.broker.event_notification_generation();
                     let batch = self.broker.resume_events(
                         authority,
                         EventQuery {
@@ -546,7 +549,8 @@ impl ProtocolServer {
                             break;
                         }
                         crate::WaitOutcome::Pending { .. } => {
-                            std::thread::sleep(Duration::from_millis(10));
+                            self.broker
+                                .wait_for_event_change_until(notification_generation, deadline);
                         }
                         outcome => {
                             return Err(crate::WaitEngine::<ProtocolClock>::outcome_error(
@@ -803,14 +807,6 @@ enum WireWaitCondition {
 
 struct ProtocolClock {
     started: Instant,
-}
-
-impl ProtocolClock {
-    fn new() -> Self {
-        Self {
-            started: Instant::now(),
-        }
-    }
 }
 
 impl crate::Clock for ProtocolClock {
@@ -1219,9 +1215,20 @@ mod tests {
                         page_id: None,
                     },
                     EventKind::ConnectionChanged,
+                    BTreeMap::from([("state".to_owned(), "loading".to_owned())]),
+                )
+                .expect("publish unrelated event");
+            event_broker
+                .publish_event(
+                    &authority,
+                    EventScope {
+                        space_id: None,
+                        page_id: None,
+                    },
+                    EventKind::ConnectionChanged,
                     BTreeMap::from([("state".to_owned(), "ready".to_owned())]),
                 )
-                .expect("publish event");
+                .expect("publish matching event");
         });
         let Envelope::Response(response) = server
             .dispatch(request_envelope(
@@ -1247,6 +1254,10 @@ mod tests {
         let event: agentyc_core::EventRecord =
             serde_json::from_str(result.get("event").expect("event")).expect("event json");
         assert_eq!(event.event, EventKind::ConnectionChanged);
+        assert_eq!(
+            event.payload.get("state").map(String::as_str),
+            Some("ready")
+        );
     }
 
     #[test]
