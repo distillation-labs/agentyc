@@ -99,7 +99,12 @@ test("same-space page, action, and fence mutations are serialized", async () => 
     method: "fence.barrier",
     space_id: "space_queue",
     lease_epoch: 2,
-    params: { fence_epoch: 2 },
+    params: {
+      fence_epoch: 2,
+      request_token: "reconcile_queue_fence_token",
+      broker_epoch: 1,
+      connection_epoch: 1,
+    },
   });
   await wait();
   assert.deepEqual(order, ["page.create:start"]);
@@ -157,8 +162,16 @@ test("fence arriving during page creation prevents binding and rolls the tab bac
     message: {
       request_id: "req_fenced_barrier",
       action_id: "action_fenced_barrier",
+      broker_epoch: 1,
+      connection_epoch: 1,
+      request_token: "reconcile_fenced_barrier_token",
     },
-    params: { fence_epoch: 2 },
+    params: {
+      fence_epoch: 2,
+      request_token: "reconcile_fenced_barrier_token",
+      broker_epoch: 1,
+      connection_epoch: 1,
+    },
     requestId: "req_fenced_barrier",
     actionId: "action_fenced_barrier",
     spaceId: "space_fenced",
@@ -360,6 +373,10 @@ test("runtime evaluation approvals are hashed, scoped, expiring, and single-use"
     page_id: "page_eval",
     lease_epoch: 1,
     target_generation: 1,
+    navigation_generation: 1,
+    document_generation: 1,
+    origin: "https://agent.test",
+    frame_scope: "main",
     expires_at: Date.now() + 10_000,
   };
   const result = await bridge.sendCommand({
@@ -555,19 +572,69 @@ test("side-panel destructive actions require expiring single-use intent tickets"
     );
     return envelope;
   };
-  const accepted = await worker.handleSidePanelRequest({
-    action: "stop",
-    params: { space_id: "space_panel" },
-    intent_ticket: ticket,
-  }, sender);
+  const accepted = await worker.handleSidePanelRequest(
+    {
+      action: "stop",
+      params: { space_id: "space_panel" },
+      intent_ticket: ticket,
+    },
+    sender,
+  );
   assert.equal(accepted.ok, true);
-  const replay = await worker.handleSidePanelRequest({
-    action: "stop",
-    params: { space_id: "space_panel" },
-    intent_ticket: ticket,
-  }, sender);
+  const replay = await worker.handleSidePanelRequest(
+    {
+      action: "stop",
+      params: { space_id: "space_panel" },
+      intent_ticket: ticket,
+    },
+    sender,
+  );
   assert.equal(replay.ok, false);
   assert.equal(replay.error.code, "replay_rejected");
+  worker.stop();
+});
+
+test("side-panel pause and handoff preserve distinct host transition methods", async () => {
+  const chrome = new FakeChrome();
+  const { worker } = await boot(chrome);
+  const sender = {
+    id: chrome.runtime.id,
+    url: "chrome-extension://fake-extension-id/src/sidepanel/index.html",
+    origin: "chrome-extension://fake-extension-id",
+    frameId: 0,
+  };
+  const methods = [];
+  worker.native.sendRequest = (request) => {
+    methods.push(request.method);
+    worker.pending.get(request.requestId)?.resolve({ ok: true, result: {} });
+  };
+  const ticket = (action, id) => ({
+    issued_by_host: true,
+    ticket_id: id,
+    purpose: "sidepanel",
+    action,
+    space_id: "space_panel",
+    profile_instance_id: worker.metadata.profileInstanceId,
+    expires_at: Date.now() + 10_000,
+    browser_session_epoch: worker.metadata.browserSessionEpoch,
+  });
+  await worker.handleSidePanelRequest(
+    {
+      action: "pause",
+      params: { space_id: "space_panel" },
+      intent_ticket: ticket("pause", "ticket_pause_1"),
+    },
+    sender,
+  );
+  await worker.handleSidePanelRequest(
+    {
+      action: "handoff",
+      params: { space_id: "space_panel" },
+      intent_ticket: ticket("handoff", "ticket_handoff_1"),
+    },
+    sender,
+  );
+  assert.deepEqual(methods, ["space.pause", "space.handoff"]);
   worker.stop();
 });
 
