@@ -11,26 +11,29 @@ use std::{
 
 use agentyc_core::{
     ActionId, ActionOperation, ActionReceipt, ActionRequest, ActionStatus, BrokerEpoch, Capability,
-    CompletionSource, CoreError, ErrorCode, EventId, EventKind, EventRecord, EventScope,
-    EventSequence, Generation, GenerationWatermark, HelloEnvelope, HelloOkEnvelope, HostMetadata,
-    Lease, LeaseEpoch, NextAction, PROTOCOL_VERSION, PageBindingState, PageDescriptor, PageId,
-    PageLifecycle, PageOwnership, PrincipalId, ProfileBindingId, ProfileBindingState,
-    ProfileDisclosure, ReconcileToken, ReconciliationState, ResumeResult, RetentionPolicy,
-    SnapshotEnvelope, SpaceDescriptor, SpaceId, SpaceLifecycle, Timestamp, UnknownReason,
-    negotiate_version,
+    CompletionSource, CoreError, ErrorCode, EventCursor, EventId, EventKind, EventRecord,
+    EventScope, EventSequence, FrameId, Generation, GenerationWatermark, HelloEnvelope,
+    HelloOkEnvelope, HostMetadata, Lease, LeaseEpoch, NextAction, PROTOCOL_VERSION,
+    PageBindingState, PageDescriptor, PageId, PageLifecycle, PageOwnership, PrincipalId,
+    ProfileBindingId, ProfileBindingState, ProfileDisclosure, ReconcileToken, ReconciliationState,
+    ResumeResult, RetentionPolicy, SnapshotEnvelope, SpaceDescriptor, SpaceId, SpaceLifecycle,
+    Timestamp, UnknownReason, negotiate_version,
 };
 
+use agentyc_core::events::EventAttribution;
 use agentyc_core::protocol::ResumeWatermark;
 use agentyc_core::states::{DirtyReason, LeaseState};
 use serde_json::{Value, json};
 
 use crate::{
+    actionability::{ActionabilityChecker, ActionabilityInput, requires_element_actionability},
     actions::ActionResult,
     bridge::{
         Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeStatus, ExtensionEpochs,
         FenceResult, ObservationSnapshot, sanitize_observation_snapshot,
     },
     error::HostError,
+    event_router::{EventRouter, RouterLimits},
     events::{EventBatch, EventQuery},
     leases::{
         AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult, UserIntentTicket,
@@ -40,11 +43,18 @@ use crate::{
         PendingFenceRecord, TakeoverProofRecord, canonical_action_hash as ledger_action_hash,
         validate_action_payload_contract, validate_public_payload_shape,
     },
+    refs::RefRegistry,
     scheduler::{Backpressure, BackpressureKind, Scheduler},
-    snapshots::{PageGeneration, SnapshotCacheRecord, SnapshotMetadataRead, SnapshotRead},
+    snapshots::{
+        ConcurrentSnapshotCache, DirtyReason as SnapshotDirtyReason, PageGeneration,
+        SnapshotCacheRecord, SnapshotMetadataRead, SnapshotRead,
+    },
+    trace_policy::request_requires_intent,
 };
 
+#[allow(dead_code)]
 static USER_INTENT_TICKET_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+#[allow(dead_code)]
 const MAX_USER_INTENT_TICKET_TTL_MS: u64 = 60_000;
 
 /// Why a host broker is temporarily unable to use its browser bridge.
@@ -178,7 +188,14 @@ impl EventNotifications {
 struct BrokerInner {
     ledger: Ledger,
     bridge: Arc<dyn Bridge>,
+    /// Broker-owned bounded event consumer state. Durable ledger events remain
+    /// authoritative, while this layer owns dedupe/coalescing/resync semantics.
+    event_router: EventRouter,
+    /// Memory-only representation-aware snapshot cache used before ledger/bridge reads.
+    snapshot_cache: ConcurrentSnapshotCache,
     lifecycle: HostLifecycle,
+    /// Memory-only logical ref registry. Browser handles never enter durable state.
+    ref_registry: RefRegistry,
     user_intent_tickets: BTreeMap<ReconcileToken, UserIntentTicket>,
 }
 
@@ -234,11 +251,23 @@ impl Broker {
     }
 
     fn with_scheduler(ledger: Ledger, bridge: Arc<dyn Bridge>, scheduler: Scheduler) -> Self {
+        let event_router = event_router_from_ledger(&ledger);
+        let limits = ledger.limits();
+        let snapshot_cache =
+            ConcurrentSnapshotCache::with_limits(limits.max_snapshots, limits.max_snapshot_bytes);
+        for pages in ledger.state().snapshots.values() {
+            for record in pages.values().filter(|record| !record.dirty) {
+                let _ = snapshot_cache.insert(record.envelope.clone());
+            }
+        }
         Self {
             inner: Arc::new(Mutex::new(BrokerInner {
                 ledger,
                 bridge,
+                event_router,
+                snapshot_cache,
                 lifecycle: HostLifecycle::Ready,
+                ref_registry: RefRegistry::default(),
                 user_intent_tickets: BTreeMap::new(),
             })),
             event_notifications: Arc::new(EventNotifications::default()),
@@ -282,7 +311,36 @@ impl Broker {
 
     /// Mark bridge loss without discarding durable logical records.
     pub fn mark_degraded(&self, reason: HostDegradedReason) -> Result<(), HostError> {
-        self.transition_lifecycle(HostLifecycle::Degraded(reason))
+        self.with_inner(|inner| {
+            if !valid_lifecycle_transition(inner.lifecycle, HostLifecycle::Degraded(reason)) {
+                return Err(HostError::Invariant(format!(
+                    "invalid host lifecycle transition from {:?} to degraded",
+                    inner.lifecycle
+                )));
+            }
+            inner.lifecycle = HostLifecycle::Degraded(reason);
+            inner
+                .ref_registry
+                .invalidate_all(Timestamp::new(current_millis()));
+            inner.ledger.update(|state| {
+                state.snapshots.clear();
+                append_event(
+                    state,
+                    EventScope {
+                        space_id: None,
+                        page_id: None,
+                    },
+                    EventKind::ConnectionChanged,
+                    payload([
+                        ("status", "disconnected".to_owned()),
+                        ("resync_required", "true".to_owned()),
+                    ]),
+                    Some(DirtyReason::Reconnect),
+                    true,
+                )?;
+                Ok(())
+            })
+        })
     }
 
     /// Begin bounded bridge recovery after a degraded period.
@@ -495,6 +553,13 @@ impl Broker {
                 );
                 Ok((connection_epoch, principal_id, resume))
             })?;
+            if is_extension {
+                // A new extension connection is a new browser/worker
+                // provenance boundary. Never retain refs across it.
+                inner
+                    .ref_registry
+                    .invalidate_all(Timestamp::new(current_millis()));
+            }
             let authority = AuthorityTicket::host_issued(
                 principal_id.clone(),
                 inner.ledger.broker_epoch(),
@@ -672,48 +737,150 @@ impl Broker {
         &self,
         authority: &AuthorityTicket,
         event: &Value,
-        _now: Timestamp,
+        now: Timestamp,
     ) -> Result<(), HostError> {
-        let event_name = event.get("event").and_then(Value::as_str).unwrap_or("");
-        if event_name.is_empty() || event_name == "inventory" {
+        let event_name = event
+            .get("event")
+            .and_then(Value::as_str)
+            .filter(|name| {
+                !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
+            })
+            .ok_or_else(|| {
+                CoreError::invalid_argument("bridge event name is missing or bounded")
+            })?;
+        if event_name == "inventory" {
             return Ok(());
         }
         let event_payload = event
             .get("payload")
             .and_then(Value::as_object)
             .cloned()
-            .unwrap_or_default();
-        let space_text = event_payload
-            .get("space_id")
-            .and_then(Value::as_str)
-            .or_else(|| event.get("space_id").and_then(Value::as_str));
-        let page_text = event_payload
-            .get("page_id")
-            .and_then(Value::as_str)
-            .or_else(|| event.get("page_id").and_then(Value::as_str));
+            .ok_or_else(|| CoreError::invalid_argument("bridge event payload is missing"))?;
+        let (event_kind, mut dirty_reason, target_lost, global) = bridge_event_contract(event_name)
+            .ok_or_else(|| CoreError::invalid_argument("bridge event kind is unsupported"))?;
+        if event_name == "debugger.event" {
+            dirty_reason = debugger_event_dirty_reason(
+                event_payload
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            );
+        }
+        let broker_epoch = required_bridge_epoch(event, "broker_epoch")?;
+        let connection_epoch = required_bridge_epoch(event, "connection_epoch")?;
+        let worker_instance_epoch = optional_bridge_epoch(event, "worker_instance_epoch")?;
+        let browser_session_epoch = optional_bridge_epoch(event, "browser_session_epoch")?;
+        let space_text = bridge_field(&event_payload, event, "space_id");
+        let page_text = bridge_field(&event_payload, event, "page_id");
+        if global {
+            if space_text.is_some() || page_text.is_some() {
+                return Err(CoreError::invalid_argument(
+                    "global bridge events cannot carry a page scope",
+                )
+                .into());
+            }
+        } else if space_text.is_none() || page_text.is_none() {
+            return Err(CoreError::invalid_argument(
+                "scoped bridge events require logical space and page attribution",
+            )
+            .into());
+        }
+        let space_id = parse_bridge_id::<SpaceId>(space_text, "space_id")?;
+        let page_id = parse_bridge_id::<PageId>(page_text, "page_id")?;
+        let frame_id = parse_bridge_id::<agentyc_core::FrameId>(
+            bridge_field(&event_payload, event, "logical_frame_id")
+                .or_else(|| bridge_field(&event_payload, event, "frame_id")),
+            "frame_id",
+        )?;
+        let document_id = parse_bridge_id::<agentyc_core::DocumentId>(
+            bridge_field(&event_payload, event, "document_id"),
+            "document_id",
+        )?;
+        let navigation_id = parse_bridge_id::<agentyc_core::NavigationId>(
+            bridge_field(&event_payload, event, "navigation_id"),
+            "navigation_id",
+        )?;
+
         self.with_inner(|inner| {
+            let extension_epochs = inner.bridge.extension_epochs();
+            if broker_epoch != authority.broker_epoch().get()
+                || connection_epoch != authority.connection_epoch().get()
+            {
+                return Err(CoreError::new(
+                    ErrorCode::PermissionDenied,
+                    "bridge event attribution does not match its authority",
+                )
+                .into());
+            }
+            if let Some(epochs) = extension_epochs
+                && (worker_instance_epoch
+                    .is_some_and(|epoch| epoch != epochs.worker_instance_epoch)
+                    || browser_session_epoch
+                        .is_some_and(|epoch| epoch != epochs.browser_session_epoch))
+            {
+                return Err(CoreError::new(
+                    ErrorCode::PermissionDenied,
+                    "bridge event extension epoch is stale",
+                )
+                .into());
+            }
+            let worker_instance_epoch = worker_instance_epoch
+                .or_else(|| extension_epochs.map(|epochs| epochs.worker_instance_epoch));
+            let browser_session_epoch = browser_session_epoch
+                .or_else(|| extension_epochs.map(|epochs| epochs.browser_session_epoch));
+            let mut attribution = EventAttribution::bridge(
+                agentyc_core::ConnectionEpoch::new(connection_epoch),
+                authority.profile_binding_id().cloned(),
+                browser_session_epoch.map(agentyc_core::BrowserSessionEpoch::new),
+                worker_instance_epoch.map(agentyc_core::WorkerInstanceEpoch::new),
+            );
+            attribution.frame_id = frame_id.clone();
+            attribution.document_id = document_id;
+            attribution.navigation_id = navigation_id;
+
             inner.ledger.update(|state| {
                 authorize_ticket(state, authority)?;
-                if event_name == "browser.session_changed" {
-                    // The Native Messaging hello carries the authoritative
-                    // browser-session epoch. Do not orphan every space from a
-                    // late/replayed UI event; the host applies recovery only
-                    // after the new epoch is admitted and a fresh lease/rebind
-                    // path is used.
+                if global {
+                    // A global reconnect/session event invalidates every
+                    // memory-only ref before any later action can resolve it.
+                    inner.ref_registry.invalidate_all(now);
+                    if matches!(
+                        dirty_reason,
+                        DirtyReason::Reconnect
+                            | DirtyReason::SessionLost
+                            | DirtyReason::TargetReplaced
+                            | DirtyReason::Navigation
+                            | DirtyReason::FrameChanged
+                            | DirtyReason::EventGap
+                            | DirtyReason::RawEvaluation
+                            | DirtyReason::Takeover
+                    ) {
+                        let _ = inner
+                            .snapshot_cache
+                            .invalidate_all_with_reason(snapshot_dirty_reason(dirty_reason));
+                        state.snapshots.clear();
+                    }
+                    append_event_with_attribution(
+                        state,
+                        EventScope {
+                            space_id: None,
+                            page_id: None,
+                        },
+                        event_kind,
+                        bridge_event_payload(event_name, &event_payload),
+                        Some(dirty_reason),
+                        true,
+                        attribution.clone(),
+                    )?;
                     return Ok(());
                 }
-                let (Some(space_text), Some(page_text)) = (space_text, page_text) else {
-                    return Ok(());
-                };
-                let Ok(space_id) = space_text.parse::<SpaceId>() else {
-                    return Ok(());
-                };
-                let Ok(page_id) = page_text.parse::<PageId>() else {
-                    return Ok(());
-                };
+                let space_id = space_id.clone().ok_or_else(|| {
+                    CoreError::invalid_argument("scoped bridge event space attribution is missing")
+                })?;
+                let page_id = page_id.clone().ok_or_else(|| {
+                    CoreError::invalid_argument("scoped bridge event page attribution is missing")
+                })?;
                 authorize_profile_for_mutation(state, &space_id, authority)?;
-                let mut page_changed = false;
-                let target_lost = matches!(event_name, "page.lost" | "page.replaced");
                 let target = event_payload
                     .get("target_generation")
                     .and_then(Value::as_u64);
@@ -723,58 +890,86 @@ impl Broker {
                 let document = event_payload
                     .get("document_generation")
                     .and_then(Value::as_u64);
+                let mut page_changed = false;
                 if let Some(space) = state.spaces.get_mut(&space_id) {
-                    if let Some(page) = space.page_mut(&page_id) {
-                        // Cleanup proofs are host-side compare-and-set values.
-                        // A late ordinary page.changed event must not advance
-                        // a page generation while it is Closing.
-                        if page.lifecycle == PageLifecycle::Closing && !target_lost {
-                            return Ok(());
-                        }
-                        if let Some(value) =
-                            target.filter(|value| *value > page.target_generation.get())
-                        {
-                            page.target_generation = Generation::new(value);
-                            page_changed = true;
-                        }
-                        if let Some(value) =
-                            navigation.filter(|value| *value > page.navigation_generation.get())
-                        {
-                            page.navigation_generation = Generation::new(value);
-                            page_changed = true;
-                        }
-                        if let Some(value) =
-                            document.filter(|value| *value > page.document_generation.get())
-                        {
-                            page.document_generation = Generation::new(value);
-                            page_changed = true;
-                        }
-                        if target_lost {
-                            if !matches!(
-                                page.lifecycle,
-                                PageLifecycle::Closed | PageLifecycle::Closing
-                            ) {
-                                if target.is_none() {
-                                    bump_page_generations(page)?;
-                                }
-                                page.lifecycle = PageLifecycle::TargetLost;
-                                page.binding = PageBindingState::Lost;
-                                page_changed = true;
-                            }
-                        }
-                        if page_changed {
-                            state.snapshots.remove(&space_id);
-                        }
+                    let page = space.page_mut(&page_id).ok_or_else(|| {
+                        CoreError::new(ErrorCode::PageNotFound, "logical page not found")
+                    })?;
+                    // Cleanup proofs are host-side compare-and-set values. A
+                    // late ordinary event must not advance a closing page.
+                    if page.lifecycle == PageLifecycle::Closing && !target_lost {
+                        return Ok(());
                     }
+                    if let Some(value) =
+                        target.filter(|value| *value > page.target_generation.get())
+                    {
+                        page.target_generation = Generation::new(value);
+                        page_changed = true;
+                    }
+                    if let Some(value) =
+                        navigation.filter(|value| *value > page.navigation_generation.get())
+                    {
+                        page.navigation_generation = Generation::new(value);
+                        page_changed = true;
+                    }
+                    if let Some(value) =
+                        document.filter(|value| *value > page.document_generation.get())
+                    {
+                        page.document_generation = Generation::new(value);
+                        page_changed = true;
+                    }
+                    if target_lost
+                        && !matches!(
+                            page.lifecycle,
+                            PageLifecycle::Closed | PageLifecycle::Closing
+                        )
+                    {
+                        if target.is_none() {
+                            bump_page_generations(page)?;
+                        }
+                        page.lifecycle = PageLifecycle::TargetLost;
+                        page.binding = PageBindingState::Lost;
+                        page_changed = true;
+                    }
+                    // Debugger events are semantic dirty notifications even
+                    // when their generation fields did not advance.
+                    let snapshot_dirty = page_changed
+                        || (matches!(event_kind, EventKind::PageChanged)
+                            && bridge_event_affects_snapshot(event_name, &event_payload));
+                    if snapshot_dirty {
+                        if let Some(frame_id) = &frame_id {
+                            inner
+                                .ref_registry
+                                .invalidate_frame(&space_id, &page_id, frame_id, now);
+                        } else {
+                            inner
+                                .ref_registry
+                                .invalidate_scope(&space_id, &page_id, now);
+                        }
+                        let _ = inner.snapshot_cache.invalidate_with_reason(
+                            &space_id,
+                            &page_id,
+                            snapshot_dirty_reason(dirty_reason),
+                        );
+                        state.snapshots.remove(&space_id);
+                    }
+                    page_changed = page_changed || matches!(event_kind, EventKind::PageChanged);
+                } else {
+                    return Err(CoreError::new(
+                        ErrorCode::SpaceNotFound,
+                        "logical space not found",
+                    )
+                    .into());
                 }
                 if page_changed {
-                    append_event(
+                    append_event_with_attribution(
                         state,
                         EventScope::page(space_id, page_id),
-                        EventKind::PageChanged,
-                        payload([("reason", event_name.to_owned())]),
-                        None,
+                        event_kind,
+                        bridge_event_payload(event_name, &event_payload),
+                        Some(dirty_reason),
                         target_lost,
+                        attribution,
                     )?;
                 }
                 Ok(())
@@ -2111,6 +2306,7 @@ impl Broker {
     /// returned browser inventory is validated before the durable page is
     /// marked managed, and group presentation remains best effort because a
     /// Chrome tab group is visual state rather than authority.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_managed_page(
         &self,
         space_id: &SpaceId,
@@ -2367,6 +2563,12 @@ impl Broker {
                 page.lifecycle = PageLifecycle::TargetLost;
                 page.binding = PageBindingState::Lost;
                 let result = page.clone();
+                inner.ref_registry.invalidate_scope(space_id, page_id, now);
+                let _ = inner.snapshot_cache.invalidate_with_reason(
+                    space_id,
+                    page_id,
+                    SnapshotDirtyReason::TargetReplaced,
+                );
                 state.snapshots.remove(space_id);
                 append_event(
                     state,
@@ -2939,6 +3141,7 @@ impl Broker {
         })
     }
 
+    #[allow(dead_code)]
     /// Issue a one-use confirmation for a sensitive action after an explicit
     /// user confirmation in a trusted host-owned UI.
     ///
@@ -2952,7 +3155,7 @@ impl Broker {
         now: Timestamp,
         ttl: u64,
     ) -> Result<UserIntentTicket, HostError> {
-        if !is_sensitive_action(request.operation) {
+        if !request_requires_intent(request.operation, &request.payload) {
             return Err(CoreError::invalid_argument(
                 "user-intent tickets are only issued for sensitive actions",
             )
@@ -2989,14 +3192,35 @@ impl Broker {
             inner
                 .user_intent_tickets
                 .retain(|_, ticket| ticket.expires_at().get() > now.get());
+            let document_generation = if let Some(page_id) = &request.page_id {
+                Some(
+                    inner
+                        .ledger
+                        .state()
+                        .spaces
+                        .get(&request.space_id)
+                        .and_then(|space| space.page(page_id))
+                        .ok_or_else(|| {
+                            CoreError::new(ErrorCode::PageNotFound, "logical page not found")
+                        })?
+                        .document_generation,
+                )
+            } else {
+                None
+            };
             let number = USER_INTENT_TICKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let token = ReconcileToken::from_suffix(format!("intent-{}-{number}", now.get()))
                 .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
             let ticket = UserIntentTicket::host_issued(
                 token.clone(),
                 request.space_id.clone(),
+                request.page_id.clone(),
+                document_generation,
                 request.lease_epoch,
                 action_hash,
+                authority.profile_binding_id().cloned(),
+                authority.connection_epoch(),
+                authority.connection_nonce().clone(),
                 expires_at,
             );
             inner.user_intent_tickets.insert(token, ticket.clone());
@@ -3015,6 +3239,7 @@ impl Broker {
     }
 
     /// Admit a sensitive action using its host-issued, one-use user confirmation.
+    #[allow(dead_code)]
     pub(crate) fn enqueue_action_with_user_intent(
         &self,
         request: ActionRequest<BTreeMap<String, String>>,
@@ -3043,17 +3268,34 @@ impl Broker {
             .into());
         }
         self.with_inner(|inner| {
-            if is_sensitive_action(request.operation) {
+            if request_requires_intent(request.operation, &request.payload) {
                 let ticket = intent_ticket.ok_or_else(|| {
                     CoreError::new(
                         ErrorCode::PermissionDenied,
                         "sensitive action requires a host-issued user-intent ticket",
                     )
                 })?;
+                let current_document_generation = request
+                    .page_id
+                    .as_ref()
+                    .and_then(|page_id| {
+                        inner
+                            .ledger
+                            .state()
+                            .spaces
+                            .get(&request.space_id)
+                            .and_then(|space| space.page(page_id))
+                    })
+                    .map(|page| page.document_generation);
                 if ticket.expires_at().get() <= now.get()
                     || ticket.space_id() != &request.space_id
+                    || ticket.page_id() != request.page_id.as_ref()
+                    || ticket.document_generation() != current_document_generation
                     || ticket.lease_epoch() != request.lease_epoch
                     || ticket.action_hash() != &request.request_hash
+                    || ticket.profile_binding_id() != authority.profile_binding_id()
+                    || ticket.connection_epoch() != authority.connection_epoch()
+                    || ticket.connection_nonce() != authority.connection_nonce()
                     || inner.user_intent_tickets.get(ticket.token()) != Some(ticket)
                 {
                     return Err(CoreError::new(
@@ -3131,6 +3373,7 @@ impl Broker {
                 } else if request.operation == ActionOperation::Close {
                     return Err(CoreError::invalid_argument("close requires a logical page").into());
                 }
+                validate_actionability_for_state(&mut inner.ref_registry, state, &request, now)?;
                 let queue = state
                     .action_queues
                     .entry(request.space_id.clone())
@@ -3235,21 +3478,54 @@ impl Broker {
                     .into());
                 }
                 authorize_space(state, &request.space_id, authority, lease_epoch, now, true)?;
-                let queue = state
+                let queue_is_head = state
                     .action_queues
-                    .get_mut(&request.space_id)
+                    .get(&request.space_id)
                     .ok_or_else(|| {
                         CoreError::new(
                             ErrorCode::LedgerIncompatible,
                             "queued action has no space queue",
                         )
-                    })?;
-                if queue.first() != Some(action_id) {
+                    })?
+                    .first()
+                    == Some(action_id);
+                if !queue_is_head {
                     return Err(CoreError::new(
                         ErrorCode::PermissionDenied,
                         "actions must dispatch in per-space FIFO order",
                     )
                     .into());
+                }
+                if let Err(error) =
+                    validate_actionability_for_state(&mut inner.ref_registry, state, &request, now)
+                {
+                    let queue =
+                        state
+                            .action_queues
+                            .get_mut(&request.space_id)
+                            .ok_or_else(|| {
+                                CoreError::new(
+                                    ErrorCode::LedgerIncompatible,
+                                    "queued action has no space queue",
+                                )
+                            })?;
+                    let _ = queue.remove(0);
+                    let receipt = state.actions.get_mut(action_id).ok_or_else(|| {
+                        CoreError::new(ErrorCode::LedgerIncompatible, "action receipt is missing")
+                    })?;
+                    receipt.cancel(Some(now))?;
+                    append_event(
+                        state,
+                        EventScope::space(request.space_id.clone()),
+                        EventKind::ActionChanged,
+                        payload([
+                            ("action_id", action_id.to_string()),
+                            ("status", "cancelled".to_owned()),
+                        ]),
+                        Some(DirtyReason::Action),
+                        false,
+                    )?;
+                    return Err(error.into());
                 }
                 if is_mutating(request.operation)
                     && state.actions.values().any(|receipt| {
@@ -3264,6 +3540,15 @@ impl Broker {
                     )
                     .into());
                 }
+                let queue = state
+                    .action_queues
+                    .get_mut(&request.space_id)
+                    .ok_or_else(|| {
+                        CoreError::new(
+                            ErrorCode::LedgerIncompatible,
+                            "queued action has no space queue",
+                        )
+                    })?;
                 let _ = queue.remove(0);
                 let receipt = state.actions.get_mut(action_id).ok_or_else(|| {
                     CoreError::new(ErrorCode::LedgerIncompatible, "action receipt is missing")
@@ -3319,6 +3604,26 @@ impl Broker {
                     )
                     .into());
                 }
+                if let Err(error) =
+                    validate_actionability_for_state(&mut inner.ref_registry, state, &request, now)
+                {
+                    let receipt = state.actions.get_mut(action_id).ok_or_else(|| {
+                        CoreError::new(ErrorCode::LedgerIncompatible, "action receipt is missing")
+                    })?;
+                    receipt.mark_failed(error.code, false, Some(now))?;
+                    append_event(
+                        state,
+                        EventScope::space(request.space_id.clone()),
+                        EventKind::ActionChanged,
+                        payload([
+                            ("action_id", action_id.to_string()),
+                            ("status", "failed".to_owned()),
+                        ]),
+                        Some(DirtyReason::Action),
+                        false,
+                    )?;
+                    return Err(error.into());
+                }
                 Ok(())
             })
         })?;
@@ -3326,10 +3631,17 @@ impl Broker {
         let bridge = self.bridge()?;
         let outcome = match bridge.dispatch(&request) {
             Ok(outcome) => outcome,
-            Err(_) => BridgeDispatchResult::Unknown {
-                reason: UnknownReason::BridgeLost,
+            Err(error) if error.code == ErrorCode::UnknownOutcome => {
+                BridgeDispatchResult::Unknown {
+                    reason: UnknownReason::BridgeLost,
+                }
+            }
+            Err(error) => BridgeDispatchResult::Failed {
+                code: error.code,
+                retryable: error.retryable,
             },
         };
+        let outcome = self.verify_final_postcondition(&request, outcome)?;
         let receipt = self.finish_dispatch(action_id, request, authority, outcome, now)?;
         Ok(ActionResult { receipt })
     }
@@ -3346,6 +3658,44 @@ impl Broker {
             return Ok(ActionResult { receipt });
         }
         self.dispatch_action(&receipt.action_id, authority, receipt.lease_epoch, now)
+    }
+
+    fn verify_final_postcondition(
+        &self,
+        request: &ActionRequest<BTreeMap<String, String>>,
+        outcome: BridgeDispatchResult,
+    ) -> Result<BridgeDispatchResult, HostError> {
+        if !matches!(outcome, BridgeDispatchResult::Succeeded)
+            || request.postcondition.is_none()
+            || request.page_id.is_none()
+            || matches!(request.operation, ActionOperation::Wait)
+        {
+            return Ok(outcome);
+        }
+        let bridge = self.bridge()?;
+        let page_id = request.page_id.as_ref().expect("checked above");
+        let snapshot = match bridge.snapshot(&request.space_id, page_id, request.lease_epoch) {
+            Ok(snapshot) => snapshot,
+            // A post-dispatch proof read that cannot complete does not prove
+            // failure: the mutation may already have taken effect.
+            Err(_) => {
+                return Ok(BridgeDispatchResult::Unknown {
+                    reason: UnknownReason::BridgeLost,
+                });
+            }
+        };
+        let postcondition = request.postcondition.as_ref().expect("checked above");
+        match crate::actionability::PostconditionVerifier::verify(
+            postcondition,
+            snapshot.document_generation,
+            Some(&snapshot.snapshot_hash),
+        ) {
+            Ok(()) => Ok(BridgeDispatchResult::Succeeded),
+            Err(error) => Ok(BridgeDispatchResult::Failed {
+                code: error.code,
+                retryable: false,
+            }),
+        }
     }
 
     fn finish_dispatch(
@@ -3400,6 +3750,16 @@ impl Broker {
                     (receipt.clone(), receipt.status, receipt.unknown)
                 };
                 let requires_dirty = is_mutating(request.operation);
+                if requires_dirty && let Some(page_id) = &request.page_id {
+                    inner
+                        .ref_registry
+                        .invalidate_scope(&request.space_id, page_id, now);
+                    let _ = inner.snapshot_cache.mark_dirty_with_reason(
+                        &request.space_id,
+                        page_id,
+                        SnapshotDirtyReason::Action,
+                    );
+                }
                 if requires_dirty
                     && let Some(page_id) = &request.page_id
                     && let Some(pages) = state.snapshots.get_mut(&request.space_id)
@@ -3652,6 +4012,58 @@ impl Broker {
         })
     }
 
+    /// Issue a logical element ref from the current complete cached snapshot.
+    ///
+    /// Ref issuance is host-owned and memory-only. A caller must first obtain a
+    /// clean, complete snapshot; partial/truncated/resync results cannot mint
+    /// refs. The returned ref contains logical provenance only.
+    pub fn issue_ref(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        frame_id: FrameId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        now: Timestamp,
+    ) -> Result<agentyc_core::ElementRef, HostError> {
+        self.with_inner(|inner| {
+            let envelope = inner.ledger.update(|state| {
+                let generation =
+                    authorize_page(state, space_id, page_id, authority, lease_epoch, now, false)?;
+                let record = state
+                    .snapshots
+                    .get(space_id)
+                    .and_then(|pages| pages.get(page_id))
+                    .ok_or_else(|| {
+                        CoreError::stale_ref(
+                            "a clean snapshot is required before issuing an element ref",
+                        )
+                    })?;
+                if record.dirty
+                    || record.generation != generation
+                    || record.envelope.navigation_generation != generation.navigation_generation
+                    || record.envelope.document_generation != generation.document_generation
+                {
+                    return Err(CoreError::stale_ref(
+                        "snapshot provenance is stale; refresh before issuing an element ref",
+                    )
+                    .into());
+                }
+                if !record.envelope.can_issue_refs() {
+                    return Err(CoreError::stale_ref(
+                        "partial, truncated, or resync snapshots cannot issue refs",
+                    )
+                    .into());
+                }
+                Ok(record.envelope.clone())
+            })?;
+            inner
+                .ref_registry
+                .issue(&envelope, frame_id, now)
+                .map_err(Into::into)
+        })
+    }
+
     /// Read a clean cached snapshot or perform exactly one bridge scan on a miss/dirty entry.
     pub fn read_snapshot(
         &self,
@@ -3667,13 +4079,39 @@ impl Broker {
             .map_err(scheduler_backpressure)?;
         let bridge = self.bridge()?;
         require_capability(&*bridge, Capability::Snapshot)?;
-        let live_observation = bridge.observe().map_err(HostError::Bridge)?;
-        let live_observation = sanitize_observation_snapshot(live_observation)?;
-        self.reconcile_bridge_pages(&live_observation)?;
-        let (cached, generation) = self.with_inner(|inner| {
+        // Check the exact clean cache before any bridge observation. A clean
+        // read must be entirely host-local and perform zero browser work.
+        let (cached, _generation) = self.with_inner(|inner| {
+            let representation_cache =
+                inner
+                    .snapshot_cache
+                    .get_clean(space_id, page_id)
+                    .map_err(|error| {
+                        CoreError::new(ErrorCode::LedgerIncompatible, error.to_string())
+                    })?;
             inner.ledger.update(|state| {
                 let generation =
                     authorize_page(state, space_id, page_id, authority, lease_epoch, now, false)?;
+                if let Some(envelope) = representation_cache.as_ref()
+                    && envelope.navigation_generation == generation.navigation_generation
+                    && envelope.document_generation == generation.document_generation
+                    && state
+                        .snapshots
+                        .get(space_id)
+                        .and_then(|pages| pages.get(page_id))
+                        .is_none_or(|record| !record.dirty)
+                {
+                    let mut envelope = envelope.clone();
+                    envelope.cache_state = agentyc_core::CacheState::Cached;
+                    return Ok((
+                        Some(SnapshotRead {
+                            envelope,
+                            cache_state: agentyc_core::CacheState::Cached,
+                            scan_performed: false,
+                        }),
+                        generation,
+                    ));
+                }
                 if let Some(record) = state
                     .snapshots
                     .get(space_id)
@@ -3698,6 +4136,17 @@ impl Broker {
         if let Some(cached) = cached {
             return Ok(cached);
         }
+        // Only a miss/dirty entry is allowed to observe the live inventory.
+        // Reconciliation may advance or invalidate the page generation, so the
+        // authoritative generation is read again before the snapshot scan.
+        let live_observation = bridge.observe().map_err(HostError::Bridge)?;
+        let live_observation = sanitize_observation_snapshot(live_observation)?;
+        self.reconcile_bridge_pages(&live_observation)?;
+        let generation = self.with_inner(|inner| {
+            inner.ledger.update(|state| {
+                authorize_page(state, space_id, page_id, authority, lease_epoch, now, false)
+            })
+        })?;
         let envelope = bridge
             .snapshot(space_id, page_id, lease_epoch)
             .map_err(HostError::Bridge)?;
@@ -3727,6 +4176,7 @@ impl Broker {
                 }
                 let mut fresh = envelope.clone();
                 fresh.cache_state = agentyc_core::CacheState::Fresh;
+                let _ = inner.snapshot_cache.insert(fresh.clone());
                 state.snapshots.entry(space_id.clone()).or_default().insert(
                     page_id.clone(),
                     SnapshotCacheRecord {
@@ -3800,6 +4250,10 @@ impl Broker {
                     )
                     .into());
                 }
+                inner
+                    .ref_registry
+                    .invalidate_provenance(&envelope.provenance(), now);
+                let _ = inner.snapshot_cache.insert(envelope.clone());
                 state
                     .snapshots
                     .entry(envelope.space_id.clone())
@@ -3829,7 +4283,7 @@ impl Broker {
         self.with_inner(|inner| {
             inner.ledger.update(|state| {
                 authorize_page(state, space_id, page_id, authority, lease_epoch, now, false)?;
-                Ok(state
+                let changed = state
                     .snapshots
                     .get_mut(space_id)
                     .and_then(|pages| pages.get_mut(page_id))
@@ -3837,7 +4291,18 @@ impl Broker {
                         record.dirty = true;
                         true
                     })
-                    .unwrap_or(false))
+                    .unwrap_or(false);
+                if changed {
+                    inner
+                        .ref_registry
+                        .invalidate_rerender(space_id, page_id, now);
+                    let _ = inner.snapshot_cache.mark_dirty_with_reason(
+                        space_id,
+                        page_id,
+                        SnapshotDirtyReason::DomMutation,
+                    );
+                }
+                Ok(changed)
             })
         })
     }
@@ -3870,7 +4335,18 @@ impl Broker {
                         .into());
                     }
                 }
-                append_event(state, scope, event, payload, None, false)
+                append_event_with_attribution(
+                    state,
+                    scope,
+                    event,
+                    payload,
+                    None,
+                    false,
+                    EventAttribution::client(
+                        authority.connection_epoch(),
+                        authority.profile_binding_id().cloned(),
+                    ),
+                )
             })
         })
     }
@@ -3884,6 +4360,9 @@ impl Broker {
         self.with_inner(|inner| {
             let state = inner.ledger.state();
             authorize_ticket(state, authority)?;
+            if let Some(scope) = &query.scope {
+                scope.validate()?;
+            }
             if let Some(scope) = &query.scope
                 && let Some(space_id) = &scope.space_id
             {
@@ -3915,31 +4394,23 @@ impl Broker {
                     cursor,
                 });
             }
-            let events = state
-                .events
-                .iter()
-                .filter(|event| event.is_after(query.after.sequence))
-                .filter(|event| {
-                    event.scope.space_id.as_ref().is_none_or(|space_id| {
-                        state.spaces.get(space_id).is_some_and(|space| {
-                            visible_to_principal(space, authority.principal_id())
-                        })
-                    })
+            // Ingest the complete durable sequence so events hidden from this
+            // principal still advance the cursor; filtering before routing would
+            // manufacture sequence gaps for multi-space clients.
+            let mut replay = inner.event_router.replay(query.after, query.scope.as_ref());
+            replay.events.retain(|event| {
+                event.scope.space_id.as_ref().is_none_or(|space_id| {
+                    state
+                        .spaces
+                        .get(space_id)
+                        .is_some_and(|space| visible_to_principal(space, authority.principal_id()))
                 })
-                .filter(|event| {
-                    query.scope.as_ref().is_none_or(|requested| {
-                        event.scope.matches(requested)
-                            || (event.scope.space_id.is_none() && event.scope.page_id.is_none())
-                    })
-                })
-                .cloned()
-                .collect();
-            Ok(EventBatch {
-                broker_epoch: state.broker_epoch,
-                result: ResumeResult::Accepted,
-                events,
-                cursor,
-            })
+            });
+            // The durable ledger cursor remains authoritative even when the
+            // bounded consumer router coalesces the retained tail.
+            replay.broker_epoch = state.broker_epoch;
+            replay.cursor = cursor;
+            Ok(replay)
         })
     }
 
@@ -4039,6 +4510,8 @@ impl Broker {
             (state.broker_epoch, state.event_sequence)
         };
         let result = operation(&mut inner);
+        let router_state = inner.ledger.state().clone();
+        sync_event_router(&mut inner.event_router, &router_state);
         let state = inner.ledger.state();
         if (state.broker_epoch, state.event_sequence) != before {
             // Keep the broker lock until the notification predicate changes so
@@ -4749,6 +5222,53 @@ fn bounded_optional(value: Option<String>) -> Result<Option<String>, HostError> 
     Ok(value)
 }
 
+fn validate_actionability_for_state(
+    registry: &mut RefRegistry,
+    state: &LedgerState,
+    request: &ActionRequest<BTreeMap<String, String>>,
+    now: Timestamp,
+) -> Result<(), CoreError> {
+    let input = ActionabilityInput::from_payload(&request.payload)?;
+    if requires_element_actionability(request.operation) && input.is_none() {
+        return Err(CoreError::invalid_argument(
+            "element mutation requires a complete ref, provenance, frame, and actionability proof",
+        ));
+    }
+    let Some(input) = input else {
+        return Ok(());
+    };
+    let page_id = request.page_id.as_ref().ok_or_else(|| {
+        CoreError::invalid_argument("typed actionability evidence requires a logical page")
+    })?;
+    let page = state
+        .spaces
+        .get(&request.space_id)
+        .and_then(|space| space.page(page_id))
+        .ok_or_else(|| CoreError::new(ErrorCode::PageNotFound, "logical page not found"))?;
+    let snapshot = state
+        .snapshots
+        .get(&request.space_id)
+        .and_then(|pages| pages.get(page_id))
+        .ok_or_else(|| {
+            CoreError::stale_ref("a current snapshot is required for action dispatch")
+        })?;
+    input.validate_for_page(
+        request.operation,
+        page,
+        Some(&snapshot.envelope.snapshot_hash),
+    )?;
+    ActionabilityChecker::check_with_registry(
+        request.operation.into(),
+        registry,
+        &input.element_ref,
+        &input.frame_id,
+        &input.provenance,
+        &input.evidence,
+        now,
+    )?;
+    Ok(())
+}
+
 fn validate_public_payload(payload: &BTreeMap<String, String>) -> Result<(), HostError> {
     for (key, value) in payload {
         if key.is_empty() || key.len() > 128 || value.len() > 65_536 {
@@ -4788,6 +5308,297 @@ fn payload<const N: usize>(items: [(&str, String); N]) -> BTreeMap<String, Strin
         .collect()
 }
 
+fn bridge_event_affects_snapshot(
+    event_name: &str,
+    event_payload: &serde_json::Map<String, Value>,
+) -> bool {
+    if event_name.starts_with("log.")
+        || event_name.starts_with("network.")
+        || event_name.starts_with("dialog.")
+        || event_name.starts_with("download.")
+        || event_name.starts_with("trace.")
+        || event_name.starts_with("mock.")
+    {
+        return false;
+    }
+    if event_name == "debugger.event" {
+        let method = event_payload
+            .get("method")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                event_payload
+                    .get("params")
+                    .and_then(Value::as_object)
+                    .and_then(|params| params.get("method"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or_default();
+        return !method.starts_with("Network.") && !method.starts_with("Log.");
+    }
+    true
+}
+
+fn bridge_event_payload(
+    event_name: &str,
+    event_payload: &serde_json::Map<String, Value>,
+) -> BTreeMap<String, String> {
+    const FIELDS: &[(&str, &str)] = &[
+        ("method", "method"),
+        ("url", "url"),
+        ("href", "href"),
+        ("navigation", "navigation"),
+        ("navigation_kind", "navigation_kind"),
+        ("transition", "transition"),
+        ("direction", "direction"),
+        ("resource_type", "resource_type"),
+        ("resourceType", "resource_type"),
+        ("status", "status"),
+        ("response_status", "response_status"),
+        ("state", "state"),
+        ("download_state", "download_state"),
+        ("filename", "filename"),
+        ("file_name", "file_name"),
+        ("name", "name"),
+        ("selector", "selector"),
+        ("text", "text"),
+        ("inner_text", "inner_text"),
+        ("content", "content"),
+        ("geometry_signature", "geometry_signature"),
+        ("geometry", "geometry"),
+        ("dom_changed", "dom_changed"),
+        ("mutation", "mutation"),
+        ("geometry_changed", "geometry_changed"),
+        ("layout_changed", "layout_changed"),
+        ("finished", "finished"),
+        ("completed", "completed"),
+        ("failed", "failed"),
+        ("excluded", "excluded"),
+        ("long_lived", "long_lived"),
+        ("websocket", "websocket"),
+        ("download", "download"),
+        ("analytics", "analytics"),
+        ("timestamp", "timestamp"),
+    ];
+    let mut result = payload([("reason", event_name.to_owned())]);
+    let nested = event_payload.get("params").and_then(Value::as_object);
+    let sources = [Some(event_payload), nested];
+    for source in sources.into_iter().flatten() {
+        for (source_key, output_key) in FIELDS {
+            let Some(value) = source.get(*source_key) else {
+                continue;
+            };
+            let text = match value {
+                Value::String(value) => Some(value.clone()),
+                Value::Bool(value) => Some(value.to_string()),
+                Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            };
+            if let Some(text) = text
+                && !text.is_empty()
+                && text.len() <= 4 * 1024
+                && !text.chars().any(char::is_control)
+            {
+                result.entry((*output_key).to_owned()).or_insert(text);
+            }
+        }
+    }
+
+    let request = nested
+        .and_then(|params| params.get("request"))
+        .and_then(Value::as_object);
+    let response = nested
+        .and_then(|params| params.get("response"))
+        .and_then(Value::as_object);
+    let frame = nested
+        .and_then(|params| params.get("frame"))
+        .and_then(Value::as_object);
+    for (object, key, output_key) in [
+        (request, "url", "url"),
+        (response, "url", "url"),
+        (frame, "url", "url"),
+        (request, "method", "method"),
+        (request, "resourceType", "resource_type"),
+        (response, "status", "status"),
+        (response, "statusText", "status_text"),
+    ] {
+        if let Some(value) = object
+            .and_then(|object| object.get(key))
+            .and_then(|value| match value {
+                Value::String(value) => Some(value.clone()),
+                Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .filter(|value| !value.is_empty() && value.len() <= 4 * 1024)
+        {
+            result.entry(output_key.to_owned()).or_insert(value);
+        }
+    }
+    let method = result.get("method").cloned().unwrap_or_default();
+    let (kind, navigation) = match method.as_str() {
+        "Page.frameNavigated" => ("navigation", Some("url")),
+        "Page.navigatedWithinDocument" => ("navigation", Some("history")),
+        "Page.frameStartedLoading" => ("navigation", Some("reload")),
+        "Network.requestWillBeSent" => ("request", None),
+        "Network.responseReceived" => ("response", None),
+        "Network.loadingFinished" => ("network_finished", None),
+        "Network.loadingFailed" => ("network_finished", None),
+        value if value.starts_with("DOM.") => ("dom", None),
+        _ => ("debugger", None),
+    };
+    result.insert("wait_kind".to_owned(), kind.to_owned());
+    if let Some(navigation) = navigation {
+        result.insert("navigation".to_owned(), navigation.to_owned());
+    }
+    result
+}
+
+fn snapshot_dirty_reason(reason: DirtyReason) -> SnapshotDirtyReason {
+    match reason {
+        DirtyReason::EventGap => SnapshotDirtyReason::EventGap,
+        DirtyReason::Navigation => SnapshotDirtyReason::Navigation,
+        DirtyReason::FrameChanged => SnapshotDirtyReason::FrameReplaced,
+        DirtyReason::Action => SnapshotDirtyReason::Action,
+        DirtyReason::TargetReplaced => SnapshotDirtyReason::TargetReplaced,
+        DirtyReason::SessionLost => SnapshotDirtyReason::SessionLost,
+        DirtyReason::Reconnect => SnapshotDirtyReason::Reconnect,
+        DirtyReason::RawEvaluation => SnapshotDirtyReason::RawEvaluation,
+        DirtyReason::Takeover => SnapshotDirtyReason::Takeover,
+        DirtyReason::GeometryChanged => SnapshotDirtyReason::GeometryChanged,
+        DirtyReason::ScrollChanged => SnapshotDirtyReason::ScrollChanged,
+        DirtyReason::DomMutation => SnapshotDirtyReason::DomMutation,
+        DirtyReason::Expired => SnapshotDirtyReason::Expired,
+        DirtyReason::Unknown => SnapshotDirtyReason::Unknown,
+    }
+}
+
+fn debugger_event_dirty_reason(method: &str) -> DirtyReason {
+    if method.is_empty() || method.starts_with("DOM.") || method.starts_with("Accessibility.") {
+        DirtyReason::DomMutation
+    } else if matches!(
+        method,
+        "Page.frameAttached" | "Page.frameDetached" | "Page.frameStartedLoading"
+    ) {
+        DirtyReason::FrameChanged
+    } else if matches!(
+        method,
+        "Page.frameNavigated"
+            | "Page.navigatedWithinDocument"
+            | "Page.domContentEventFired"
+            | "Page.loadEventFired"
+    ) {
+        DirtyReason::Navigation
+    } else if method.starts_with("Network.") {
+        DirtyReason::GeometryChanged
+    } else if method.starts_with("Runtime.executionContext") {
+        DirtyReason::Navigation
+    } else {
+        DirtyReason::Unknown
+    }
+}
+
+fn bridge_event_contract(event_name: &str) -> Option<(EventKind, DirtyReason, bool, bool)> {
+    Some(match event_name {
+        "debugger.event" => (
+            EventKind::PageChanged,
+            DirtyReason::DomMutation,
+            false,
+            false,
+        ),
+        "debugger.document_changed" => (
+            EventKind::PageChanged,
+            DirtyReason::Navigation,
+            false,
+            false,
+        ),
+        "debugger.target_lost" | "page.lost" | "page.replaced" => (
+            EventKind::PageChanged,
+            DirtyReason::TargetReplaced,
+            true,
+            false,
+        ),
+        "debugger.session_lost" | "debugger.detached" => (
+            EventKind::PageChanged,
+            DirtyReason::SessionLost,
+            true,
+            false,
+        ),
+        "page.changed" => (
+            EventKind::PageChanged,
+            DirtyReason::DomMutation,
+            false,
+            false,
+        ),
+        "page.focus_changed" | "tab.observed" => {
+            (EventKind::PageChanged, DirtyReason::Unknown, false, false)
+        }
+        "page.rebound" | "page.rebind_required" => {
+            (EventKind::PageChanged, DirtyReason::Reconnect, false, false)
+        }
+        "browser.session_changed" | "debugger.mappings_reset" | "browser.event_gap" => (
+            EventKind::ConnectionChanged,
+            DirtyReason::Reconnect,
+            true,
+            true,
+        ),
+        name if name.starts_with("log.")
+            || name.starts_with("network.")
+            || name.starts_with("dialog.")
+            || name.starts_with("download.")
+            || name.starts_with("trace.")
+            || name.starts_with("mock.") =>
+        {
+            (EventKind::PageChanged, DirtyReason::Unknown, false, false)
+        }
+        _ => return None,
+    })
+}
+
+fn bridge_field<'a>(
+    payload: &'a serde_json::Map<String, Value>,
+    event: &'a Value,
+    field: &str,
+) -> Option<&'a str> {
+    payload
+        .get(field)
+        .and_then(Value::as_str)
+        .or_else(|| event.get(field).and_then(Value::as_str))
+}
+
+fn required_bridge_epoch(event: &Value, field: &str) -> Result<u64, HostError> {
+    event
+        .get(field)
+        .and_then(Value::as_u64)
+        .filter(|epoch| *epoch > 0)
+        .ok_or_else(|| {
+            CoreError::invalid_argument(format!("bridge {field} is missing or invalid")).into()
+        })
+}
+
+fn optional_bridge_epoch(event: &Value, field: &str) -> Result<Option<u64>, HostError> {
+    let Some(value) = event.get(field) else {
+        return Ok(None);
+    };
+    value
+        .as_u64()
+        .filter(|epoch| *epoch > 0)
+        .map(Some)
+        .ok_or_else(|| CoreError::invalid_argument(format!("bridge {field} is invalid")).into())
+}
+
+fn parse_bridge_id<T>(value: Option<&str>, field: &str) -> Result<Option<T>, HostError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    value
+        .map(|value| {
+            value.parse::<T>().map_err(|error| {
+                CoreError::invalid_argument(format!("bridge {field} is invalid: {error}")).into()
+            })
+        })
+        .transpose()
+}
+
 fn append_event(
     state: &mut LedgerState,
     scope: EventScope,
@@ -4795,6 +5606,42 @@ fn append_event(
     payload: BTreeMap<String, String>,
     dirty_reason: Option<DirtyReason>,
     resync_required: bool,
+) -> Result<EventRecord, HostError> {
+    let attribution = broker_event_attribution(state, &scope);
+    append_event_with_attribution(
+        state,
+        scope,
+        event,
+        payload,
+        dirty_reason,
+        resync_required,
+        attribution,
+    )
+}
+
+fn broker_event_attribution(state: &LedgerState, scope: &EventScope) -> EventAttribution {
+    let mut attribution = EventAttribution::broker();
+    attribution.profile_binding_id = scope
+        .space_id
+        .as_ref()
+        .and_then(|space_id| state.profile_bindings.get(space_id).cloned());
+    attribution.browser_session_epoch = state
+        .extension_browser_session_epoch
+        .map(agentyc_core::BrowserSessionEpoch::new);
+    attribution.worker_instance_epoch = state
+        .extension_worker_instance_epoch
+        .map(agentyc_core::WorkerInstanceEpoch::new);
+    attribution
+}
+
+fn append_event_with_attribution(
+    state: &mut LedgerState,
+    scope: EventScope,
+    event: EventKind,
+    payload: BTreeMap<String, String>,
+    dirty_reason: Option<DirtyReason>,
+    resync_required: bool,
+    attribution: EventAttribution,
 ) -> Result<EventRecord, HostError> {
     validate_public_payload_shape(&payload, 512).map_err(HostError::Ledger)?;
     let sequence = state
@@ -4811,7 +5658,11 @@ fn append_event(
             .checked_next()
             .ok_or_else(|| CoreError::invalid_argument("space generation overflow"))?;
     }
-    let generation = generation_watermark(state, &scope);
+    let mut generation = generation_watermark(state, &scope);
+    generation.metadata = Some(agentyc_core::events::EventMetadata::for_event(
+        event,
+        attribution,
+    ));
     let event_id = EventId::from_suffix(format!("{}-{}", state.broker_epoch.get(), sequence.get()))
         .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
     let record = EventRecord {
@@ -4827,6 +5678,7 @@ fn append_event(
         resync_required,
         payload,
     };
+    record.validate_admission()?;
     state.events.push(record.clone());
     Ok(record)
 }
@@ -4863,6 +5715,41 @@ fn generation_watermark(state: &LedgerState, scope: &EventScope) -> GenerationWa
                     .and_then(|page_id| pages.get(page_id))
             })
             .map(|record| record.envelope.snapshot_version),
+        metadata: None,
+    }
+}
+
+fn event_router_from_ledger(ledger: &Ledger) -> EventRouter {
+    let state = ledger.state();
+    let cursor = EventCursor {
+        broker_epoch: state.broker_epoch,
+        sequence: state.event_sequence,
+    };
+    let start = state.events.first().map_or(cursor, |first| EventCursor {
+        broker_epoch: state.broker_epoch,
+        sequence: EventSequence::new(first.sequence.get().saturating_sub(1)),
+    });
+    let mut router =
+        EventRouter::new_at(start, RouterLimits::new(ledger.limits().max_events.max(1)));
+    for event in state.events.iter().cloned() {
+        let _ = router.ingest(event);
+    }
+    router
+}
+
+fn sync_event_router(router: &mut EventRouter, state: &LedgerState) {
+    if router.cursor().broker_epoch != state.broker_epoch {
+        router.request_resync();
+        return;
+    }
+    let last = router.cursor().sequence;
+    for event in state
+        .events
+        .iter()
+        .filter(|event| event.sequence.get() > last.get())
+        .cloned()
+    {
+        let _ = router.ingest(event);
     }
 }
 
@@ -4931,16 +5818,6 @@ fn is_mutating(operation: ActionOperation) -> bool {
     !matches!(
         operation,
         ActionOperation::Wait | ActionOperation::Screenshot
-    )
-}
-
-fn is_sensitive_action(operation: ActionOperation) -> bool {
-    matches!(
-        operation,
-        ActionOperation::Evaluate
-            | ActionOperation::CookieWrite
-            | ActionOperation::StorageWrite
-            | ActionOperation::Upload
     )
 }
 
@@ -5128,8 +6005,40 @@ mod tests {
             )
             .expect("bound page");
         let extension = admit_authority_with_nonce(&broker, "extension", "extension-loss");
+        let before_debugger_event = broker.event_cursor(&owner).expect("event cursor");
+        let debugger_event = serde_json::json!({
+            "kind": "event",
+            "broker_epoch": extension.broker_epoch().get(),
+            "connection_epoch": extension.connection_epoch().get(),
+            "event": "debugger.event",
+            "payload": {
+                "space_id": space.space_id,
+                "page_id": page.page_id,
+                "target_generation": bound.target_generation.get(),
+            }
+        });
+        broker
+            .apply_bridge_event(&extension, &debugger_event, Timestamp::new(1))
+            .expect("debugger event");
+        let debugger_events = broker
+            .resume_events(&owner, EventQuery::all(before_debugger_event))
+            .expect("debugger replay");
+        assert_eq!(debugger_events.events.len(), 1);
+        assert_eq!(
+            debugger_events.events[0].dirty_reason,
+            Some(DirtyReason::DomMutation)
+        );
+        assert_eq!(
+            debugger_events.events[0]
+                .metadata()
+                .map(|metadata| metadata.attribution.source),
+            Some(agentyc_core::events::EventSource::Bridge)
+        );
+
         let event = serde_json::json!({
             "kind": "event",
+            "broker_epoch": extension.broker_epoch().get(),
+            "connection_epoch": extension.connection_epoch().get(),
             "event": "page.lost",
             "payload": {
                 "space_id": space.space_id,
@@ -5151,6 +6060,23 @@ mod tests {
         assert_eq!(
             updated_page.target_generation.get(),
             bound.target_generation.get() + 1
+        );
+    }
+
+    #[test]
+    fn bridge_events_without_connection_attribution_are_rejected() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let authority = admit_authority(&broker, "bridge-attribution");
+        let event = serde_json::json!({
+            "kind": "event",
+            "event": "browser.session_changed",
+            "payload": {}
+        });
+        assert!(
+            broker
+                .apply_bridge_event(&authority, &event, Timestamp::new(1))
+                .is_err()
         );
     }
 
