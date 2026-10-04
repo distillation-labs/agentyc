@@ -1,4 +1,5 @@
 import { assertLogicalId } from "./errors.mjs";
+import { normalizeNow, transportOptions } from "./constants.mjs";
 
 /** A logical page handle; browser target identities are intentionally absent. */
 export class Page {
@@ -30,9 +31,9 @@ export class Page {
         space_id: this.space.id,
         lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
         label: this._label,
-        now: options.now,
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
     const record = result?.page ?? result;
     this._id = assertLogicalId(
@@ -52,9 +53,9 @@ export class Page {
         space_id: this.space.id,
         page_id: this._id,
         lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
-        now: options.now,
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
   }
 
@@ -66,7 +67,11 @@ export class Page {
       lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
       operation,
       payload,
+      request_id: options.requestId,
+      action_id: options.actionId,
       idempotency_key: options.idempotencyKey,
+      now: options.now,
+      deadline_ms: options.deadlineMs,
       postcondition: options.postcondition,
       signal: options.signal,
     });
@@ -80,9 +85,9 @@ export class Page {
         space_id: this.space.id,
         page_id: this._id,
         lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
-        now: options.now,
+        now: normalizeNow(options.now),
       },
-      { signal: options.signal },
+      transportOptions(options),
     );
   }
 
@@ -92,6 +97,11 @@ export class Page {
   }
 
   async waitFor(condition, options = {}) {
-    return this.space.waitFor(condition, options);
+    await this.create(options);
+    return this.space.client.waitFor(condition, {
+      ...options,
+      spaceId: this.space.id,
+      pageId: this._id,
+    });
   }
 }
