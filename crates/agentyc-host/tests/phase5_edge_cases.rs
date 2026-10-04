@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use agentyc_core::events::{EventAttribution, EventMetadata};
 use agentyc_core::{
     BrokerEpoch, EventId, EventKind, EventRecord, EventScope, EventSequence, Generation,
     GenerationWatermark, PROTOCOL_VERSION, SpaceId, Timestamp,
@@ -19,6 +20,7 @@ fn event(sequence: u64, scope: EventScope, kind: EventKind, page_generation: u64
         event: kind,
         generation: GenerationWatermark {
             page_generation: Generation::new(page_generation),
+            metadata: Some(EventMetadata::for_event(kind, EventAttribution::broker())),
             ..GenerationWatermark::default()
         },
         dirty_reason: None,
@@ -234,4 +236,56 @@ fn generation_waits_require_every_generation_dimension() {
     higher.generation.document_generation = Generation::new(3);
     assert!(WaitCondition::GenerationAtLeast(target).matches(&higher));
     assert!(EventRouter::generation_reached(&higher, &higher.generation));
+}
+
+#[test]
+fn heartbeat_replay_keeps_typed_source_metadata() {
+    let mut router = EventRouter::empty();
+    let heartbeat = event(
+        1,
+        EventScope {
+            space_id: None,
+            page_id: None,
+        },
+        EventKind::Heartbeat,
+        0,
+    );
+    assert!(matches!(
+        router.ingest(heartbeat),
+        RouterIngest::Accepted { .. }
+    ));
+    let replay = router.replay(
+        agentyc_core::EventCursor {
+            broker_epoch: BrokerEpoch::new(1),
+            sequence: EventSequence::new(0),
+        },
+        None,
+    );
+    assert_eq!(replay.events.len(), 1);
+    assert_eq!(
+        replay.events[0]
+            .metadata()
+            .and_then(|metadata| metadata.heartbeat)
+            .map(|heartbeat| heartbeat.source),
+        Some(agentyc_core::events::EventSource::Broker)
+    );
+}
+
+#[test]
+fn scoped_missing_attribution_is_not_routed_by_fallback() {
+    let mut router = EventRouter::empty();
+    let mut missing = event(
+        1,
+        EventScope::space(space("attribution")),
+        EventKind::PageChanged,
+        1,
+    );
+    missing.generation.metadata = None;
+    assert!(matches!(
+        router.ingest(missing),
+        RouterIngest::ResyncRequired {
+            reason: agentyc_host::RouterResyncReason::MissingAttribution,
+            ..
+        }
+    ));
 }
