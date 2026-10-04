@@ -8,9 +8,10 @@ use thiserror::Error;
 use crate::{
     errors::{CoreError, ErrorCode},
     ids::{
-        ActionId, ContentHash, Generation, IdempotencyKey, LeaseEpoch, PageId, ReconcileToken,
-        RequestId, SpaceId, Timestamp,
+        ActionId, ConnectionEpoch, ConnectionNonce, ContentHash, Generation, IdempotencyKey,
+        LeaseEpoch, PageId, ProfileBindingId, ReconcileToken, RequestId, SpaceId, Timestamp,
     },
+    records::{UserIntentContext, UserIntentTicket},
     states::{ActionStatus, CompletionSource, DispatchState, NextAction, ReconciliationState},
 };
 
@@ -111,6 +112,48 @@ impl<P> ActionRequest<P> {
             ));
         }
         Ok(())
+    }
+
+    /// Validate and consume a user-intent ticket when policy requires confirmation.
+    ///
+    /// `required` is a host policy decision; it must never be derived from a
+    /// caller-controlled payload boolean. Existing actions that do not cross a
+    /// confirmation boundary can continue to omit the ticket.
+    #[allow(clippy::too_many_arguments)]
+    pub fn validate_user_intent(
+        &self,
+        ticket: Option<&mut UserIntentTicket>,
+        required: bool,
+        profile_binding_id: &ProfileBindingId,
+        connection_epoch: ConnectionEpoch,
+        connection_nonce: &ConnectionNonce,
+        document_generation: Option<Generation>,
+        now: Timestamp,
+    ) -> Result<(), CoreError> {
+        let Some(ticket) = ticket else {
+            return if required {
+                Err(CoreError::new(
+                    ErrorCode::PermissionDenied,
+                    "user-intent ticket is required",
+                ))
+            } else {
+                Ok(())
+            };
+        };
+
+        ticket.validate_and_consume(
+            &UserIntentContext {
+                profile_binding_id,
+                space_id: &self.space_id,
+                page_id: self.page_id.as_ref(),
+                document_generation,
+                action_hash: &self.request_hash,
+                lease_epoch: self.lease_epoch,
+                connection_epoch,
+                connection_nonce,
+            },
+            now,
+        )
     }
 }
 
@@ -434,7 +477,11 @@ pub enum ActionTransitionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{ActionId, RequestId};
+    use crate::{
+        ids::{ActionId, ConnectionEpoch, ConnectionNonce, ProfileBindingId, RequestId},
+        records::UserIntentTicket,
+        states::UserIntentTicketState,
+    };
 
     fn receipt() -> ActionReceipt {
         ActionReceipt::queued(
@@ -480,5 +527,75 @@ mod tests {
             .expect_err("stale lease");
         assert_eq!(error.code, ErrorCode::StaleLease);
         assert_eq!(error.guidance, crate::errors::ErrorGuidance::RefreshLease);
+    }
+
+    #[test]
+    fn action_request_requires_and_consumes_only_matching_confirmation_ticket() {
+        let action = receipt();
+        let request = ActionRequest {
+            request_id: action.request_id,
+            action_id: action.action_id,
+            idempotency_key: action.idempotency_key,
+            request_hash: action.request_hash.clone(),
+            space_id: action.space_id,
+            page_id: action.page_id.clone(),
+            lease_epoch: action.lease_epoch,
+            operation: action.operation,
+            payload: BTreeMap::<String, String>::new(),
+            postcondition: None,
+        };
+        let profile = ProfileBindingId::from_suffix("default").expect("profile");
+        assert_eq!(
+            request
+                .validate_user_intent(
+                    None,
+                    true,
+                    &profile,
+                    ConnectionEpoch::new(1),
+                    &ConnectionNonce::from_suffix("panel").expect("nonce"),
+                    Some(Generation::new(2)),
+                    Timestamp::new(10),
+                )
+                .expect_err("required ticket")
+                .code,
+            ErrorCode::PermissionDenied
+        );
+        request
+            .validate_user_intent(
+                None,
+                false,
+                &profile,
+                ConnectionEpoch::new(1),
+                &ConnectionNonce::from_suffix("panel").expect("nonce"),
+                Some(Generation::new(2)),
+                Timestamp::new(10),
+            )
+            .expect("optional ticket for ordinary operation");
+
+        let mut ticket = UserIntentTicket {
+            ticket_id: "ticket_action_1".to_owned(),
+            profile_binding_id: profile.clone(),
+            space_id: request.space_id.clone(),
+            page_id: request.page_id.clone(),
+            document_generation: Some(Generation::new(2)),
+            action_hash: request.request_hash.clone(),
+            lease_epoch: request.lease_epoch,
+            connection_epoch: ConnectionEpoch::new(1),
+            connection_nonce: ConnectionNonce::from_suffix("panel").expect("nonce"),
+            expires_at: Timestamp::new(20),
+            state: UserIntentTicketState::Issued,
+        };
+        request
+            .validate_user_intent(
+                Some(&mut ticket),
+                true,
+                &profile,
+                ConnectionEpoch::new(1),
+                &ConnectionNonce::from_suffix("panel").expect("nonce"),
+                Some(Generation::new(2)),
+                Timestamp::new(10),
+            )
+            .expect("matching ticket");
+        assert_eq!(ticket.state, UserIntentTicketState::Consumed);
     }
 }
