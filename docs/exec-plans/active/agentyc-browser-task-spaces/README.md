@@ -4,8 +4,8 @@
 - **Owner:** Japneet Kalkat
 - **Operational owner:** Japneet Kalkat
 - **Primary outcome:** Coding agents can create and resume ego-lite-like task spaces in the user's already-installed Chrome, work on durable labeled pages concurrently, receive compact actionable context, and stop safely when the user takes control.
-- **Status:** Phase 0 complete; Phase 1 architecture active
-- **Active phase:** Phase 1 — architecture and ownership freeze (implementation not started)
+- **Status:** Phase 0, Phase 1, Phase 2, and Phase 3 complete; Phase 4 active
+- **Active phase:** Phase 4 — Chrome extension and task-space UI
 - **Phase authority:** `plans/PLAN_INDEX.md` is the canonical phase registry; exactly one phase may be `active`, and a phase cannot start until its predecessor exit gate is complete
 - **Release posture:** Internal existing-Chrome vertical slice, then opt-in preview, then staged rollout; MCP compatibility is independently gated and is not the product launch gate.
 
@@ -50,7 +50,7 @@ See `research/decision-supersession.md` for the old-plan mapping and `research/d
 
 ## Evidence status
 
-This document is an execution plan and evidence registry. The current Phase 0 checker is green and the headed existing-Chrome artifact is accepted; Phase 1 has not yet started implementation. Core/host, MV3 extension, context/reliability, direct CLI/SDK, rollout gates, and host-backed MCP adapter slices exist with deterministic tests. Production distribution, OOPIF/session-graph support, selected-page retention, and deployed-tokenizer performance remain explicitly deferred to later phases.
+This document is an execution plan and evidence registry. The current Phase 0 checker is green and the headed disposable Chrome/Native-Messaging probe is source-bound; Phase 1 is complete with deterministic architecture, security, permission, recovery, fence, profile-disclosure, and threshold gates. Phase 2 is complete with frozen core/local/Native Messaging/CLI/SDK/MCP contracts, golden/negative fixtures, identity audits, and deterministic validation. Phase 3 is complete with a single-broker Native Messaging topology, durable host lifecycle/ledger, peer-checked local IPC, scheduler integration, fencing, reconciliation, and deterministic evidence. Phase 4 is now active for the MV3 extension and task-space UI. Production distribution, OOPIF/session-graph support, selected-page retention, and deployed-tokenizer performance remain explicitly deferred to later phases.
 
 **Proven by repository/source inspection:**
 
@@ -66,12 +66,12 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 **Current evidence:**
 
 - The accepted headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` proves the two-space/two-agent current-run coexistence gate, user-tab/focus preservation, isolation, fencing, cleanup, and restart/update observations through the product host-backed direct CLI. The source-identical smoke `artifacts/p0-coexistence/live-hardening-basic-3/` additionally passes current-source browser inventory, snapshots, actions, focus, isolation, and cleanup; disruptive restart/update actions remain operator-approved checkpoints.
-- The current checker returns `status: pass` with coexistence, installation, live Chrome, live Native Messaging, and performance gates passed.
-- Deterministic validation now covers 52 extension tests, 37 host tests, 34 host-core integration tests, 10 direct CLI tests, and 13 SDK tests. The hardening audit added same-session proof-bound recovery, persistent safety counters, lifecycle invalidation, monotonic generation reconciliation, cleanup truncation rejection, and protocol-name alignment.
+- The current checker returns `status: pass` with coexistence, installation, live Chrome, live Native Messaging, and performance gates passed. The disposable P0 lane is not existing-profile proof.
+- Deterministic validation includes 72 extension tests, 67 host-library tests, 66 host integration tests, 15 direct CLI tests, 28 core tests, 77 rollout/harness tests, and the Phase 1/2/3/4 quality and contract checkers. Phase 3 adds stale-owner lock recovery, endpoint metadata, Native Messaging shim forwarding, peer-credential admission, broker scheduler permits, pause/handoff fences, profile rebind fencing, and an explicit legacy runtime boundary.
 
 **Explicit residuals, not hidden blockers:** OOPIF/flat debugger session graph, full reference-equivalent refs/actionability/waits/dialog/file chooser, selected-page retention, ordinary-user Web Store/managed distribution, Linux/Windows registration, production rollback/kill-switch evidence, and deployed-model tokenizer/human responsiveness baselines remain owned by later phases. They are not claimed by the Phase 0 gate.
 
-**Current Phase 0 decision:** The Phase 0 bounded exit gate is passed. The plan is ready for Phase 1 architecture work; no Phase 1 implementation has been started. See the [Chrome audit](../../../../research/phase-0-chrome-docs-audit.md), [ego-lite audit](../../../../research/ego-lite-pattern-audit.md), and [host-backed probe audit](../../../../research/phase-0-host-backed-probe.md) for exact scope and residuals.
+**Current phase decision:** Phase 0's bounded checker, Phase 1's architecture gate, Phase 2's deterministic contract exit gate, and Phase 3's host-core exit gate pass. Phase 4 is active for the MV3 extension and task-space UI. Live existing-profile permission, distribution, rollback, OOPIF, deployed-tokenizer, and human-responsiveness evidence remains explicitly owned by later rollout phases. See the [Phase 3 Chrome audit](research/phase-3-chrome-docs-audit.md), [Chrome audit](../../../../research/phase-0-chrome-docs-audit.md), [ego-lite audit](../../../../research/ego-lite-pattern-audit.md), and [host-backed probe audit](../../../../research/phase-0-host-backed-probe.md) for exact scope and residuals.
 
 ## Planned capability target — not yet proven
 
@@ -314,4 +314,4 @@ Rollback disables new mutations, marks spaces paused, retains pages, drains only
 - [Phase 8 — MCP compatibility and deprecation](plans/phase-8-mcp-compatibility.md)
 - [Phase registry and execution rules](plans/PLAN_INDEX.md)
 
-**Planning note:** Phase 0 remains active. Its test/probe scaffolding and validation scripts are present, but production implementation is still gated on real headed-Chrome evidence. No later phase may start until Phase 0's exit gate is fully checked; offline and host-only results do not close live gates.
+**Planning note:** Phase 0, Phase 1, Phase 2, and Phase 3 are complete under their bounded/deterministic gates. Phase 4 is active. Offline, disposable, host-only, and operator-acknowledgement results do not close existing-profile or production-release gates; those remain explicitly gated in later phases.
