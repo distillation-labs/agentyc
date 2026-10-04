@@ -374,7 +374,7 @@ impl ProtocolServer {
                 put_json(&mut result, "action_id", &action.receipt.action_id)?;
                 put_json(&mut result, "receipt", &action.receipt)?;
             }
-            "snapshot.read" => {
+            "snapshot" | "snapshot.read" => {
                 let space_id = parse_space(required(&request.params, "space_id")?)?;
                 let page_id = parse_page(required(&request.params, "page_id")?)?;
                 let lease_epoch =
@@ -412,7 +412,7 @@ impl ProtocolServer {
                 put_json(&mut result, "sequence", &cursor.sequence)?;
                 put_json(&mut result, "cursor", &cursor)?;
             }
-            "events.resume" => {
+            "events.read" | "events.resume" => {
                 let current = self.broker.event_cursor(authority)?;
                 let after = EventCursor {
                     broker_epoch: agentyc_core::BrokerEpoch::new(
@@ -440,6 +440,13 @@ impl ProtocolServer {
                     },
                 )?;
                 put_json(&mut result, "events", &events)?;
+            }
+            "wait.for" => {
+                return Err(agentyc_core::CoreError::new(
+                    agentyc_core::ErrorCode::CapabilityUnavailable,
+                    "wait.for requires the event-driven wait adapter; use events.resume in the local protocol",
+                )
+                .into());
             }
             "host.status" => {
                 let lifecycle = self.broker.lifecycle()?;
