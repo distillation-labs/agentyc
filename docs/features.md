@@ -1,16 +1,22 @@
 # Features
 
-## Public MCP Surface
+## Legacy Direct-CDP MCP Surface
 
-The MCP server (`agentyc_mcp::BrowserServer`) exposes 61 tools and nothing else
-— no MCP resources, no prompts, no LLM in the loop. It runs over stdio by
-default, or Streamable HTTP via `agentyc serve`.
+The legacy direct-CDP MCP server (`agentyc_mcp::BrowserServer`) exposes 61 tools
+and nothing else: no MCP resources, no prompts, no LLM in the loop. It runs over
+stdio only when explicitly selected with `--legacy-cdp`, or over legacy
+Streamable HTTP via `agentyc serve`. For existing-Chrome tasks, use the
+host-backed API and address pages through logical task-space/page handles.
+
+The tools and behaviors in this section describe legacy compatibility, not the
+canonical existing-Chrome API. Logical space/page APIs are documented in
+[`api-local.md`](api-local.md).
 
 ### Navigation And Session Control
 
 | Tool                            | Description                                           |
 | ------------------------------- | ----------------------------------------------------- |
-| `browser_navigate`              | Navigate to a URL, optionally in a new tab            |
+| `browser_navigate`              | Legacy: navigate in the selected page, optionally in a new tab |
 | `browser_go_back`               | Go back in history                                    |
 | `browser_go_forward`            | Go forward in history                                 |
 | `browser_refresh`               | Reload the current page                               |
@@ -75,10 +81,10 @@ default, or Streamable HTTP via `agentyc serve`.
 
 | Tool                        | Description                                               |
 | --------------------------- | --------------------------------------------------------- |
-| `browser_new_tab`           | Create a new tab and switch focus to it                   |
-| `browser_list_tabs`         | List open tabs                                            |
-| `browser_switch_tab`        | Switch to a tab by `tab_id`                               |
-| `browser_close_tab`         | Close a tab by `tab_id`                                   |
+| `browser_new_tab`           | Legacy: create a CDP tab and switch runtime focus         |
+| `browser_list_tabs`         | Legacy: list CDP tabs                                     |
+| `browser_switch_tab` (legacy) | Switch to a CDP tab by raw `tab_id`; compatibility only   |
+| `browser_close_tab` (legacy) | Close a CDP tab by raw `tab_id`; compatibility only       |
 | `browser_wait_for_tab`      | Wait for a new tab to appear and optionally switch to it  |
 | `browser_get_cookies`       | Read cookies for the current page                         |
 | `browser_set_cookies`       | Set one or more cookies                                   |
@@ -99,7 +105,8 @@ default, or Streamable HTTP via `agentyc serve`.
 
 ## Browser State
 
-`browser_get_state` is the main inspection primitive used by agents.
+`browser_get_state` is the legacy direct-CDP inspection primitive. For normal
+existing-Chrome work, inspect a logical page using the host-backed snapshot API.
 
 | Mode    | Behavior                                                          |
 | ------- | ----------------------------------------------------------------- |
@@ -110,16 +117,16 @@ default, or Streamable HTTP via `agentyc serve`.
 
 Important behavior:
 
-- Stable refs look like `e123` and map to CDP backend node ids.
+- In legacy direct-CDP mode, stable refs look like `e123` and map to CDP backend node ids.
 - `since_hash` returns `changed=false` when the page signature is unchanged, and
   omits the interactive-element payload while keeping `url`, `title`,
-  `state_hash`, and `current_tab_id`.
+  `state_hash`, and `current_tab_id` (legacy response field only; not canonical identity).
 - Compact ranked payloads can report `interactive_elements_truncated`,
   `interactive_elements_remaining`, and `compaction_strategy`.
 - Shadow DOM is pierced during element discovery.
 - Screenshots are delivered as MCP image content, not embedded base64.
 
-Recommended usage:
+Recommended legacy direct-CDP usage (not the host-backed page API):
 
 - Start with `mode="min"` for routine inspection.
 - Use `mode="focus"` when you already have a ref and need one element.
@@ -128,7 +135,7 @@ Recommended usage:
 
 ## Deterministic Extraction
 
-`browser_extract_content` is deterministic-only. Supported route families:
+Legacy direct-CDP `browser_extract_content` is deterministic-only. Supported route families:
 
 - Links
 - Link collections (navigation menus, pagination, result lists)
@@ -145,18 +152,19 @@ Guarantees:
 - Unsupported free-form requests return explicit errors.
 - Responses include route metadata.
 
-This is the default, no-API-key extraction path.
+This is the legacy adapter's no-API-key extraction path.
 
-## Shared Browser Behavior
+## Legacy Direct-CDP Shared Browser Behavior
 
-`agentyc browser` plus `agentyc mcp --cdp-url ...` lets multiple MCP server
-processes share one Chrome instance:
+`agentyc browser` plus `agentyc mcp --legacy-cdp --cdp-url ...` is a legacy compatibility
+workflow that lets multiple MCP server processes share one Chrome instance. It
+uses CDP/current-target selection, not the canonical host-backed logical
+space/page model:
 
 - Attaching through `--cdp-url` reuses the running browser instead of launching one.
 - The attached browser is kept alive for the session.
-- Attach and `new_tab=true` flows track the runtime's current target.
+- Attach and `new_tab=true` flows track the legacy runtime's current target; this is not logical page identity.
 - Attached subagents stay in the shared browser profile, so cookies and local
   storage remain available across runtimes while state snapshots, refs, and logs
   stay scoped to the owned tab.
-- `browser_new_tab` is the recommended way for a subagent to open an additional
-  tab after startup without disturbing other runtimes.
+- A subagent using this explicitly selected legacy mode can call `browser_new_tab` to open an additional tab; do not treat the selected target as logical identity. For canonical work, create or use a host-backed logical page in a task space.
