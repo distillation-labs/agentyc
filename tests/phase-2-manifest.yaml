@@ -1,0 +1,1216 @@
+{
+  "schema_version": 1,
+  "phase": 2,
+  "kind": "phase-2-contract-manifest",
+  "status": "complete",
+  "evidence_mode": "deterministic_repository_contracts",
+  "release_eligible": false,
+  "live_claims": false,
+  "phase_plan": "docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-2-contracts.md",
+  "artifact": "artifacts/p2-contracts-review.md",
+  "traceability": "docs/contract-traceability-phase-2.md",
+  "fixture_index": "tests/fixtures/mcp/index.v1.json",
+  "framing":
+    {
+      "distinct": true,
+      "local":
+        {
+          "byte_order": "big_endian",
+          "prefix_bytes": 4,
+          "source_paths":
+            [
+              "crates/agentyc-core/src/protocol.rs",
+              "crates/agentyc-host/src/local_ipc.rs",
+              "docs/security/host-protocol.md"
+            ],
+          "markers": ["big-endian", "to_be_bytes", "FRAME_PREFIX_BYTES"]
+        },
+      "native":
+        {
+          "byte_order": "little_endian",
+          "prefix_bytes": 4,
+          "source_paths":
+            [
+              "crates/agentyc-host/src/native_messaging.rs",
+              "extension/src/native-messaging.mjs",
+              "docs/security/host-protocol.md"
+            ],
+          "markers": ["little-endian", "to_ne_bytes", "Native Messaging"]
+        }
+    },
+  "phase_1":
+    {
+      "status": "complete",
+      "preserved": true,
+      "plan": "docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-1-architecture.md",
+      "nonclaims":
+        [
+          "Phase 1 evidence remains architecture and deterministic security evidence, not a live production rollout.",
+          "Phase 1 does not claim ordinary-user distribution or existing-profile release readiness."
+        ]
+    },
+  "tasks":
+    [
+      {
+        "id": "P2-T1",
+        "checked": true,
+        "required_modules":
+          [
+            "crates/agentyc-core/Cargo.toml",
+            "crates/agentyc-core/src/lib.rs",
+            "crates/agentyc-core/src/ids.rs",
+            "crates/agentyc-core/src/records.rs",
+            "crates/agentyc-core/src/states.rs",
+            "crates/agentyc-core/src/errors.rs",
+            "crates/agentyc-core/src/protocol.rs",
+            "crates/agentyc-core/src/snapshots.rs",
+            "crates/agentyc-core/src/actions.rs",
+            "crates/agentyc-core/src/events.rs"
+          ],
+        "fixtures":
+          [
+            "crates/agentyc-core/tests/fixtures/request-envelope.json",
+            "crates/agentyc-core/tests/fixtures/action-unknown.json",
+            "crates/agentyc-core/tests/fixtures/error-stale-ref.json"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/contract.rs::request_envelope_matches_golden_wire_order",
+            "crates/agentyc-core/tests/contract.rs::no_raw_browser_identity_keys_are_serialized",
+            "crates/agentyc-core/tests/negative.rs::raw_identity_values_fail_validated_logical_id_deserialization",
+            "crates/agentyc-core/tests/golden_fixtures.rs::remaining_typed_contract_fixtures_are_executable_goldens"
+          ],
+        "evidence_paths":
+          [
+            "crates/agentyc-core/Cargo.toml",
+            "crates/agentyc-core/src/lib.rs",
+            "crates/agentyc-core/src/ids.rs",
+            "crates/agentyc-core/src/records.rs",
+            "crates/agentyc-core/src/states.rs",
+            "crates/agentyc-core/src/errors.rs",
+            "crates/agentyc-core/src/protocol.rs"
+          ],
+        "notes": "Typed transport-neutral records, deterministic serde fixtures, and logical-ID rejection are repository evidence; broker implementation and release behavior remain later-phase claims."
+      },
+      {
+        "id": "P2-T2",
+        "checked": true,
+        "required_modules":
+          [
+            "crates/agentyc-core/src/protocol.rs",
+            "crates/agentyc-host/src/protocol.rs",
+            "crates/agentyc-host/src/local_ipc.rs",
+            "docs/security/host-protocol.md"
+          ],
+        "fixtures":
+          [
+            "crates/agentyc-core/tests/fixtures/artifact-begin.json",
+            "crates/agentyc-core/tests/fixtures/artifact-end.json",
+            "tests/fixtures/mcp/workflows/stdio.v1.json"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/negative.rs::framing_rejects_bounds_truncation_and_trailing_bytes",
+            "crates/agentyc-core/tests/negative.rs::invalid_utf8_and_protocol_mismatch_are_stable_errors",
+            "crates/agentyc-host/tests/protocol_edge_cases.rs::coalesced_out_of_order_responses_keep_their_request_identity",
+            "crates/agentyc-host/tests/protocol_edge_cases.rs::fragmented_frames_decode_only_after_the_complete_payload_arrives",
+            "crates/agentyc-host/tests/protocol_edge_cases.rs::truncated_stream_is_rejected_at_finish",
+            "crates/agentyc-host/tests/protocol_edge_cases.rs::local_protocol_uses_the_big_endian_length_prefix"
+          ],
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/protocol.rs",
+            "crates/agentyc-host/src/protocol.rs",
+            "crates/agentyc-host/src/local_ipc.rs",
+            "docs/security/host-protocol.md"
+          ],
+        "notes": "Local IPC is four-byte big-endian; Native Messaging is separately checked as four-byte native little-endian on supported targets."
+      },
+      {
+        "id": "P2-T3",
+        "checked": true,
+        "required_modules":
+          [
+            "crates/agentyc-host/src/native_messaging.rs",
+            "extension/src/protocol.mjs",
+            "extension/src/native-messaging.mjs",
+            "docs/security/host-protocol.md"
+          ],
+        "fixtures":
+          [
+            "tests/fixtures/mcp/workflows/host-backed.v1.json",
+            "tests/fixtures/mcp/transcripts/http-session.v1.jsonl"
+          ],
+        "tests":
+          [
+            "extension/tests/protocol.test.mjs::bounded envelopes reject malformed, raw-id, and oversized messages",
+            "extension/tests/protocol.test.mjs::post-handshake envelopes require every live epoch",
+            "extension/tests/protocol.test.mjs::sequence validation rejects gaps and replay",
+            "extension/tests/protocol.test.mjs::Native Messaging artifact helpers enforce begin/chunk/end order and digest",
+            "extension/tests/protocol.test.mjs::Native Messaging handshake validates nonce and sequence independently"
+          ],
+        "evidence_paths":
+          [
+            "crates/agentyc-host/src/native_messaging.rs",
+            "extension/src/protocol.mjs",
+            "extension/src/native-messaging.mjs",
+            "docs/security/host-protocol.md"
+          ],
+        "notes": "Exact origin, independent epochs/sequences, bounded artifacts, and payload/transport metadata separation are statically evidenced; installation and headed Chrome integration remain unclaimed."
+      },
+      {
+        "id": "P2-T4",
+        "checked": true,
+        "required_modules":
+          [
+            "crates/agentyc-core/src/snapshots.rs",
+            "crates/agentyc-core/src/actions.rs",
+            "crates/agentyc-core/src/events.rs",
+            "docs/api-local.md"
+          ],
+        "fixtures":
+          [
+            "crates/agentyc-core/tests/fixtures/snapshot-delta.json",
+            "crates/agentyc-core/tests/fixtures/snapshot-full.json",
+            "crates/agentyc-core/tests/fixtures/snapshot-resync.json",
+            "crates/agentyc-core/tests/fixtures/ref.json",
+            "crates/agentyc-core/tests/fixtures/wait-cancel.json",
+            "tests/fixtures/mcp/schemas/tools.v1.json"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/contract.rs::snapshot_delta_hashes_and_order_are_deterministic",
+            "crates/agentyc-core/tests/negative.rs::delta_rejects_duplicate_targets_unordered_operations_and_bad_hashes",
+            "crates/agentyc-core/tests/phase2_state_machine.rs::snapshot_refs_and_action_receipts_fail_closed_across_state_boundaries",
+            "crates/agentyc-core/tests/golden_fixtures.rs::remaining_typed_contract_fixtures_are_executable_goldens",
+            "packages/agentyc-browser/test/phase2.test.mjs::actions validate the registry and carry now, idempotency, request identity, and deadline",
+            "packages/agentyc-browser/test/phase2.test.mjs::wait cancellation is cancelled while dispatched mutation cancellation is unknown"
+          ],
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/snapshots.rs",
+            "crates/agentyc-core/src/actions.rs",
+            "crates/agentyc-core/src/events.rs",
+            "docs/api-local.md"
+          ],
+        "notes": "Snapshot provenance, bounded deltas, action receipts, cancellation, reconciliation, and token metrics are contract evidence, not a deployed tokenizer or live browser scan claim."
+      },
+      {
+        "id": "P2-T5",
+        "checked": true,
+        "required_modules":
+          [
+            "crates/agentyc-core/src/records.rs",
+            "crates/agentyc-core/src/states.rs",
+            "docs/api-local.md"
+          ],
+        "fixtures":
+          [
+            "crates/agentyc-core/tests/fixtures/user-control-return.json",
+            "crates/agentyc-core/tests/fixtures/action-unknown.json",
+            "tests/fixtures/mcp/workflows/host-backed.v1.json"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/phase2_state_machine.rs::ordinary_mutations_are_fenced_by_recovery_expiry_and_epoch",
+            "crates/agentyc-core/tests/phase2_state_machine.rs::ticket_identity_expiry_and_single_use_are_enforced",
+            "crates/agentyc-core/tests/phase2_state_machine.rs::fence_return_release_and_cleanup_proofs_form_a_closed_transition",
+            "crates/agentyc-core/tests/phase2_state_machine.rs::snapshot_refs_and_action_receipts_fail_closed_across_state_boundaries"
+          ],
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/records.rs",
+            "crates/agentyc-core/src/states.rs",
+            "docs/api-local.md"
+          ],
+        "notes": "Canonical spaces/pages/leases, fencing, single-use user intent, and cleanup proofs are exercised by deterministic state-machine tests."
+      },
+      {
+        "id": "P2-T6",
+        "checked": true,
+        "required_modules":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "packages/agentyc-browser/src/client.mjs",
+            "packages/agentyc-browser/src/space.mjs",
+            "packages/agentyc-browser/src/page.mjs",
+            "crates/agentyc/src/commands/direct.rs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc/src/commands/direct/pages.rs",
+            "docs/cli.md"
+          ],
+        "fixtures":
+          [
+            "tests/fixtures/mcp/workflows/host-backed.v1.json",
+            "crates/agentyc-core/tests/fixtures/request-envelope.json"
+          ],
+        "tests":
+          [
+            "packages/agentyc-browser/test/phase2.test.mjs::createSpace requires exact disclosure acknowledgement and sends canonical fields",
+            "packages/agentyc-browser/test/phase2.test.mjs::waits carry logical scope, use the bounded default, and reject invalid timeouts",
+            "packages/agentyc-browser/test/phase2.test.mjs::claim, renew, and takeover apply the same default lease TTL",
+            "packages/agentyc-browser/test/phase2.test.mjs::reconciliation requires a lease epoch before dispatch",
+            "packages/agentyc-browser/test/sdk.test.mjs::logical space and lazy page handles never expose browser identities",
+            "packages/agentyc-browser/test/sdk.test.mjs::read requests reconnect once, while side-effect loss becomes unknown",
+            "packages/agentyc-browser/test/sdk.test.mjs::local protocol transport uses Rust-compatible framing, handshake, events, and resume",
+            "crates/agentyc/src/commands/direct/pages.rs::planned_page_results_are_logical_and_listable"
+          ],
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "packages/agentyc-browser/src/client.mjs",
+            "crates/agentyc/src/commands/direct.rs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc/src/commands/direct/pages.rs",
+            "docs/cli.md"
+          ],
+        "notes": "The central operation registry is the mapping source. Direct CLI page close is lease-authorized and covered by the offline direct contract test."
+      },
+      {
+        "id": "P2-T7",
+        "checked": true,
+        "required_modules":
+          [
+            "crates/agentyc-mcp/src/host_adapter.rs",
+            "crates/agentyc-mcp/src/host_server.rs",
+            "crates/agentyc-mcp/src/remote_host_server.rs",
+            "crates/agentyc-mcp/src/legacy.rs",
+            "tests/mcp_protocol.rs",
+            "docs/mcp-compatibility.md"
+          ],
+        "fixtures":
+          [
+            "tests/fixtures/mcp/index.v1.json",
+            "tests/fixtures/mcp/manifests/default.v1.json",
+            "tests/fixtures/mcp/manifests/extended.v1.json",
+            "tests/fixtures/mcp/schemas/tools.v1.json",
+            "tests/fixtures/mcp/errors/v1.json",
+            "tests/fixtures/mcp/workflows/stdio.v1.json",
+            "tests/fixtures/mcp/workflows/http.v1.json",
+            "tests/fixtures/mcp/workflows/host-backed.v1.json",
+            "tests/fixtures/mcp/transcripts/stdio-initialize.v1.jsonl",
+            "tests/fixtures/mcp/transcripts/tool-error.v1.jsonl",
+            "tests/fixtures/mcp/transcripts/http-session.v1.jsonl"
+          ],
+        "tests":
+          [
+            "tests/mcp_protocol.rs::test_tool_count_is_61",
+            "tests/mcp_protocol.rs::test_all_tool_names_present",
+            "tests/mcp_protocol.rs::test_server_name_in_tool_descriptions"
+          ],
+        "evidence_paths":
+          [
+            "crates/agentyc-mcp/src/host_adapter.rs",
+            "crates/agentyc-mcp/src/host_server.rs",
+            "crates/agentyc-mcp/src/remote_host_server.rs",
+            "crates/agentyc-mcp/src/legacy.rs",
+            "tests/mcp_protocol.rs",
+            "docs/mcp-compatibility.md"
+          ],
+        "notes": "MCP fixtures freeze repository measurements and adapter semantics only. They do not claim modern MCP support or headed host/extension/browser conformance."
+      },
+      {
+        "id": "P2-T8",
+        "checked": true,
+        "required_modules":
+          [
+            "SKILL.md",
+            "docs/cli.md",
+            "docs/api-local.md",
+            "docs/architecture-existing-chrome.md",
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc-core/src/lib.rs"
+          ],
+        "fixtures":
+          [
+            "tests/fixtures/mcp/schemas/tools.v1.json",
+            "tests/fixtures/mcp/errors/v1.json",
+            "crates/agentyc-core/tests/fixtures/error-stale-ref.json"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/contract.rs::no_raw_browser_identity_keys_are_serialized",
+            "crates/agentyc-core/tests/negative.rs::raw_identity_values_fail_validated_logical_id_deserialization",
+            "packages/agentyc-browser/test/sdk.test.mjs::logical space and lazy page handles never expose browser identities",
+            "extension/tests/protocol.test.mjs::bounded envelopes reject malformed, raw-id, and oversized messages"
+          ],
+        "evidence_paths":
+          [
+            "SKILL.md",
+            "docs/cli.md",
+            "docs/api-local.md",
+            "docs/architecture-existing-chrome.md",
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc-core/src/lib.rs"
+          ],
+        "notes": "Primary outputs use logical identity; legacy adapter fields are explicit compatibility-only allowlist entries."
+      }
+    ],
+  "quality_checklist":
+    [
+      {
+        "id": "Q2-01",
+        "checked": true,
+        "evidence_paths":
+          ["crates/agentyc-core/Cargo.toml", "crates/agentyc-core/src/lib.rs"],
+        "tests":
+          [
+            "crates/agentyc-core/tests/contract.rs::request_envelope_matches_golden_wire_order"
+          ]
+      },
+      {
+        "id": "Q2-02",
+        "checked": true,
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/protocol.rs",
+            "crates/agentyc-host/src/native_messaging.rs",
+            "docs/security/host-protocol.md"
+          ],
+        "tests":
+          [
+            "crates/agentyc-host/tests/protocol_edge_cases.rs::local_protocol_uses_the_big_endian_length_prefix",
+            "extension/tests/protocol.test.mjs::Native Messaging handshake validates nonce and sequence independently"
+          ]
+      },
+      {
+        "id": "Q2-03",
+        "checked": true,
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/actions.rs",
+            "packages/agentyc-browser/src/operations.mjs"
+          ],
+        "tests":
+          [
+            "packages/agentyc-browser/test/phase2.test.mjs::actions validate the registry and carry now, idempotency, request identity, and deadline"
+          ]
+      },
+      {
+        "id": "Q2-04",
+        "checked": true,
+        "evidence_paths":
+          ["crates/agentyc-core/src/snapshots.rs", "docs/api-local.md"],
+        "tests":
+          [
+            "crates/agentyc-core/tests/phase2_state_machine.rs::snapshot_refs_and_action_receipts_fail_closed_across_state_boundaries"
+          ]
+      },
+      {
+        "id": "Q2-05",
+        "checked": true,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc-mcp/src/host_adapter.rs",
+            "docs/cli.md"
+          ],
+        "tests":
+          [
+            "packages/agentyc-browser/test/sdk.test.mjs::logical space and lazy page handles never expose browser identities"
+          ]
+      },
+      {
+        "id": "Q2-06",
+        "checked": true,
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/records.rs",
+            "docs/architecture-existing-chrome.md"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/negative.rs::raw_identity_values_fail_validated_logical_id_deserialization"
+          ]
+      },
+      {
+        "id": "Q2-07",
+        "checked": true,
+        "evidence_paths":
+          [
+            "crates/agentyc-host/src/native_messaging.rs",
+            "docs/security/host-protocol.md"
+          ],
+        "tests":
+          [
+            "extension/tests/protocol.test.mjs::post-handshake envelopes require every live epoch"
+          ]
+      },
+      {
+        "id": "Q2-08",
+        "checked": true,
+        "evidence_paths":
+          ["SKILL.md", "docs/cli.md", "crates/agentyc-core/src/lib.rs"],
+        "tests":
+          [
+            "crates/agentyc-core/tests/contract.rs::no_raw_browser_identity_keys_are_serialized"
+          ]
+      },
+      {
+        "id": "Q2-09",
+        "checked": true,
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/snapshots.rs",
+            "crates/agentyc-core/tests/fixtures/snapshot-delta.json"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/contract.rs::snapshot_delta_hashes_and_order_are_deterministic"
+          ]
+      },
+      {
+        "id": "Q2-10",
+        "checked": true,
+        "evidence_paths":
+          ["crates/agentyc-core/src/snapshots.rs", "docs/api-local.md"],
+        "tests":
+          [
+            "crates/agentyc-core/tests/golden_fixtures.rs::remaining_typed_contract_fixtures_are_executable_goldens"
+          ]
+      },
+      {
+        "id": "Q2-11",
+        "checked": true,
+        "evidence_paths":
+          [
+            "crates/agentyc-core/src/errors.rs",
+            "tests/fixtures/mcp/errors/v1.json",
+            "crates/agentyc-mcp/src/host_adapter.rs"
+          ],
+        "tests":
+          [
+            "crates/agentyc-core/tests/negative.rs::invalid_utf8_and_protocol_mismatch_are_stable_errors"
+          ]
+      }
+    ],
+  "identity":
+    {
+      "canonical_fields":
+        [
+          "space_id",
+          "page_id",
+          "frame_id",
+          "document_id",
+          "navigation_id",
+          "action_id",
+          "event_id",
+          "ref_id",
+          "snapshot_id",
+          "profile_instance_id",
+          "broker_epoch",
+          "connection_epoch",
+          "browser_session_epoch",
+          "worker_instance_epoch"
+        ],
+      "allowlist":
+        [
+          {
+            "path": "crates/agentyc-mcp/src/legacy.rs",
+            "scope": "compatibility_only",
+            "reason": "Legacy direct-CDP MCP preserves deprecated tab/session fields behind an explicit compatibility adapter."
+          },
+          {
+            "path": "docs/api.md",
+            "scope": "compatibility_only",
+            "reason": "The public API reference labels legacy tab_id fields as adapter-only and non-authoritative."
+          },
+          {
+            "path": "tests/fixtures/mcp/schemas/tools.v1.json",
+            "scope": "sanitized_fixture",
+            "reason": "The one deprecated tab_id schema entry uses a redacted browser-id example."
+          }
+        ],
+      "primary_paths":
+        [
+          "SKILL.md",
+          "docs/cli.md",
+          "docs/api-local.md",
+          "packages/agentyc-browser/src/operations.mjs",
+          "packages/agentyc-browser/src/index.d.ts",
+          "crates/agentyc-core/src/lib.rs"
+        ],
+      "forbidden_markers":
+        [
+          "[id] name",
+          "raw tab id",
+          "raw target id",
+          "raw session id",
+          "current-tab authority"
+        ],
+      "safe_values":
+        [
+          "<redacted browser id>",
+          "<redacted session id>",
+          "not-authoritative",
+          "untrusted",
+          "null",
+          "false",
+          "true"
+        ]
+    },
+  "mappings":
+    [
+      {
+        "key": "space.create",
+        "wire": "space.create",
+        "sdk": "BrowserClient.createSpace",
+        "cli": "space create",
+        "mcp": "host_space_create",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.list",
+        "wire": "space.list",
+        "sdk": "BrowserClient.listSpaces",
+        "cli": "space list",
+        "mcp": "host_space_list",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.prune",
+        "wire": "space.prune",
+        "sdk": "BrowserClient.pruneSpaces",
+        "cli": "space prune",
+        "mcp": null,
+        "supported": true,
+        "status": "integration_gap",
+        "gap_layers": ["mcp"],
+        "reason": "The direct registry/CLI/SDK entry has no corresponding host-backed MCP route in the Phase 2 catalog.",
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "docs/mcp-compatibility.md"
+          ]
+      },
+      {
+        "key": "space.claim",
+        "wire": "space.claim",
+        "sdk": "TaskSpace.claim",
+        "cli": "space claim",
+        "mcp": "host_lease_acquire",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.renew",
+        "wire": "space.renew",
+        "sdk": "TaskSpace.renew",
+        "cli": "space renew",
+        "mcp": "host_lease_renew",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.takeover",
+        "wire": "space.takeover",
+        "sdk": "TaskSpace.takeover",
+        "cli": "space takeover",
+        "mcp": "host_lease_takeover",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.takeover_with_control_ticket",
+        "wire": "space.takeover_with_control_ticket",
+        "sdk": "TaskSpace.reclaim",
+        "cli": "space reclaim",
+        "mcp": "host_lease_takeover_with_control_ticket",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.return",
+        "wire": "space.return",
+        "sdk": "TaskSpace.returnControl",
+        "cli": "space return",
+        "mcp": "host_lease_return_control",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.finish",
+        "wire": "space.finish",
+        "sdk": "TaskSpace.finish",
+        "cli": "space finish",
+        "mcp": "host_space_finish",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "space.release",
+        "wire": "space.release",
+        "sdk": "TaskSpace.release",
+        "cli": "space release",
+        "mcp": "host_space_release",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "page.create",
+        "wire": "page.create",
+        "sdk": "TaskSpace.newPage",
+        "cli": "page create",
+        "mcp": "host_page_create",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/pages.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "page.create_managed",
+        "wire": "page.create_managed",
+        "sdk": "TaskSpace.newManagedPage",
+        "cli": "page create-managed",
+        "mcp": null,
+        "supported": true,
+        "status": "integration_gap",
+        "gap_layers": ["mcp"],
+        "reason": "Managed-page creation is present in the direct registry but has no host-backed MCP route in the measured Phase 2 catalog.",
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/pages.rs",
+            "docs/mcp-compatibility.md"
+          ]
+      },
+      {
+        "key": "page.close",
+        "wire": "page.close",
+        "sdk": "Page.close",
+        "cli": "page close",
+        "mcp": "host_page_close",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/pages.rs",
+            "crates/agentyc-mcp/src/host_server.rs",
+            "docs/cli.md"
+          ]
+      },
+      {
+        "key": "page.list",
+        "wire": "page.list",
+        "sdk": "TaskSpace.listPages",
+        "cli": "page list",
+        "mcp": "host_page_list",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/pages.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "page.inventory",
+        "wire": "page.inventory",
+        "sdk": "TaskSpace.inventory",
+        "cli": "page inventory",
+        "mcp": null,
+        "supported": true,
+        "status": "integration_gap",
+        "gap_layers": ["mcp"],
+        "reason": "Inventory is a direct logical-client operation and is not advertised as a host-backed MCP route in the Phase 2 catalog.",
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/pages.rs",
+            "docs/mcp-compatibility.md"
+          ]
+      },
+      {
+        "key": "action.execute",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.status",
+        "wire": "action.status",
+        "sdk": "BrowserClient.actionStatus",
+        "cli": "action status",
+        "mcp": "host_action_status",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.reconcile",
+        "wire": "action.reconcile",
+        "sdk": "BrowserClient.reconcileAction",
+        "cli": "action reconcile",
+        "mcp": "host_action_reconcile",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "snapshot.read",
+        "wire": "snapshot.read",
+        "sdk": "Page.snapshot",
+        "cli": "snapshot",
+        "mcp": "host_snapshot_read",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/snapshot.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "events.read",
+        "wire": "events.read",
+        "sdk": "BrowserClient.events",
+        "cli": "events",
+        "mcp": "host_event_resume",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/events.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "wait.for",
+        "wire": "wait.for",
+        "sdk": "BrowserClient.waitFor",
+        "cli": "wait",
+        "mcp": null,
+        "supported": true,
+        "status": "integration_gap",
+        "gap_layers": ["mcp"],
+        "reason": "Wait is defined by the direct SDK/CLI registry but is not a host-backed MCP route in the measured Phase 2 catalog.",
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "docs/mcp-compatibility.md"
+          ]
+      },
+      {
+        "key": "host.status",
+        "wire": "host.status",
+        "sdk": "BrowserClient.hostStatus",
+        "cli": "host status",
+        "mcp": null,
+        "supported": true,
+        "status": "integration_gap",
+        "gap_layers": ["mcp"],
+        "reason": "Host status is a direct local-client operation and is not a declared host-backed MCP tool in the Phase 2 catalog.",
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/host.rs",
+            "docs/mcp-compatibility.md"
+          ]
+      },
+      {
+        "key": "action.cancel",
+        "wire": "action.cancel",
+        "sdk": null,
+        "cli": null,
+        "mcp": null,
+        "supported": false,
+        "status": "unsupported",
+        "gap_layers": [],
+        "reason": "Cancellation is a request-envelope operation, not a durable action operation.",
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "packages/agentyc-browser/test/phase2.test.mjs"
+          ]
+      },
+      {
+        "key": "page.navigate",
+        "wire": "page.navigate",
+        "sdk": null,
+        "cli": null,
+        "mcp": null,
+        "supported": false,
+        "status": "unsupported",
+        "gap_layers": [],
+        "reason": "Navigation is represented by action.execute with operation navigate.",
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "packages/agentyc-browser/test/phase2.test.mjs"
+          ]
+      },
+      {
+        "key": "page.adopt",
+        "wire": "page.adopt",
+        "sdk": null,
+        "cli": null,
+        "mcp": null,
+        "supported": false,
+        "status": "unsupported",
+        "gap_layers": [],
+        "reason": "Page adoption is not a Phase 2 local protocol operation.",
+        "evidence_paths":
+          ["packages/agentyc-browser/src/operations.mjs", "docs/api-local.md"]
+      },
+      {
+        "key": "action.navigate",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation navigate",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.click",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation click",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.input",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation input",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.evaluate",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation evaluate",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.scroll",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation scroll",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.wait",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation wait",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.screenshot",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation screenshot",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.storage_write",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation storage_write",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.cookie_write",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation cookie_write",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.upload",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation upload",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      },
+      {
+        "key": "action.close",
+        "wire": "action.execute",
+        "sdk": "Page.action",
+        "cli": "action execute --operation close",
+        "mcp": "host_action_execute",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "crates/agentyc/src/commands/direct/actions.rs",
+            "crates/agentyc-mcp/src/host_server.rs"
+          ]
+      }
+    ],
+  "error_fixture": "tests/fixtures/mcp/errors/v1.json",
+  "mcp_manifests":
+    [
+      "tests/fixtures/mcp/manifests/default.v1.json",
+      "tests/fixtures/mcp/manifests/extended.v1.json"
+    ],
+  "nonclaims":
+    [
+      "Phase 1 remains complete and preserved; this slice does not rewrite its architecture or live-probe claims.",
+      "Phase 2 completion means deterministic repository contracts and checked-in evidence only, not a production release certificate.",
+      "No live Chrome, existing-profile, host/extension, MCP transport, or end-to-end browser integration is claimed.",
+      "MCP remains compatibility-only; modern protocol eras are not claimed under rmcp 1.7.",
+      "Page close CLI parity and several direct/MCP mappings remain explicit integration gaps.",
+      "Production distribution, OOPIF/session graphs, deployed tokenizers, rollback, and later-phase performance remain deferred."
+    ],
+  "commands":
+    [
+      {
+        "command": "python3 scripts/check_exec_plan.py docs/exec-plans/active/agentyc-browser-task-spaces",
+        "result": "pass"
+      },
+      {
+        "command": "python3 scripts/check_phase_0_baseline.py",
+        "result": "pass"
+      },
+      {
+        "command": "python3 scripts/check_phase_1_quality.py",
+        "result": "pass"
+      },
+      { "command": "cargo test -p agentyc-core --locked", "result": "pass" },
+      { "command": "cargo test -p agentyc-host --locked", "result": "pass" },
+      { "command": "cargo test -p agentyc --locked", "result": "pass" },
+      { "command": "cargo test -p agentyc-mcp --locked", "result": "pass" },
+      { "command": "npm test --prefix extension", "result": "pass" },
+      {
+        "command": "npm test --prefix packages/agentyc-browser",
+        "result": "pass"
+      },
+      {
+        "command": "npm run check --prefix packages/agentyc-browser",
+        "result": "pass"
+      },
+      {
+        "command": "python3 -m unittest discover -s scripts -p 'test_*.py' -v",
+        "result": "pass"
+      },
+      {
+        "command": "python3 scripts/check_phase_2_contracts.py",
+        "result": "pass"
+      },
+      {
+        "command": "npm run typecheck --prefix packages/agentyc-browser",
+        "result": "unavailable: TypeScript is not installed; no live or release claim"
+      }
+    ]
+}
