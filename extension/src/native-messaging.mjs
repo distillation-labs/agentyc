@@ -34,8 +34,11 @@ export class NativeMessagingClient {
     extensionVersion = "0.1.0",
     autoReconnect = true,
     reconnectDelayMs = DEFAULT_RECONNECT_MS,
-    setTimeoutFn = globalThis.setTimeout,
-    clearTimeoutFn = globalThis.clearTimeout,
+    // Chrome's timer functions are Web IDL methods and must be invoked with
+    // their global receiver. Keep dependency injection available for tests,
+    // but never store the unbound platform methods as defaults.
+    setTimeoutFn = (...args) => globalThis.setTimeout(...args),
+    clearTimeoutFn = (...args) => globalThis.clearTimeout(...args),
     onMessage = () => {},
     onStateChange = () => {},
     onUnknownActions = () => {},
