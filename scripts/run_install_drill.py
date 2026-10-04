@@ -28,7 +28,6 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
 
 try:
     import fcntl
@@ -450,7 +449,7 @@ def _load_lifecycle_object(path: Path, description: str) -> dict[str, Any]:
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError(f"{description} is unreadable") from error
     if not isinstance(value, dict):
-        raise ValueError(f"{description} must be an object")
+        raise TypeError(f"{description} must be an object")
     return value
 
 
@@ -587,9 +586,16 @@ def validate_lifecycle_provenance(
             errors.append(f"lifecycle_provenance.{field} does not match the current source")
     _validate_lifecycle_fixture_provenance(provenance.get("fixture"), errors)
     fixture = provenance.get("fixture")
-    if require_production and isinstance(fixture, dict) and fixture.get("kind") == "repository_file":
-        if not isinstance(fixture.get("relative_file"), str) or not fixture["relative_file"].startswith("tests/fixtures/"):
-            errors.append("production lifecycle fixture is not under tests/fixtures")
+    if (
+        require_production
+        and isinstance(fixture, dict)
+        and fixture.get("kind") == "repository_file"
+        and (
+            not isinstance(fixture.get("relative_file"), str)
+            or not fixture["relative_file"].startswith("tests/fixtures/")
+        )
+    ):
+        errors.append("production lifecycle fixture is not under tests/fixtures")
     return sorted(set(errors))
 
 
@@ -948,7 +954,7 @@ def load_lifecycle_record(path_value: str, artifact_dir: Path) -> dict[str, Any]
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError("lifecycle record is unreadable") from error
     if not isinstance(value, dict):
-        raise ValueError("lifecycle record must be an object")
+        raise TypeError("lifecycle record must be an object")
     phase4_artifacts = _path_inside(Path(artifact_dir).resolve(), PHASE4_ARTIFACT_DIR.resolve(), allow_parent=True)
     provenance_source_dir: Path | None = None
     if not phase4_artifacts:
@@ -1533,7 +1539,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             lifecycle_record = load_lifecycle_record(args.lifecycle_record, artifact_dir)
             lifecycle_record_errors = validate_lifecycle_record(lifecycle_record, require_live=True)
-        except ValueError as error:
+        except (TypeError, ValueError) as error:
             lifecycle_record_errors = [str(error)]
         report["lifecycle_record_validation"] = {
             "status": "passed" if not lifecycle_record_errors else "blocked",
