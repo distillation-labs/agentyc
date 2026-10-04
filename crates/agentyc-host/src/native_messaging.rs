@@ -24,17 +24,18 @@ use std::{
 };
 
 use agentyc_core::{
-    ActionReceipt, ActionRequest, ArtifactBeginEnvelope, ArtifactChunkEnvelope,
-    ArtifactEndEnvelope, ArtifactTransferBudget, BrokerEpoch, Capability, ClientId, ClientMetadata,
-    ConnectionEpoch, ConnectionNonce, CoreError, ErrorCode, HelloEnvelope, LeaseEpoch,
-    MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNK_BYTES, MAX_ARTIFACT_CHUNKS,
+    ActionId, ActionReceipt, ActionRequest, ArtifactBeginEnvelope, ArtifactChunkEnvelope,
+    ArtifactEndEnvelope, ArtifactKind, ArtifactTransferBudget, BrokerEpoch, Capability, ClientId,
+    ClientMetadata, ConnectionEpoch, ConnectionNonce, ContentHash, CoreError, ErrorCode,
+    HelloEnvelope, LeaseEpoch, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNK_BYTES, MAX_ARTIFACT_CHUNKS,
     MAX_CUMULATIVE_ARTIFACT_BYTES, MAX_IN_FLIGHT_ARTIFACT_BYTES, PROTOCOL_VERSION, PageId,
-    PrincipalId, ProfileBindingId, ProfileBindingState, ReconcileToken, SnapshotEnvelope, SpaceId,
-    UnknownReason,
+    PrincipalId, ProfileBindingId, ProfileBindingState, ReconcileToken, ResumeResult,
+    ResumeWatermark, SnapshotEnvelope, SpaceId, UnknownReason,
 };
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
+use crate::actions::ArtifactHandle;
 use crate::bridge::{
     Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeStatus, ExtensionEpochs,
     FenceResult, ObservationSnapshot, sanitize_observation_snapshot,
@@ -70,6 +71,9 @@ const MAX_NATIVE_ID_BYTES: usize = 256;
 const MAX_NATIVE_DEADLINE_MS: u64 = 24 * 60 * 60 * 1000;
 const MAX_NATIVE_WARNING_BYTES: usize = 4 * 1024;
 const MAX_NATIVE_WARNINGS: usize = 64;
+/// Native Messaging cursors are bounded to the exact integer range JavaScript
+/// can round-trip without losing broker position.
+pub const MAX_NATIVE_RESUME_CURSOR_VALUE: u64 = 9_007_199_254_740_991;
 
 // Derived from the pinned public key in extension/manifest.json. Do not derive
 // the trusted origin from Native Messaging argv: argv is not attestable here.
@@ -442,6 +446,8 @@ pub struct NativeHello {
     pub extension_version: String,
     /// Extension capability strings.
     pub capabilities: Vec<String>,
+    /// Optional broker event cursor retained across reconnects.
+    pub resume_from: Option<ResumeWatermark>,
 }
 
 impl NativeHello {
@@ -461,7 +467,7 @@ impl NativeHello {
             protocol: self.protocol,
             supported_protocols: vec![self.protocol],
             principal_id,
-            resume_from: None,
+            resume_from: self.resume_from,
             client_metadata: Some(ClientMetadata {
                 client_id: Some(client_id),
                 client_name: Some("agentyc-extension".to_owned()),
@@ -469,6 +475,30 @@ impl NativeHello {
                 connection_nonce: Some(nonce),
                 profile_binding_id: Some(profile_binding_id),
             }),
+        })
+    }
+
+    /// Return the optional broker/source cursor attached to this hello.
+    pub fn resume_from(&self) -> Option<ResumeWatermark> {
+        self.resume_from
+    }
+
+    /// Alias emphasizing that this cursor is not the Native Messaging sequence.
+    pub fn resume_cursor(&self) -> Option<ResumeWatermark> {
+        self.resume_from()
+    }
+
+    /// Attach a bounded broker/source cursor to a hello constructed in code.
+    pub fn with_resume_from(
+        self,
+        cursor: Option<ResumeWatermark>,
+    ) -> Result<Self, NativeHostError> {
+        if let Some(cursor) = cursor {
+            validate_native_resume_cursor(cursor)?;
+        }
+        Ok(Self {
+            resume_from: cursor,
+            ..self
         })
     }
 }
@@ -574,6 +604,9 @@ struct SessionMetadata {
     hello: NativeHello,
     broker_epoch: Option<u64>,
     connection_epoch: Option<u64>,
+    resume_from: Option<ResumeWatermark>,
+    resume_status: ResumeResult,
+    last_accepted_cursor: Option<ResumeWatermark>,
     next_inbound_sequence: u64,
     next_outbound_sequence: u64,
     handshake_complete: bool,
@@ -585,6 +618,7 @@ struct SessionMetadata {
     profile_state: ProfileBindingState,
     artifact_transfers: BTreeMap<String, NativeArtifactTransfer>,
     completed_artifacts: BTreeMap<String, NativeArtifact>,
+    artifacts_by_action: BTreeMap<String, ArtifactHandle>,
     artifact_budget: ArtifactTransferBudget,
     outbound_artifact_transfers: BTreeMap<String, NativeArtifactTransfer>,
     outbound_artifact_budget: ArtifactTransferBudget,
@@ -673,9 +707,13 @@ impl NativeMessagingBridge {
                     profile_instance_id: String::new(),
                     extension_version: String::new(),
                     capabilities: Vec::new(),
+                    resume_from: None,
                 },
                 broker_epoch: None,
                 connection_epoch: None,
+                resume_from: None,
+                resume_status: ResumeResult::Accepted,
+                last_accepted_cursor: None,
                 next_inbound_sequence: 1,
                 next_outbound_sequence: 1,
                 handshake_complete: false,
@@ -694,6 +732,7 @@ impl NativeMessagingBridge {
                 profile_state: ProfileBindingState::Unbound,
                 artifact_transfers: BTreeMap::new(),
                 completed_artifacts: BTreeMap::new(),
+                artifacts_by_action: BTreeMap::new(),
                 artifact_budget: ArtifactTransferBudget::default(),
                 outbound_artifact_transfers: BTreeMap::new(),
                 outbound_artifact_budget: ArtifactTransferBudget::default(),
@@ -739,6 +778,34 @@ impl NativeMessagingBridge {
         let mut fields = Map::new();
         fields.insert("event".to_owned(), Value::String(event.to_owned()));
         fields.insert("payload".to_owned(), payload);
+        self.post("event", fields)
+    }
+
+    /// Send a host event with a broker-owned cursor kept separate from the
+    /// Native Messaging envelope sequence.
+    pub fn send_event_with_cursor(
+        &self,
+        event: &str,
+        payload: Value,
+        cursor: ResumeWatermark,
+    ) -> Result<(), NativeHostError> {
+        validate_native_resume_cursor(cursor)?;
+        let broker_epoch = self
+            .shared
+            .session
+            .lock()
+            .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?
+            .broker_epoch
+            .ok_or_else(|| NativeHostError::Protocol("broker epoch is missing".to_owned()))?;
+        if cursor.broker_epoch.get() != broker_epoch {
+            return Err(NativeHostError::Protocol(
+                "event cursor belongs to another broker epoch".to_owned(),
+            ));
+        }
+        let mut fields = Map::new();
+        fields.insert("event".to_owned(), Value::String(event.to_owned()));
+        fields.insert("payload".to_owned(), payload);
+        fields.insert("cursor".to_owned(), native_cursor_value(cursor));
         self.post("event", fields)
     }
 
@@ -909,6 +976,11 @@ impl NativeMessagingBridge {
     }
 
     /// Send the host handshake acknowledgement after the broker admits the peer.
+    ///
+    /// This compatibility entry point can determine a broker-epoch mismatch,
+    /// but the broker's retention decision is available only to the caller that
+    /// performed admission. Call [`Self::complete_handshake_with_resume`] when
+    /// that decision is available.
     pub fn complete_handshake(
         &self,
         hello: &NativeHello,
@@ -916,6 +988,42 @@ impl NativeMessagingBridge {
         connection_epoch: agentyc_core::ConnectionEpoch,
         capabilities: &[Capability],
     ) -> Result<(), NativeHostError> {
+        let resume = match hello.resume_from {
+            Some(cursor) if cursor.broker_epoch != broker_epoch => ResumeResult::ResyncRequired,
+            _ => ResumeResult::Accepted,
+        };
+        self.complete_handshake_with_resume(
+            hello,
+            broker_epoch,
+            connection_epoch,
+            capabilities,
+            resume,
+        )
+    }
+
+    /// Send the host handshake acknowledgement with the broker's explicit
+    /// accepted/resync decision.
+    pub fn complete_handshake_with_resume(
+        &self,
+        hello: &NativeHello,
+        broker_epoch: BrokerEpoch,
+        connection_epoch: agentyc_core::ConnectionEpoch,
+        capabilities: &[Capability],
+        resume: ResumeResult,
+    ) -> Result<(), NativeHostError> {
+        let resume_from = hello.resume_from;
+        if let Some(cursor) = resume_from {
+            validate_native_resume_cursor(cursor)?;
+            if resume == ResumeResult::Accepted && cursor.broker_epoch != broker_epoch {
+                return Err(NativeHostError::Protocol(
+                    "accepted resume cursor belongs to another broker epoch".to_owned(),
+                ));
+            }
+        } else if resume == ResumeResult::ResyncRequired {
+            return Err(NativeHostError::Protocol(
+                "resync status requires a resume cursor".to_owned(),
+            ));
+        }
         let mut session =
             self.shared.session.lock().map_err(|_| {
                 NativeHostError::Unavailable("session state is poisoned".to_owned())
@@ -932,6 +1040,12 @@ impl NativeMessagingBridge {
         }
         session.broker_epoch = Some(broker_epoch.get());
         session.connection_epoch = Some(connection_epoch.get());
+        session.resume_status = resume;
+        session.resume_from = resume_from;
+        session.last_accepted_cursor = match resume {
+            ResumeResult::Accepted => resume_from,
+            ResumeResult::ResyncRequired => None,
+        };
         session.capabilities = intersect_capabilities(&hello.capabilities, capabilities);
         session.negotiated_capability_names =
             intersect_capability_names(&hello.capabilities, capabilities);
@@ -952,6 +1066,7 @@ impl NativeMessagingBridge {
             "limits": session.negotiated_limits.to_value(),
             "profile_instance_id": hello.profile_instance_id,
             "profile_state": "bound",
+            "resume": resume_result_wire(resume),
         });
         session.next_outbound_sequence = session
             .next_outbound_sequence
@@ -961,6 +1076,24 @@ impl NativeMessagingBridge {
         session.handshake_complete = true;
         drop(session);
         write_envelope(&self.shared, &envelope)
+    }
+
+    /// Return the resume decision recorded for this connection.
+    pub fn resume_status(&self) -> Result<ResumeResult, NativeHostError> {
+        self.shared
+            .session
+            .lock()
+            .map(|session| session.resume_status)
+            .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))
+    }
+
+    /// Return the last broker/source cursor accepted on this connection.
+    pub fn last_accepted_cursor(&self) -> Result<Option<ResumeWatermark>, NativeHostError> {
+        self.shared
+            .session
+            .lock()
+            .map(|session| session.last_accepted_cursor)
+            .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))
     }
 
     /// Return the extension hello accepted by this connection.
@@ -1036,7 +1169,19 @@ impl NativeMessagingBridge {
             self.shared.session.lock().map_err(|_| {
                 NativeHostError::Unavailable("session state is poisoned".to_owned())
             })?;
-        Ok(session.completed_artifacts.remove(artifact_id))
+        let artifact = session.completed_artifacts.remove(artifact_id);
+        if artifact.is_some() {
+            let action_id = session
+                .artifacts_by_action
+                .iter()
+                .find_map(|(action_id, handle)| {
+                    (handle.artifact_id.as_str() == artifact_id).then_some(action_id.clone())
+                });
+            if let Some(action_id) = action_id {
+                session.artifacts_by_action.remove(&action_id);
+            }
+        }
+        Ok(artifact)
     }
 
     /// Return the latest logical inventory records observed from the extension.
@@ -1738,7 +1883,7 @@ impl Bridge for NativeMessagingBridge {
             }
         }
         match self.request_value(&method, params, Some(request.action_id.as_str())) {
-            Ok(result) => Ok(native_action_result(request.operation, result)),
+            Ok(result) => Ok(native_action_result(&self.shared, request, result)),
             Err(error) if error.code == ErrorCode::UnknownOutcome => {
                 Ok(BridgeDispatchResult::Unknown {
                     reason: UnknownReason::BridgeLost,
@@ -1752,6 +1897,69 @@ impl Bridge for NativeMessagingBridge {
                 retryable: error.retryable,
             }),
         }
+    }
+
+    fn artifact_for_action(
+        &self,
+        action_id: &ActionId,
+    ) -> Result<Option<ArtifactHandle>, CoreError> {
+        self.shared
+            .session
+            .lock()
+            .map(|session| session.artifacts_by_action.get(action_id.as_str()).cloned())
+            .map_err(|_| {
+                CoreError::new(
+                    ErrorCode::NativeHostUnavailable,
+                    "artifact state is poisoned",
+                )
+            })
+    }
+
+    fn take_artifact(&self, handle: &ArtifactHandle) -> Result<Option<Vec<u8>>, CoreError> {
+        let mut session = self.shared.session.lock().map_err(|_| {
+            CoreError::new(
+                ErrorCode::NativeHostUnavailable,
+                "artifact state is poisoned",
+            )
+        })?;
+        let Some(owned) = session.artifacts_by_action.get(handle.action_id.as_str()) else {
+            return Ok(None);
+        };
+        if owned != handle {
+            return Err(CoreError::new(
+                ErrorCode::PermissionDenied,
+                "artifact handle is not the retained action artifact",
+            ));
+        }
+        let Some(artifact) = session.completed_artifacts.get(handle.artifact_id.as_str()) else {
+            return Ok(None);
+        };
+        if artifact.begin.request_id.as_ref() != Some(&handle.request_id)
+            || artifact.begin.artifact_kind != handle.artifact_kind
+            || artifact.begin.total_bytes != handle.total_bytes
+            || artifact.begin.chunk_count != handle.chunk_count
+            || artifact.begin.digest != handle.digest
+            || artifact.begin.redacted != handle.redacted
+        {
+            return Err(CoreError::new(
+                ErrorCode::InvalidJson,
+                "retained artifact metadata does not match its logical handle",
+            ));
+        }
+        if ContentHash::from_bytes(&artifact.bytes) != handle.digest {
+            return Err(CoreError::new(
+                ErrorCode::InvalidJson,
+                "retained artifact digest does not match its logical handle",
+            ));
+        }
+        let artifact = session
+            .completed_artifacts
+            .remove(handle.artifact_id.as_str())
+            .expect("artifact was present during validation");
+        session
+            .artifacts_by_action
+            .remove(handle.action_id.as_str());
+        Ok(Some(artifact.bytes))
     }
 
     fn reconcile(&self, receipt: &ActionReceipt) -> Result<BridgeReconcileResult, CoreError> {
@@ -1899,6 +2107,7 @@ fn read_loop(
             }
         };
         session.hello = hello.clone();
+        session.resume_from = parsed_hello.resume_from;
         session.next_inbound_sequence = 2;
         session.extension_limits = parsed_hello.limits;
         session.capabilities = map_capabilities(&hello.capabilities);
@@ -1933,6 +2142,7 @@ fn read_loop(
 #[derive(Debug)]
 struct ParsedNativeHello {
     hello: NativeHello,
+    resume_from: Option<ResumeWatermark>,
     limits: NativeNegotiatedLimits,
 }
 
@@ -1994,6 +2204,11 @@ fn parse_hello(
         ));
     }
     let limits = parse_limits(object.get("limits"))?;
+    let resume_from = parse_native_resume_cursor(
+        object
+            .get("resume_from")
+            .or_else(|| object.get("resume_cursor")),
+    )?;
     if let Some(profile_state) = object.get("profile_state").and_then(Value::as_str)
         && profile_state != "bound"
     {
@@ -2012,7 +2227,9 @@ fn parse_hello(
             profile_instance_id,
             extension_version,
             capabilities,
+            resume_from,
         },
+        resume_from,
         limits,
     })
 }
@@ -2122,6 +2339,8 @@ fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostErro
             "extension_version",
             "capabilities",
             "limits",
+            "resume_from",
+            "resume_cursor",
         ]);
     } else {
         allowed.extend([
@@ -2138,6 +2357,8 @@ fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostErro
             "limits",
             "profile_instance_id",
             "profile_state",
+            "resume",
+            "cursor",
         ],
         "request" => &[
             "request_id",
@@ -2156,7 +2377,7 @@ fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostErro
             "error",
             "warnings",
         ],
-        "event" => &["event", "payload", "space_id", "page_id"],
+        "event" => &["event", "payload", "space_id", "page_id", "cursor"],
         "inventory" => &["payload"],
         "fence" => &[
             "request_id",
@@ -2235,6 +2456,16 @@ fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostErro
         if object.contains_key("limits") {
             let _ = parse_limits(object.get("limits"))?;
         }
+        if object.contains_key("resume_from") && object.contains_key("resume_cursor") {
+            return Err(NativeHostError::Protocol(
+                "hello cannot contain both resume_from and resume_cursor".to_owned(),
+            ));
+        }
+        let _ = parse_native_resume_cursor(
+            object
+                .get("resume_from")
+                .or_else(|| object.get("resume_cursor")),
+        )?;
         return Ok(());
     }
 
@@ -2257,6 +2488,10 @@ fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostErro
                     "hello_ok profile_state must be bound".to_owned(),
                 ));
             }
+            if let Some(resume) = object.get("resume") {
+                let _ = parse_native_resume_result(resume)?;
+            }
+            let _ = parse_native_resume_cursor(object.get("cursor"))?;
         }
         "request" => {
             require_text(object, "request_id", MAX_NATIVE_ID_BYTES)?;
@@ -2298,6 +2533,7 @@ fn validate_native_shape(value: &Value, kind: &str) -> Result<(), NativeHostErro
                 .ok_or_else(|| NativeHostError::Protocol("event payload is required".to_owned()))?;
             optional_text(object, "space_id", MAX_NATIVE_ID_BYTES)?;
             optional_text(object, "page_id", MAX_NATIVE_ID_BYTES)?;
+            let _ = parse_native_resume_cursor(object.get("cursor"))?;
         }
         "inventory" => {
             object
@@ -2815,6 +3051,7 @@ fn enqueue_request(shared: &NativeShared, value: Value) -> Result<(), NativeHost
 }
 
 fn enqueue_event(shared: &NativeShared, value: Value) -> Result<(), NativeHostError> {
+    accept_inbound_cursor(shared, &value)?;
     let mut events = shared
         .events
         .lock()
@@ -2844,6 +3081,34 @@ fn enqueue_event(shared: &NativeShared, value: Value) -> Result<(), NativeHostEr
         return Ok(());
     }
     events.push_back(value);
+    Ok(())
+}
+
+fn accept_inbound_cursor(shared: &NativeShared, value: &Value) -> Result<(), NativeHostError> {
+    let Some(cursor) = parse_native_resume_cursor(value.get("cursor"))? else {
+        return Ok(());
+    };
+    let mut session = shared
+        .session
+        .lock()
+        .map_err(|_| NativeHostError::Unavailable("session state is poisoned".to_owned()))?;
+    let broker_epoch = session
+        .broker_epoch
+        .ok_or_else(|| NativeHostError::Protocol("broker epoch is missing".to_owned()))?;
+    if cursor.broker_epoch.get() != broker_epoch {
+        return Err(NativeHostError::Protocol(
+            "Native Messaging broker cursor epoch is stale".to_owned(),
+        ));
+    }
+    if session
+        .last_accepted_cursor
+        .is_some_and(|previous| cursor.sequence.get() < previous.sequence.get())
+    {
+        return Err(NativeHostError::Protocol(
+            "Native Messaging broker cursor is stale".to_owned(),
+        ));
+    }
+    session.last_accepted_cursor = Some(cursor);
     Ok(())
 }
 
@@ -2976,9 +3241,48 @@ fn record_inventory(shared: &NativeShared, value: &Value) -> Result<(), NativeHo
 }
 
 fn native_action_result(
-    _operation: agentyc_core::ActionOperation,
+    shared: &NativeShared,
+    request: &ActionRequest<BTreeMap<String, String>>,
     result: Value,
 ) -> BridgeDispatchResult {
+    let outcome = native_action_outcome(&result);
+    if !matches!(outcome, BridgeDispatchResult::Succeeded)
+        || request.operation != agentyc_core::ActionOperation::Screenshot
+    {
+        return outcome;
+    }
+    let handle = match artifact_handle_from_result(request, &result) {
+        Ok(Some(handle)) => handle,
+        Ok(None) | Err(_) => {
+            return BridgeDispatchResult::Failed {
+                code: ErrorCode::InvalidJson,
+                retryable: false,
+            };
+        }
+    };
+    let retained = shared.session.lock().ok().is_some_and(|mut session| {
+        if !session
+            .completed_artifacts
+            .contains_key(handle.artifact_id.as_str())
+        {
+            return false;
+        }
+        session
+            .artifacts_by_action
+            .insert(handle.action_id.to_string(), handle);
+        true
+    });
+    if retained {
+        BridgeDispatchResult::Succeeded
+    } else {
+        BridgeDispatchResult::Failed {
+            code: ErrorCode::InvalidJson,
+            retryable: false,
+        }
+    }
+}
+
+fn native_action_outcome(result: &Value) -> BridgeDispatchResult {
     let receipt = result.get("receipt").and_then(Value::as_object);
     let proof = result.get("action_proof").and_then(Value::as_object);
     if proof
@@ -3048,6 +3352,59 @@ fn native_action_result(
         };
     }
     BridgeDispatchResult::Succeeded
+}
+
+fn artifact_handle_from_result(
+    request: &ActionRequest<BTreeMap<String, String>>,
+    result: &Value,
+) -> Result<Option<ArtifactHandle>, CoreError> {
+    let Some(artifact) = result.get("result").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    let Some(artifact_id) = artifact.get("artifact_handle").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let artifact_id = artifact_id
+        .parse::<agentyc_core::ArtifactId>()
+        .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
+    let artifact_kind = serde_json::from_value::<ArtifactKind>(
+        artifact
+            .get("artifact_kind")
+            .cloned()
+            .ok_or_else(|| CoreError::invalid_argument("artifact_kind is required"))?,
+    )
+    .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
+    let total_bytes = artifact
+        .get("total_bytes")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| CoreError::invalid_argument("artifact total_bytes is required"))?;
+    let chunk_count = artifact
+        .get("chunk_count")
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| CoreError::invalid_argument("artifact chunk_count is invalid"))?;
+    let digest = artifact
+        .get("digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CoreError::invalid_argument("artifact digest is required"))?
+        .parse::<ContentHash>()
+        .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
+    let redacted = artifact
+        .get("redacted")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| CoreError::invalid_argument("artifact redacted flag is required"))?;
+    Ok(Some(ArtifactHandle {
+        artifact_id,
+        request_id: request.request_id.clone(),
+        action_id: request.action_id.clone(),
+        space_id: request.space_id.clone(),
+        page_id: request.page_id.clone(),
+        artifact_kind,
+        total_bytes,
+        chunk_count,
+        digest,
+        redacted,
+    }))
 }
 
 fn response_result(value: Value) -> Result<Value, CoreError> {
@@ -3359,6 +3716,101 @@ fn assert_no_raw_browser_identifiers(value: &Value, parent: &str) -> Result<(), 
     Ok(())
 }
 
+fn parse_native_resume_cursor(
+    value: Option<&Value>,
+) -> Result<Option<ResumeWatermark>, NativeHostError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let object = value.as_object().ok_or_else(|| {
+        NativeHostError::Protocol("Native Messaging resume cursor must be an object".to_owned())
+    })?;
+    if object.len() != 2
+        || object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "broker_epoch" | "sequence"))
+    {
+        return Err(NativeHostError::Protocol(
+            "Native Messaging resume cursor has unknown fields".to_owned(),
+        ));
+    }
+    let broker_epoch = object
+        .get("broker_epoch")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            NativeHostError::Protocol(
+                "Native Messaging resume cursor broker_epoch is invalid".to_owned(),
+            )
+        })?;
+    let sequence = object
+        .get("sequence")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            NativeHostError::Protocol(
+                "Native Messaging resume cursor sequence is invalid".to_owned(),
+            )
+        })?;
+    let cursor = ResumeWatermark {
+        broker_epoch: BrokerEpoch::new(broker_epoch),
+        sequence: agentyc_core::EventSequence::new(sequence),
+    };
+    validate_native_resume_cursor(cursor)?;
+    Ok(Some(cursor))
+}
+
+fn validate_native_resume_cursor(cursor: ResumeWatermark) -> Result<(), NativeHostError> {
+    if cursor.broker_epoch.get() == 0
+        || cursor.broker_epoch.get() > MAX_NATIVE_RESUME_CURSOR_VALUE
+        || cursor.sequence.get() > MAX_NATIVE_RESUME_CURSOR_VALUE
+    {
+        return Err(NativeHostError::Protocol(
+            "Native Messaging resume cursor is outside its bound".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn native_cursor_value(cursor: ResumeWatermark) -> Value {
+    json!({
+        "broker_epoch": cursor.broker_epoch.get(),
+        "sequence": cursor.sequence.get(),
+    })
+}
+
+fn parse_native_resume_result(value: &Value) -> Result<ResumeResult, NativeHostError> {
+    let status = value
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            value
+                .as_object()
+                .filter(|object| object.len() == 1)
+                .and_then(|object| object.get("kind"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| {
+            NativeHostError::Protocol("Native Messaging resume status is invalid".to_owned())
+        })?;
+    match status.as_str() {
+        "accepted" => Ok(ResumeResult::Accepted),
+        "resync_required" => Ok(ResumeResult::ResyncRequired),
+        _ => Err(NativeHostError::Protocol(
+            "Native Messaging resume status is unsupported".to_owned(),
+        )),
+    }
+}
+
+fn resume_result_wire(result: ResumeResult) -> &'static str {
+    match result {
+        ResumeResult::Accepted => "accepted",
+        ResumeResult::ResyncRequired => "resync_required",
+    }
+}
+
 fn required_string(object: &Map<String, Value>, key: &str) -> Result<String, NativeHostError> {
     let value = object
         .get(key)
@@ -3462,6 +3914,14 @@ fn mark_closed(shared: &NativeShared, error: NativeHostError) {
     let pending = std::mem::take(&mut *pending);
     for (_, sender) in pending {
         let _ = sender.send(Err(error.clone()));
+    }
+    if let Ok(mut session) = shared.session.lock() {
+        session.artifact_transfers.clear();
+        session.completed_artifacts.clear();
+        session.artifacts_by_action.clear();
+        session.artifact_budget = ArtifactTransferBudget::default();
+        session.outbound_artifact_transfers.clear();
+        session.outbound_artifact_budget = ArtifactTransferBudget::default();
     }
 }
 
@@ -3636,6 +4096,252 @@ mod tests {
     }
 
     #[test]
+    fn native_hello_resume_cursor_is_bounded_and_maps_to_core_hello() {
+        let (to_host, from_extension) = mpsc::sync_channel(1);
+        to_host
+            .send(frame_json(json!({
+                "protocol": PROTOCOL_VERSION,
+                "kind": "hello",
+                "nonce": "nonce_resume_cursor",
+                "sequence": 1,
+                "worker_instance_epoch": 2,
+                "browser_session_epoch": 3,
+                "profile_instance_id": "profile_resume_cursor",
+                "extension_version": "0.1.0",
+                "capabilities": [],
+                "resume_from": {"broker_epoch": 7, "sequence": 11}
+            })))
+            .expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        let (hello, bridge) = NativeMessagingBridge::accept(
+            reader,
+            io::sink(),
+            NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+                .expect("origin")
+                .with_handshake_timeout(Duration::from_secs(1)),
+        )
+        .expect("accept");
+        let cursor = hello.resume_cursor().expect("resume cursor");
+        assert_eq!(cursor.broker_epoch.get(), 7);
+        assert_eq!(cursor.sequence.get(), 11);
+        assert_eq!(
+            hello
+                .to_core_hello(PrincipalId::from_suffix("extension").expect("principal"))
+                .expect("core hello")
+                .resume_from,
+            Some(cursor)
+        );
+        bridge
+            .complete_handshake_with_resume(
+                &hello,
+                BrokerEpoch::new(7),
+                agentyc_core::ConnectionEpoch::new(1),
+                &[Capability::Action],
+                ResumeResult::Accepted,
+            )
+            .expect("accepted resume handshake");
+        assert_eq!(
+            bridge.last_accepted_cursor().expect("cursor state"),
+            Some(cursor)
+        );
+        drop(to_host);
+        assert!(matches!(
+            bridge.wait_closed(),
+            NativeHostError::Unavailable(_)
+        ));
+
+        let (to_host, from_extension) = mpsc::sync_channel(1);
+        to_host
+            .send(frame_json(json!({
+                "protocol": PROTOCOL_VERSION,
+                "kind": "hello",
+                "nonce": "nonce_resume_cursor_bound",
+                "sequence": 1,
+                "worker_instance_epoch": 2,
+                "browser_session_epoch": 3,
+                "profile_instance_id": "profile_resume_cursor_bound",
+                "extension_version": "0.1.0",
+                "capabilities": [],
+                "resume_from": {"broker_epoch": 7, "sequence": MAX_NATIVE_RESUME_CURSOR_VALUE + 1}
+            })))
+            .expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        assert!(matches!(
+            NativeMessagingBridge::accept(
+                reader,
+                io::sink(),
+                NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+                    .expect("origin")
+                    .with_handshake_timeout(Duration::from_secs(1)),
+            ),
+            Err(NativeHostError::Protocol(message)) if message.contains("resume cursor")
+        ));
+    }
+
+    #[test]
+    fn native_resume_status_handles_broker_epoch_and_retention_resync() {
+        let (to_host, from_extension) = mpsc::sync_channel(1);
+        to_host
+            .send(frame_json(json!({
+                "protocol": PROTOCOL_VERSION,
+                "kind": "hello",
+                "nonce": "nonce_resume_status_epoch",
+                "sequence": 1,
+                "worker_instance_epoch": 2,
+                "browser_session_epoch": 3,
+                "profile_instance_id": "profile_resume_status_epoch",
+                "extension_version": "0.1.0",
+                "capabilities": [],
+                "resume_from": {"broker_epoch": 7, "sequence": 11}
+            })))
+            .expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let (hello, bridge) = NativeMessagingBridge::accept(
+            reader,
+            CaptureWriter(Arc::clone(&capture)),
+            NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+                .expect("origin")
+                .with_handshake_timeout(Duration::from_secs(1)),
+        )
+        .expect("accept");
+        bridge
+            .complete_handshake(
+                &hello,
+                BrokerEpoch::new(8),
+                agentyc_core::ConnectionEpoch::new(2),
+                &[Capability::Action],
+            )
+            .expect("epoch resync handshake");
+        assert_eq!(
+            captured_frames(&capture)[0]["resume"],
+            json!("resync_required")
+        );
+        assert!(
+            bridge
+                .last_accepted_cursor()
+                .expect("cursor state")
+                .is_none()
+        );
+        drop(to_host);
+
+        let (to_host, from_extension) = mpsc::sync_channel(1);
+        to_host
+            .send(frame_json(json!({
+                "protocol": PROTOCOL_VERSION,
+                "kind": "hello",
+                "nonce": "nonce_resume_status_retention",
+                "sequence": 1,
+                "worker_instance_epoch": 2,
+                "browser_session_epoch": 3,
+                "profile_instance_id": "profile_resume_status_retention",
+                "extension_version": "0.1.0",
+                "capabilities": [],
+                "resume_from": {"broker_epoch": 8, "sequence": 11}
+            })))
+            .expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let (hello, bridge) = NativeMessagingBridge::accept(
+            reader,
+            CaptureWriter(Arc::clone(&capture)),
+            NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+                .expect("origin")
+                .with_handshake_timeout(Duration::from_secs(1)),
+        )
+        .expect("accept");
+        bridge
+            .complete_handshake_with_resume(
+                &hello,
+                BrokerEpoch::new(8),
+                agentyc_core::ConnectionEpoch::new(3),
+                &[Capability::Action],
+                ResumeResult::ResyncRequired,
+            )
+            .expect("retention resync handshake");
+        assert_eq!(
+            captured_frames(&capture)[0]["resume"],
+            json!("resync_required")
+        );
+        assert!(
+            bridge
+                .last_accepted_cursor()
+                .expect("cursor state")
+                .is_none()
+        );
+        drop(to_host);
+    }
+
+    #[test]
+    fn native_broker_cursor_is_not_the_native_envelope_sequence() {
+        let (to_host, from_extension) = mpsc::sync_channel(1);
+        to_host
+            .send(frame_json(json!({
+                "protocol": PROTOCOL_VERSION,
+                "kind": "hello",
+                "nonce": "nonce_cursor_separation",
+                "sequence": 1,
+                "worker_instance_epoch": 2,
+                "browser_session_epoch": 3,
+                "profile_instance_id": "profile_cursor_separation",
+                "extension_version": "0.1.0",
+                "capabilities": []
+            })))
+            .expect("hello input");
+        let reader = ChannelReader {
+            receiver: from_extension,
+            buffer: VecDeque::new(),
+        };
+        let capture = Arc::new(Mutex::new(Vec::new()));
+        let (hello, bridge) = NativeMessagingBridge::accept(
+            reader,
+            CaptureWriter(Arc::clone(&capture)),
+            NativeMessagingConfig::new(ALLOWED_EXTENSION_ORIGINS[0])
+                .expect("origin")
+                .with_handshake_timeout(Duration::from_secs(1)),
+        )
+        .expect("accept");
+        bridge
+            .complete_handshake(
+                &hello,
+                BrokerEpoch::new(8),
+                agentyc_core::ConnectionEpoch::new(4),
+                &[Capability::Action],
+            )
+            .expect("handshake");
+        bridge
+            .send_event_with_cursor(
+                "host.cursor_test",
+                json!({"ok": true}),
+                ResumeWatermark {
+                    broker_epoch: BrokerEpoch::new(8),
+                    sequence: agentyc_core::EventSequence::new(41),
+                },
+            )
+            .expect("cursor event");
+        let event = captured_frames(&capture)
+            .into_iter()
+            .find(|frame| frame["kind"] == "event")
+            .expect("event frame");
+        assert_eq!(event["sequence"], json!(2));
+        assert_eq!(event["cursor"], json!({"broker_epoch": 8, "sequence": 41}));
+        assert_ne!(event["sequence"], event["cursor"]["sequence"]);
+        drop(to_host);
+    }
+
+    #[test]
     fn hello_conversion_keeps_profile_binding_and_nonce() {
         let hello = NativeHello {
             protocol: PROTOCOL_VERSION,
@@ -3646,6 +4352,7 @@ mod tests {
             profile_instance_id: "profile_test".to_owned(),
             extension_version: "0.1.0".to_owned(),
             capabilities: vec!["logical_tabs".to_owned()],
+            resume_from: None,
         };
         let core = hello
             .to_core_hello(PrincipalId::from_suffix("extension").expect("principal"))
@@ -3774,6 +4481,7 @@ mod tests {
             profile_instance_id: format!("profile_{nonce_suffix}"),
             extension_version: "0.1.0".to_owned(),
             capabilities: vec!["logical_tabs".to_owned()],
+            resume_from: None,
         };
         to_host
             .send(frame_json(json!({
@@ -3931,6 +4639,7 @@ mod tests {
             profile_instance_id: "profile_request_test".to_owned(),
             extension_version: "0.1.0".to_owned(),
             capabilities: vec!["logical_tabs".to_owned()],
+            resume_from: None,
         };
         to_host
             .send(frame_json(json!({
@@ -4040,6 +4749,7 @@ mod tests {
             profile_instance_id: "profile_test".to_owned(),
             extension_version: "0.1.0".to_owned(),
             capabilities: vec!["logical_tabs".to_owned(), "frame_events".to_owned()],
+            resume_from: None,
         };
         let hello_wire = json!({
             "protocol": PROTOCOL_VERSION,
