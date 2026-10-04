@@ -273,9 +273,14 @@ test("stale or duplicate fence epochs are rejected and never lower the barrier",
       sequence,
       fenceRequest("space_one", epoch, `stale${epoch}_${sequence}`),
     );
-    assert.equal(stale.kind, "response");
-    assert.equal(stale.ok, false);
-    assert.equal(stale.error.code, "stale_fence");
+    if (epoch === 3) {
+      assert.equal(stale.kind, "fence_ack");
+      assert.equal(stale.result.idempotent, true);
+    } else {
+      assert.equal(stale.kind, "response");
+      assert.equal(stale.ok, false);
+      assert.equal(stale.error.code, "stale_fence");
+    }
   }
   assert.equal(worker.fences.get("space_one"), 3);
 
@@ -435,6 +440,10 @@ test("corrupt persisted fences are ignored instead of trusted", async () => {
   chrome.storageData.agentyc_extension_metadata = {
     profile_instance_id: "profile_fixed",
     worker_instance_epoch: 1,
+    browser_session_epoch: 1,
+  };
+  chrome.sessionStorageData.agentyc_browser_session_marker = {
+    profile_instance_id: "profile_fixed",
     browser_session_epoch: 1,
   };
   chrome.storageData.agentyc_space_fences = {
