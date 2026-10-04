@@ -254,7 +254,11 @@ test("debugger bridge routes only attributed events and returns unknown for lost
         params: { url: "https://agent.test/next" },
         commandId: "command-1",
       }),
-    (error) => error.code === "unknown_outcome" && error.outcome === "unknown",
+    (error) =>
+      error.code === "unknown_outcome" &&
+      error.outcome === "unknown" &&
+      error.details?.chrome_error === "unknown" &&
+      error.details?.cause === undefined,
   );
   await assert.rejects(
     () =>
@@ -266,6 +270,81 @@ test("debugger bridge routes only attributed events and returns unknown for lost
       }),
     (error) => error.code === "capability_unavailable",
   );
+  bridge.stop();
+});
+
+test("Chrome 125 related-target sessions are attached recursively and routed logically", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://agent.test/" }],
+  });
+  const groups = new GroupsRegistry({ chromeApi: chrome });
+  const tabs = new TabsRegistry({ chromeApi: chrome, groups });
+  const frames = new FramesRegistry();
+  const routed = [];
+  const bridge = new DebuggerBridge({
+    chromeApi: chrome,
+    tabs,
+    frames,
+    onEvent: (event) => routed.push(event),
+  });
+  await tabs.start();
+  tabs.bindManagedTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+    leaseEpoch: 1,
+    ownershipProof: proof(),
+  });
+  bridge.start();
+  await bridge.attach({
+    spaceId: "space_one",
+    pageId: "page_one",
+    leaseEpoch: 1,
+  });
+  assert.equal(chrome.debuggerInternalCommands.length, 1);
+  chrome.emitDebuggerEvent(1, "Target.attachedToTarget", {
+    sessionId: "child-session",
+    targetInfo: { type: "iframe", url: "https://child.agent.test/" },
+  });
+  await wait();
+  await wait();
+  assert.equal(Boolean(frames.getInternalBinding(1, "child-session")), true);
+  assert.equal(chrome.debuggerInternalCommands.length, 2);
+  assert.equal(
+    chrome.debuggerInternalCommands[1].source.sessionId,
+    "child-session",
+  );
+  frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "child-frame",
+    logicalFrameId: "child-logical-frame",
+  });
+  await bridge.sendCommand({
+    spaceId: "space_one",
+    pageId: "page_one",
+    leaseEpoch: 1,
+    method: "Page.getFrameTree",
+    frameScope: "child-logical-frame",
+  });
+  assert.equal(
+    chrome.debuggerCommands.at(-1).source.sessionId,
+    "child-session",
+  );
+
+  chrome.emitDebuggerEvent(
+    1,
+    "Runtime.executionContextCreated",
+    { context: { id: 7, auxData: { frameId: "child-frame" } } },
+    "child-session",
+  );
+  assert.equal(routed.at(-1)?.space_id, "space_one");
+  assert.equal("sessionId" in (routed.at(-1)?.params ?? {}), false);
+  chrome.emitDebuggerEvent(1, "Target.detachedFromTarget", {
+    sessionId: "child-session",
+    targetId: "raw-child-target",
+  });
+  assert.equal(frames.getInternalBinding(1, "child-session"), undefined);
   bridge.stop();
 });
 
