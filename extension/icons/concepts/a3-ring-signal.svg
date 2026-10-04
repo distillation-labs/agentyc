@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
-  <title id="title">Ring signal</title>
-  <desc id="desc">An open signal ring and endpoint node in cobalt and cream</desc>
-  <rect width="128" height="128" rx="28" fill="#2463F5" />
-  <path d="M96 40a36 36 0 1 0 0 48" fill="none" stroke="#FFF6E8" stroke-width="13" stroke-linecap="butt" />
-  <circle cx="98" cy="64" r="11" fill="#FFF6E8" />
-</svg>
