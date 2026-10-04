@@ -1010,6 +1010,31 @@ impl Bridge for NativeMessagingBridge {
             params.insert("page_id".to_owned(), json!(page_id.to_string()));
         }
         params.insert("lease_epoch".to_owned(), json!(request.lease_epoch.get()));
+        if let Some(page_id) = &request.page_id {
+            let inventory = self.inventory_snapshot();
+            if let Some(page) = inventory.pages.iter().find(|page| {
+                page.get("space_id").and_then(Value::as_str) == Some(request.space_id.as_str())
+                    && page.get("page_id").and_then(Value::as_str) == Some(page_id.as_str())
+            }) {
+                for (source, destination) in [
+                    ("target_generation", "expected_target_generation"),
+                    ("navigation_generation", "expected_navigation_generation"),
+                    ("document_generation", "expected_document_generation"),
+                ] {
+                    if let Some(value) = page.get(source).and_then(Value::as_u64) {
+                        params.insert(destination.to_owned(), json!(value));
+                    }
+                }
+            }
+        }
+        if let Some(postcondition) = &request.postcondition {
+            params.insert(
+                "postcondition".to_owned(),
+                serde_json::to_value(postcondition).map_err(|_| {
+                    CoreError::new(ErrorCode::InvalidJson, "action postcondition is not JSON")
+                })?,
+            );
+        }
         params.insert("action_id".to_owned(), json!(request.action_id.to_string()));
         params.insert(
             "request_id".to_owned(),
@@ -1021,6 +1046,15 @@ impl Bridge for NativeMessagingBridge {
                 CoreError::new(ErrorCode::InvalidJson, "action payload is not JSON")
             })?,
         );
+        if request.operation == agentyc_core::ActionOperation::Close {
+            let page_id = request.page_id.as_ref().ok_or_else(|| {
+                CoreError::new(ErrorCode::PageNotFound, "close action requires a page")
+            })?;
+            params.insert(
+                "cleanup_proof".to_owned(),
+                self.cleanup_proof(&request.space_id, page_id, request.lease_epoch)?,
+            );
+        }
         for (key, value) in &request.payload {
             if !params.contains_key(key) {
                 params.insert(key.clone(), Value::String(value.clone()));
