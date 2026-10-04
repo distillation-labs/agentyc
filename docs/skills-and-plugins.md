@@ -4,7 +4,7 @@ Agentyc ships an agent-facing browser automation skill and a portable plugin bun
 
 ## Available package
 
-- **`agentyc-browser-automation`** — MCP-first browser automation for QA, web workflows, extraction, auth-state handling, multi-tab tasks, network debugging, and browser-mediated verification.
+- **`agentyc-browser-automation`** — host-backed logical browser automation for QA, web workflows, extraction, auth-state handling, task-space pages, network debugging, and browser-mediated verification. MCP is compatibility-only.
 
 Package contents:
 
@@ -21,13 +21,13 @@ plugins/agentyc-browser-automation/
 
 ## Install with an agent
 
-Install the binary:
+Install the binary, then use the direct host-backed CLI or Node SDK as the primary interface. See the [Direct CLI](./cli.md) and [Local browser SDK](./api-local.md) guides.
 
 ```bash
 cargo install --git https://github.com/distillation-labs/agentyc agentyc
 ```
 
-Register MCP:
+For MCP clients, register the optional compatibility adapter:
 
 ```json
 {
@@ -41,7 +41,7 @@ Register MCP:
 }
 ```
 
-Then load `.agents/skills/agentyc-browser-automation/SKILL.md` through the coding agent's skill/plugin mechanism. The skill is the source of truth; `plugin.json` provides portable metadata and the MCP registration.
+Then load `.agents/skills/agentyc-browser-automation/SKILL.md` through the coding agent's skill/plugin mechanism. The skill is the source of truth; `plugin.json` provides portable metadata and optional MCP compatibility registration.
 
 ## What makes it a superpower
 
@@ -53,7 +53,7 @@ The skill encodes an operational loop:
 4. Verify the actual user-visible or network outcome.
 5. Recover from stale refs, frames, dialogs, dynamic content, and failed actions using evidence.
 
-It also teaches frontend selection: MCP for long-lived agent sessions, REPL for interactive debugging, and CLI for isolated one-shot commands. Evaluation cases cover functional behavior, performance, and safety.
+It also teaches interface selection: use the direct CLI/SDK as the primary host-backed interface, and MCP only when compatibility with an MCP client is needed. Use REPL for interactive debugging and CLI for isolated one-shot commands. Evaluation cases cover functional behavior, performance, and safety.
 
 ## End-user bootstrap
 
