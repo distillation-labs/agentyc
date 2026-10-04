@@ -252,11 +252,9 @@ pub(crate) fn peer_matches_directory_owner(
     let Ok(peer) = tokio::net::UnixStream::from_std(probe) else {
         return false;
     };
-    u32::try_from(
-        peer.peer_cred()
-            .map_or(u32::MAX, |credentials| credentials.uid()),
-    )
-    .is_ok_and(|uid| uid == owner_uid)
+    peer.peer_cred()
+        .map_or(u32::MAX, |credentials| credentials.uid())
+        == owner_uid
 }
 
 fn current_millis() -> u64 {
