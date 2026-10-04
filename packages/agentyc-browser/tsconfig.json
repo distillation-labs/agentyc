@@ -5,7 +5,7 @@
     "moduleResolution": "NodeNext",
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": false
+    "skipLibCheck": false,
   },
-  "include": ["src/index.d.ts", "typecheck/consumer.ts"]
+  "include": ["src/**/*.ts", "src/index.d.ts", "typecheck/consumer.ts"],
 }
