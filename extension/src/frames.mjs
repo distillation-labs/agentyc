@@ -9,6 +9,26 @@ function sessionKey(tabId, sessionId) {
   return `${tabId}:${sessionId ?? "root"}`;
 }
 
+function isRootSession(sessionId) {
+  return sessionId === undefined || sessionId === null;
+}
+
+function frameKey(tabId, sessionId, frameId) {
+  return `${sessionKey(tabId, sessionId)}:${frameId}`;
+}
+
+function contextKey(tabId, sessionId, executionContextId) {
+  return `${sessionKey(tabId, sessionId)}:${executionContextId}`;
+}
+
+function hasHandle(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isSafeGeneration(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
 export const DEBUGGER_EVENT_ALLOWLIST = Object.freeze({
   Accessibility: Object.freeze(["loadComplete", "nodesUpdated"]),
   DOM: Object.freeze([
@@ -86,12 +106,24 @@ export class FramesRegistry {
     this.sessions = new Map();
     this.frames = new Map();
     this.contexts = new Map();
+    this.sessionMetadata = new Map();
+    this.sessionGenerationCounters = new Map();
+    this.frameGenerationCounters = new Map();
+    this.contextGenerationCounters = new Map();
+    this.retiredLogicalFrameIds = new Set();
     this.nextLogicalFrameNumber = 1;
   }
 
   allocateLogicalFrameId() {
-    const value = this.nextLogicalFrameNumber++;
-    return `frame-${value.toString(36)}`;
+    let value;
+    do {
+      const number = this.nextLogicalFrameNumber++;
+      value = `frame-${number.toString(36)}`;
+    } while (
+      this.retiredLogicalFrameIds.has(value) ||
+      this.logicalFrameIdInUse(value)
+    );
+    return value;
   }
 
   setHintSalt(hintSalt) {
@@ -103,9 +135,9 @@ export class FramesRegistry {
     spaceId,
     pageId,
     origin,
-    targetGeneration = 1,
-    documentGeneration = 1,
-    navigationGeneration = 1,
+    targetGeneration,
+    documentGeneration,
+    navigationGeneration,
   } = {}) {
     if (!Number.isInteger(tabId))
       throw new ProtocolError(
@@ -113,17 +145,34 @@ export class FramesRegistry {
         "frame binding requires an internal tab",
       );
     assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
+
+    const previous = this.tabs.get(tabId);
+    const nextTargetGeneration = isSafeGeneration(targetGeneration)
+      ? targetGeneration
+      : previous
+        ? previous.targetGeneration + 1
+        : 1;
     const binding = {
       rawTabId: tabId,
       spaceId,
       pageId,
       origin: typeof origin === "string" ? origin : undefined,
-      targetGeneration,
-      documentGeneration,
-      navigationGeneration,
-      frameTopologyVersion: 1,
+      targetGeneration: nextTargetGeneration,
+      documentGeneration: isSafeGeneration(documentGeneration)
+        ? documentGeneration
+        : previous
+          ? previous.documentGeneration + 1
+          : 1,
+      navigationGeneration: isSafeGeneration(navigationGeneration)
+        ? navigationGeneration
+        : previous
+          ? previous.navigationGeneration + 1
+          : 1,
+      frameTopologyVersion: previous ? previous.frameTopologyVersion + 1 : 1,
       sessionIds: new Set(),
     };
+
+    if (previous) this.clearTab(tabId);
     this.tabs.set(tabId, binding);
     this.sessions.set(sessionKey(tabId), binding);
     return this.publicBinding(binding);
@@ -135,9 +184,10 @@ export class FramesRegistry {
     spaceId,
     pageId,
     origin,
-    targetGeneration = 1,
-    documentGeneration = 1,
-    navigationGeneration = 1,
+    targetGeneration,
+    documentGeneration,
+    navigationGeneration,
+    targetId,
   } = {}) {
     if (
       !Number.isInteger(tabId) ||
@@ -149,7 +199,13 @@ export class FramesRegistry {
         "child session binding requires internal handles",
       );
     }
+    if (targetId !== undefined && !hasHandle(targetId))
+      throw new ProtocolError(
+        "schema_invalid",
+        "child session target handle is invalid",
+      );
     assertLogicalScope({ spaceId, pageId }, { pageRequired: true });
+    const key = sessionKey(tabId, sessionId);
     const tab = this.tabs.get(tabId);
     if (tab && (tab.spaceId !== spaceId || tab.pageId !== pageId)) {
       throw new ProtocolError(
@@ -157,20 +213,53 @@ export class FramesRegistry {
         "debugger session scope conflicts with its tab",
       );
     }
+
+    const current = this.sessions.get(key);
+    const currentMetadata = this.sessionMetadata.get(key);
+    if (
+      current &&
+      (!targetId ||
+        !currentMetadata?.targetId ||
+        currentMetadata.targetId === targetId)
+    ) {
+      if (
+        targetId !== undefined &&
+        currentMetadata &&
+        currentMetadata.targetId === undefined
+      )
+        currentMetadata.targetId = targetId;
+      return this.publicBinding(current);
+    }
+
+    if (current) this.retireSession(tabId, sessionId);
+
     const binding = tab ?? {
       rawTabId: tabId,
       spaceId,
       pageId,
       origin: typeof origin === "string" ? origin : undefined,
-      targetGeneration,
-      documentGeneration,
-      navigationGeneration,
+      targetGeneration: isSafeGeneration(targetGeneration)
+        ? targetGeneration
+        : 1,
+      documentGeneration: isSafeGeneration(documentGeneration)
+        ? documentGeneration
+        : 1,
+      navigationGeneration: isSafeGeneration(navigationGeneration)
+        ? navigationGeneration
+        : 1,
       frameTopologyVersion: 1,
       sessionIds: new Set(),
     };
+    const sessionGeneration =
+      (this.sessionGenerationCounters.get(key) ?? 0) + 1;
+    this.sessionGenerationCounters.set(key, sessionGeneration);
+    this.sessionMetadata.set(key, {
+      sessionGeneration,
+      targetId,
+    });
     binding.sessionIds.add(sessionId);
     this.tabs.set(tabId, binding);
-    this.sessions.set(sessionKey(tabId, sessionId), binding);
+    this.sessions.set(key, binding);
     return this.publicBinding(binding);
   }
 
@@ -180,50 +269,79 @@ export class FramesRegistry {
     frameId,
     logicalFrameId,
     origin,
+    parentFrameId,
     documentGeneration,
     navigationGeneration,
   } = {}) {
-    if (
-      !Number.isInteger(tabId) ||
-      typeof frameId !== "string" ||
-      frameId.length === 0
-    ) {
+    if (!Number.isInteger(tabId) || !hasHandle(frameId)) {
       throw new ProtocolError(
         "schema_invalid",
         "frame binding requires internal frame handles",
       );
     }
+    if (parentFrameId !== undefined && !hasHandle(parentFrameId))
+      throw new ProtocolError(
+        "schema_invalid",
+        "frame parent handle is invalid",
+      );
+    const key = frameKey(tabId, sessionId, frameId);
     const binding = this.sessions.get(sessionKey(tabId, sessionId));
     if (!binding)
       throw new ProtocolError(
         "page_not_found",
         "frame has no logical page binding",
       );
-    const key = `${sessionKey(tabId, sessionId)}:${frameId}`;
+    const sessionGeneration = this.sessionMetadata.get(
+      sessionKey(tabId, sessionId),
+    )?.sessionGeneration;
     const previous = this.frames.get(key);
+    if (previous) {
+      if (
+        previous.sessionGeneration !== undefined &&
+        previous.sessionGeneration !== sessionGeneration
+      )
+        throw new ProtocolError(
+          "stale_generation",
+          "frame binding belongs to an older debugger session",
+        );
+      if (typeof origin === "string") previous.origin = origin;
+      if (parentFrameId !== undefined)
+        previous.rawParentFrameId = parentFrameId;
+      if (isSafeGeneration(documentGeneration))
+        previous.documentGeneration = documentGeneration;
+      if (isSafeGeneration(navigationGeneration))
+        previous.navigationGeneration = navigationGeneration;
+      return this.publicFrame(previous);
+    }
+
+    const frameGeneration = (this.frameGenerationCounters.get(key) ?? 0) + 1;
+    this.frameGenerationCounters.set(key, frameGeneration);
+    const requestedLogicalFrameId = hasHandle(logicalFrameId)
+      ? logicalFrameId
+      : undefined;
+    const nextLogicalFrameId =
+      requestedLogicalFrameId &&
+      !this.retiredLogicalFrameIds.has(requestedLogicalFrameId) &&
+      !this.logicalFrameIdInUse(requestedLogicalFrameId)
+        ? requestedLogicalFrameId
+        : this.allocateLogicalFrameId();
     const frame = {
       rawTabId: tabId,
       rawSessionId: sessionId,
       rawFrameId: frameId,
+      rawParentFrameId: parentFrameId,
+      sessionGeneration,
       spaceId: binding.spaceId,
       pageId: binding.pageId,
-      origin:
-        typeof origin === "string"
-          ? origin
-          : (previous?.origin ?? binding.origin),
-      logicalFrameId:
-        typeof logicalFrameId === "string"
-          ? logicalFrameId
-          : (previous?.logicalFrameId ?? this.allocateLogicalFrameId()),
-      documentGeneration:
-        documentGeneration ??
-        previous?.documentGeneration ??
-        binding.documentGeneration,
-      navigationGeneration:
-        navigationGeneration ??
-        previous?.navigationGeneration ??
-        binding.navigationGeneration,
-      frameVersion: previous?.frameVersion ?? 1,
+      origin: typeof origin === "string" ? origin : binding.origin,
+      logicalFrameId: nextLogicalFrameId,
+      documentGeneration: isSafeGeneration(documentGeneration)
+        ? documentGeneration
+        : binding.documentGeneration,
+      navigationGeneration: isSafeGeneration(navigationGeneration)
+        ? navigationGeneration
+        : binding.navigationGeneration,
+      frameVersion: frameGeneration,
     };
     this.frames.set(key, frame);
     return this.publicFrame(frame);
@@ -236,172 +354,348 @@ export class FramesRegistry {
         "execution context binding is invalid",
       );
     }
-    if (
-      frameId !== undefined &&
-      (typeof frameId !== "string" || frameId.length === 0)
-    ) {
+    if (frameId !== undefined && !hasHandle(frameId))
       throw new ProtocolError(
         "schema_invalid",
         "execution context frame handle is invalid",
       );
-    }
-    const session = this.sessions.get(sessionKey(tabId, sessionId));
+    const sessionKeyValue = sessionKey(tabId, sessionId);
+    const session = this.sessions.get(sessionKeyValue);
     if (!session)
       throw new ProtocolError(
         "page_not_found",
         "execution context has no logical page binding",
       );
-    this.contexts.set(`${sessionKey(tabId, sessionId)}:${executionContextId}`, {
+    if (frameId !== undefined && !this.frameFor(tabId, sessionId, frameId))
+      throw new ProtocolError(
+        "stale_generation",
+        "execution context frame binding is not current",
+      );
+    const key = contextKey(tabId, sessionId, executionContextId);
+    const contextGeneration =
+      (this.contextGenerationCounters.get(key) ?? 0) + 1;
+    this.contextGenerationCounters.set(key, contextGeneration);
+    const sessionGeneration =
+      this.sessionMetadata.get(sessionKeyValue)?.sessionGeneration;
+    this.contexts.set(key, {
       rawTabId: tabId,
       rawSessionId: sessionId,
       rawExecutionContextId: executionContextId,
       rawFrameId: frameId,
+      sessionGeneration,
+      contextGeneration,
       spaceId: session.spaceId,
       pageId: session.pageId,
       documentGeneration: session.documentGeneration,
     });
   }
 
-  frameFor(tabId, sessionId, frameId) {
-    if (typeof frameId !== "string" || frameId.length === 0) return undefined;
-    return this.frames.get(`${sessionKey(tabId, sessionId)}:${frameId}`);
+  logicalFrameIdInUse(logicalFrameId) {
+    for (const frame of this.frames.values()) {
+      if (frame.logicalFrameId === logicalFrameId) return true;
+    }
+    return false;
   }
 
-  rawFrameIdForEvent(tabId, sessionId, method, params = {}) {
-    if (typeof params.frameId === "string") return params.frameId;
-    if (typeof params.frame?.id === "string") return params.frame.id;
+  frameFor(tabId, sessionId, frameId) {
+    if (!hasHandle(frameId)) return undefined;
+    const frame = this.frames.get(frameKey(tabId, sessionId, frameId));
+    if (!frame) return undefined;
+    const sessionGeneration = this.sessionMetadata.get(
+      sessionKey(tabId, sessionId),
+    )?.sessionGeneration;
     if (
-      method === "Runtime.executionContextCreated" &&
-      typeof params.context?.auxData?.frameId === "string"
+      frame.sessionGeneration !== undefined &&
+      frame.sessionGeneration !== sessionGeneration
     )
-      return params.context.auxData.frameId;
-    if (Number.isSafeInteger(params.executionContextId)) {
-      return this.contexts.get(
-        `${sessionKey(tabId, sessionId)}:${params.executionContextId}`,
-      )?.rawFrameId;
-    }
+      return undefined;
+    return frame;
+  }
+
+  contextFor(tabId, sessionId, executionContextId) {
+    if (!Number.isSafeInteger(executionContextId)) return undefined;
+    const key = contextKey(tabId, sessionId, executionContextId);
+    const context = this.contexts.get(key);
+    if (!context) return undefined;
+    const sessionGeneration = this.sessionMetadata.get(
+      sessionKey(tabId, sessionId),
+    )?.sessionGeneration;
+    if (
+      context.sessionGeneration !== undefined &&
+      context.sessionGeneration !== sessionGeneration
+    )
+      return undefined;
+    if (
+      context.rawFrameId !== undefined &&
+      !this.frameFor(tabId, sessionId, context.rawFrameId)
+    )
+      return undefined;
+    return context;
+  }
+
+  rawExecutionContextIdForEvent(method, params = {}) {
+    if (Number.isSafeInteger(params.executionContextId))
+      return params.executionContextId;
+    if (Number.isSafeInteger(params.exceptionDetails?.executionContextId))
+      return params.exceptionDetails.executionContextId;
     return undefined;
   }
 
+  rawFrameIdForEvent(tabId, sessionId, method, params = {}) {
+    if (hasHandle(params.frameId)) return params.frameId;
+    if (hasHandle(params.frame?.id)) return params.frame.id;
+    if (
+      method === "Runtime.executionContextCreated" &&
+      hasHandle(params.context?.auxData?.frameId)
+    )
+      return params.context.auxData.frameId;
+    const executionContextId = this.rawExecutionContextIdForEvent(
+      method,
+      params,
+    );
+    if (executionContextId !== undefined)
+      return this.contextFor(tabId, sessionId, executionContextId)?.rawFrameId;
+    return undefined;
+  }
+
+  retireFrameByKey(key) {
+    const frame = this.frames.get(key);
+    if (!frame) return false;
+    this.frameGenerationCounters.set(
+      key,
+      Math.max(this.frameGenerationCounters.get(key) ?? 0, frame.frameVersion),
+    );
+    if (hasHandle(frame.logicalFrameId))
+      this.retiredLogicalFrameIds.add(frame.logicalFrameId);
+    this.frames.delete(key);
+    for (const [contextKeyValue, context] of this.contexts) {
+      if (
+        context.rawTabId === frame.rawTabId &&
+        context.rawSessionId === frame.rawSessionId &&
+        context.rawFrameId === frame.rawFrameId
+      ) {
+        this.contextGenerationCounters.set(
+          contextKeyValue,
+          Math.max(
+            this.contextGenerationCounters.get(contextKeyValue) ?? 0,
+            context.contextGeneration ?? 0,
+          ),
+        );
+        this.contexts.delete(contextKeyValue);
+      }
+    }
+    for (const [childKey, child] of [...this.frames]) {
+      if (
+        child.rawTabId === frame.rawTabId &&
+        child.rawSessionId === frame.rawSessionId &&
+        child.rawParentFrameId === frame.rawFrameId
+      )
+        this.retireFrameByKey(childKey);
+    }
+    return true;
+  }
+
+  retireSession(tabId, sessionId, options = {}) {
+    const key = sessionKey(tabId, sessionId);
+    const binding = this.sessions.get(key);
+    if (!binding) return false;
+    const metadata = this.sessionMetadata.get(key);
+    if (
+      options.expectedSessionGeneration !== undefined &&
+      metadata?.sessionGeneration !== options.expectedSessionGeneration
+    )
+      return false;
+    if (
+      options.targetId !== undefined &&
+      metadata?.targetId !== undefined &&
+      metadata.targetId !== options.targetId
+    )
+      return false;
+
+    this.sessions.delete(key);
+    this.sessionMetadata.delete(key);
+    binding.sessionIds.delete(sessionId);
+    for (const frameKeyValue of [...this.frames.keys()]) {
+      if (frameKeyValue.startsWith(`${key}:`))
+        this.retireFrameByKey(frameKeyValue);
+    }
+    for (const [contextKeyValue, context] of this.contexts) {
+      if (contextKeyValue.startsWith(`${key}:`)) {
+        this.contextGenerationCounters.set(
+          contextKeyValue,
+          Math.max(
+            this.contextGenerationCounters.get(contextKeyValue) ?? 0,
+            context.contextGeneration ?? 0,
+          ),
+        );
+        this.contexts.delete(contextKeyValue);
+      }
+    }
+    return true;
+  }
+
   clearTab(tabId) {
-    this.tabs.delete(tabId);
+    for (const key of [...this.sessions.keys()]) {
+      if (key.startsWith(`${tabId}:`) && key !== sessionKey(tabId)) {
+        const sessionId = key.slice(`${tabId}:`.length);
+        this.retireSession(tabId, sessionId);
+      }
+    }
+    for (const [key, frame] of [...this.frames]) {
+      if (frame.rawTabId === tabId) this.retireFrameByKey(key);
+    }
+    for (const [key, context] of [...this.contexts]) {
+      if (context.rawTabId === tabId) {
+        this.contextGenerationCounters.set(
+          key,
+          Math.max(
+            this.contextGenerationCounters.get(key) ?? 0,
+            context.contextGeneration ?? 0,
+          ),
+        );
+        this.contexts.delete(key);
+      }
+    }
     for (const key of [...this.sessions.keys()]) {
       if (key.startsWith(`${tabId}:`)) this.sessions.delete(key);
     }
-    for (const [key, frame] of this.frames) {
-      if (frame.rawTabId === tabId) this.frames.delete(key);
+    for (const key of [...this.sessionMetadata.keys()]) {
+      if (key.startsWith(`${tabId}:`)) this.sessionMetadata.delete(key);
     }
-    for (const [key, context] of this.contexts) {
-      if (context.rawTabId === tabId) this.contexts.delete(key);
-    }
+    this.tabs.delete(tabId);
   }
 
   observeDebuggerEvent({ tabId, sessionId, method, params = {} } = {}) {
-    if (!isAllowedDebuggerEvent(method)) return;
+    if (!isAllowedDebuggerEvent(method)) return false;
     const binding = this.sessions.get(sessionKey(tabId, sessionId));
-    if (!binding) return;
-    if (
-      method === "Page.frameNavigated" &&
-      typeof params.frame?.id === "string"
-    ) {
+    if (!binding) return false;
+
+    if (method === "Page.frameNavigated" && hasHandle(params.frame?.id)) {
       const frameId = params.frame.id;
-      const isRoot = typeof params.frame.parentId !== "string";
-      let frame = this.frameFor(tabId, sessionId, frameId);
-      if (!isRoot && !frame) {
-        try {
-          this.bindFrame({
-            tabId,
-            sessionId,
-            frameId,
-            origin: params.frame.url,
-          });
-          frame = this.frameFor(tabId, sessionId, frameId);
-        } catch {
-          // Attribution remains conservative until the session is bound.
-        }
-      }
+      const parentFrameId = hasHandle(params.frame.parentId)
+        ? params.frame.parentId
+        : undefined;
+      const isRootNavigation =
+        isRootSession(sessionId) && parentFrameId === undefined;
+      const frame = this.frameFor(tabId, sessionId, frameId);
       if (frame) {
+        if (
+          frame.rawParentFrameId !== undefined &&
+          parentFrameId !== frame.rawParentFrameId
+        )
+          return false;
+        if (frame.rawParentFrameId === undefined && parentFrameId !== undefined)
+          frame.rawParentFrameId = parentFrameId;
         frame.documentGeneration += 1;
         frame.navigationGeneration += 1;
         frame.frameVersion += 1;
+        this.frameGenerationCounters.set(
+          frameKey(tabId, sessionId, frameId),
+          frame.frameVersion,
+        );
         if (typeof params.frame.url === "string")
           frame.origin = params.frame.url;
-      }
-      if (isRoot) {
+        if (isRootNavigation) {
+          binding.documentGeneration += 1;
+          binding.navigationGeneration += 1;
+        }
+      } else if (!isRootNavigation) {
+        // A navigation event cannot create a frame. It may be a late event for
+        // a detached frame, so keep the attribution as a hard routing miss.
+        return false;
+      } else {
         binding.documentGeneration += 1;
         binding.navigationGeneration += 1;
       }
     }
-    if (method === "Page.frameAttached" && typeof params.frameId === "string") {
+
+    if (method === "Page.frameAttached" && hasHandle(params.frameId)) {
+      const frame = this.frameFor(tabId, sessionId, params.frameId);
+      const parentFrameId = hasHandle(params.parentFrameId)
+        ? params.parentFrameId
+        : undefined;
+      if (
+        frame &&
+        frame.rawParentFrameId !== undefined &&
+        parentFrameId !== frame.rawParentFrameId
+      )
+        return false;
       try {
         this.bindFrame({
           tabId,
           sessionId,
           frameId: params.frameId,
           origin: params.url,
+          parentFrameId,
         });
       } catch {
-        // Attribution remains conservative until a logical frame binding exists.
+        return false;
       }
       binding.frameTopologyVersion += 1;
     }
-    if (method === "Page.frameDetached" && typeof params.frameId === "string") {
-      const key = `${sessionKey(tabId, sessionId)}:${params.frameId}`;
-      this.frames.delete(key);
-      for (const [contextKey, context] of this.contexts) {
-        if (
-          context.rawTabId === tabId &&
-          context.rawSessionId === sessionId &&
-          context.rawFrameId === params.frameId
-        )
-          this.contexts.delete(contextKey);
-      }
+
+    if (method === "Page.frameDetached" && hasHandle(params.frameId)) {
+      const key = frameKey(tabId, sessionId, params.frameId);
+      if (!this.frameFor(tabId, sessionId, params.frameId)) return false;
+      this.retireFrameByKey(key);
       binding.frameTopologyVersion += 1;
     }
+
     if (method === "Runtime.executionContextCreated") {
       const executionContextId = params.context?.id;
-      const frameId = params.context?.auxData?.frameId;
-      if (Number.isSafeInteger(executionContextId)) {
-        try {
-          if (typeof frameId === "string" && frameId.length > 0) {
-            const exactKey = `${sessionKey(tabId, sessionId)}:${frameId}`;
-            const previous = this.frameFor(tabId, sessionId, frameId);
-            if (!this.frames.has(exactKey)) {
-              this.bindFrame({
-                tabId,
-                sessionId,
-                frameId,
-                logicalFrameId: previous?.logicalFrameId,
-                origin: previous?.origin,
-                documentGeneration: previous?.documentGeneration,
-                navigationGeneration: previous?.navigationGeneration,
-              });
-            }
-          }
-          this.bindExecutionContext({
-            tabId,
-            sessionId,
-            executionContextId,
-            frameId,
-          });
-        } catch {
-          // Ignore contexts that cannot be attributed to a live logical page.
-        }
+      const frameId = hasHandle(params.context?.auxData?.frameId)
+        ? params.context.auxData.frameId
+        : undefined;
+      if (!Number.isSafeInteger(executionContextId)) return false;
+      if (frameId !== undefined && !this.frameFor(tabId, sessionId, frameId))
+        return false;
+      try {
+        this.bindExecutionContext({
+          tabId,
+          sessionId,
+          executionContextId,
+          frameId,
+        });
+      } catch {
+        return false;
       }
     }
+
     if (method === "Runtime.executionContextDestroyed") {
-      if (Number.isSafeInteger(params.executionContextId)) {
-        this.contexts.delete(
-          `${sessionKey(tabId, sessionId)}:${params.executionContextId}`,
-        );
-      }
+      const executionContextId = this.rawExecutionContextIdForEvent(
+        method,
+        params,
+      );
+      if (executionContextId === undefined) return false;
+      const context = this.contextFor(tabId, sessionId, executionContextId);
+      if (!context) return false;
+      this.contextGenerationCounters.set(
+        contextKey(tabId, sessionId, executionContextId),
+        Math.max(
+          this.contextGenerationCounters.get(
+            contextKey(tabId, sessionId, executionContextId),
+          ) ?? 0,
+          context.contextGeneration ?? 0,
+        ),
+      );
+      this.contexts.delete(contextKey(tabId, sessionId, executionContextId));
     }
+
     if (method === "Runtime.executionContextsCleared") {
       const prefix = `${sessionKey(tabId, sessionId)}:`;
-      for (const key of [...this.contexts.keys()]) {
-        if (key.startsWith(prefix)) this.contexts.delete(key);
+      for (const [key, context] of [...this.contexts]) {
+        if (!key.startsWith(prefix)) continue;
+        this.contextGenerationCounters.set(
+          key,
+          Math.max(
+            this.contextGenerationCounters.get(key) ?? 0,
+            context.contextGeneration ?? 0,
+          ),
+        );
+        this.contexts.delete(key);
       }
     }
+    return true;
   }
 
   routeDebuggerEvent({ tabId, sessionId, method, params = {} } = {}) {
@@ -415,11 +709,39 @@ export class FramesRegistry {
       params,
     );
     const beforeFrame = this.frameFor(tabId, sessionId, beforeFrameId);
-    this.observeDebuggerEvent({ tabId, sessionId, method, params });
+    const executionContextId = this.rawExecutionContextIdForEvent(
+      method,
+      params,
+    );
+    const beforeContext = this.contextFor(tabId, sessionId, executionContextId);
+    if (!this.observeDebuggerEvent({ tabId, sessionId, method, params }))
+      return null;
+
     const frameId =
       this.rawFrameIdForEvent(tabId, sessionId, method, params) ??
       beforeFrameId;
-    const frame = this.frameFor(tabId, sessionId, frameId) ?? beforeFrame;
+    const isFrameDetached = method === "Page.frameDetached";
+    const isContextDestroyed = method === "Runtime.executionContextDestroyed";
+    const frame =
+      this.frameFor(tabId, sessionId, frameId) ??
+      (isFrameDetached || isContextDestroyed ? beforeFrame : undefined);
+    const hasExplicitFrame =
+      hasHandle(params.frameId) ||
+      hasHandle(params.frame?.id) ||
+      hasHandle(params.context?.auxData?.frameId);
+    const isRootNavigation =
+      method === "Page.frameNavigated" &&
+      isRootSession(sessionId) &&
+      !hasHandle(params.frame?.parentId);
+    if (hasExplicitFrame && !frame && !isRootNavigation) return null;
+    if (
+      executionContextId !== undefined &&
+      !beforeContext &&
+      !this.contextFor(tabId, sessionId, executionContextId) &&
+      method !== "Runtime.executionContextCreated"
+    )
+      return null;
+
     const routed = {
       event: "debugger.event",
       method,
@@ -453,18 +775,23 @@ export class FramesRegistry {
     return event;
   }
 
-  invalidateSession(tabId, sessionId, reason = "session_lost") {
+  invalidateSession(tabId, sessionId, reason = "session_lost", options = {}) {
     const key = sessionKey(tabId, sessionId);
     const binding = this.sessions.get(key);
     if (!binding) return null;
-    this.sessions.delete(key);
-    binding.sessionIds.delete(sessionId);
-    for (const frameKey of [...this.frames.keys()]) {
-      if (frameKey.startsWith(`${key}:`)) this.frames.delete(frameKey);
-    }
-    for (const contextKey of [...this.contexts.keys()]) {
-      if (contextKey.startsWith(`${key}:`)) this.contexts.delete(contextKey);
-    }
+    const metadata = this.sessionMetadata.get(key);
+    if (
+      options.expectedSessionGeneration !== undefined &&
+      metadata?.sessionGeneration !== options.expectedSessionGeneration
+    )
+      return null;
+    if (
+      options.targetId !== undefined &&
+      metadata?.targetId !== undefined &&
+      metadata.targetId !== options.targetId
+    )
+      return null;
+    if (!this.retireSession(tabId, sessionId, options)) return null;
     const event = {
       event: "debugger.session_lost",
       reason,
@@ -478,6 +805,30 @@ export class FramesRegistry {
 
   getInternalBinding(tabId, sessionId) {
     return this.sessions.get(sessionKey(tabId, sessionId));
+  }
+
+  getSessionGeneration(tabId, sessionId) {
+    return this.sessionMetadata.get(sessionKey(tabId, sessionId))
+      ?.sessionGeneration;
+  }
+
+  isCurrentSession(tabId, sessionId, { sessionGeneration, targetId } = {}) {
+    const key = sessionKey(tabId, sessionId);
+    const current = this.sessions.get(key);
+    const metadata = this.sessionMetadata.get(key);
+    if (!current || !metadata) return false;
+    if (
+      sessionGeneration !== undefined &&
+      metadata.sessionGeneration !== sessionGeneration
+    )
+      return false;
+    if (
+      targetId !== undefined &&
+      metadata.targetId !== undefined &&
+      metadata.targetId !== targetId
+    )
+      return false;
+    return true;
   }
 
   resolveFrameScope({ tabId, frameScope = "main" } = {}) {
@@ -544,14 +895,24 @@ export class FramesRegistry {
     const binding = this.tabs.get(tabId);
     if (!binding) return null;
     for (const key of [...this.sessions.keys()]) {
-      if (key.startsWith(`${tabId}:`) && key !== sessionKey(tabId))
-        this.sessions.delete(key);
+      if (key.startsWith(`${tabId}:`) && key !== sessionKey(tabId)) {
+        const sessionId = key.slice(`${tabId}:`.length);
+        this.retireSession(tabId, sessionId);
+      }
     }
-    for (const key of [...this.frames.keys()]) {
-      if (key.startsWith(`${tabId}:`)) this.frames.delete(key);
+    for (const [key, frame] of [...this.frames]) {
+      if (frame.rawTabId === tabId) this.retireFrameByKey(key);
     }
-    for (const key of [...this.contexts.keys()]) {
-      if (key.startsWith(`${tabId}:`)) this.contexts.delete(key);
+    for (const [key, context] of [...this.contexts]) {
+      if (context.rawTabId !== tabId) continue;
+      this.contextGenerationCounters.set(
+        key,
+        Math.max(
+          this.contextGenerationCounters.get(key) ?? 0,
+          context.contextGeneration ?? 0,
+        ),
+      );
+      this.contexts.delete(key);
     }
     binding.documentGeneration = documentGeneration;
     binding.navigationGeneration = navigationGeneration;
@@ -571,8 +932,10 @@ export class FramesRegistry {
   }
 
   reset(reason = "session_reset") {
+    for (const tabId of [...this.tabs.keys()]) this.clearTab(tabId);
     this.tabs.clear();
     this.sessions.clear();
+    this.sessionMetadata.clear();
     this.frames.clear();
     this.contexts.clear();
     this.onEvent({ event: "debugger.mappings_reset", reason });
