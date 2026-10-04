@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use agentyc_core::{BrokerEpoch, LeaseEpoch, ReconcileToken, SpaceId, SpaceLifecycle};
+use agentyc_core::{
+    BrokerEpoch, LeaseEpoch, ProfileDisclosure, ReconcileToken, SpaceId, SpaceLifecycle,
+};
 use serde_json::{Value, json};
 
 use super::{
@@ -53,9 +55,21 @@ fn prune(context: &DirectContext, args: SpacePruneArgs) -> DirectResult<Value> {
 }
 
 fn create(context: &DirectContext, args: SpaceCreateArgs) -> DirectResult<Value> {
+    if !args.accept_shared_profile_disclosure {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::PermissionDenied,
+            "explicit shared-profile disclosure acknowledgement is required before space creation",
+        ));
+    }
+    let disclosure = ProfileDisclosure {
+        profile_scope: ProfileDisclosure::PROFILE_SCOPE.to_owned(),
+        shared_state_notice: ProfileDisclosure::SHARED_STATE_NOTICE.to_owned(),
+        isolation_claim: false,
+        acknowledged: true,
+    };
     if let Some((broker, authority)) = context.local() {
         let space = broker
-            .create_space(authority, args.label)
+            .create_space_with_disclosure(authority, args.label, disclosure)
             .map_err(host_error)?;
         return Ok(json!({
             "space": space,
@@ -66,7 +80,19 @@ fn create(context: &DirectContext, args: SpaceCreateArgs) -> DirectResult<Value>
 
     let response = context.request(
         "space.create",
-        BTreeMap::from([("label".to_owned(), args.label)]),
+        BTreeMap::from([
+            ("label".to_owned(), args.label),
+            ("profile_scope".to_owned(), disclosure.profile_scope),
+            (
+                "shared_state_notice".to_owned(),
+                disclosure.shared_state_notice,
+            ),
+            ("isolation_claim".to_owned(), "false".to_owned()),
+            (
+                "profile_disclosure_acknowledged".to_owned(),
+                "true".to_owned(),
+            ),
+        ]),
     )?;
     Ok(json!({
         "space": remote_field(&response, "space")?,
