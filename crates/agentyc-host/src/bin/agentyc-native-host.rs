@@ -10,15 +10,21 @@ use std::{
     env,
     path::PathBuf,
     process::ExitCode,
+    sync::Arc,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use agentyc_core::{CoreError, ErrorCode, LeaseEpoch, PrincipalId, SpaceId, Timestamp};
+use agentyc_core::{
+    CoreError, ErrorCode, LeaseEpoch, PrincipalId, ProfileBindingId, ProfileDisclosure, SpaceId,
+    Timestamp,
+};
 use agentyc_host::native_messaging::NativeRequest;
 use agentyc_host::{
-    AuthorityTicket, Broker, LocalHostServer, NativeMessagingBridge, NativeMessagingConfig,
-    configured_socket_path,
+    AuthorityTicket, BridgeRouter, Broker, EndpointMetadata, HostLifecycle, Ledger, LedgerError,
+    LocalHostServer, NativeForwardServer, NativeMessagingBridge, NativeMessagingConfig,
+    configured_socket_path, forward_stdio_to_owner, publish_endpoint_metadata,
+    remove_endpoint_metadata_if_owner,
 };
 use serde_json::{Map, Value, json};
 
@@ -55,15 +61,57 @@ fn run() -> Result<(), String> {
 
     let state_dir = state_directory()?;
     let config = NativeMessagingConfig::new(configured).map_err(|error| error.to_string())?;
+
+    // The ledger lock is acquired before consuming Native Messaging bytes. A
+    // duplicate Chrome-launched shim therefore cannot create a second broker or
+    // consume a handshake that the current owner must process.
+    let ledger = match Ledger::open(&state_dir) {
+        Ok(ledger) => ledger,
+        Err(LedgerError::AlreadyOwned) => {
+            #[cfg(unix)]
+            {
+                forward_stdio_to_owner(&state_dir, config.handshake_timeout)
+                    .map_err(|error| error.to_string())?;
+                return Ok(());
+            }
+            #[cfg(not(unix))]
+            {
+                return Err("a broker already owns the state directory".to_owned());
+            }
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+
+    #[cfg(unix)]
+    let forward_server =
+        NativeForwardServer::start(&state_dir).map_err(|error| error.to_string())?;
     let (native_hello, bridge) =
-        NativeMessagingBridge::accept_stdio(config).map_err(|error| error.to_string())?;
+        NativeMessagingBridge::accept_stdio(config.clone()).map_err(|error| error.to_string())?;
     let principal = PrincipalId::from_suffix("extension")
         .map_err(|error| format!("invalid extension principal: {error}"))?;
     let hello = native_hello
         .to_core_hello(principal)
         .map_err(|error| error.to_string())?;
-    let broker = Broker::open(&state_dir, bridge.clone()).map_err(|error| error.to_string())?;
-    let connection = broker.hello(&hello).map_err(|error| error.to_string())?;
+    let router = Arc::new(BridgeRouter::with_bridge(Arc::new(bridge.clone())));
+    let broker = Broker::with_shared_bridge(ledger, router.clone());
+    broker
+        .transition_lifecycle(HostLifecycle::Starting)
+        .map_err(|error| error.to_string())?;
+    broker
+        .wait_for_extension()
+        .map_err(|error| error.to_string())?;
+    let connection = match broker.hello(&hello) {
+        Ok(connection) => connection,
+        Err(error) => {
+            if error.as_core_error().code == ErrorCode::ProfileNotFound
+                && let Ok(observed_profile) =
+                    ProfileBindingId::new(native_hello.profile_instance_id.clone())
+            {
+                let _ = broker.mark_profile_rebind_required(&observed_profile);
+            }
+            return Err(error.to_string());
+        }
+    };
     let capabilities = broker.capabilities().map_err(|error| error.to_string())?;
     bridge
         .complete_handshake(
@@ -73,22 +121,44 @@ fn run() -> Result<(), String> {
             &capabilities,
         )
         .map_err(|error| error.to_string())?;
+    broker.mark_ready().map_err(|error| error.to_string())?;
     let mut side_panel_tickets = send_control_spaces(&broker, connection.authority(), &bridge)?;
 
     // The reader thread owns Native Messaging input and routes responses/events
     // to the bridge. Agent/MCP clients use the separate owner-only local socket;
-    // they never open a second ledger or broker.
+    // duplicate shims forward to this process and never open another ledger.
     let local_server = LocalHostServer::start(broker.clone(), configured_socket_path(&state_dir))
         .map_err(|error| error.to_string())?;
-    supervise_native_requests(
+    let endpoint = EndpointMetadata::new(
+        broker
+            .broker_epoch()
+            .map_err(|error| error.to_string())?
+            .get(),
+        std::process::id(),
+        local_server.socket_path().display().to_string(),
+        #[cfg(unix)]
+        forward_server.socket_path().display().to_string(),
+        #[cfg(not(unix))]
+        "unsupported".to_owned(),
+    );
+    publish_endpoint_metadata(&state_dir, &endpoint).map_err(|error| error.to_string())?;
+    let supervision = supervise_native_requests(
         &broker,
-        connection.authority(),
-        &bridge,
+        connection.authority().clone(),
+        bridge,
         &mut side_panel_tickets,
-    )?;
+        #[cfg(unix)]
+        &forward_server,
+        &router,
+        &config,
+    );
     local_server.stop();
+    #[cfg(unix)]
+    forward_server.stop();
     let _ = broker.disconnect(connection.authority());
-    Ok(())
+    let _ =
+        remove_endpoint_metadata_if_owner(&state_dir, endpoint.broker_epoch, endpoint.owner_pid);
+    supervision
 }
 
 fn send_control_spaces(
@@ -169,36 +239,89 @@ fn send_control_spaces(
 
 fn supervise_native_requests(
     broker: &Broker,
-    authority: &AuthorityTicket,
-    bridge: &NativeMessagingBridge,
+    authority: AuthorityTicket,
+    bridge: NativeMessagingBridge,
     tickets: &mut SidePanelTicketRegistry,
+    #[cfg(unix)] forward_server: &NativeForwardServer,
+    router: &Arc<BridgeRouter>,
+    config: &NativeMessagingConfig,
 ) -> Result<(), String> {
+    let mut authority = authority;
+    let mut bridge = bridge;
+    let mut degraded_since = None;
     loop {
+        #[cfg(unix)]
+        if let Ok(stream) = forward_server.accept_forwarded(Duration::ZERO) {
+            let reader = stream
+                .try_clone()
+                .map_err(|error| format!("Native Messaging forwarding clone failed: {error}"))?;
+            match NativeMessagingBridge::accept(reader, stream, config.clone()) {
+                Ok((next_hello, next_bridge)) => {
+                    let principal = PrincipalId::from_suffix("extension")
+                        .map_err(|error| format!("invalid extension principal: {error}"))?;
+                    let hello = next_hello
+                        .to_core_hello(principal)
+                        .map_err(|error| error.to_string())?;
+                    let next_connection =
+                        broker.hello(&hello).map_err(|error| error.to_string())?;
+                    let capabilities = broker.capabilities().map_err(|error| error.to_string())?;
+                    next_bridge
+                        .complete_handshake(
+                            &next_hello,
+                            next_connection.broker_epoch,
+                            next_connection.connection_epoch,
+                            &capabilities,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    router
+                        .install(Arc::new(next_bridge.clone()))
+                        .map_err(|error| error.to_string())?;
+                    broker.mark_ready().map_err(|error| error.to_string())?;
+                    bridge = next_bridge;
+                    authority = next_connection.authority().clone();
+                    *tickets = send_control_spaces(broker, &authority, &bridge)?;
+                    degraded_since = None;
+                    continue;
+                }
+                Err(_) => continue,
+            }
+        }
+
+        if bridge.is_closed() {
+            if degraded_since.is_none() {
+                let _ = router.clear();
+                let _ = broker.mark_degraded(agentyc_host::HostDegradedReason::ExtensionLost);
+                degraded_since = Some(std::time::Instant::now());
+            }
+            if degraded_since.is_some_and(|at| at.elapsed() >= Duration::from_secs(30)) {
+                return Ok(());
+            }
+            thread::sleep(SUPERVISOR_POLL_INTERVAL);
+            continue;
+        }
+
         for event in bridge.drain_events() {
             // Lifecycle events are advisory browser observations. Reduce the
             // bounded queue into the broker before accepting more requests;
             // never replay browser commands from an event.
-            let _ = broker.apply_bridge_event(authority, &event, Timestamp::new(current_millis()));
+            let _ = broker.apply_bridge_event(&authority, &event, Timestamp::new(current_millis()));
         }
         for request in bridge.drain_requests() {
             if bridge.is_closed() {
-                return Ok(());
+                break;
             }
-            let result = dispatch_native_request(broker, authority, &request, tickets);
+            let result = dispatch_native_request(broker, &authority, &request, tickets);
             let should_refresh_spaces = result.is_ok();
             if let Err(error) = bridge.respond(&request, result) {
                 if bridge.is_closed() {
-                    return Ok(());
+                    break;
                 }
                 return Err(error.to_string());
             }
             if should_refresh_spaces {
-                let refreshed = send_control_spaces(broker, authority, bridge)?;
+                let refreshed = send_control_spaces(broker, &authority, &bridge)?;
                 tickets.issued.extend(refreshed.issued);
             }
-        }
-        if bridge.is_closed() {
-            return Ok(());
         }
         thread::sleep(SUPERVISOR_POLL_INTERVAL);
     }
@@ -215,10 +338,20 @@ fn dispatch_native_request(
     })?;
     match request.method.as_str() {
         "space.create" => {
-            ensure_allowed_params(params, &["label"])?;
+            ensure_allowed_params(
+                params,
+                &[
+                    "label",
+                    "profile_scope",
+                    "shared_state_notice",
+                    "isolation_claim",
+                    "profile_disclosure_acknowledged",
+                ],
+            )?;
             let label = required_string_param(params, "label")?;
+            let disclosure = profile_disclosure_param(params)?;
             let space = broker
-                .create_space(authority, label.to_owned())
+                .create_space_with_disclosure(authority, label.to_owned(), disclosure)
                 .map_err(|error| error.as_core_error())?;
             Ok(json!({
                 "space": &space,
@@ -240,6 +373,27 @@ fn dispatch_native_request(
                 "lease_epoch": &takeover.lease_epoch,
                 "fence_acknowledged": takeover.fence_acknowledged,
                 "lifecycle": &takeover.lifecycle,
+            }))
+        }
+        "space.pause" | "space.handoff" => {
+            ensure_allowed_params(params, &["space_id", "now", "ttl", "intent_ticket"])?;
+            let space_id = parse_space_param(params)?;
+            let now = timestamp_param(params)?;
+            let ttl = optional_u64_param(params, "ttl")?.unwrap_or(DEFAULT_SIDE_PANEL_TTL);
+            validate_side_panel_intent(params, request.method.as_str(), &space_id, tickets)?;
+            let space = if request.method == "space.pause" {
+                broker
+                    .pause_space(&space_id, authority, now, ttl)
+                    .map_err(|error| error.as_core_error())?
+            } else {
+                broker
+                    .handoff_space(&space_id, authority, now, ttl)
+                    .map_err(|error| error.as_core_error())?
+            };
+            Ok(json!({
+                "space": &space,
+                "space_id": &space.space_id,
+                "lifecycle": &space.lifecycle,
             }))
         }
         "space.return" | "space.return_control" => {
@@ -366,6 +520,8 @@ fn validate_side_panel_intent(
     }
     let valid = match method {
         "space.takeover" => action == "takeover" || action == "retain",
+        "space.pause" => action == "pause" || action == "stop",
+        "space.handoff" => action == "handoff" || action == "stop",
         "space.return_control" => matches!(action, "return_control" | "stop" | "pause" | "handoff"),
         "space.finish" => action == "finish",
         "space.release" => action == "release",
@@ -395,6 +551,31 @@ fn ensure_allowed_params(params: &Map<String, Value>, allowed: &[&str]) -> Resul
         )));
     }
     Ok(())
+}
+
+fn profile_disclosure_param(params: &Map<String, Value>) -> Result<ProfileDisclosure, CoreError> {
+    let string_param = |key: &str| {
+        params
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| CoreError::invalid_argument(format!("{key} must be a string")))
+    };
+    let disclosure = ProfileDisclosure {
+        profile_scope: string_param("profile_scope")?.to_owned(),
+        shared_state_notice: string_param("shared_state_notice")?.to_owned(),
+        isolation_claim: params
+            .get("isolation_claim")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| CoreError::invalid_argument("isolation_claim must be boolean"))?,
+        acknowledged: params
+            .get("profile_disclosure_acknowledged")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| {
+                CoreError::invalid_argument("profile_disclosure_acknowledged must be boolean")
+            })?,
+    };
+    disclosure.validate()?;
+    Ok(disclosure)
 }
 
 fn required_string_param<'a>(
@@ -550,7 +731,13 @@ mod tests {
             request_id: "req_side_panel_create".to_owned(),
             action_id: Some("action_side_panel_create".to_owned()),
             method: "space.create".to_owned(),
-            params: json!({"label": "panel"}),
+            params: json!({
+                "label": "panel",
+                "profile_scope": "shared_existing_profile",
+                "shared_state_notice": "shared_profile_state",
+                "isolation_claim": false,
+                "profile_disclosure_acknowledged": true,
+            }),
         };
 
         let result =
