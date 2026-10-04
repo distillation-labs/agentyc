@@ -286,6 +286,7 @@ test("Chrome 125 related-target sessions are attached recursively and routed log
     tabs,
     frames,
     onEvent: (event) => routed.push(event),
+    enableEventDomains: true,
   });
   await tabs.start();
   tabs.bindManagedTab({
@@ -301,18 +302,31 @@ test("Chrome 125 related-target sessions are attached recursively and routed log
     pageId: "page_one",
     leaseEpoch: 1,
   });
-  assert.equal(chrome.debuggerInternalCommands.length, 1);
+  assert.equal(
+    chrome.debuggerInternalCommands.filter(
+      (command) => command.method === "Target.setAutoAttach",
+    ).length,
+    1,
+  );
   chrome.emitDebuggerEvent(1, "Target.attachedToTarget", {
     sessionId: "child-session",
     targetInfo: { type: "iframe", url: "https://child.agent.test/" },
   });
-  await wait();
-  await wait();
+  for (let index = 0; index < 8; index += 1) await wait();
   assert.equal(Boolean(frames.getInternalBinding(1, "child-session")), true);
-  assert.equal(chrome.debuggerInternalCommands.length, 2);
   assert.equal(
-    chrome.debuggerInternalCommands[1].source.sessionId,
-    "child-session",
+    chrome.debuggerInternalCommands.filter(
+      (command) => command.method === "Target.setAutoAttach",
+    ).length,
+    2,
+  );
+  assert.equal(
+    chrome.debuggerCommands.some(
+      (command) =>
+        command.method === "Runtime.enable" &&
+        command.source.sessionId === "child-session",
+    ),
+    true,
   );
   frames.bindFrame({
     tabId: 1,
@@ -346,6 +360,182 @@ test("Chrome 125 related-target sessions are attached recursively and routed log
   });
   assert.equal(frames.getInternalBinding(1, "child-session"), undefined);
   bridge.stop();
+});
+
+test("synchronous related-target events are attributed before auto-attach completes", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://agent.test/" }],
+  });
+  const groups = new GroupsRegistry({ chromeApi: chrome });
+  const tabs = new TabsRegistry({ chromeApi: chrome, groups });
+  const frames = new FramesRegistry();
+  const bridge = new DebuggerBridge({
+    chromeApi: chrome,
+    tabs,
+    frames,
+    enableEventDomains: true,
+  });
+  await tabs.start();
+  tabs.bindManagedTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+    leaseEpoch: 1,
+    ownershipProof: proof(),
+  });
+  bridge.start();
+
+  const sendCommand = chrome.debugger.sendCommand;
+  chrome.debugger.sendCommand = async (source, method, params) => {
+    const result = await sendCommand(source, method, params);
+    if (method === "Target.setAutoAttach" && source.sessionId === undefined) {
+      chrome.emitDebuggerEvent(1, "Target.attachedToTarget", {
+        sessionId: "sync-child-session",
+        targetInfo: { type: "iframe", url: "https://child.agent.test/" },
+      });
+    }
+    return result;
+  };
+
+  await bridge.attach({
+    spaceId: "space_one",
+    pageId: "page_one",
+    leaseEpoch: 1,
+  });
+  assert.equal(
+    frames.getInternalBinding(1, "sync-child-session")?.pageId,
+    "page_one",
+  );
+  for (let index = 0; index < 8; index += 1) await wait();
+  assert.equal(
+    chrome.debuggerInternalCommands.filter(
+      (command) => command.method === "Target.setAutoAttach",
+    ).length,
+    2,
+  );
+  assert.equal(
+    chrome.debuggerCommands.some(
+      (command) =>
+        command.method === "Runtime.enable" &&
+        command.source.sessionId === "sync-child-session",
+    ),
+    true,
+  );
+  bridge.stop();
+});
+
+test("auto-attach setup failure rolls back the root debugger attachment", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://agent.test/" }],
+  });
+  const groups = new GroupsRegistry({ chromeApi: chrome });
+  const tabs = new TabsRegistry({ chromeApi: chrome, groups });
+  const frames = new FramesRegistry();
+  const bridge = new DebuggerBridge({ chromeApi: chrome, tabs, frames });
+  await tabs.start();
+  tabs.bindManagedTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+    leaseEpoch: 1,
+    ownershipProof: proof(),
+  });
+  chrome.debuggerFailures.set(
+    "Target.setAutoAttach",
+    new Error("auto-attach setup failed"),
+  );
+
+  await assert.rejects(
+    () =>
+      bridge.attach({
+        spaceId: "space_one",
+        pageId: "page_one",
+        leaseEpoch: 1,
+      }),
+    (error) => error.code === "unknown_outcome",
+  );
+  assert.deepEqual(chrome.debuggerDetachCalls, [{ tabId: 1 }]);
+  assert.equal(chrome.debugger.attached.has(1), false);
+  assert.equal(bridge.isAttached("page_one"), false);
+  assert.equal(frames.getInternalBinding(1), undefined);
+});
+
+test("frame and execution-context events retain logical attribution without raw handles", () => {
+  const routed = [];
+  const frames = new FramesRegistry({ onRoute: (event) => routed.push(event) });
+  frames.bindTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindSession({
+    tabId: 1,
+    sessionId: "child-session",
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-frame",
+    logicalFrameId: "logical-frame",
+  });
+
+  const attached = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Page.frameAttached",
+    params: { frameId: "raw-frame", parentFrameId: "raw-root" },
+  });
+  assert.equal(attached.frame_id, "logical-frame");
+  assert.equal(attached.params.frameId, undefined);
+  assert.equal(attached.params.parentFrameId, undefined);
+
+  const created = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextCreated",
+    params: {
+      context: { id: 7, auxData: { frameId: "raw-frame", isDefault: true } },
+    },
+  });
+  assert.equal(created.frame_id, "logical-frame");
+  assert.equal(created.params.context.id, undefined);
+  assert.equal(created.params.context.auxData.frameId, undefined);
+  assert.equal(frames.contexts.size, 1);
+
+  const consoleEvent = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.consoleAPICalled",
+    params: { executionContextId: 7, type: "log", args: [] },
+  });
+  assert.equal(consoleEvent.frame_id, "logical-frame");
+
+  const destroyed = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextDestroyed",
+    params: { executionContextId: 7 },
+  });
+  assert.equal(destroyed.frame_id, "logical-frame");
+  assert.equal(frames.contexts.size, 0);
+
+  frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextCreated",
+    params: { context: { id: 8, auxData: { frameId: "raw-frame" } } },
+  });
+  assert.equal(frames.contexts.size, 1);
+  frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextsCleared",
+    params: {},
+  });
+  assert.equal(frames.contexts.size, 0);
+  assert.equal(routed.length, 6);
 });
 
 test("debugger detach is a loss event and does not trigger an automatic reattach", async () => {
