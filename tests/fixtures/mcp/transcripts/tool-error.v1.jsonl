@@ -1,0 +1,2 @@
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"tools/call","params":{"name":"host_space_finish","arguments":{"space_id":"space_fixture","lease_epoch":2}}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"server_to_client","method":"tools/call_result","result":{"isError":true,"structuredContent":{"ok":false,"error":{"code":"stale_lease","retryable":false,"guidance":"refresh_lease","message":"fixture lease is stale","next_action":"refresh_lease"}}}}
