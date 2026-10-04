@@ -204,4 +204,20 @@ The official Chrome documentation audit is recorded in `research/phase-0-chrome-
 | Relative Markdown links in edited Phase 0/release/research files                        | Passed; local link destinations exist.                                                                                                                                                                                 |
 | Scoped `git diff --check`                                                               | Passed; no whitespace errors in owned documentation.                                                                                                                                                                   |
 
-P0-T6 and P0-T7 remain unchecked in the plan because the current checker accepts narrower disposable instrumentation than their full done-when requirements. The audit changes no release threshold and claims no new product test, enrollment, live scenario, or Phase 0 completion.
+P0-T6 and P0-T7 remain unchecked in the historical plan text because the current checker accepts narrower disposable instrumentation than their full done-when requirements. The audit changes no release threshold and claims no new product test, enrollment, live scenario, or Phase 0 completion.
+
+## 10. Current Phase 0 closure addendum — 2026-10-03
+
+The historical blocked capture above is retained. It is superseded for the current worktree by the fresh headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` and the hardening/test results recorded in the execution plan. The current report has:
+
+- `status: live_passed`, `current_run: true`, `release_eligible: true`;
+- current-run profile/host/extension enrollment observations;
+- two managed pages in two logical spaces and two visual groups;
+- an active unrelated unmanaged user tab with unchanged focus;
+- snapshots and allowlisted screenshot actions;
+- cross-space rejection and stale-lease rejection;
+- takeover fencing, fresh ticketed reclaim, cleanup/release;
+- worker, host, browser-session, and extension-update recovery observations;
+- measured-live safety counters of zero for user-tab closes, focus theft, cross-space mutations, and stale-agent mutations.
+
+The report is accepted only by `scripts/check_phase_0_baseline.py`, which verifies the current-run envelope, ordered ten-scenario evidence, receipt references, enrollment markers, browser policy, and zero safety counters. It does not claim OOPIF/flat-session support, ordinary-user distribution, selected-page retention, or deployed-tokenizer performance; those are explicit Phase 1/6/7 residuals.
