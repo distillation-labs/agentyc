@@ -1,6 +1,6 @@
 # Agentyc Browser Automation Plugin
 
-This plugin gives a coding agent deterministic browser automation. For existing-Chrome workflows, use the [host-backed logical task-space/page API](../../docs/api-local.md); direct-CDP and current-tab workflows are legacy compatibility only.
+This plugin gives a coding agent deterministic browser automation. The direct host-backed CLI and Node SDK is the primary interface; MCP is compatibility-only. For existing-Chrome workflows, use the [host-backed logical task-space/page API](../../docs/api-local.md); direct-CDP and current-tab workflows are legacy compatibility only.
 
 ## Install
 
@@ -17,7 +17,7 @@ Copy or register the versioned skill at `.agents/skills/agentyc-browser-automati
     "agentyc": {
       "type": "local",
       "command": ["agentyc", "mcp"],
-      "env": {"AGENTYC_HEADLESS": "1"}
+      "env": { "AGENTYC_HEADLESS": "1" }
     }
   }
 }
@@ -31,7 +31,7 @@ For clients that use a flat MCP server map, use:
     "agentyc": {
       "command": "agentyc",
       "args": ["mcp"],
-      "env": {"AGENTYC_HEADLESS": "1"}
+      "env": { "AGENTYC_HEADLESS": "1" }
     }
   }
 }
