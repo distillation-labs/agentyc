@@ -1,0 +1,5 @@
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"POST","endpoint":"local-loopback:/mcp","headers":{"Mcp-Protocol-Version":"2024-11-05","Accept":"text/event-stream"},"body":{"method":"initialize"}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"server_to_client","method":"SSE","headers":{"Mcp-Session-Id":"<redacted session id>"},"body":{"protocolVersion":"2024-11-05"}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"GET","endpoint":"local-loopback:/mcp","headers":{"Mcp-Session-Id":"<redacted session id>","Last-Event-ID":"<redacted event id>"}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"POST","endpoint":"local-loopback:/mcp","headers":{"Mcp-Session-Id":"<redacted session id>"},"body":{"method":"tools/call","params":{"name":"host_space_list"}}}
+{"schema_version":1,"sanitized":true,"live_claims":false,"direction":"client_to_server","method":"DELETE","endpoint":"local-loopback:/mcp","headers":{"Mcp-Session-Id":"<redacted session id>"}}
