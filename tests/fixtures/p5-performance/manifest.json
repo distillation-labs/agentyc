@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "phase": 5,
+  "fixture_set": "phase-5-context-performance",
+  "deterministic": true,
+  "network": "local-only",
+  "external_resources": false,
+  "fixtures": [
+    {
+      "name": "small-form",
+      "file": "../browser-task-spaces/small-form.html",
+      "topology": "static",
+      "mutation_profile": "single-control"
+    },
+    {
+      "name": "dense-admin-table",
+      "file": "../browser-task-spaces/dense-admin-table.html",
+      "topology": "static",
+      "mutation_profile": "table-reorder"
+    },
+    {
+      "name": "dynamic-feed",
+      "file": "../browser-task-spaces/dynamic-feed.html",
+      "topology": "static",
+      "mutation_profile": "append-burst"
+    },
+    {
+      "name": "nested-frame",
+      "file": "../browser-task-spaces/nested-frame.html",
+      "topology": "nested",
+      "mutation_profile": "frame-action"
+    },
+    {
+      "name": "oopif-shell",
+      "file": "oopif-shell.html",
+      "topology": "oopif",
+      "mutation_profile": "frame-replacement"
+    }
+  ]
+}
