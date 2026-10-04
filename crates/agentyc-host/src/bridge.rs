@@ -7,12 +7,12 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::Mutex,
+    sync::{Arc, Mutex, RwLock},
 };
 
 use agentyc_core::{
     ActionReceipt, ActionRequest, BrokerEpoch, Capability, CoreError, ErrorCode, LeaseEpoch,
-    PageId, SnapshotEnvelope, SpaceId, UnknownReason,
+    PageId, ReconcileToken, SnapshotEnvelope, SpaceId, UnknownReason,
 };
 use serde_json::{Map, Value, json};
 
@@ -573,6 +573,22 @@ pub trait Bridge: Send + Sync {
         broker_epoch: BrokerEpoch,
     ) -> Result<FenceResult, CoreError>;
 
+    /// Fence one logical space using the exact durable request token.
+    ///
+    /// The default keeps existing bridge implementations source-compatible;
+    /// durable-aware bridges override this method to bind the acknowledgement
+    /// to the host ledger's pending request.
+    fn fence_with_token(
+        &self,
+        space_id: &SpaceId,
+        old_epoch: Option<LeaseEpoch>,
+        new_epoch: LeaseEpoch,
+        broker_epoch: BrokerEpoch,
+        _request_token: &ReconcileToken,
+    ) -> Result<FenceResult, CoreError> {
+        self.fence(space_id, old_epoch, new_epoch, broker_epoch)
+    }
+
     /// Close one explicitly authorized logical page; never close a whole space.
     fn close_page(
         &self,
@@ -626,6 +642,219 @@ pub trait Bridge: Send + Sync {
             ErrorCode::CapabilityUnavailable,
             "bridge does not support visual group presentation",
         ))
+    }
+}
+
+/// A host-owned bridge slot that can replace a disconnected Native Messaging
+/// session without replacing the broker or ledger authority.
+#[derive(Clone, Default)]
+pub struct BridgeRouter {
+    current: Arc<RwLock<Option<Arc<dyn Bridge>>>>,
+}
+
+impl std::fmt::Debug for BridgeRouter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BridgeRouter")
+            .field(
+                "connected",
+                &self
+                    .current
+                    .read()
+                    .map(|bridge| bridge.is_some())
+                    .unwrap_or(false),
+            )
+            .finish()
+    }
+}
+
+impl BridgeRouter {
+    /// Construct an empty router; mutations fail closed until a bridge is installed.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Construct a router with the current bridge session.
+    pub fn with_bridge(bridge: Arc<dyn Bridge>) -> Self {
+        Self {
+            current: Arc::new(RwLock::new(Some(bridge))),
+        }
+    }
+
+    /// Replace the current browser bridge after a trusted reconnect handshake.
+    pub fn install(&self, bridge: Arc<dyn Bridge>) -> Result<(), CoreError> {
+        let mut current = self.current.write().map_err(|_| {
+            CoreError::new(
+                ErrorCode::ExtensionNotConnected,
+                "bridge router is poisoned",
+            )
+        })?;
+        *current = Some(bridge);
+        Ok(())
+    }
+
+    /// Remove the current bridge after a transport disconnect.
+    pub fn clear(&self) -> Result<(), CoreError> {
+        let mut current = self.current.write().map_err(|_| {
+            CoreError::new(
+                ErrorCode::ExtensionNotConnected,
+                "bridge router is poisoned",
+            )
+        })?;
+        *current = None;
+        Ok(())
+    }
+
+    /// Return whether a live bridge session is installed.
+    pub fn is_connected(&self) -> bool {
+        self.current
+            .read()
+            .map(|bridge| bridge.is_some())
+            .unwrap_or(false)
+    }
+
+    fn current(&self) -> Result<Arc<dyn Bridge>, CoreError> {
+        self.current
+            .read()
+            .map_err(|_| {
+                CoreError::new(
+                    ErrorCode::ExtensionNotConnected,
+                    "bridge router is poisoned",
+                )
+            })?
+            .clone()
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::ExtensionNotConnected,
+                    "no browser bridge is connected",
+                )
+            })
+    }
+}
+
+impl Bridge for BridgeRouter {
+    fn capabilities(&self) -> Vec<Capability> {
+        self.current()
+            .map(|bridge| bridge.capabilities())
+            .unwrap_or_default()
+    }
+
+    fn extension_epochs(&self) -> Option<ExtensionEpochs> {
+        self.current()
+            .ok()
+            .and_then(|bridge| bridge.extension_epochs())
+    }
+
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        self.current()
+            .ok()
+            .and_then(|bridge| bridge.bridge_status())
+    }
+
+    fn dispatch(
+        &self,
+        request: &ActionRequest<BTreeMap<String, String>>,
+    ) -> Result<BridgeDispatchResult, CoreError> {
+        self.current()?.dispatch(request)
+    }
+
+    fn reconcile(&self, receipt: &ActionReceipt) -> Result<BridgeReconcileResult, CoreError> {
+        self.current()?.reconcile(receipt)
+    }
+
+    fn observe(&self) -> Result<ObservationSnapshot, CoreError> {
+        self.current()?.observe()
+    }
+
+    fn snapshot(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+    ) -> Result<SnapshotEnvelope, CoreError> {
+        self.current()?.snapshot(space_id, page_id, lease_epoch)
+    }
+
+    fn fence(
+        &self,
+        space_id: &SpaceId,
+        old_epoch: Option<LeaseEpoch>,
+        new_epoch: LeaseEpoch,
+        broker_epoch: BrokerEpoch,
+    ) -> Result<FenceResult, CoreError> {
+        self.current()?
+            .fence(space_id, old_epoch, new_epoch, broker_epoch)
+    }
+
+    fn fence_with_token(
+        &self,
+        space_id: &SpaceId,
+        old_epoch: Option<LeaseEpoch>,
+        new_epoch: LeaseEpoch,
+        broker_epoch: BrokerEpoch,
+        request_token: &ReconcileToken,
+    ) -> Result<FenceResult, CoreError> {
+        self.current()?.fence_with_token(
+            space_id,
+            old_epoch,
+            new_epoch,
+            broker_epoch,
+            request_token,
+        )
+    }
+
+    fn close_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+    ) -> Result<(), CoreError> {
+        self.current()?.close_page(space_id, page_id, lease_epoch)
+    }
+
+    fn create_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        url: Option<&str>,
+        title: Option<&str>,
+        ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        self.current()?
+            .create_page(space_id, page_id, lease_epoch, url, title, ownership_proof)
+    }
+
+    fn rebind_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        target_generation: u64,
+        navigation_generation: u64,
+        document_generation: u64,
+        ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        self.current()?.rebind_page(
+            space_id,
+            page_id,
+            lease_epoch,
+            target_generation,
+            navigation_generation,
+            document_generation,
+            ownership_proof,
+        )
+    }
+
+    fn present_group(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        self.current()?
+            .present_group(space_id, page_id, lease_epoch, title)
     }
 }
 
@@ -1053,6 +1282,20 @@ mod tests {
         assert!(snapshot.pages[1].get("page_id").is_none());
         assert!(snapshot.groups[0].get("group_id").is_none());
         assert!(snapshot.groups[0].get("path").is_none());
+    }
+
+    #[test]
+    fn bridge_router_replaces_only_the_live_adapter_and_fails_closed_when_empty() {
+        let first = Arc::new(FakeBridge::new());
+        first.set_capabilities(vec![Capability::Action]);
+        let second = Arc::new(FakeBridge::new());
+        second.set_capabilities(vec![Capability::Snapshot]);
+        let router = BridgeRouter::with_bridge(first);
+        assert_eq!(router.capabilities(), vec![Capability::Action]);
+        router.install(second).expect("install replacement");
+        assert_eq!(router.capabilities(), vec![Capability::Snapshot]);
+        router.clear().expect("clear bridge");
+        assert!(router.observe().is_err());
     }
 
     #[test]
