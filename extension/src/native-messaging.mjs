@@ -41,6 +41,108 @@ function defaultNativeLimits() {
   };
 }
 
+const RESUME_STATUSES = new Set(["accepted", "resync_required"]);
+
+function nativeResumeCursor(value, field = "resume cursor") {
+  if (value === undefined || value === null) return undefined;
+  if (
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    throw new ProtocolError("schema_invalid", `${field} must be an object`);
+  }
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("broker_epoch") ||
+    !keys.includes("sequence")
+  ) {
+    throw new ProtocolError("schema_invalid", `${field} has unknown fields`);
+  }
+  if (
+    !Number.isSafeInteger(value.broker_epoch) ||
+    value.broker_epoch < 1 ||
+    value.broker_epoch > Number.MAX_SAFE_INTEGER
+  ) {
+    throw new ProtocolError(
+      "schema_invalid",
+      `${field}.broker_epoch is invalid`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(value.sequence) ||
+    value.sequence < 0 ||
+    value.sequence > Number.MAX_SAFE_INTEGER
+  ) {
+    throw new ProtocolError("schema_invalid", `${field}.sequence is invalid`);
+  }
+  return {
+    broker_epoch: value.broker_epoch,
+    sequence: value.sequence,
+  };
+}
+
+function nativeResumeStatus(value) {
+  if (value === undefined || value === null) return undefined;
+  const status =
+    typeof value === "string"
+      ? value
+      : value &&
+          typeof value === "object" &&
+          !Array.isArray(value) &&
+          Object.getPrototypeOf(value) === Object.prototype &&
+          Object.keys(value).length === 1 &&
+          typeof value.kind === "string"
+        ? value.kind
+        : undefined;
+  if (!RESUME_STATUSES.has(status)) {
+    throw new ProtocolError("handshake_invalid", "resume status is invalid");
+  }
+  return status;
+}
+
+function validateNativeResumeFields(envelope) {
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope))
+    return;
+  if (envelope.kind === "hello") {
+    if (
+      envelope.resume_from !== undefined &&
+      envelope.resume_cursor !== undefined
+    ) {
+      throw new ProtocolError(
+        "schema_invalid",
+        "hello cannot contain both resume_from and resume_cursor",
+      );
+    }
+    nativeResumeCursor(
+      envelope.resume_from ?? envelope.resume_cursor,
+      "resume_from",
+    );
+  } else if (envelope.kind === "hello_ok") {
+    nativeResumeStatus(envelope.resume);
+    nativeResumeCursor(envelope.cursor, "hello_ok cursor");
+  } else if (envelope.kind === "event") {
+    nativeResumeCursor(envelope.cursor, "event cursor");
+  }
+}
+
+function nativeEnvelopeForValidation(envelope) {
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope))
+    return envelope;
+  const copy = { ...envelope };
+  if (envelope.kind === "hello") {
+    delete copy.resume_from;
+    delete copy.resume_cursor;
+  } else if (envelope.kind === "hello_ok") {
+    delete copy.resume;
+    delete copy.cursor;
+  } else if (envelope.kind === "event") {
+    delete copy.cursor;
+  }
+  return copy;
+}
+
 function appendArtifactBytes(existing, chunk) {
   const output = new Uint8Array(existing.length + chunk.length);
   output.set(existing, 0);
@@ -105,6 +207,8 @@ export class NativeMessagingClient {
     this.nonce = null;
     this.brokerEpoch = undefined;
     this.connectionEpoch = undefined;
+    this.resumeCursor = undefined;
+    this.resumeStatus = undefined;
     this.outboundSequence = 1;
     this.eventSequence = 0;
     this.inboundSequence = new SequenceValidator(1);
@@ -144,6 +248,8 @@ export class NativeMessagingClient {
       state: this.state,
       brokerEpoch: this.brokerEpoch,
       connectionEpoch: this.connectionEpoch,
+      resumeCursor: this.resumeCursor ? { ...this.resumeCursor } : undefined,
+      resumeStatus: this.resumeStatus,
       workerInstanceEpoch: this.workerInstanceEpoch,
       browserSessionEpoch: this.browserSessionEpoch,
       profileInstanceId: this.profileInstanceId,
@@ -179,6 +285,7 @@ export class NativeMessagingClient {
         this.nonce = createNonce();
         this.brokerEpoch = undefined;
         this.connectionEpoch = undefined;
+        this.resumeStatus = undefined;
         this.outboundSequence = 1;
         this.eventSequence = 0;
         this.inboundSequence.reset(1);
@@ -233,19 +340,19 @@ export class NativeMessagingClient {
   }
 
   postHello() {
-    this.postEnvelope(
-      makeEnvelope("hello", {
-        nonce: this.nonce,
-        sequence: this.outboundSequence++,
-        worker_instance_epoch: this.workerInstanceEpoch,
-        browser_session_epoch: this.browserSessionEpoch,
-        profile_instance_id: this.profileInstanceId,
-        extension_version: this.extensionVersion,
-        capabilities: this.requestedCapabilities,
-        ...(this.profileInstanceId ? { profile_state: "bound" } : {}),
-        limits: defaultNativeLimits(),
-      }),
-    );
+    const envelope = makeEnvelope("hello", {
+      nonce: this.nonce,
+      sequence: this.outboundSequence++,
+      worker_instance_epoch: this.workerInstanceEpoch,
+      browser_session_epoch: this.browserSessionEpoch,
+      profile_instance_id: this.profileInstanceId,
+      extension_version: this.extensionVersion,
+      capabilities: this.requestedCapabilities,
+      ...(this.profileInstanceId ? { profile_state: "bound" } : {}),
+      limits: defaultNativeLimits(),
+    });
+    if (this.resumeCursor) envelope.resume_from = { ...this.resumeCursor };
+    this.postEnvelope(envelope);
   }
 
   handleIncoming(
@@ -259,7 +366,7 @@ export class NativeMessagingClient {
     )
       return;
     try {
-      assertBoundedEnvelope(message, {
+      assertBoundedEnvelope(nativeEnvelopeForValidation(message), {
         maxBytes:
           this.state === "connected"
             ? this.limits.max_control_bytes
@@ -271,7 +378,8 @@ export class NativeMessagingClient {
           "origin claims are transport metadata, not JSON fields",
         );
       }
-      validateEnvelope(message, {
+      validateNativeResumeFields(message);
+      validateEnvelope(nativeEnvelopeForValidation(message), {
         expectedNonce: this.nonce,
         expectedBrokerEpoch: this.brokerEpoch,
         expectedConnectionEpoch: this.connectionEpoch,
@@ -295,6 +403,8 @@ export class NativeMessagingClient {
       else if (message.kind === "artifact_chunk")
         this.acceptArtifactChunk(message);
       else if (message.kind === "artifact_end") this.acceptArtifactEnd(message);
+      else if (message.kind === "event" && message.cursor !== undefined)
+        this.acceptBrokerCursor(message.cursor);
       this.onMessage(message);
     } catch (error) {
       this.failProtocol(error, { connectionGeneration, port });
@@ -359,6 +469,48 @@ export class NativeMessagingClient {
         "hello_ok targets another profile binding",
       );
     }
+    const requestedCursor = this.resumeCursor
+      ? { ...this.resumeCursor }
+      : undefined;
+    const resumeStatusFromHost = nativeResumeStatus(message.resume);
+    const hostCursor = nativeResumeCursor(message.cursor, "hello_ok cursor");
+    let resumeStatus = resumeStatusFromHost ?? "accepted";
+    if (
+      requestedCursor &&
+      requestedCursor.broker_epoch !== message.broker_epoch
+    ) {
+      if (resumeStatusFromHost === "accepted") {
+        throw new ProtocolError(
+          "stale_epoch",
+          "hello_ok accepted a cursor from another broker epoch",
+        );
+      }
+      if (resumeStatusFromHost === undefined) resumeStatus = "resync_required";
+    }
+    if (hostCursor && hostCursor.broker_epoch !== message.broker_epoch) {
+      throw new ProtocolError(
+        "stale_epoch",
+        "hello_ok cursor does not match broker_epoch",
+      );
+    }
+    if (
+      resumeStatus === "accepted" &&
+      requestedCursor &&
+      hostCursor &&
+      hostCursor.sequence < requestedCursor.sequence
+    ) {
+      throw new ProtocolError(
+        "handshake_invalid",
+        "hello_ok cursor moved behind the requested resume cursor",
+      );
+    }
+    if (resumeStatus === "resync_required") {
+      this.resumeCursor = undefined;
+    } else if (hostCursor) {
+      this.resumeCursor = hostCursor;
+    }
+    this.resumeStatus = resumeStatus;
+
     const capabilities = Array.isArray(message.capabilities)
       ? message.capabilities
       : [];
@@ -381,6 +533,32 @@ export class NativeMessagingClient {
     this.reconnectAttempt = 0;
     this.transition("connected", message);
     this.onMessage(message);
+  }
+
+  acceptBrokerCursor(value) {
+    const cursor = nativeResumeCursor(value, "event cursor");
+    if (!cursor) return;
+    if (
+      this.brokerEpoch === undefined ||
+      cursor.broker_epoch !== this.brokerEpoch
+    ) {
+      throw new ProtocolError(
+        "stale_epoch",
+        "event cursor does not match the live broker epoch",
+      );
+    }
+    if (
+      this.resumeCursor &&
+      this.resumeCursor.broker_epoch === cursor.broker_epoch &&
+      cursor.sequence < this.resumeCursor.sequence
+    ) {
+      throw new ProtocolError(
+        "sequence_replayed",
+        "event cursor moved behind the last accepted cursor",
+      );
+    }
+    this.resumeCursor = cursor;
+    this.resumeStatus = "accepted";
   }
 
   sendArtifactBegin({
@@ -738,7 +916,8 @@ export class NativeMessagingClient {
         "Native Messaging port is unavailable",
       );
     }
-    assertBoundedEnvelope(envelope, {
+    validateNativeResumeFields(envelope);
+    assertBoundedEnvelope(nativeEnvelopeForValidation(envelope), {
       maxBytes: this.connected
         ? this.limits.max_control_bytes
         : MAX_CONTROL_BYTES,
@@ -787,6 +966,7 @@ export class NativeMessagingClient {
     this.port = null;
     this.brokerEpoch = undefined;
     this.connectionEpoch = undefined;
+    this.resumeStatus = undefined;
     this.state = "disconnected";
     if (wasLive) this.onUnknownActions([], reason);
     this.onStateChange(this.state, reason);
