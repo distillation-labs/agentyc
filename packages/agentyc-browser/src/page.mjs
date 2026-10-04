@@ -1,8 +1,13 @@
-import { assertLogicalId } from "./errors.mjs";
+import {
+  AgentycError,
+  CapabilityUnavailableError,
+  assertLogicalId,
+} from "./errors.mjs";
 import {
   invalidArgument,
   normalizeNonNegativeInteger,
   normalizeNow,
+  requireLeaseEpoch,
   transportOptions,
 } from "./constants.mjs";
 import { operationForAction } from "./operations.mjs";
@@ -17,10 +22,7 @@ export const PAGE_HELPER_OPERATIONS = Object.freeze({
   click: "click",
   type: "input",
   fill: "input",
-  press: "input",
   scroll: "scroll",
-  select: "input",
-  upload: "upload",
   evaluate: "evaluate",
 });
 
@@ -178,6 +180,8 @@ export class Page {
     this._id = pageId ? assertLogicalId(pageId, "page_", "page_id") : undefined;
     this._label = label;
     this.record = record;
+    this._createPromise = undefined;
+    this._resolvePromise = undefined;
   }
 
   get id() {
@@ -192,11 +196,22 @@ export class Page {
     if (this._id) return this;
     if (!this._label)
       throw new TypeError("a lazy page handle needs a label before creation");
+    if (this._createPromise) return this._createPromise;
+    this._createPromise = this._create(options).finally(() => {
+      this._createPromise = undefined;
+    });
+    return this._createPromise;
+  }
+
+  async _create(options) {
+    const leaseEpoch = requireLeaseEpoch(
+      options.leaseEpoch ?? this.space.leaseEpoch,
+    );
     const result = await this.space.client.request(
       "page.create",
       {
         space_id: this.space.id,
-        lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
+        lease_epoch: leaseEpoch,
         label: this._label,
         now: normalizeNow(options.now),
       },
@@ -212,15 +227,49 @@ export class Page {
     return this;
   }
 
+  /** Resolve this label to exactly one existing logical page without creating it. */
+  async resolve(options = {}) {
+    if (this._id) return this;
+    if (!this._label)
+      throw new TypeError("a lazy page handle needs a label before resolution");
+    if (this._resolvePromise) return this._resolvePromise;
+    this._resolvePromise = this.space
+      .listPages(options)
+      .then((pages) => {
+        const matches = pages.filter((page) => page.label === this._label);
+        if (matches.length !== 1) {
+          const ambiguous = matches.length > 1;
+          throw new AgentycError({
+            code: ambiguous ? "invalid_argument" : "page_not_found",
+            message: ambiguous
+              ? `page label ${this._label} is ambiguous in this space`
+              : `no existing page has label ${this._label} in this space`,
+            retryable: false,
+            guidance: "none",
+          });
+        }
+        this._id = matches[0].id;
+        this.record = matches[0].record;
+        return this;
+      })
+      .finally(() => {
+        this._resolvePromise = undefined;
+      });
+    return this._resolvePromise;
+  }
+
   async snapshot(options = {}) {
     const hostOptions = snapshotParams(options);
-    await this.create(options);
+    const leaseEpoch = requireLeaseEpoch(
+      options.leaseEpoch ?? this.space.leaseEpoch,
+    );
+    await this.resolve(options);
     return this.space.client.request(
       "snapshot.read",
       {
         space_id: this.space.id,
         page_id: this._id,
-        lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
+        lease_epoch: leaseEpoch,
         now: normalizeNow(options.now),
         ...hostOptions,
       },
@@ -229,11 +278,14 @@ export class Page {
   }
 
   async action(operation, payload = {}, options = {}) {
-    await this.create(options);
+    const leaseEpoch = requireLeaseEpoch(
+      options.leaseEpoch ?? this.space.leaseEpoch,
+    );
+    await this.resolve(options);
     return this.space.client.submitAction({
       space_id: this.space.id,
       page_id: this._id,
-      lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
+      lease_epoch: leaseEpoch,
       operation,
       payload,
       request_id: options.requestId,
@@ -296,13 +348,10 @@ export class Page {
    * `input` action carrying `key`. The host and extension decide whether a
    * key payload is supported; the SDK does not assume native key delivery.
    */
-  async press(key, options = {}) {
-    requireString(key, "key");
-    const { target, ...actionOptions } = options ?? {};
-    return this._helperAction(
-      "press",
-      actionPayload(targetFields(target), { key }),
-      actionOptions,
+  async press(_key, _options = {}) {
+    throw new CapabilityUnavailableError(
+      "key presses are not supported by the current host action contract",
+      { capability: "keyboard_input" },
     );
   }
 
@@ -315,12 +364,10 @@ export class Page {
    * `input` action carrying `value`. The host and extension decide whether a
    * select payload is supported; the SDK does not assume native selection.
    */
-  async select(target, value, options = {}) {
-    requireString(value, "value", { allowEmpty: true });
-    return this._helperAction(
-      "select",
-      actionPayload(targetFields(target), { value }),
-      options,
+  async select(_target, _value, _options = {}) {
+    throw new CapabilityUnavailableError(
+      "select-option actions are not supported by the current host action contract",
+      { capability: "select_option" },
     );
   }
 
@@ -328,11 +375,10 @@ export class Page {
    * `upload` action; `fields` are forwarded unchanged. The extension may deny
    * uploads, in which case the host error is surfaced as-is.
    */
-  async upload(target, fields = {}, options = {}) {
-    return this._helperAction(
-      "upload",
-      actionPayload(targetFields(target), fields),
-      options,
+  async upload(_target, _fields = {}, _options = {}) {
+    throw new CapabilityUnavailableError(
+      "file upload is not enabled by the current extension action policy",
+      { capability: "upload" },
     );
   }
 
@@ -356,13 +402,16 @@ export class Page {
   }
 
   async close(options = {}) {
-    await this.create(options);
+    const leaseEpoch = requireLeaseEpoch(
+      options.leaseEpoch ?? this.space.leaseEpoch,
+    );
+    await this.resolve(options);
     return this.space.client.request(
       "page.close",
       {
         space_id: this.space.id,
         page_id: this._id,
-        lease_epoch: options.leaseEpoch ?? this.space.leaseEpoch,
+        lease_epoch: leaseEpoch,
         now: normalizeNow(options.now),
       },
       transportOptions(options),
@@ -370,12 +419,12 @@ export class Page {
   }
 
   async events(options = {}) {
-    await this.create(options);
+    await this.resolve(options);
     return this.space.events({ ...options, pageId: this._id });
   }
 
   async waitFor(condition, options = {}) {
-    await this.create(options);
+    await this.resolve(options);
     return this.space.client.waitFor(condition, {
       ...options,
       spaceId: this.space.id,
