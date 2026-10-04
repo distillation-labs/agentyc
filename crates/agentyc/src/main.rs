@@ -19,7 +19,8 @@ mod frontend;
 
 use commands::direct::{
     ActionCommand as DirectActionCommand, DirectCommand, DirectCommandError, DirectOptions,
-    EventsArgs, HostCommand, PageCommand as DirectPageCommand, SnapshotArgs, SpaceCommand,
+    EventsArgs, ExtensionCommand, HostCommand, PageCommand as DirectPageCommand, SnapshotArgs,
+    SpaceCommand, WaitArgs,
 };
 use frontend::{Action, dispatch, render_error, render_json, runtime_config};
 
@@ -138,6 +139,13 @@ enum Cmd {
         #[command(subcommand)]
         command: HostCommand,
     },
+    /// Wait for a host-observed logical condition.
+    Wait(WaitArgs),
+    /// Inspect extension state observed by the host.
+    Extension {
+        #[command(subcommand)]
+        command: ExtensionCommand,
+    },
 }
 
 #[tokio::main]
@@ -220,6 +228,10 @@ async fn run() -> Result<()> {
         Some(Cmd::Action { command }) => run_direct(DirectCommand::Action(command), direct_options),
         Some(Cmd::Events(args)) => run_direct(DirectCommand::Events(args), direct_options),
         Some(Cmd::Host { command }) => run_direct(DirectCommand::Host(command), direct_options),
+        Some(Cmd::Wait(args)) => run_direct(DirectCommand::Wait(args), direct_options),
+        Some(Cmd::Extension { command }) => {
+            run_direct(DirectCommand::Extension(command), direct_options)
+        }
     }
 }
 
