@@ -34,7 +34,7 @@ The default path never downloads a browser, launches a browser, requires a copie
 
 **Rejected:** managed BrowserContext as the default because it is a different browser/profile; CDP-only attachment because it does not reliably attach to ordinary Chrome and cannot provide the requested user-facing task-space experience; copying the proprietary Ego Lite browser host because it is not in the open-source checkout.
 
-**Reopen when:** Chrome removes a required API, enterprise policy blocks the debugger permission for the supported cohort, or a reviewed browser-native integration becomes available with stronger guarantees.
+**Reopen when:** Chrome removes a required API, enterprise policy blocks the debugger permission in a supported environment, or a reviewed browser-native integration becomes available with stronger guarantees.
 
 **Confidence:** medium/high for the integration shape; exact API capability matrix and Chrome-version floor are Phase 0 gates.
 
@@ -92,10 +92,6 @@ Use a stable Web Store extension ID for production so Native Messaging `allowed_
 
 The core permission set is reviewed in Phase 0 and includes `debugger`, `nativeMessaging`, `storage`, `tabs`, `tabGroups`, `scripting`, and `sidePanel`; optional capabilities such as cookies/downloads/file upload require separate policy and tests.
 
-### D-18 — Rollout and rollback
-
-Release extension, native host, CLI/SDK, broker ledger schema, and MCP adapter as versioned components with a compatibility matrix. Rollback disables new agent mutations, leaves spaces paused and recoverable, and never closes user tabs or kills user Chrome. A pre-ledger or incompatible host binary cannot open a newer ledger.
-
 ## Revisit triggers
 
 Reopen a decision only after one of these observable events:
@@ -105,5 +101,5 @@ Reopen a decision only after one of these observable events:
 - user-tab interference, cross-space mutation, or stale-agent mutation appears in validation;
 - profile-sharing guarantees prove unacceptable for the intended workflow;
 - a required agent client cannot use the local protocol/CLI/SDK;
-- Chrome Web Store/enterprise distribution constraints block the intended cohort;
+- Chrome Web Store/enterprise distribution constraints block the supported environment;
 - a validated performance or recovery gate fails.
