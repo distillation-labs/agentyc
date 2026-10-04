@@ -11,7 +11,7 @@ pub(super) fn run(context: &DirectContext, command: HostCommand) -> DirectResult
     }
 }
 
-fn status(context: &DirectContext) -> DirectResult<Value> {
+pub(super) fn status(context: &DirectContext) -> DirectResult<Value> {
     if let Some((broker, _authority)) = context.local() {
         let lifecycle = broker.lifecycle().map_err(host_error)?;
         let epoch = broker.broker_epoch().map_err(host_error)?;
