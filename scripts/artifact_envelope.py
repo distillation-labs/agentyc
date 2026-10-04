@@ -445,7 +445,7 @@ def envelope(
     artifact_nonce = nonce or report.get("nonce") or new_nonce()
     timestamp = utc_timestamp()
     build = {
-        "phase": 0,
+        "phase": report.get("phase", 0),
         "artifact_kind": kind,
         "producer": "scripts/artifact_envelope.py",
         "producer_sha256": sha256_bytes(Path(__file__).read_bytes()),
