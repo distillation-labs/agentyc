@@ -1,3 +1,5 @@
+import { transportOptions } from "./constants.mjs";
+
 export async function readEvents(client, options = {}) {
   return client.request(
     "events.resume",
@@ -8,7 +10,7 @@ export async function readEvents(client, options = {}) {
       page_id: options.pageId,
       limit: options.limit,
     },
-    { signal: options.signal },
+    transportOptions(options),
   );
 }
 
