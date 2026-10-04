@@ -19,5 +19,8 @@
     "typecheck": "node scripts/typecheck.mjs",
     "check": "node scripts/check.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
 }
