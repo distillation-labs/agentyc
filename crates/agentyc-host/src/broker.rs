@@ -3,10 +3,10 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use agentyc_core::{
@@ -103,6 +103,52 @@ impl Connection {
 #[derive(Clone)]
 pub struct Broker {
     inner: Arc<Mutex<BrokerInner>>,
+    event_notifications: Arc<EventNotifications>,
+}
+
+#[derive(Debug, Default)]
+struct EventNotifications {
+    generation: Mutex<u64>,
+    changed: Condvar,
+}
+
+impl EventNotifications {
+    fn generation(&self) -> u64 {
+        *self
+            .generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn notify(&self) {
+        let mut generation = self
+            .generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *generation = generation.wrapping_add(1);
+        self.changed.notify_all();
+    }
+
+    fn wait_until(&self, observed: u64, deadline: Instant) {
+        let mut generation = self
+            .generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *generation == observed {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            let (next_generation, timeout) = self
+                .changed
+                .wait_timeout(generation, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            generation = next_generation;
+            if timeout.timed_out() && *generation == observed {
+                return;
+            }
+        }
+    }
 }
 
 struct BrokerInner {
@@ -153,6 +199,7 @@ impl Broker {
                 lifecycle: HostLifecycle::Ready,
                 user_intent_tickets: BTreeMap::new(),
             })),
+            event_notifications: Arc::new(EventNotifications::default()),
         }
     }
 
@@ -165,6 +212,7 @@ impl Broker {
                 lifecycle: HostLifecycle::Ready,
                 user_intent_tickets: BTreeMap::new(),
             })),
+            event_notifications: Arc::new(EventNotifications::default()),
         }
     }
 
@@ -3568,6 +3616,16 @@ impl Broker {
         })
     }
 
+    /// Observe the current notification generation before reading broker events.
+    pub(crate) fn event_notification_generation(&self) -> u64 {
+        self.event_notifications.generation()
+    }
+
+    /// Wait until the generation changes or the absolute deadline expires.
+    pub(crate) fn wait_for_event_change_until(&self, observed: u64, deadline: Instant) {
+        self.event_notifications.wait_until(observed, deadline);
+    }
+
     /// Drain durable host work without closing any page or whole browser group.
     pub fn shutdown(&self, now: Timestamp) -> Result<(), HostError> {
         self.with_inner(|inner| {
@@ -3634,7 +3692,18 @@ impl Broker {
         F: FnOnce(&mut BrokerInner) -> Result<T, HostError>,
     {
         let mut inner = self.inner.lock().map_err(|_| HostError::StatePoisoned)?;
-        operation(&mut inner)
+        let before = {
+            let state = inner.ledger.state();
+            (state.broker_epoch, state.event_sequence)
+        };
+        let result = operation(&mut inner);
+        let state = inner.ledger.state();
+        if (state.broker_epoch, state.event_sequence) != before {
+            // Keep the broker lock until the notification predicate changes so
+            // cursor readers cannot observe an unannounced committed sequence.
+            self.event_notifications.notify();
+        }
+        result
     }
 }
 
@@ -4549,6 +4618,37 @@ mod tests {
             }),
         };
         broker.hello(&hello).expect("hello").authority().clone()
+    }
+
+    #[test]
+    fn committed_non_publish_event_advances_notify_waiters() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let authority = admit_authority(&broker, "notification");
+        let observed = broker.event_notification_generation();
+        let waiter_broker = broker.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("started signal");
+            waiter_broker.wait_for_event_change_until(
+                observed,
+                Instant::now() + std::time::Duration::from_secs(2),
+            );
+            finished_tx
+                .send(waiter_broker.event_notification_generation())
+                .expect("finished signal");
+        });
+        started_rx.recv().expect("waiter started");
+
+        broker
+            .create_space(&authority, "notification")
+            .expect("space creation");
+        let generation = finished_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("waiter notified before deadline");
+        waiter.join().expect("waiter thread");
+        assert_ne!(generation, observed);
     }
 
     #[test]
