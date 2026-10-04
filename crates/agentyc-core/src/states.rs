@@ -347,6 +347,24 @@ pub enum DirtyReason {
     FrameChanged,
     /// An action may have changed the page.
     Action,
+    /// A target was replaced or became unavailable.
+    TargetReplaced,
+    /// The bridge session or debugger session was lost.
+    SessionLost,
+    /// A reconnect or mapping reset invalidated prior provenance.
+    Reconnect,
+    /// The event stream contained a gap and the cache must resynchronize.
+    EventGap,
+    /// Layout or geometry changed.
+    GeometryChanged,
+    /// Scroll state changed.
+    ScrollChanged,
+    /// Raw evaluation may have changed page state outside the snapshot model.
+    RawEvaluation,
+    /// A takeover changed the authority generation.
+    Takeover,
+    /// The cache entry expired before it could be used.
+    Expired,
     /// The source could not classify the change.
     Unknown,
 }
