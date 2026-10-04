@@ -1,37 +1,54 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>agentyc task spaces</title>
-    <link rel="stylesheet" href="styles.css">
-  </head>
-  <body>
-    <header>
-      <div>
-        <p class="eyebrow">agentyc</p>
-        <h1>Task spaces</h1>
-      </div>
-      <span id="connection-status" class="status">Waiting for host</span>
-    </header>
-    <main>
-      <section class="create-card" aria-labelledby="create-title">
-        <h2 id="create-title">Create a space</h2>
-        <div class="create-row">
-          <label for="space-label">Label</label>
-          <input id="space-label" maxlength="128" autocomplete="off" placeholder="Research" />
-          <button id="create-space" type="button">Create</button>
-        </div>
-      </section>
-      <section aria-labelledby="spaces-title">
-        <h2 id="spaces-title" class="sr-only">Available spaces</h2>
-        <div id="spaces"></div>
-      </section>
-      <section class="notice-card" aria-labelledby="notice-title">
-        <h2 id="notice-title">Notices</h2>
-        <ul id="notices" aria-live="polite"></ul>
-      </section>
-    </main>
-    <script type="module" src="app.mjs"></script>
-  </body>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>agentyc task spaces</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <header>
+            <div>
+                <p class="eyebrow">agentyc</p>
+                <h1>Task spaces</h1>
+            </div>
+            <span id="connection-status" class="status">Waiting for host</span>
+        </header>
+        <main>
+            <section class="create-card" aria-labelledby="create-title">
+                <h2 id="create-title">Create a space</h2>
+                <p id="profile-disclosure">
+                    This space uses your existing Chrome profile. Cookies,
+                    storage, history, permissions, and installed extensions are
+                    shared; this is not an isolation boundary.
+                </p>
+                <label class="disclosure-check">
+                    <input
+                        id="profile-disclosure-acknowledged"
+                        type="checkbox"
+                    />
+                    I understand and accept the shared-profile behavior.
+                </label>
+                <div class="create-row">
+                    <label for="space-label">Label</label>
+                    <input
+                        id="space-label"
+                        maxlength="128"
+                        autocomplete="off"
+                        placeholder="Research"
+                    />
+                    <button id="create-space" type="button">Create</button>
+                </div>
+            </section>
+            <section aria-labelledby="spaces-title">
+                <h2 id="spaces-title" class="sr-only">Available spaces</h2>
+                <div id="spaces"></div>
+            </section>
+            <section class="notice-card" aria-labelledby="notice-title">
+                <h2 id="notice-title">Notices</h2>
+                <ul id="notices" aria-live="polite"></ul>
+            </section>
+        </main>
+        <script type="module" src="app.mjs"></script>
+    </body>
 </html>
