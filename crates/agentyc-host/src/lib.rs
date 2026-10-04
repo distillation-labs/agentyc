@@ -10,6 +10,7 @@ pub mod actionability;
 pub mod actions;
 pub mod bridge;
 pub mod broker;
+pub mod chrome_bridge;
 pub mod context;
 pub mod error;
 pub mod event_router;
@@ -33,10 +34,10 @@ pub use actionability::{
 pub use actions::{ActionLookup, ActionResult};
 pub use agentyc_core;
 pub use bridge::{
-    Bridge, BridgeDispatchResult, BridgeReconcileResult, ExtensionEpochs, FakeBridge, FenceResult,
-    NullBridge,
+    Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeRouter, ExtensionEpochs, FakeBridge,
+    FenceResult, NullBridge,
 };
-pub use broker::{Broker, Connection, HostLifecycle, canonical_action_hash};
+pub use broker::{Broker, Connection, HostDegradedReason, HostLifecycle, canonical_action_hash};
 pub use context::{
     ContextBody, ContextBuilder, ContextMetadata, ContextMode, ContextOptions, ContextOutput,
     ContextRepresentation, ContextRequest, ContextRequestMode, RedactionPolicy, TokenMetrics,
@@ -46,7 +47,11 @@ pub use event_router::{
     EventRouter, RouterIngest, RouterLimits, RouterResyncReason, RouterWatermark,
 };
 pub use events::{EventBatch, EventQuery};
-pub use host::Host;
+pub use host::{
+    ENDPOINT_METADATA_FILENAME, ENDPOINT_METADATA_SCHEMA_VERSION, EndpointMetadata, Host,
+    NATIVE_FORWARD_SOCKET_FILENAME, endpoint_metadata_path, native_forward_socket_path,
+    publish_endpoint_metadata, read_endpoint_metadata, remove_endpoint_metadata_if_owner,
+};
 pub use leases::{
     AuthorityTicket, ControlReturn, ControlTicket, LeaseGrant, TakeoverResult, UserIntentTicket,
 };
@@ -62,11 +67,13 @@ pub use native_messaging::{
     MAX_NATIVE_EVENT_QUEUE, MAX_NATIVE_PENDING_REQUESTS, MAX_NATIVE_READ_CHUNK_BYTES, NativeHello,
     NativeHostError, NativeMessagingBridge, NativeMessagingConfig, normalize_extension_origin,
 };
+#[cfg(unix)]
+pub use native_messaging::{NativeForwardServer, forward_stdio_to_owner};
 pub use protocol::{LocalProtocolClient, LocalProtocolServer, ProtocolClient, ProtocolServer};
 pub use refs::{RefInvalidationReason, RefRecord, RefRegistry, RefRegistryLimits, RefTombstone};
 pub use scheduler::{
     Backpressure, BackpressureKind, MutationPermit, ReadPermit, Scheduler, SchedulerLimits,
-    SchedulerSnapshot,
+    SchedulerSnapshot, SchedulerWaitError,
 };
 pub use snapshots::{
     CachedSnapshot, PageGeneration, SnapshotCache, SnapshotCacheError, SnapshotCacheRecord,
