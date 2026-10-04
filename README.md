@@ -2,29 +2,39 @@
 
 <p align="center">
   <em>Deterministic, host-backed browser task spaces for coding agents.</em><br>
-  No API key needed. No LLM fallback. Direct CLI/SDK first, with MCP compatibility.
+  No API key needed. No LLM fallback. Direct CLI/SDK is the primary interface; MCP is compatibility-only.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/rust-≥1.80-orange?style=flat&logo=rust&logoColor=white" alt="Rust ≥1.80">
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT">
-  <img src="https://img.shields.io/badge/MCP-stdio-000?style=flat&logo=modelcontextprotocol&logoColor=white" alt="MCP stdio">
-  <img src="https://img.shields.io/badge/CDP-native-46BC99?style=flat" alt="CDP-native">
+  <img src="https://img.shields.io/badge/CLI%2FSDK-primary-success?style=flat" alt="CLI/SDK Primary">
+  <img src="https://img.shields.io/badge/MCP-compatibility-informational?style=flat&logo=modelcontextprotocol&logoColor=white" alt="MCP Compatibility">
 </p>
 
 ---
 
 ## What It Is
 
-`agentyc` is a single native binary for direct host-backed CLI/SDK access to logical browser task spaces, with an MCP adapter available for compatibility. The existing-Chrome product path uses the enrolled MV3 extension and Native Messaging bridge; it does not launch Chrome or attach to a copied CDP URL. The direct-CDP server remains an explicit legacy compatibility mode. Every operation is deterministic, every response is compact, and no API key is required.
+`agentyc` is a single native binary providing direct host-backed CLI and Node SDK access to logical browser task spaces and managed pages. The direct CLI/SDK is the primary interface; MCP is compatibility-only.
+
+Key architectural boundaries:
+
+- **Logical task spaces and pages:** The primary object model uses logical identifiers (`space_id`, `page_id`) and durable labels. Raw browser target IDs, session IDs, and tab IDs are never public identity and are not exposed.
+- **Explicit shared-profile disclosure:** Automation operates inside the user's existing Chrome profile (sharing cookies, sessions, and storage), not an isolated sandbox. Creating a task space strictly requires explicit acknowledgement (`--accept-shared-profile-disclosure` in the CLI or `acceptSharedProfileDisclosure: true` in the SDK).
+- **No implicit Chrome launch or download:** Agentyc does not launch Chrome or download Chromium binaries automatically. Live automation connects to an existing Chrome browser with the enrolled Agentyc MV3 extension and Native Messaging host.
+- **Deterministic fake-host seam:** For testing and CI without a live browser, `--offline` (or `AGENTYC_FAKE_HOST=1`) executes host broker operations deterministically in-process.
+- **Current CLI per-invocation model:** Direct CLI commands run per invocation against the host ledger. In offline mode, each process invocation starts a fresh broker instance, which fences active leases from previous runs. A long-lived host transport is the continuity mechanism for the SDK.
+- **Live validation limits:** Live browser control requires an enrolled Chrome extension and Native Messaging host on macOS. When the extension is absent, commands return typed errors (`extension_not_connected` or `capability_unavailable`) rather than falling back to an unverified runtime.
 
 Cold start: **~5ms**. Binary: **~8MB**. Idle RSS: **~3MB**.
 
 ```bash
-# Download the binary for your platform, then:
-agentyc           # starts the direct host-backed CLI
-agentyc init      # writes agentyc-skill.md — point your agent at it
-# Or install the portable agent plugin bundle:
+# Direct host-backed CLI commands:
+agentyc host status   # inspects host status and bridge capabilities
+agentyc space list    # lists logical task spaces
+agentyc init          # writes agentyc-skill.md — point your agent at it
+# Portable agent plugin bundle:
 # plugins/agentyc-browser-automation/plugin.json
 ```
 
@@ -41,9 +51,7 @@ curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/ag
 curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/agentyc-x86_64-apple-darwin.tar.gz | tar xz
 # Linux x86_64
 curl -L https://github.com/distillation-labs/agentyc/releases/latest/download/agentyc-x86_64-unknown-linux-gnu.tar.gz | tar xz
-# Then move the binary onto your PATH and use the direct host-backed CLI:
-agentyc host status
-agentyc space list
+# Move the binary onto your PATH
 ```
 
 **Or build from source:**
@@ -52,7 +60,37 @@ agentyc space list
 cargo install --git https://github.com/distillation-labs/agentyc agentyc
 ```
 
-**Optional MCP compatibility (for MCP clients):**
+### Runnable tested example (using deterministic offline seam)
+
+You can execute direct task-space commands immediately without live Chrome using `--offline`:
+
+```bash
+# Inspect host lifecycle and capabilities:
+agentyc --state-dir /tmp/agentyc-state --offline --json host status
+
+# Create a task space with explicit shared-profile disclosure:
+agentyc --state-dir /tmp/agentyc-state --offline --json space create \
+  --label research \
+  --accept-shared-profile-disclosure
+
+# List logical task spaces:
+agentyc --state-dir /tmp/agentyc-state --offline --json space list
+```
+
+### Bootstrap your agent with the skills guide
+
+```bash
+agentyc init                      # writes agentyc-skill.md
+agentyc init --output .agent.md   # custom path
+agentyc init --print              # print to stdout
+agentyc init --force              # overwrite existing
+```
+
+Point your agent at that file. It teaches the read→ref→act→verify loop, supported direct operations, error reconciliation, and safety. The canonical installable skill and plugin metadata live under `.agents/skills/agentyc-browser-automation/` and `plugins/agentyc-browser-automation/`; see `docs/skills-and-plugins.md`.
+
+### Optional MCP compatibility adapter (for MCP clients only)
+
+The direct host-backed CLI/SDK is the primary interface. MCP is compatibility-only. To connect an MCP client:
 
 ```json
 {
@@ -65,38 +103,29 @@ cargo install --git https://github.com/distillation-labs/agentyc agentyc
 }
 ```
 
-Direct host-backed CLI/SDK is the primary interface for task-space workflows. Select the MCP compatibility adapter explicitly with `agentyc mcp`; add `"--extended"` only for its optional observability profile.
+Add `"--extended"` to `agentyc mcp` only when optional legacy observability tools are needed.
 
-**Bootstrap your agent with the skills guide:**
-
-```bash
-agentyc init                      # writes agentyc-skill.md
-agentyc init --output .agent.md   # custom path
-agentyc init --print              # print to stdout
-agentyc init --force              # overwrite existing
-```
-
-Point your agent at that file. It explains the read→ref→act→verify loop, tool selection, error recovery, frontend choice, safety, and has a full quick-reference. The canonical installable skill and plugin metadata live under `.agents/skills/agentyc-browser-automation/` and `plugins/agentyc-browser-automation/`; see `docs/skills-and-plugins.md`.
+---
 
 ## Existing-Chrome task spaces
 
-The host/core contracts, production-shaped MV3 extension package, Native Messaging host, direct CLI/SDK, context/reliability modules, rollout gates, and MCP compatibility adapter are present. Each logical space owns its managed pages and one visual Chrome tab group; leases and epochs, not group membership, authorize mutations. Phase 0 is registered complete; live product and release gates remain tracked in later phases. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md) and [release gate](docs/release-gate.md).
+The host/core contracts, MV3 extension package, Native Messaging host, direct CLI/SDK, context/reliability modules, rollout gates, and MCP compatibility adapter are present in the repository. Each logical space owns its managed pages; leases and epochs authorize mutations. Live product and release gates remain tracked across execution phases. See the [task-space plan](docs/exec-plans/active/agentyc-browser-task-spaces/README.md) and [release gate](docs/release-gate.md).
 
 ---
 
 ## How It Compares
 
-|                       | agentyc                                    | browser-use                 | Playwright MCP           |
-| --------------------- | ------------------------------------------ | --------------------------- | ------------------------ |
-| **Interface**         | Direct host-backed CLI / Node SDK          | Python script + custom loop | MCP wrapper over library |
-| **LLM required**      | No                                         | Yes (planner)               | No                       |
-| **Extraction**        | Deterministic (7 route families)           | LLM-based                   | Raw page access          |
-| **State snapshots**   | Token-aware, compact, `since_hash` polling | Full DOM dump               | Full DOM or AX tree      |
-| **Element targeting** | Stable refs (`e123`) survive re-renders    | XPath/CSS selectors         | Playwright locators      |
-| **Browser backend**   | Enrolled Chrome extension                  | Playwright                  | Playwright               |
-| **Runtime**           | Native binary (~8MB)                       | Python + many deps          | Node + Playwright        |
-| **Cold start**        | ~5ms                                       | ~300ms+                     | ~200ms+                  |
-| **Legacy MCP tools**  | 61 default / 76 extended                   | ~15–20                      | ~20                      |
+|                       | agentyc                                     | browser-use                 | Playwright MCP           |
+| --------------------- | ------------------------------------------- | --------------------------- | ------------------------ |
+| **Interface**         | Direct host-backed CLI / Node SDK (primary) | Python script + custom loop | MCP wrapper over library |
+| **LLM required**      | No                                          | Yes (planner)               | No                       |
+| **Extraction**        | Deterministic (structured routes)           | LLM-based                   | Raw page access          |
+| **State snapshots**   | Token-aware, compact, normalized hash       | Full DOM dump               | Full DOM or AX tree      |
+| **Element targeting** | Stable logical refs (`ref_`)                | XPath/CSS selectors         | Playwright locators      |
+| **Browser backend**   | Enrolled Chrome extension                   | Playwright                  | Playwright               |
+| **Runtime**           | Native binary (~8MB)                        | Python + many deps          | Node + Playwright        |
+| **Cold start**        | ~5ms                                        | ~300ms+                     | ~200ms+                  |
+| **Compatibility MCP** | 61 default / 76 extended adapter tools      | ~15–20                      | ~20                      |
 
 ---
 
@@ -230,25 +259,36 @@ This section documents the explicit legacy compatibility implementation, not the
 
 ## Configuration
 
-### CLI flags
+### Direct CLI options
 
-| Flag                        | Default   | Description                   |
-| --------------------------- | --------- | ----------------------------- |
-| `--cdp-url`                 | —         | Attach to an existing browser |
-| `--session-timeout-minutes` | 0 (never) | Auto-close idle sessions      |
+| Flag                   | Description                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `--state-dir <PATH>`   | Durable state directory (defaults to `$AGENTYC_STATE_DIR` or `~/.agentyc/state`).      |
+| `--principal <ID>`     | Logical principal identifier (defaults to `principal_cli`).                            |
+| `--profile-binding-id` | Enrolled profile binding suffix or complete identity.                                  |
+| `--offline`            | Use the deterministic in-process fake-host seam for testing/CI without live Chrome.    |
+| `--json`               | Emit compact structured JSON on stdout (default emits pretty-printed structured JSON). |
 
 ### Environment variables
 
-| Variable                   | Description                              |
-| -------------------------- | ---------------------------------------- |
-| `AGENTYC_HEADLESS`         | `1` to run Chrome headless               |
-| `AGENTYC_ALLOWED_DOMAINS`  | Comma-separated domain allowlist         |
-| `AGENTYC_ACTION_TIMEOUT_S` | Per-action CDP timeout (default 180s)    |
-| `AGENTYC_CDP_TIMEOUT_S`    | CDP response timeout (default 60s)       |
-| `AGENTYC_PROXY_URL`        | Proxy server URL                         |
-| `AGENTYC_PROXY_USERNAME`   | Proxy username                           |
-| `AGENTYC_PROXY_PASSWORD`   | Proxy password                           |
-| `AGENTYC_LOGGING_LEVEL`    | Log level (e.g. `warn`, `info`, `debug`) |
+| Variable                  | Description                                                            |
+| ------------------------- | ---------------------------------------------------------------------- |
+| `AGENTYC_STATE_DIR`       | State directory for host ledger and leases.                            |
+| `AGENTYC_PRINCIPAL`       | Logical principal identity override.                                   |
+| `AGENTYC_FAKE_HOST`       | Set to `1` to select the deterministic fake-host test seam.            |
+| `AGENTYC_ALLOWED_DOMAINS` | Comma-separated domain allowlist for constrained workflows.            |
+| `AGENTYC_LOGGING_LEVEL`   | Log level for diagnostics emitted to stderr (`warn`, `info`, `debug`). |
+
+### Legacy compatibility options
+
+| Flag                        | Default   | Description                                                |
+| --------------------------- | --------- | ---------------------------------------------------------- |
+| `--cdp-url`                 | —         | Attach to an existing browser (legacy compatibility only). |
+| `--session-timeout-minutes` | 0 (never) | Auto-close idle sessions in legacy runtime.                |
+| `AGENTYC_HEADLESS`          | `0`       | `1` to run legacy Chrome headless.                         |
+| `AGENTYC_ACTION_TIMEOUT_S`  | `180`     | Per-action timeout for legacy CDP adapter.                 |
+| `AGENTYC_CDP_TIMEOUT_S`     | `60`      | CDP response timeout for legacy CDP adapter.               |
+| `AGENTYC_PROXY_URL`         | —         | Proxy server URL for legacy browser launch.                |
 
 ### Legacy Chrome defaults
 
