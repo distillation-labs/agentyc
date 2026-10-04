@@ -20,6 +20,8 @@ The supported direct command tree is:
 - `space takeover --space-id SPACE_ID [--ttl MS] [--now MS]`
 - `space reclaim --space-id SPACE_ID [--control-ticket JSON] [--ttl MS] [--now MS]`
 - `space return --space-id SPACE_ID --lease-epoch EPOCH [--now MS]`
+- `space pause --space-id SPACE_ID [--ttl MS] [--now MS]`
+- `space handoff --space-id SPACE_ID [--ttl MS] [--now MS]`
 - `space finish --space-id SPACE_ID --lease-epoch EPOCH [--now MS]`
 - `space release --space-id SPACE_ID --lease-epoch EPOCH [--now MS]`
 - `page create --space-id SPACE_ID --lease-epoch EPOCH --label LABEL [--now MS]`
