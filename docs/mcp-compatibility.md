@@ -6,7 +6,7 @@
 
 | Surface | Current behavior | Evidence |
 | --- | --- | --- |
-| Legacy direct-CDP `BrowserServer` | Explicit compatibility path (`agentyc mcp --legacy-cdp`, or legacy HTTP `serve`); legacy `ServerState` owns `BrowserRuntime` and CDP/page selection. | `crates/agentyc-mcp/src/lib.rs`, `src/tools/mod.rs`, `crates/agentyc/src/main.rs` |
+| Legacy direct-CDP `BrowserServer` | Explicit compatibility path (`agentyc mcp --legacy-cdp`, or legacy HTTP `serve`); legacy `ServerState` owns `BrowserRuntime` and CDP/page selection. | `crates/agentyc-mcp/src/legacy.rs`, `src/tools/mod.rs`, `crates/agentyc/src/main.rs` |
 | Host-backed in-process `HostBrowserServer` | 29 logical host/space/page/lease/snapshot/action/event tool routes; takes an injected `Broker` and host handshake. It does not install these tools in the legacy router. | `crates/agentyc-mcp/src/host_server.rs`, `src/host_adapter.rs` |
 | Host-backed remote `RemoteHostBrowserServer` | 30 declared logical routes sent through `LocalSocketClient`; 18 are marked supported by the local protocol, and 12 return a typed `capability_unavailable` result before forwarding. | `crates/agentyc-mcp/src/remote_host_server.rs` |
 
@@ -14,7 +14,7 @@ The normal CLI host-backed route uses the local host socket; it does not silentl
 
 ## Legacy tool profiles
 
-The legacy router measures **61 default tools** and **76 tools with the extended profile**. `tests/mcp_protocol.rs::test_tool_count_is_61` asserts the default count and its initialize helper uses `2024-11-05`. The 76 declarations are in `crates/agentyc-mcp/src/lib.rs`; `tests/fixtures/mcp/tool_catalog.json` contains 76 names. `BrowserServer::new` adds the observability router only when `AGENTYC_EXTENDED` is `1`, `true`, or `yes`; CLI flags set that variable. The 15 additional declarations are:
+The legacy router measures **61 default tools** and **76 tools with the extended profile**. `tests/mcp_protocol.rs::test_tool_count_is_61` asserts the default count and its initialize helper uses `2024-11-05`. The 76 declarations are in `crates/agentyc-mcp/src/legacy.rs`; `tests/fixtures/mcp/tool_catalog.json` contains 76 names. `BrowserServer::new` adds the observability router only when `AGENTYC_EXTENDED` is `1`, `true`, or `yes`; CLI flags set that variable. The 15 additional declarations are:
 
 | Group | Extended-only tools |
 | --- | --- |
