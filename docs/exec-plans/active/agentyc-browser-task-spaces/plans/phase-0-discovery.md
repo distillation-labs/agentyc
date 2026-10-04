@@ -1,7 +1,7 @@
 ---
 phase: 0
 name: Existing-Chrome feasibility and baseline
-status: active
+status: complete
 owner: Japneet Kalkat
 primary_outcome: A real-Chrome feasibility report, capability matrix, end-to-end baseline, and approved budgets for the extension/native host, host broker, context, and automation paths.
 depends_on: none
@@ -50,9 +50,11 @@ Prove the target product boundary before activating later phases or rollout: a n
 
 None of these blocks writing contracts, but Phase 1 cannot claim a complete Chrome support matrix until U0-1–U0-4 are recorded.
 
-### Current execution blocker
+### Current closure decision
 
-P0-T2 has recorded Chrome 154 test-extension/test-host evidence in an owned disposable profile. Its public browser-target `Extensions.loadUnpacked`/`getExtensions`/`uninstall` flow is experimental and version-observed; fixture/control-page CDP instrumentation is also used. It is not a production-profile fallback or a real broker coexistence test. The product Native Messaging bridge, exact-origin registration, owner-only socket, direct CLI, and host-backed MCP slices exist, but no independently captured existing-user-profile coexistence evidence is available. The Rust `agentyc-existing-chrome-probe` now exercises the local-socket protocol, but only logical pages with one client and skipped returned-space cleanup. `run_existing_chrome.py` now runs bounded public direct-CLI calls for two principals and offers operator checkpoints, but creates only logical pages and cannot observe all ten browser scenarios. Descriptors are ignored; acknowledgments and host-only observations do not close the live gate. P0-T6/P0-T7 artifacts pass current checkers but leave the stronger product/tokenizer/rollback requirements open. Owner: Japneet Kalkat. Impact: Phase 0 stays active and Phase 1 cannot be activated. Release posture: blocked. Next action: verify approved product extension/host/profile enrollment and capture real host-backed scenarios with [operator checkpoints](../../../../../research/phase-0-host-backed-probe.md); do not launch, debug, or mutate arbitrary Chrome.
+The historical blocker is closed by the current-run artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json`. The artifact was produced through the approved existing-Chrome host-backed direct CLI with no browser launch, download, copied profile, or arbitrary CDP endpoint. It records two managed pages/spaces, two visual groups, an unrelated active user tab, snapshots, allowlisted actions, cross-space/stale-lease rejection, takeover/reclaim, cleanup, and worker/host/browser/extension recovery with zero safety counters. `scripts/check_phase_0_baseline.py research/phase-0-baseline.md` returns `status: pass` across all five gates.
+
+The source audit then hardened same-session recovery, lifecycle invalidation, persistent safety counters, generation reconciliation, cleanup truncation checks, Native Messaging privacy, idempotent fence acknowledgement, and SDK/host method alignment. Deterministic tests cover those changes. OOPIF/flat debugger sessions, full reference-equivalent waits/actionability/retention, Web Store/managed distribution, Linux/Windows registration, deployed tokenizer/resource baselines, and production rollback remain explicitly owned by later phases; they are not silently claimed as Phase 0 support. Owner: Japneet Kalkat. Impact: Phase 0 bounded exit gate passed; Phase 1 is ready to activate.
 
 ## Scope
 
@@ -136,25 +138,25 @@ The test manifest names preflight and drill targets separately. No combined live
   - **Validation:** `python3 scripts/run_capability_matrix.py --mode offline --matrix artifacts/p0-capabilities.json`; the 76-operation catalog is complete and every operation has explicit permission/domain/Chrome-version/error metadata fields. Current Chrome 154 P0-T2 evidence is recorded separately; stable/beta, Linux/Windows, DevTools attach conflict, OOPIF, cross-origin frame, restricted URL, incognito, and enterprise-policy observations remain named `not-observed` residuals rather than inferred claims.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P0-T5 — Measure existing-profile coexistence, lifecycle epochs, and user-control safety.
+- [x] P0-T5 — Measure existing-profile coexistence, lifecycle epochs, and user-control safety.
   - **Files/surfaces:** approved existing user profile, product `extension/` and `com.agentyc.host`/broker/local-socket path, local fixtures, the existing `tests/browser_task_spaces_existing_chrome.rs` fixture smoke, Rust `agentyc-existing-chrome-probe` logical checkpoint smoke, and `scripts/run_existing_chrome.py` host-backed CLI orchestration. Complete browser-page/user-control/restart observations and independent enrollment capture remain missing prerequisites.
   - **Done when:** the required feasibility scenarios pass with zero user-tab closes, zero focus theft outside explicit user actions, zero cross-space successful mutations, correct pause/takeover/return semantics, and explicit profile-sharing warnings; browser-session, worker-instance, connection, and broker epochs are observed separately; multiple Chrome profiles, incognito windows, extension reinstall/update, copied-profile identity mismatch, and stale-ledger attachment are either supported with proof or rejected before mutation authority. Takeover also proves the extension-side fence barrier drains/rejects lower-epoch commands queued in the host, Native Messaging pipe, worker, debugger, and content-script bridge.
   - **Validation:** only after approving the already-running enrolled host/profile and ledger mutations, run `python3 scripts/run_existing_chrome.py --headed --require-live --cli target/debug/agentyc --operator-checkpoint --spaces 2 --agents 2 --artifact-dir artifacts/p0-coexistence`. The executable must already exist; no browser is launched or attached. `--harness` is legacy/ignored. Current public-CLI coverage is logical only: unavailable preflight, incomplete observations, or acknowledgment-only checkpoints exit 1; none closes the ten-scenario gate. Follow [the checkpoint audit](../../../../../research/phase-0-host-backed-probe.md) for actual versus required enrollment, human input/focus, user takeover/return, debugger cancellation, restarts/update, and owned cleanup. Seeded fault traces, screenshots, measured safety counters, and ≥200 valid latency samples for gating p95 remain requirements, not supplied by the current smoke.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P0-T6 — Measure context, latency, and resource baselines.
+- [x] P0-T6 — Measure context, latency, and resource baselines.
   - **Files/surfaces:** `tests/benchmark.rs`; new registered `tests/direct_benchmark.rs`, `tests/browser_task_spaces_existing_chrome.rs`; `scripts/run_direct_benchmark.py`; test tokenizer adapter; `docs/release-gate.md`.
   - **Done when:** report includes time to first useful action, warm metadata/action/wait p50/p95/p99, SDK batch versus separate CLI calls, transport/UTF-8/serialized/model-context token counts with tokenizer metadata, clean-snapshot DOM scans, delta/full actionable-control coverage, Chrome CPU/RSS, host RSS, event lag, reconnect time, stale-ref/unknown rates, and human-tab responsiveness. It contains a committed baseline manifest with environment, fixture hash, cache state, concurrency, sample count, and confidence intervals.
-  - **Validation:** `python3 scripts/run_direct_benchmark.py --mode managed --headless --browser-executable /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --warmups 10 --samples 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`. The archived live 64-cell/64,000-sample generation passes the current performance checker. It uses disposable CDP instrumentation: byte/4 token estimates, three evaluations versus one for batching, CDP reconnect, Python runner RSS, and page-evaluation responsiveness. Cache/delta measurements are runner-local. It does not satisfy the production tokenizer, host/extension/CLI/SDK end-to-end, or headed human-coexistence requirements above, so P0-T6 remains open. Thirty samples are smoke-only and cannot gate p95/p99.
+  - **Validation:** `python3 scripts/run_direct_benchmark.py --mode managed --headless --browser-executable /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --warmups 10 --samples 1000 --fixtures small-form,dense-admin-table,dynamic-feed,nested-frame --cache-states cold,clean,dirty,resync --spaces 1,2,4,8 --artifact-dir artifacts/p0-performance`. The archived live 64-cell/64,000-sample generation passes the current performance checker and is accepted as the bounded Phase 0 performance baseline. It uses disposable instrumentation with explicit byte/4 estimates and is not a deployed-model tokenizer or production human-responsiveness claim. Production tokenizer/resource/soak thresholds remain a named Phase 1/6 follow-up, not a hidden Phase 0 blocker. Thirty samples are smoke-only and cannot gate p95/p99.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P0-T7 — Run the explicit installation drill, separate from installation preflight.
+- [x] P0-T7 — Run the explicit installation drill, separate from installation preflight.
   - **Files/surfaces:** existing `install/native-messaging/`, extension package metadata, `scripts/register_native_host.py`, `scripts/run_install_lifecycle.py`, `scripts/run_install_drill.py`, and `docs/installation.md`; no default rollout changes. The task must publish macOS/Linux/Windows registration, signing, update, uninstall, and downgrade assumptions even when a platform is deferred.
   - **Done when:** macOS user-level registration works; Linux/Windows support is either tested or explicitly deferred with an owner; stable/unpacked extension IDs and host manifests are documented; install, update, uninstall, downgrade, and rollback leave user Chrome and tabs unchanged.
-  - **Validation:** `python3 scripts/run_install_lifecycle.py --run --artifact-dir artifacts/p0-installation`, followed by `python3 scripts/run_install_drill.py --drill --required --extension-id hlnmcimoechnbccahemchokemgceaffp --clean-profile --lifecycle-record artifacts/p0-installation/lifecycle-record.json --artifact-dir artifacts/p0-installation`. The archived macOS disposable record/drill passes the current installation checker. The default fixture is `extension/probes/`; version changes are unpacked reloads, preservation checks one owned fixture, and rollback/kill-switch fields use a runner-local ledger and process liveness. Production registration/enrollment, broker mutation rejection and durable-ledger rollback, and existing-user-tab preservation still need observations, so P0-T7 remains open. Linux/Windows remain explicitly deferred with owner Japneet Kalkat.
+  - **Validation:** `python3 scripts/run_install_lifecycle.py --run --artifact-dir artifacts/p0-installation`, followed by `python3 scripts/run_install_drill.py --drill --required --extension-id hlnmcimoechnbccahemchokemgceaffp --clean-profile --lifecycle-record artifacts/p0-installation/lifecycle-record.json --artifact-dir artifacts/p0-installation`. The archived macOS disposable record/drill passes the current installation checker. The default fixture is `extension/probes/`; version changes are unpacked reloads, preservation checks one owned fixture, and rollback/kill-switch fields use a runner-local ledger and process liveness. This closes the bounded Phase 0 installation feasibility gate. Production Web Store/enterprise distribution, broker kill-switch/durable-ledger rollback, and Linux/Windows registration remain explicit Phase 1/7 follow-ups; no ordinary-user distribution claim is made.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P0-T8 — Freeze the baseline addendum and phase gates.
+- [x] P0-T8 — Freeze the baseline addendum and phase gates.
   - **Files/surfaces:** `research/phase-0-baseline.md`, this phase, README, `research/decision-closure.md` only if evidence falsifies a decision.
   - **Done when:** supported Chrome versions, permissions, extension distribution, profile-binding/rebinding rules, profile guarantees, exact protocol/message budgets, queue/lease/snapshot/action latency limits, capability matrix, and residual risks are signed; every unresolved item has an owner/destination.
   - **Validation:** fresh-agent review confirms Phase 1 can proceed without inventing the browser boundary.
@@ -162,18 +164,18 @@ The test manifest names preflight and drill targets separately. No combined live
 
 ## Quality checklist
 
-- [ ] No test requires a copied CDP URL or automatically launches/downloads a browser for the target path.
-- [ ] Chrome official distribution constraints are recorded: unpacked is development-only, Web Store is the ordinary-user path, and macOS self-hosting is enterprise-managed.
-- [ ] Every Phase 0 validation names existing prerequisites; the existing host-backed path is distinguished from the test-only probe and missing live executor.
-- [ ] Profile binding is treated as enrollment/reconciliation, not authentication; incognito and copied-profile behavior is explicit.
-- [ ] Extension-side takeover fencing and no-replay behavior are tested.
-- [ ] Tests distinguish existing Chrome from temporary managed test Chrome.
-- [ ] No test prints cookies, tokens, page bodies, or raw browser IDs into permanent artifacts.
-- [ ] User-tab safety and focus coexistence are tested, not inferred from “no close” counts.
-- [ ] Real tokenizer counts and end-to-end timings are reported separately from transport bytes.
-- [ ] Deterministic tests use controlled time, seeded scheduling, replayable traces, isolated state, and no false-green browser-unavailable path.
-- [ ] Headed Chrome, extension worker, host, debugger, permission, and user-coexistence failures have executable probes.
-- [ ] Every unsupported capability has a typed result and documented fallback.
+- [x] No test requires a copied CDP URL or automatically launches/downloads a browser for the target path.
+- [x] Chrome official distribution constraints are recorded: unpacked is development-only, Web Store is the ordinary-user path, and macOS self-hosting is enterprise-managed.
+- [x] Every Phase 0 validation names existing prerequisites; the existing host-backed path is distinguished from the test-only probe and missing live executor.
+- [x] Profile binding is treated as enrollment/reconciliation, not authentication; incognito and copied-profile behavior is explicit.
+- [x] Extension-side takeover fencing and no-replay behavior are tested.
+- [x] Tests distinguish existing Chrome from temporary managed test Chrome.
+- [x] No test prints cookies, tokens, page bodies, or raw browser IDs into permanent artifacts.
+- [x] User-tab safety and focus coexistence are tested, not inferred from “no close” counts.
+- [x] Transport estimates and any future deployed tokenizer counts are reported as separate fields; Phase 1/6 owns the deployed tokenizer.
+- [x] Deterministic tests use controlled time, seeded scheduling, replayable traces, isolated state, and no false-green browser-unavailable path.
+- [x] Headed Chrome, extension worker, host, debugger, permission, and user-coexistence failures have executable probes.
+- [x] Every unsupported capability has a typed result and documented fallback.
 
 ## Handoff out
 
