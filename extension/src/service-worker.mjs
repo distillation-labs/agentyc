@@ -19,6 +19,8 @@ const METADATA_KEY = "agentyc_extension_metadata";
 const FENCE_KEY = "agentyc_space_fences";
 const ACTION_STATE_KEY = "agentyc_action_state";
 const MANAGED_BINDINGS_KEY = "agentyc_managed_bindings";
+const SAFETY_COUNTERS_KEY = "agentyc_safety_counters";
+const SESSION_MARKER_KEY = "agentyc_browser_session_marker";
 const VERSION = (() => {
   try {
     const version = globalThis.chrome?.runtime?.getManifest?.().version;
@@ -335,6 +337,7 @@ export class ServiceWorkerController {
   } = {}) {
     this.chrome = chromeApiOrGlobal(chromeApi);
     this.storage = storageArea ?? this.chrome?.storage?.local;
+    this.sessionStorage = this.chrome?.storage?.session;
     this.hostName = hostName;
     this.now = now;
     this.metadata = {
@@ -359,6 +362,9 @@ export class ServiceWorkerController {
     this.actionReceipts = new Map();
     this.snapshotVersions = new Map();
     this.safetyCounters = { userTabCloses: 0, focusTheft: 0 };
+    this.storedSafetyCounters = undefined;
+    this.browserSessionFresh = false;
+    this.lifecycleToken = 0;
     this.nativeConnectedOnce = false;
     this.recoveryObserved = false;
     this.storedActionState = undefined;
@@ -423,6 +429,7 @@ export class ServiceWorkerController {
     if (this.startPromise) return this.startPromise;
     this.installRuntimeListener();
     this.startPromise = (async () => {
+      this.lifecycleToken += 1;
       await this.loadMetadata();
       await this.recoverPersistedActionState();
       this.loadFences();
@@ -467,10 +474,12 @@ export class ServiceWorkerController {
       FENCE_KEY,
       ACTION_STATE_KEY,
       MANAGED_BINDINGS_KEY,
+      SAFETY_COUNTERS_KEY,
     ]);
     this.storedFences = storedValues[FENCE_KEY];
     this.storedActionState = storedValues[ACTION_STATE_KEY];
     this.storedManagedBindings = storedValues[MANAGED_BINDINGS_KEY];
+    this.storedSafetyCounters = storedValues[SAFETY_COUNTERS_KEY];
     const stored = storedValues[METADATA_KEY] ?? {};
     const profileInstanceId =
       this.metadata.profileInstanceId ??
@@ -487,16 +496,43 @@ export class ServiceWorkerController {
       stored.browser_session_epoch >= 1
         ? stored.browser_session_epoch
         : 1;
-    const browserSessionEpoch =
+    let browserSessionEpoch =
       Number.isSafeInteger(this.metadata.browserSessionEpoch) &&
       this.metadata.browserSessionEpoch >= 1
         ? this.metadata.browserSessionEpoch
         : previousBrowserSession;
+    let sessionMarker;
+    if (this.sessionStorage?.get) {
+      const sessionValues = await storageGet(this.sessionStorage, [
+        SESSION_MARKER_KEY,
+      ]);
+      sessionMarker = sessionValues[SESSION_MARKER_KEY];
+      this.browserSessionFresh =
+        !isPlainObject(sessionMarker) ||
+        sessionMarker.profile_instance_id !== profileInstanceId;
+      // Keep the prior durable epoch until runtime.onStartup performs the
+      // browser-session transition. Rehydration is disabled while this marker
+      // is absent, so a worker wake during browser startup cannot reclaim an
+      // old tab before the epoch fence is installed.
+    }
     this.metadata = {
       profileInstanceId,
       workerInstanceEpoch,
       browserSessionEpoch,
     };
+    const storedSafety = this.storedSafetyCounters;
+    if (
+      isPlainObject(storedSafety) &&
+      Number.isSafeInteger(storedSafety.user_tab_closes) &&
+      storedSafety.user_tab_closes >= 0 &&
+      Number.isSafeInteger(storedSafety.focus_theft) &&
+      storedSafety.focus_theft >= 0
+    ) {
+      this.safetyCounters = {
+        userTabCloses: storedSafety.user_tab_closes,
+        focusTheft: storedSafety.focus_theft,
+      };
+    }
     if (this.native) {
       this.native.profileInstanceId = profileInstanceId;
       this.native.workerInstanceEpoch = workerInstanceEpoch;
@@ -509,7 +545,36 @@ export class ServiceWorkerController {
         browser_session_epoch: browserSessionEpoch,
         ui_version: VERSION,
       },
+      [SAFETY_COUNTERS_KEY]: {
+        user_tab_closes: this.safetyCounters.userTabCloses,
+        focus_theft: this.safetyCounters.focusTheft,
+      },
     });
+    if (this.sessionStorage?.set) {
+      await storageSet(this.sessionStorage, {
+        [SESSION_MARKER_KEY]: {
+          profile_instance_id: profileInstanceId,
+          browser_session_epoch: browserSessionEpoch,
+        },
+      });
+    }
+  }
+
+  async persistSafetyCounters() {
+    await storageSet(this.storage, {
+      [SAFETY_COUNTERS_KEY]: {
+        user_tab_closes: this.safetyCounters.userTabCloses,
+        focus_theft: this.safetyCounters.focusTheft,
+      },
+    });
+  }
+
+  queueSafetyCountersPersist() {
+    void this.persistSafetyCounters().catch(() => {});
+  }
+
+  isLiveToken(token) {
+    return this.started && token === this.lifecycleToken;
   }
 
   applyRuntimeIdentity() {
@@ -573,6 +638,12 @@ export class ServiceWorkerController {
     await this.tabs.refreshSession().catch(() => {});
     await new Promise((resolve) => globalThis.setTimeout(resolve, 250));
     await this.tabs.refreshSession().catch(() => {});
+    if (this.browserSessionFresh) {
+      this.handleExtensionEvent("browser.session_pending", {
+        reason: "storage.session marker was reset; awaiting runtime.onStartup",
+      });
+      return;
+    }
     const stored = this.storedManagedBindings;
     this.storedManagedBindings = undefined;
     let restored = false;
@@ -600,15 +671,22 @@ export class ServiceWorkerController {
         !Number.isSafeInteger(binding.lease_epoch) ||
         binding.lease_epoch < 1 ||
         !Number.isSafeInteger(binding.browser_session_epoch) ||
-        binding.browser_session_epoch < 1
-      )
+        binding.browser_session_epoch < 1 ||
+        binding.browser_session_epoch !== this.metadata.browserSessionEpoch
+      ) {
+        if (isPlainObject(binding)) {
+          this.handleExtensionEvent("page.rebind_required", {
+            space_id: binding.space_id,
+            page_id: binding.page_id,
+            reason: "persisted binding belongs to another browser session",
+          });
+        }
         continue;
-      const candidate =
-        this.tabs.findByHint(binding.tab_hint) ??
-        this.tabs.findRehydrateCandidate({
-          url: binding.url,
-          title: binding.title,
-        });
+      }
+      // A worker restart may restore an exact tab hint in the same Chrome
+      // session. URL/title matching is deliberately not an authority path:
+      // an unrelated user tab can have the same URL.
+      const candidate = this.tabs.findByHint(binding.tab_hint);
       if (
         !candidate ||
         candidate.ownership !== "unmanaged" ||
@@ -620,12 +698,13 @@ export class ServiceWorkerController {
         this.handleExtensionEvent("page.rebind_required", {
           space_id: binding.space_id,
           page_id: binding.page_id,
-          reason: "persisted managed binding has no exact inactive tab match",
+          reason:
+            "persisted managed binding has no exact same-session tab match",
         });
         continue;
       }
       try {
-        this.tabs.bindManagedTab({
+        this.tabs.restoreManagedBinding({
           tabId: candidate.rawTabId,
           spaceId: binding.space_id,
           pageId: binding.page_id,
@@ -633,21 +712,6 @@ export class ServiceWorkerController {
           targetGeneration: binding.target_generation,
           navigationGeneration: binding.navigation_generation,
           documentGeneration: binding.document_generation,
-          ownershipProof: {
-            issued_by_host: true,
-            proof_id: createLogicalId("rehydrate"),
-            kind: "creation",
-            space_id: binding.space_id,
-            page_id: binding.page_id,
-            lease_epoch: binding.lease_epoch,
-            target_generation: binding.target_generation,
-            profile_instance_id: this.metadata.profileInstanceId,
-            browser_session_epoch: this.metadata.browserSessionEpoch,
-            rebind: true,
-            expires_at: this.now() + MAX_SIDE_PANEL_TICKET_LIFETIME_MS,
-          },
-          url: candidate.url,
-          title: candidate.title,
         });
         await this.groups
           .presentSpace({
@@ -660,13 +724,13 @@ export class ServiceWorkerController {
         this.handleExtensionEvent("page.rebound", {
           space_id: binding.space_id,
           page_id: binding.page_id,
-          reason: "persisted managed binding restored",
+          reason: "same-session durable binding restored",
         });
       } catch {
         this.handleExtensionEvent("page.rebind_required", {
           space_id: binding.space_id,
           page_id: binding.page_id,
-          reason: "persisted managed binding could not be restored",
+          reason: "same-session durable binding could not be restored",
         });
       }
     }
@@ -1154,6 +1218,29 @@ export class ServiceWorkerController {
       event.addListener(listener);
       this.sidePanelListeners.push(() => event.removeListener?.(listener));
     }
+    const installed = this.chrome?.runtime?.onInstalled;
+    if (installed?.addListener) {
+      const listener = (details = {}) => {
+        if (details.reason !== "update" && details.reason !== "chrome_update")
+          return;
+        this.lifecycleToken += 1;
+        for (const actionId of this.inflight.keys())
+          this.reportUnknownAction(
+            actionId,
+            "extension update interrupted the mutation",
+            this.inflight.get(actionId),
+          );
+        this.inflight.clear();
+        this.queueActionStatePersist();
+        this.handleExtensionEvent("extension.updated", {
+          reason: details.reason,
+          extension_version: VERSION,
+          recovery_required: true,
+        });
+      };
+      installed.addListener(listener);
+      this.sidePanelListeners.push(() => installed.removeListener?.(listener));
+    }
     const startup = this.chrome?.runtime?.onStartup;
     if (startup?.addListener) {
       const listener = () => {
@@ -1184,6 +1271,14 @@ export class ServiceWorkerController {
     this.tabs.stop();
     this.groups.stop();
     this.native.stop();
+    this.lifecycleToken += 1;
+    for (const pending of this.pending.values())
+      pending.reject?.(
+        new ProtocolError(
+          "native_host_unavailable",
+          "service worker stopped before the host response arrived",
+        ),
+      );
     this.pending.clear();
     this.mutationTails.clear();
     for (const pending of this.contentPending.values())
@@ -1276,6 +1371,7 @@ export class ServiceWorkerController {
       this.contentDocuments.clear();
       this.snapshotVersions.clear();
       this.usedSidePanelTickets.clear();
+      this.safetyCounters = { userTabCloses: 0, focusTheft: 0 };
       this.debugger.resetSession(nextEpoch);
       this.tabs.resetSession(nextEpoch);
       this.metadata.browserSessionEpoch = nextEpoch;
@@ -1289,6 +1385,15 @@ export class ServiceWorkerController {
           ui_version: VERSION,
         },
       });
+      await this.persistSafetyCounters().catch(() => {});
+      if (this.sessionStorage?.set)
+        await storageSet(this.sessionStorage, {
+          [SESSION_MARKER_KEY]: {
+            profile_instance_id: this.metadata.profileInstanceId,
+            browser_session_epoch: nextEpoch,
+          },
+        }).catch(() => {});
+      this.browserSessionFresh = false;
       await this.persistFences().catch(() => {});
       this.handleExtensionEvent("browser.session_changed", {
         browser_session_epoch: nextEpoch,
@@ -1427,7 +1532,18 @@ export class ServiceWorkerController {
     const rank = (page) =>
       page.ownership !== "unmanaged" ? 0 : page.active === true ? 1 : 2;
     const ordered = all
-      .map((page, index) => ({ page, index }))
+      .map((page, index) => ({
+        page:
+          page.ownership === "unmanaged"
+            ? (() => {
+                const safe = { ...page };
+                delete safe.url;
+                delete safe.title;
+                return safe;
+              })()
+            : page,
+        index,
+      }))
       .sort((a, b) => rank(a.page) - rank(b.page) || a.index - b.index)
       .map(({ page }) => page);
     const encoder = new TextEncoder();
@@ -1661,6 +1777,7 @@ export class ServiceWorkerController {
       journaled = true;
     }
     try {
+      const operationToken = this.lifecycleToken;
       const result = await this.executeHostMethod({
         method,
         params,
@@ -1670,7 +1787,17 @@ export class ServiceWorkerController {
         requestId,
         actionId,
         message,
+        operationToken,
       });
+      if (!this.isLiveToken(operationToken)) {
+        const error = new ProtocolError(
+          "unknown_outcome",
+          "service worker stopped before the mutation outcome was committed",
+        );
+        error.outcome = "unknown";
+        error.retryable = false;
+        throw error;
+      }
       const receipt =
         mutation && actionId
           ? this.emitActionReceipt(actionId, actionContext, "succeeded")
@@ -1713,6 +1840,7 @@ export class ServiceWorkerController {
     leaseEpoch,
     requestId,
     actionId,
+    operationToken = this.lifecycleToken,
   }) {
     switch (method) {
       case "snapshot.read":
@@ -1754,6 +1882,7 @@ export class ServiceWorkerController {
           ownershipProof: params.ownership_proof,
           windowHint: params.window_hint,
           onDispatch: () => this.markActionDispatched(actionId),
+          isLive: () => this.isLiveToken(operationToken),
         });
         await this.persistManagedBindings().catch(() => {});
         return record;
@@ -2424,7 +2553,10 @@ export class ServiceWorkerController {
     if (stored?.outcome === "succeeded" || stored?.outcome === "failed")
       return finish(stored.outcome, stored.code);
     if (!record) {
-      if (stored?.method === "page.close") return finish("succeeded");
+      // A missing logical mapping is not positive proof that a close reached
+      // Chrome. The target may still exist after a lost response or may have
+      // been replaced. Keep the outcome unknown until a later inventory or
+      // host-side reconciliation proves absence.
       return finish("unknown", "unknown_outcome");
     }
     const observed = this.observedPageGeneration(effectivePageId);
@@ -2642,13 +2774,37 @@ export class ServiceWorkerController {
       "fence_epoch",
     );
     const current = this.fences.get(spaceId) ?? 0;
-    if (fenceEpoch <= current) {
+    if (fenceEpoch < current) {
       const error = errorResult(
         "stale_fence",
-        "fence barrier is older than or equal to the live barrier",
+        "fence barrier is older than the live barrier",
       );
       this.reply({ requestId, actionId, ok: false, error, mutation: false });
       return { ok: false, error };
+    }
+    if (fenceEpoch === current) {
+      const result = {
+        space_id: spaceId,
+        fence_epoch: fenceEpoch,
+        drained_request_ids: [],
+        unknown_action_ids: [],
+        affected_page_count: this.tabs.pagesForSpace(spaceId).length,
+        durable: true,
+        idempotent: true,
+      };
+      try {
+        this.native.send("fence_ack", {
+          request_id: requestId,
+          action_id: actionId,
+          space_id: spaceId,
+          fence_epoch: fenceEpoch,
+          result,
+          ok: true,
+        });
+      } catch {
+        // The host keeps the fence pending when the acknowledgement is lost.
+      }
+      return { ok: true, result };
     }
     const drain = this.tabs.beginFence(spaceId, fenceEpoch);
     const unknownActionIds = [];
@@ -2724,14 +2880,18 @@ export class ServiceWorkerController {
   handleExtensionEvent(event, payload = {}) {
     const sourcePayload =
       payload && typeof payload === "object" ? payload : { value: payload };
-    if (event === "tab.closed" && sourcePayload.ownership === "unmanaged")
+    if (event === "tab.closed" && sourcePayload.ownership === "unmanaged") {
       this.safetyCounters.userTabCloses += 1;
+      this.queueSafetyCountersPersist();
+    }
     if (
       event === "page.focus_changed" &&
       sourcePayload.ownership === "agent" &&
       sourcePayload.active === true
-    )
+    ) {
       this.safetyCounters.focusTheft += 1;
+      this.queueSafetyCountersPersist();
+    }
     let safePayload =
       payload && typeof payload === "object"
         ? { ...payload }
