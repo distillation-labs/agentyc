@@ -28,6 +28,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 try:
     import fcntl
@@ -40,6 +41,9 @@ from artifact_envelope import redact_for_persistence, write_json_atomic
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_ROOT = (ROOT / "artifacts").resolve()
 DEFAULT_ARTIFACT_DIR = ARTIFACT_ROOT / "p0-installation"
+PHASE4_ARTIFACT_DIR = ARTIFACT_ROOT / "p4-install-lifecycle"
+PRODUCTION_EXTENSION_DIR = ROOT / "extension"
+PRODUCTION_HOST_MANIFEST = PRODUCTION_EXTENSION_DIR / "native_host_manifest.macos.json"
 HOST_NAME = "com.agentyc.p0_probe"
 HOST_PATH = ROOT / "tests" / "probes" / "native_probe"
 EXTENSION_DIR = ROOT / "extension" / "probes"
@@ -58,7 +62,12 @@ JOURNAL_STATES = frozenset({"prepared", "temp_written", "installed", "removing",
 LIFECYCLE_SCHEMA_VERSION = 1
 OFFLINE_EVIDENCE_STATUS = "not_measured_offline"
 MAX_LIFECYCLE_RECORD_BYTES = 128 * 1024
+LIFECYCLE_PROVENANCE_SCHEMA_VERSION = 1
+MAX_SOURCE_HASH_FILES = 256
+MAX_SOURCE_HASH_BYTES = 16 * 1024 * 1024
+MAX_SOURCE_FILE_BYTES = 4 * 1024 * 1024
 EXTENSION_ID_PATTERN = re.compile(r"^[a-p]{32}$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 PROFILE_MARKERS = {
     "Default",
     "Local State",
@@ -369,6 +378,221 @@ def validate_extension_id(value: str) -> str:
     return value
 
 
+def _read_hashed_file(path: Path, *, maximum: int = MAX_SOURCE_FILE_BYTES) -> tuple[str, int]:
+    _assert_no_symlink_components(path, message="source files must not have symlinked components")
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("source tree contains a missing, symlinked, or non-file entry")
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise ValueError("source file could not be stat-ed") from error
+    if size > maximum:
+        raise ValueError("source file exceeds the bounded hash limit")
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(min(1024 * 1024, maximum - total + 1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > maximum:
+                    raise ValueError("source file grew beyond the bounded hash limit")
+                digest.update(chunk)
+    except OSError as error:
+        raise ValueError("source file could not be hashed") from error
+    if total != size:
+        raise ValueError("source file changed while it was being hashed")
+    return digest.hexdigest(), total
+
+
+def lifecycle_source_hashes(source_dir: Path) -> dict[str, str]:
+    """Hash a repository-local extension tree without following symlinks."""
+    source = Path(source_dir).expanduser()
+    _assert_no_symlink_components(source, message="source path components must not be symlinks")
+    try:
+        source = source.resolve(strict=True)
+        source.relative_to(ROOT)
+    except (OSError, ValueError) as error:
+        raise ValueError("lifecycle source must be inside the repository") from error
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("lifecycle source must be a real directory")
+
+    result: dict[str, str] = {}
+    total_bytes = 0
+    for path in sorted(source.rglob("*"), key=lambda item: item.relative_to(source).as_posix()):
+        if path.is_symlink():
+            raise ValueError("lifecycle source must not contain symlinks")
+        if path.is_dir():
+            continue
+        relative = path.relative_to(ROOT).as_posix()
+        if len(result) >= MAX_SOURCE_HASH_FILES:
+            raise ValueError("lifecycle source exceeds the bounded file count")
+        digest, size = _read_hashed_file(path)
+        total_bytes += size
+        if total_bytes > MAX_SOURCE_HASH_BYTES:
+            raise ValueError("lifecycle source exceeds the bounded hash size")
+        result[relative] = digest
+    if not result:
+        raise ValueError("lifecycle source is empty")
+    return result
+
+
+def lifecycle_source_tree_sha256(source_hashes: dict[str, str]) -> str:
+    rendered = json.dumps(sorted(source_hashes.items()), separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _load_lifecycle_object(path: Path, description: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError(f"{description} is unreadable") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"{description} must be an object")
+    return value
+
+
+def lifecycle_source_provenance(source_dir: Path) -> dict[str, Any]:
+    """Return the source/manifest/host binding used by a lifecycle record."""
+    source = Path(source_dir).expanduser().resolve(strict=True)
+    source.relative_to(ROOT)
+    hashes = lifecycle_source_hashes(source)
+    manifest_path = source / "manifest.json"
+    manifest_relative = manifest_path.relative_to(ROOT).as_posix()
+    manifest = _load_lifecycle_object(manifest_path, "lifecycle extension manifest")
+    key = manifest.get("key")
+    if manifest.get("manifest_version") != 3 or not isinstance(manifest.get("name"), str):
+        raise ValueError("lifecycle extension manifest identity is invalid")
+    if not isinstance(manifest.get("version"), str) or not isinstance(key, str) or not key:
+        raise ValueError("lifecycle extension manifest is missing version or pinned identity")
+    if hashes.get(manifest_relative) is None:
+        raise ValueError("lifecycle source hash is missing manifest.json")
+
+    host_path = source / "native_host_manifest.macos.json"
+    host_relative = host_path.relative_to(ROOT).as_posix()
+    host = _load_lifecycle_object(host_path, "lifecycle Native Messaging host manifest")
+    if host.get("type") != "stdio" or not isinstance(host.get("name"), str):
+        raise ValueError("lifecycle Native Messaging host identity is invalid")
+    allowed_origins = host.get("allowed_origins")
+    if not isinstance(allowed_origins, list) or any(not isinstance(origin, str) for origin in allowed_origins):
+        raise ValueError("lifecycle Native Messaging host origins are invalid")
+    if hashes.get(host_relative) is None:
+        raise ValueError("lifecycle source hash is missing the Native Messaging host manifest")
+
+    production = source == PRODUCTION_EXTENSION_DIR.resolve()
+    if production and (
+        host.get("name") != "com.agentyc.host"
+        or host.get("path") != "__AGENTYC_NATIVE_HOST_PATH__"
+        or allowed_origins != ["chrome-extension://__AGENTYC_EXTENSION_ID__/"]
+    ):
+        raise ValueError("production Native Messaging host manifest identity is invalid")
+
+    return {
+        "schema_version": LIFECYCLE_PROVENANCE_SCHEMA_VERSION,
+        "source_kind": "production_extension" if production else "test_extension",
+        "source_root": source.relative_to(ROOT).as_posix(),
+        "source_tree_sha256": lifecycle_source_tree_sha256(hashes),
+        "source_hashes": hashes,
+        "manifest_identity": {
+            "relative_file": manifest_relative,
+            "sha256": hashes[manifest_relative],
+            "name": manifest["name"],
+            "manifest_version": manifest["manifest_version"],
+            "version": manifest["version"],
+            "key_sha256": hashlib.sha256(key.encode("utf-8")).hexdigest(),
+        },
+        "host_identity": {
+            "relative_file": host_relative,
+            "sha256": hashes[host_relative],
+            "name": host["name"],
+            "type": host["type"],
+            "allowed_origins": allowed_origins,
+        },
+    }
+
+
+def _validate_hash(value: Any, label: str, errors: list[str]) -> None:
+    if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
+        errors.append(f"{label} must be a lowercase SHA-256 digest")
+
+
+def _validate_lifecycle_fixture_provenance(fixture: Any, errors: list[str]) -> None:
+    if not isinstance(fixture, dict):
+        errors.append("lifecycle_provenance.fixture is missing")
+        return
+    if fixture.get("schema_version") != LIFECYCLE_PROVENANCE_SCHEMA_VERSION:
+        errors.append("lifecycle_provenance.fixture schema_version is invalid")
+    kind = fixture.get("kind")
+    if kind not in {"repository_file", "explicit_url"}:
+        errors.append("lifecycle_provenance.fixture kind is invalid")
+    _validate_hash(fixture.get("url_sha256"), "lifecycle_provenance.fixture.url_sha256", errors)
+    if kind == "repository_file":
+        relative_file = fixture.get("relative_file")
+        allowed_fixture_prefixes = ("tests/fixtures/", "extension/")
+        if not isinstance(relative_file, str) or not relative_file.startswith(allowed_fixture_prefixes):
+            errors.append("lifecycle_provenance.fixture.relative_file must be a checked-in repository fixture")
+        else:
+            candidate = ROOT / relative_file
+            try:
+                _assert_no_symlink_components(candidate, message="fixture path components must not be symlinks")
+                resolved = candidate.resolve(strict=True)
+                if not any(
+                    resolved == root or root in resolved.parents
+                    for root in (ROOT / "tests" / "fixtures", ROOT / "extension")
+                ):
+                    raise ValueError("fixture is outside the checked-in fixture roots")
+                digest, _ = _read_hashed_file(resolved)
+                if digest != fixture.get("content_sha256"):
+                    errors.append("lifecycle_provenance.fixture content hash does not match")
+                if isinstance(fixture.get("url_sha256"), str):
+                    canonical_url_hash = hashlib.sha256(resolved.as_uri().encode("utf-8")).hexdigest()
+                    if fixture["url_sha256"] != canonical_url_hash:
+                        errors.append("lifecycle_provenance.fixture URL hash does not match")
+            except (OSError, ValueError):
+                errors.append("lifecycle_provenance.fixture file is missing or unsafe")
+        _validate_hash(fixture.get("content_sha256"), "lifecycle_provenance.fixture.content_sha256", errors)
+
+
+def validate_lifecycle_provenance(
+    record: dict[str, Any],
+    *,
+    source_dir: Path | None = None,
+    require_production: bool = True,
+) -> list[str]:
+    """Verify live lifecycle evidence is tied to current source and host identity."""
+    errors: list[str] = []
+    provenance = record.get("lifecycle_provenance")
+    if not isinstance(provenance, dict):
+        return ["lifecycle_provenance is missing"]
+    if provenance.get("schema_version") != LIFECYCLE_PROVENANCE_SCHEMA_VERSION:
+        errors.append("lifecycle_provenance schema_version is invalid")
+    expected_source = Path(source_dir or PRODUCTION_EXTENSION_DIR)
+    try:
+        expected = lifecycle_source_provenance(expected_source)
+    except (OSError, ValueError, TypeError) as error:
+        return [f"current lifecycle source is unverifiable: {type(error).__name__}"]
+    if require_production and expected["source_kind"] != "production_extension":
+        errors.append("lifecycle provenance source is not the production extension")
+    for field in (
+        "source_kind",
+        "source_root",
+        "source_tree_sha256",
+        "source_hashes",
+        "manifest_identity",
+        "host_identity",
+    ):
+        if provenance.get(field) != expected.get(field):
+            errors.append(f"lifecycle_provenance.{field} does not match the current source")
+    _validate_lifecycle_fixture_provenance(provenance.get("fixture"), errors)
+    fixture = provenance.get("fixture")
+    if require_production and isinstance(fixture, dict) and fixture.get("kind") == "repository_file":
+        if not isinstance(fixture.get("relative_file"), str) or not fixture["relative_file"].startswith("tests/fixtures/"):
+            errors.append("production lifecycle fixture is not under tests/fixtures")
+    return sorted(set(errors))
+
+
 def load_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -601,8 +825,19 @@ def offline_rollback_safety() -> dict[str, Any]:
     }
 
 
-def validate_lifecycle_record(record: dict[str, Any], *, require_live: bool) -> list[str]:
-    """Validate an operator-supplied lifecycle record without executing it."""
+def validate_lifecycle_record(
+    record: dict[str, Any],
+    *,
+    require_live: bool,
+    require_provenance: bool = False,
+    provenance_source_dir: Path | None = None,
+    require_production_provenance: bool = True,
+) -> list[str]:
+    """Validate a lifecycle record without executing it.
+
+    Provenance is opt-in for compatibility with older in-memory contract tests;
+    every persisted live record is validated with ``require_provenance=True``.
+    """
     errors: list[str] = []
     if not isinstance(record, dict):
         return ["lifecycle record must be an object"]
@@ -679,13 +914,22 @@ def validate_lifecycle_record(record: dict[str, Any], *, require_live: bool) -> 
         elif not require_live and kill_switch.get("status") not in {OFFLINE_EVIDENCE_STATUS, "armed_and_verified"}:
             errors.append("rollback_safety.kill_switch has an invalid status")
 
+    if require_provenance:
+        errors.extend(
+            validate_lifecycle_provenance(
+                record,
+                source_dir=provenance_source_dir,
+                require_production=require_production_provenance,
+            )
+        )
+
     if redact_for_persistence(record) != record:
         errors.append("lifecycle record is not stable after central redaction")
     return sorted(set(errors))
 
 
 def load_lifecycle_record(path_value: str, artifact_dir: Path) -> dict[str, Any]:
-    """Load a redacted live lifecycle record from the repository artifact tree."""
+    """Load and source-bind a redacted live lifecycle record."""
     path = Path(path_value).expanduser()
     if not path.is_absolute():
         path = ROOT / path
@@ -705,7 +949,22 @@ def load_lifecycle_record(path_value: str, artifact_dir: Path) -> dict[str, Any]
         raise ValueError("lifecycle record is unreadable") from error
     if not isinstance(value, dict):
         raise ValueError("lifecycle record must be an object")
-    errors = validate_lifecycle_record(value, require_live=True)
+    phase4_artifacts = _path_inside(Path(artifact_dir).resolve(), PHASE4_ARTIFACT_DIR.resolve(), allow_parent=True)
+    provenance_source_dir: Path | None = None
+    if not phase4_artifacts:
+        provenance = value.get("lifecycle_provenance")
+        source_root = provenance.get("source_root") if isinstance(provenance, dict) else None
+        if isinstance(source_root, str) and source_root and not Path(source_root).is_absolute() and ".." not in Path(source_root).parts:
+            candidate = ROOT / source_root
+            if candidate.is_dir() and not candidate.is_symlink():
+                provenance_source_dir = candidate
+    errors = validate_lifecycle_record(
+        value,
+        require_live=True,
+        require_provenance=True,
+        provenance_source_dir=provenance_source_dir,
+        require_production_provenance=phase4_artifacts,
+    )
     if errors:
         raise ValueError("; ".join(errors))
     return redact_for_persistence(value)
@@ -1330,6 +1589,7 @@ def main(argv: list[str] | None = None) -> int:
             if action == "drill" and report["status"] == "drill_incomplete":
                 report["lifecycle"] = lifecycle_record["lifecycle"]
                 report["rollback_safety"] = lifecycle_record["rollback_safety"]
+                report["lifecycle_provenance"] = lifecycle_record["lifecycle_provenance"]
                 report["evidence_mode"] = "live"
                 report["status"] = "drill_passed"
                 report["release_eligible"] = True
