@@ -114,11 +114,12 @@ fn run() -> Result<(), String> {
     };
     let capabilities = broker.capabilities().map_err(|error| error.to_string())?;
     bridge
-        .complete_handshake(
+        .complete_handshake_with_resume(
             &native_hello,
             connection.broker_epoch,
             connection.connection_epoch,
             &capabilities,
+            connection.resume,
         )
         .map_err(|error| error.to_string())?;
     broker.mark_ready().map_err(|error| error.to_string())?;
@@ -310,11 +311,12 @@ fn supervise_native_requests(
                         broker.hello(&hello).map_err(|error| error.to_string())?;
                     let capabilities = broker.capabilities().map_err(|error| error.to_string())?;
                     next_bridge
-                        .complete_handshake(
+                        .complete_handshake_with_resume(
                             &next_hello,
                             next_connection.broker_epoch,
                             next_connection.connection_epoch,
                             &capabilities,
+                            next_connection.resume,
                         )
                         .map_err(|error| error.to_string())?;
                     router
@@ -757,6 +759,7 @@ mod tests {
             profile_instance_id: "profile_native_test".to_owned(),
             extension_version: "0.1.0".to_owned(),
             capabilities: vec!["logical_tabs".to_owned()],
+            resume_from: None,
         };
         let hello = native_hello
             .to_core_hello(PrincipalId::from_suffix("extension").expect("principal"))
