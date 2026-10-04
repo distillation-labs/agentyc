@@ -1,6 +1,6 @@
 export { connect, BrowserClient } from "./client.mjs";
 export { TaskSpace } from "./space.mjs";
-export { Page } from "./page.mjs";
+export { Page, PAGE_HELPER_OPERATIONS } from "./page.mjs";
 export { actionStatus, reconcileAction, submitAction } from "./actions.mjs";
 export {
   readEvents,
@@ -8,7 +8,7 @@ export {
   subscribeEvents,
   eventCursor,
 } from "./events.mjs";
-export { waitFor } from "./waits.mjs";
+export { waitFor, waitAfterParams } from "./waits.mjs";
 export {
   createLocalTransport,
   createLocalProtocolTransport,
