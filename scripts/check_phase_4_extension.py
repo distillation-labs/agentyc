@@ -8,9 +8,11 @@ refusing to claim headed existing-profile Chrome or production distribution.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,25 @@ ARTIFACT = Path("artifacts/p4-extension-review.md")
 AUDIT = Path("docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-4-chrome-docs-audit.md")
 LIVE_ARTIFACT = Path("artifacts/p4-live-disposable/report.json")
 MAX_BYTES = 4 * 1024 * 1024
+MAX_PROVENANCE_AGE_SECONDS = 7 * 24 * 60 * 60
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TASK_IDS = tuple(f"P4-T{i}" for i in range(1, 8))
+REDACTION_FALSE_FIELDS = ("raw_browser_ids", "secrets", "absolute_paths", "page_bodies", "errors")
+PHASE4_SOURCE_PATHS = (
+    Path("extension/package-lock.json"),
+    Path("docs/user-control.md"),
+    Path("docs/security/logging.md"),
+    Path("crates/agentyc-host/src/chrome_bridge.rs"),
+    Path("extension/tests/reconnect-debugger.test.mjs"),
+    Path("extension/tests/content-bridge-phase4.test.mjs"),
+    Path("extension/tests/tabs-registry-security.test.mjs"),
+    Path("scripts/run_phase4_live_probe.py"),
+    Path("extension/src/debugger-bridge.mjs"),
+    Path("extension/src/frames.mjs"),
+    Path("extension/src/service-worker.mjs"),
+    Path("extension/tests/fake-chrome.mjs"),
+    AUDIT,
+)
 
 
 class Phase4Error(ValueError):
@@ -66,6 +86,172 @@ def require(condition: bool, message: str) -> None:
         raise Phase4Error(message)
 
 
+def _safe_relative_path(value: Any, *, field: str) -> Path:
+    require(isinstance(value, str) and value, f"{field} must be a non-empty relative path")
+    require("\\" not in value, f"{field} must use repository-relative separators")
+    candidate = Path(value)
+    require(not candidate.is_absolute() and ".." not in candidate.parts, f"{field} must remain inside the repository")
+    require(candidate.as_posix() == value and value != ".", f"{field} is not canonical")
+    return candidate
+
+
+def _read_bytes(root: Path, path: Path) -> bytes:
+    if path.is_absolute() or ".." in path.parts:
+        raise Phase4Error(f"unsafe path: {path}")
+    current = root
+    for part in path.parts:
+        current = current / part
+        if current.is_symlink():
+            raise Phase4Error(f"symlinked evidence path: {path}")
+    candidate = root / path
+    if not candidate.is_file() or candidate.stat().st_size > MAX_BYTES:
+        raise Phase4Error(f"missing or oversized evidence path: {path}")
+    try:
+        return candidate.read_bytes()
+    except (OSError, UnicodeError) as exc:
+        raise Phase4Error(f"unreadable evidence path: {path}") from exc
+
+
+def _sha256(root: Path, path: Path) -> str:
+    return hashlib.sha256(_read_bytes(root, path)).hexdigest()
+
+
+def phase4_source_hashes(root: Path = ROOT) -> dict[str, str]:
+    """Return hashes for every source file used by the Phase 4 static gate."""
+    return {path.as_posix(): _sha256(root, path) for path in PHASE4_SOURCE_PATHS}
+
+
+def _fresh_timestamp(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        return False
+    age = (datetime.now(timezone.utc) - parsed).total_seconds()
+    return 0 <= age <= MAX_PROVENANCE_AGE_SECONDS
+
+
+def _validate_redaction(record: dict[str, Any], *, label: str) -> dict[str, Any]:
+    redaction = record.get("redaction_status")
+    require(isinstance(redaction, dict), f"{label} redaction status is missing")
+    require(redaction.get("status") == "applied", f"{label} redaction status is invalid")
+    for field in REDACTION_FALSE_FIELDS:
+        require(redaction.get(field) is False, f"{label} redaction field is unsafe: {field}")
+    return redaction
+
+
+def _validate_source_hashes(root: Path, value: Any, *, label: str) -> dict[str, str]:
+    require(isinstance(value, dict) and value, f"{label} source hashes are missing")
+    normalized: dict[str, str] = {}
+    for raw_path, expected in value.items():
+        path = _safe_relative_path(raw_path, field=f"{label} source hash path")
+        require(isinstance(expected, str) and SHA256_RE.fullmatch(expected) is not None, f"{label} source hash is invalid")
+        actual = _sha256(root, path)
+        require(actual == expected, f"{label} source hash is stale")
+        normalized[path.as_posix()] = expected
+    for path in PHASE4_SOURCE_PATHS:
+        require(path.as_posix() in normalized, f"{label} source hash is missing")
+    return normalized
+
+
+def _validate_json_evidence_envelope(value: Any, *, label: str) -> None:
+    require(isinstance(value, dict), f"{label} JSON evidence must be an object")
+    require(value.get("schema_version") == 1, f"{label} schema version is invalid")
+    build = value.get("build_tuple")
+    require(isinstance(build, dict) and build.get("phase") == 4, f"{label} provenance phase is invalid")
+    provenance = value.get("provenance")
+    require(isinstance(provenance, dict), f"{label} provenance is missing")
+    require(provenance.get("build_tuple") == build, f"{label} provenance does not match its build tuple")
+    _validate_redaction(value, label=label)
+
+
+def _validate_named_artifacts(root: Path, value: Any, *, label: str) -> list[dict[str, str]]:
+    require(isinstance(value, list) and value, f"{label} named evidence artifacts are missing")
+    normalized: list[dict[str, str]] = []
+    names: set[str] = set()
+    paths: set[str] = set()
+    for item in value:
+        if isinstance(item, str):
+            path = _safe_relative_path(item, field=f"{label} evidence artifact path")
+            name = path.stem
+        else:
+            require(isinstance(item, dict), f"{label} evidence artifact entry is invalid")
+            name = item.get("name")
+            path = _safe_relative_path(item.get("path"), field=f"{label} evidence artifact path")
+            if "sha256" in item:
+                digest = item.get("sha256")
+                require(isinstance(digest, str) and SHA256_RE.fullmatch(digest) is not None, f"{label} evidence artifact hash is invalid")
+                require(_sha256(root, path) == digest, f"{label} evidence artifact hash is stale")
+        require(isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{1,127}", name) is not None, f"{label} evidence artifact name is invalid")
+        require(name not in names and path.as_posix() not in paths, f"{label} evidence artifacts are duplicated")
+        _read_bytes(root, path)
+        names.add(name)
+        paths.add(path.as_posix())
+        normalized.append({"name": name, "path": path.as_posix()})
+        if path.suffix == ".json":
+            try:
+                payload = json.loads(_read_bytes(root, path))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise Phase4Error(f"{label} JSON evidence is invalid") from exc
+            _validate_json_evidence_envelope(payload, label=f"{label} {name}")
+    require(ARTIFACT.as_posix() in paths, f"{label} extension review artifact is not named")
+    return normalized
+
+
+def _validate_complete_record(root: Path, record: dict[str, Any], *, label: str) -> None:
+    required = ("schema_version", "provenance", "redaction_status", "source_hashes", "evidence_artifacts")
+    for field in required:
+        require(field in record, f"{label} is missing {field}")
+    require(record.get("schema_version") == 1 and record.get("phase") == 4, f"{label} identity is invalid")
+    require(record.get("status") == "complete", f"{label} status is not complete")
+    require(isinstance(record.get("evidence_mode"), str) and record["evidence_mode"] != "deterministic", f"{label} complete evidence mode is invalid")
+    _validate_redaction(record, label=label)
+    _validate_source_hashes(root, record["source_hashes"], label=label)
+    _validate_named_artifacts(root, record["evidence_artifacts"], label=label)
+
+    provenance = record["provenance"]
+    require(isinstance(provenance, dict), f"{label} provenance is invalid")
+    require(provenance.get("schema_version") == 1 and provenance.get("phase") == 4, f"{label} provenance identity is invalid")
+    require(isinstance(record.get("timestamp"), str) and _fresh_timestamp(record["timestamp"]), f"{label} timestamp is stale or invalid")
+    require(provenance.get("timestamp") == record["timestamp"], f"{label} provenance timestamp mismatch")
+    require(isinstance(record.get("nonce"), str) and record["nonce"], f"{label} nonce is missing")
+    require(provenance.get("nonce") == record["nonce"], f"{label} provenance nonce mismatch")
+    require(provenance.get("source_hashes") == record["source_hashes"], f"{label} provenance source hashes mismatch")
+    require(provenance.get("evidence_artifacts") == record["evidence_artifacts"], f"{label} provenance artifacts mismatch")
+    if "status" in provenance:
+        require(provenance["status"] == record["status"], f"{label} provenance status mismatch")
+    if "evidence_mode" in provenance:
+        require(provenance["evidence_mode"] == record["evidence_mode"], f"{label} provenance evidence mode mismatch")
+    if "redaction_status" in provenance:
+        require(provenance["redaction_status"] == record["redaction_status"], f"{label} provenance redaction mismatch")
+    if "build_tuple" in record:
+        build = record["build_tuple"]
+        require(isinstance(build, dict) and build.get("phase") == 4, f"{label} build phase is invalid")
+        if "producer" in build or "producer_sha256" in build:
+            producer = _safe_relative_path(build.get("producer"), field=f"{label} producer path")
+            producer_hash = build.get("producer_sha256")
+            require(isinstance(producer_hash, str) and SHA256_RE.fullmatch(producer_hash) is not None, f"{label} producer hash is invalid")
+            require(_sha256(root, producer) == producer_hash, f"{label} producer hash is stale")
+        if "build_tuple" in provenance:
+            require(provenance["build_tuple"] == build, f"{label} build provenance mismatch")
+
+
+def validate_complete_evidence(root: Path, values: dict[str, Any], evidence: dict[str, Any]) -> None:
+    """Fail closed when a manifest claims complete Phase 4 evidence."""
+    _validate_complete_record(root, values, label="Phase 4 manifest")
+    _validate_complete_record(root, evidence, label="Phase 4 artifact")
+    require(values.get("provenance") == evidence.get("provenance"), "Phase 4 manifest/artifact provenance mismatch")
+    require(values.get("redaction_status") == evidence.get("redaction_status"), "Phase 4 manifest/artifact redaction mismatch")
+    require(values.get("source_hashes") == evidence.get("source_hashes"), "Phase 4 manifest/artifact source hashes mismatch")
+    require(values.get("evidence_artifacts") == evidence.get("evidence_artifacts"), "Phase 4 manifest/artifact artifacts mismatch")
+    require(values.get("timestamp") == evidence.get("timestamp"), "Phase 4 manifest/artifact timestamp mismatch")
+    require(values.get("nonce") == evidence.get("nonce"), "Phase 4 manifest/artifact nonce mismatch")
+    require(values.get("evidence_mode") == evidence.get("evidence_mode"), "Phase 4 manifest/artifact evidence mode mismatch")
+
+
 def check(root: Path = ROOT) -> dict[str, Any]:
     plan = read(root, PLAN)
     values = manifest(root)
@@ -78,6 +264,10 @@ def check(root: Path = ROOT) -> dict[str, Any]:
     require(values.get("plan") == PLAN.as_posix(), "manifest plan path is invalid")
     require(values.get("audit") == AUDIT.as_posix(), "manifest audit path is invalid")
     require("status: active" in plan or "status: complete" in plan, "Phase 4 plan status is missing")
+    require(evidence.get("status") == values.get("status"), "manifest/artifact status mismatch")
+    require(evidence.get("evidence_mode") == values.get("evidence_mode"), "manifest/artifact evidence mode mismatch")
+    if values["status"] == "active":
+        require(values.get("evidence_mode") == "deterministic", "active Phase 4 evidence mode is invalid")
 
     for path in (
         Path("extension/package-lock.json"),
@@ -121,11 +311,13 @@ def check(root: Path = ROOT) -> dict[str, Any]:
         require(live.get("release_eligible") is False, "live Phase 4 artifact cannot claim release eligibility")
     require(isinstance(evidence.get("nonclaims"), list) and evidence["nonclaims"], "Phase 4 nonclaims missing")
     require("headed existing-profile Chrome" in " ".join(evidence["nonclaims"]), "headed Chrome nonclaim missing")
+    if values["status"] == "complete":
+        validate_complete_evidence(root, values, evidence)
 
     return {
         "phase": 4,
         "status": values["status"],
-        "deterministic": True,
+        "deterministic": values.get("evidence_mode") == "deterministic",
         "release_eligible": False,
         "tasks": len(TASK_IDS),
         "live_disposable": live_text is not None,
