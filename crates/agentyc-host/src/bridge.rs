@@ -596,6 +596,23 @@ pub trait Bridge: Send + Sync {
         ))
     }
 
+    /// Rebind one retained browser page to a fresh fenced lease.
+    fn rebind_page(
+        &self,
+        _space_id: &SpaceId,
+        _page_id: &PageId,
+        _lease_epoch: LeaseEpoch,
+        _target_generation: u64,
+        _navigation_generation: u64,
+        _document_generation: u64,
+        _ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        Err(CoreError::new(
+            ErrorCode::CapabilityUnavailable,
+            "bridge does not support managed page rebinding",
+        ))
+    }
+
     /// Present one managed page in its space's visual tab group.
     fn present_group(
         &self,
