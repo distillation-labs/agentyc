@@ -1,215 +1,169 @@
 # Architecture
 
-## High-Level View
+## Canonical Product Path
+
+The default product path uses the user's already-running, enrolled Chrome
+profile. Its public abstraction is a logical task space containing logical
+pages. It does not launch Chrome, discover or accept a CDP URL, or treat a
+Chrome tab as the task-space identity. `agentyc` and `agentyc mcp` use this
+host-backed path by default.
 
 ```text
-MCP client
-  |
-  | stdio (default)  ── or ──  Streamable HTTP (agentyc serve, via axum)
-  v
-agentyc (binary)  ── crates/agentyc/src/main.rs
-  |
-  v
-agentyc_mcp::run_stdio / BrowserServer  ── crates/agentyc-mcp
-  |
-  +--> rmcp ToolRouter (61 #[rmcp::tool] handlers, six routers)
-  |
-  +--> tools::{navigation, state_tools, interaction,
-  |            inspection, frames_storage, tabs_session}
-  |
-  +--> ServerState  (Arc<Mutex<ServerState>>: CdpClient, session_id, tab, browser)
-  |
-  +--> agentyc_tools  ── deterministic extraction routing
-  |
-  +--> agentyc_dom    ── DOM serialization, clickable detection, markdown
-  |
-  +--> agentyc_browser ── Chrome discovery, launch, profile, session lifecycle
-  |
-  +--> agentyc_cdp     ── CdpClient
-         |
-         +--> Chrome / Chromium over the Chrome DevTools Protocol
+CLI / MCP client
+      |
+      | owner-only local host protocol (MCP stdio is the client transport)
+      v
+agentyc host broker
+  |-- durable ledger, leases, fencing, scheduling, events, snapshots/refs
+  |-- local IPC and Chrome Native Messaging bridge
+      |
+      | Chrome-mediated Native Messaging
+      v
+MV3 extension service worker
+  |-- Chrome tabs, tab groups, debugger and side-panel APIs
+  |-- bounded observations and execution of host-authorized operations
+      |
+      v
+user-approved pages in existing Chrome
 ```
 
-## Workspace Crates (source of truth)
+The MCP service is an adapter over host operations, not an independent owner
+of task-space state. The default local MCP client connects to the owner-only
+host socket. The installed Native Messaging host owns the broker and ledger;
+the CLI does not open a second broker in normal connected mode. The explicit
+`--offline` fake-host option is a test/contract seam and is not a Chrome
+connection.
 
-The workspace is defined in the root `Cargo.toml` (`edition = "2024"`). Each
-crate owns one concern:
+### Ownership Boundaries
 
-| Crate             | Path                     | Responsibility                                                            |
-| ----------------- | ------------------------ | ------------------------------------------------------------------------- |
-| `agentyc`         | `crates/agentyc`         | Binary + CLI (`mcp`, `serve`, `init`, `browser`).                         |
-| `agentyc-mcp`     | `crates/agentyc-mcp`     | The MCP server: tool definitions, schemas, dispatch, state serialization. |
-| `agentyc-cdp`     | `crates/agentyc-cdp`     | Chrome DevTools Protocol client over WebSocket / HTTP attach.             |
-| `agentyc-browser` | `crates/agentyc-browser` | Chrome discovery, launch, profile/env config, session lifecycle.          |
-| `agentyc-dom`     | `crates/agentyc-dom`     | DOM tree serialization, clickable-element heuristics, HTML→markdown.      |
-| `agentyc-tools`   | `crates/agentyc-tools`   | Deterministic extraction route selection.                                 |
-| `agentyc-tests`   | `crates/agentyc-tests`   | Integration-test harness and ported suites.                               |
+- **Host:** owns logical identity, durable records, principal admission,
+  leases/epochs, action receipts and ordering, policy, fencing, reconciliation,
+  event watermarks, snapshot/ref provenance, and cleanup authorization.
+- **Extension:** owns calls to Chrome APIs and browser observations. It maps
+  logical `space_id`/`page_id` identities to ephemeral Chrome objects and
+  executes only host-authorized, fenced operations. It is not authoritative
+  for leases or durable action state.
+- **Clients and MCP:** use logical task-space and page identities. MCP
+  compatibility tools do not create a parallel state owner.
 
-## CLI Layer
+`space_id` and `page_id` are public opaque identities. Chrome tab, window,
+group, debugger target/session, frame runtime, extension worker, and process IDs
+are private ephemeral implementation details or bounded reconciliation hints.
+They are not public handles, authorization, or proof that a logical page is
+unchanged. Chrome-generated IDs must not appear in primary client results.
 
-`crates/agentyc/src/main.rs` parses the CLI with `clap` and dispatches:
+A Chrome profile is shared browser state, not an isolation boundary between
+spaces. Cookies, origin storage, history, permissions, installed extensions,
+and enterprise policy may be shared according to Chrome. Logical ownership
+does not isolate those resources. Tab groups are presentation only; their
+membership, title, color, or movement does not grant ownership or authorize
+cleanup. Existing/user tabs remain unmanaged unless explicitly claimed under
+the host's ownership rules.
 
-1. `agentyc` / `agentyc mcp` → the host-backed logical MCP adapter over stdio.
-2. `agentyc mcp --legacy-cdp` → the explicit legacy direct-CDP compatibility server.
-3. `agentyc serve --cdp-url <url>` → legacy Streamable HTTP over an explicitly supplied CDP endpoint; no implicit browser launch.
-4. `agentyc init` → writes the bundled `SKILL.md` (embedded via `include_str!`).
-5. `agentyc browser` → an explicit managed/test command that launches Chrome with remote debugging and prints the CDP WebSocket URL.
+### Runtime and Recovery
 
-Tracing is configured to write to stderr only — stdout is reserved for the
-JSON-RPC channel — with the level taken from `AGENTYC_LOGGING_LEVEL`.
+The Native Messaging host admits the extension through the trusted Chrome
+origin/extension identity, enrolled profile binding, protocol version, nonce,
+epochs, and schema checks. Agent/MCP clients use a distinct owner-only local
+protocol and do not open Chrome Native Messaging or Chrome APIs directly.
 
-## MCP Server Layer
+The host ledger is durable and authoritative. Active connection authority is
+process-local and is not persisted. On restart, the host advances its broker
+epoch, resets connection/event sequence context, marks interrupted operations
+for reconciliation, and requires clients/extension to reconnect. A dispatched
+mutation with an uncertain result is not blindly replayed. Browser-session or
+profile changes require reconciliation; ambiguous pages remain paused or
+unmanaged rather than being silently rebound or closed.
 
-`agentyc_mcp::BrowserServer` is the public server. It implements `rmcp`'s
-`ServerHandler` via `#[tool_handler]`, and its tools are declared with
-`#[rmcp::tool(...)]` grouped into six `#[tool_router]` blocks that are summed
-together in `BrowserServer::new()`:
+The state directory defaults to `${AGENTYC_STATE_DIR:-~/.agentyc/state}` and
+contains `ledger.json`, an exclusive `broker.lock` while the broker is open,
+and `host.sock` for local IPC (overridable by `AGENTYC_HOST_SOCKET`). Ledger
+schema and recovery details are in [Configuration](configuration.md).
 
-- `tool_router_nav` — navigation and wait tools
-- `tool_router_state` — state, HTML, screenshot, PDF, viewport
-- `tool_router_interaction` — click, type, scroll, select, dialogs, etc.
-- `tool_router_inspection` — extraction, find, search, attributes, evaluate
-- `tool_router_frames` — frames and storage
-- `tool_router_tabs` — tabs, cookies, emulation, session control
+## Workspace Crates
 
-After composition, `slim_tool_schemas()` strips verbose `schemars`-generated
-fields (`$schema`, `title`, `$defs`, per-property `format`) from every tool's
-input schema to keep the `tools/list` payload compact.
+The root `Cargo.toml` is the workspace source of truth. The current split is:
 
-Responsibilities:
+| Crate | Responsibility |
+| --- | --- |
+| `agentyc-core` | Logical IDs, protocol envelopes, schemas, records, and state/action contracts. |
+| `agentyc-host` | Broker, durable ledger, leases/fences, local IPC, Native Messaging bridge, events, and host lifecycle. |
+| `agentyc` | CLI dispatch for host-backed logical commands plus explicit compatibility commands. |
+| `agentyc-mcp` | Host-backed logical MCP adapter and separate legacy direct-CDP `BrowserServer`. |
+| `agentyc-cdp` | Chrome DevTools Protocol client used by the legacy compatibility runtime. |
+| `agentyc-browser` | Chrome discovery, launch, profile, and session lifecycle for compatibility/test use. |
+| `agentyc-runtime` | Runtime wrapper for the explicit legacy browser path. |
+| `agentyc-dom` | DOM serialization, clickable-element detection, and HTML-to-markdown utilities. |
+| `agentyc-tools` | Deterministic extraction route selection used by legacy browser tools. |
+| `agentyc-tests` | Integration-test harness and browser test support. |
 
-- Register the MCP tool list (61 tools) and serve them over stdio or HTTP.
-- The legacy server connects only to an explicit CDP endpoint or, when selected explicitly with `--legacy-cdp`, uses its managed compatibility lifecycle; the host-backed default never launches or attaches to Chrome directly.
-- Translate MCP arguments (typed `Deserialize` + `JsonSchema` param structs)
-  into `tools::*` calls.
-- Return text and image content in MCP response format.
-- Surface errors as `isError` tool content with structured codes so agents can
-  branch programmatically (see below).
+## CLI Dispatch
 
-The server advertises tools only — no MCP resources or prompts.
+`crates/agentyc/src/main.rs` dispatches these paths:
 
-### Shared State
+1. `agentyc` and `agentyc mcp` run the host-backed logical MCP service by
+   default. `--state-dir`, `AGENTYC_STATE_DIR`, and the local host socket
+   configure host access; no browser debugger URL is implied.
+2. `agentyc mcp --legacy-cdp` explicitly selects the legacy direct-CDP MCP
+   compatibility server. Its managed/test lifecycle is available only within
+   this explicit mode.
+3. `agentyc serve --cdp-url <url>` is legacy Streamable HTTP compatibility
+   mode and requires an explicit debugger endpoint.
+4. `agentyc space`, `page`, `snapshot`, `action`, `events`, and `host` are
+   direct logical host-backed CLI commands.
+5. `agentyc browser`, `run --cdp-url`, and `repl --cdp-url` are explicit
+   managed/test or direct-CDP compatibility commands; they are not defaults.
+6. `agentyc init` writes the bundled agent skills guide.
 
-`tools::ServerState` (held as `Arc<Mutex<ServerState>>`) is the single runtime
-object passed to every tool function. It owns:
+Tracing writes to stderr; stdout remains available for MCP framing or the
+structured JSON emitted by direct commands.
 
-- `cdp: Option<CdpClient>` — the live CDP connection.
-- `session_id: Option<String>` — the attached page target's CDP session id.
-- `current_tab_id: Option<String>` — the focused tab (last 4 chars of target id).
-- `launched_browser: Option<LaunchedBrowser>` — kept alive for the session.
+## Legacy CDP/MCP Compatibility Path
 
-### Structured Error Codes
+This is a separate compatibility path, not the canonical existing-Chrome
+task-space path. It retains the older active-browser/tab-oriented MCP server
+for clients that explicitly select it. The default path never falls back to
+this server or runtime.
 
-`tools::res` converts an `anyhow::Result<CallToolResult>` into the rmcp result
-type. Instead of propagating raw failures, it maps known CDP error strings into
-agent-readable, prefixed messages with recovery hints:
+`agentyc_mcp::BrowserServer` is the legacy direct-CDP server. It composes six
+tool routers for navigation/waits, state/HTML/screenshot/PDF/viewport,
+interaction, inspection/extraction, frames/storage, and tabs/cookies,
+emulation/session control. Its tool schemas are trimmed before advertising. The
+compatibility server connects to a supplied CDP endpoint or, only when
+`--legacy-cdp` is selected without one, may use its managed-test lifecycle.
+Legacy `serve` instead requires an explicit endpoint.
 
-- `[stale_ref]` — element id no longer valid → call `browser_get_state`.
-- `[element_not_interactable]` — off-screen / Shadow DOM → use coordinates or `browser_evaluate`.
-- `[no_browser]` — nothing connected → call `browser_navigate` to auto-launch.
-- `[domain_blocked]` — navigation outside `AGENTYC_ALLOWED_DOMAINS`.
-- `[timeout]` — increase `timeout_seconds` / verify the page loaded.
-- `[session_error]` — reconnect via `browser_navigate`.
+The legacy runtime uses `agentyc_cdp::CdpClient` over WebSocket or HTTP attach,
+enables Network/Runtime/Page domains, and attaches to a page target. Its
+`ServerState` keeps the CDP client, session/active-tab details, and any managed
+browser process for that compatibility session. `agentyc_browser` can locate
+and launch Chrome for explicit test/managed use; the `agentyc browser` command
+launches a temporary profile with remote debugging and prints its WebSocket
+URL. These facilities are not defaults and are not used by the host-backed
+logical adapter.
 
-## CDP Layer
+Legacy CDP environment settings such as `AGENTYC_HEADLESS`,
+`AGENTYC_CDP_TIMEOUT_S`, proxy options, `AGENTYC_ALLOWED_DOMAINS`, and
+`PLAYWRIGHT_BROWSERS_PATH` apply to the legacy browser runtime where supported.
+Legacy attach reuses the supplied browser and does not tear it down at session
+end. In shared-CDP usage, separate MCP sessions can open separate tabs, but
+cookies and storage remain shared within the browser profile; this is not
+logical task-space isolation.
 
-`agentyc_cdp::CdpClient` speaks the Chrome DevTools Protocol directly:
+The legacy extraction tools choose deterministic HTML routes (links, images,
+tables, lists, forms, or key/value content) and do not fall back to an LLM.
+Legacy structured errors and tool behavior remain compatibility concerns and
+must not be confused with host broker authority or logical-space guarantees.
 
-- `connect` over a `ws://` / `wss://` debugger URL (`tokio-tungstenite`).
-- `connect_via_http` to resolve a debugger URL from an HTTP endpoint (`reqwest`).
-- `send::<T>(method, params, session_id)` issues a CDP command, optionally
-  scoped to a page session, with a response timeout taken from
-  `AGENTYC_CDP_TIMEOUT_S` (default 60s).
+## Public Logical State
 
-On connect, the server enables `Network`, `Runtime`, and `Page` domains
-browser-wide and per page session, then attaches to the first page target.
+Host-backed page snapshots and action results are scoped by `space_id` and
+`page_id`, with lease and generation checks. Refs are valid only for their
+logical page and snapshot/document context. The extension supplies bounded
+page observations and capability results; host policy decides whether those
+observations can support an operation. Deterministic legacy extraction remains
+available only through the compatibility server.
 
-## Browser Session Layer
-
-`agentyc_browser` owns the local browser lifecycle:
-
-- `find_chrome_binary()` locates Chrome/Chromium across platform-specific
-  install locations and the `PLAYWRIGHT_BROWSERS_PATH` cache, honoring an
-  explicit override.
-- `BrowserProfile` reads runtime configuration from the environment
-  (`AGENTYC_HEADLESS`, `AGENTYC_ALLOWED_DOMAINS`, `AGENTYC_PROXY_*`).
-- `LaunchedBrowser` represents the spawned process; it is stored on
-  `ServerState` so it lives for the duration of the MCP session.
-
-Defaults relevant to clients:
-
-- `headless=false` (a visible browser) unless `AGENTYC_HEADLESS=1`.
-- Per-session isolated temporary profile.
-- Downloads path under `~/Downloads/agentyc-mcp`.
-
-## Browser State Serialization
-
-The state module shapes a page snapshot into the MCP-facing payload returned by
-`browser_get_state`:
-
-- Stable refs are generated as `e<backend_node_id>` and survive re-renders.
-- `state_hash` summarizes the page and interactive elements.
-- Modes: `auto` (full on small pages, ranked compaction on dense pages),
-  `full`, `min` (proximity-scored budget), and `focus` (single element).
-- An unchanged `since_hash` returns `changed=false` with no element payload.
-- Shadow DOM is pierced during element discovery.
-
-## Deterministic Extraction Pipeline
-
-`agentyc_tools` chooses a deterministic extraction route from the query string
-for `browser_extract_content`. Supported route families:
-
-- Links
-- Link collections
-- Images
-- Tables
-- Lists
-- Form fields
-- Key-value / definition blocks
-
-If no deterministic route matches, the server returns an explicit error. It
-never falls back to an LLM — there is no model in the loop.
-
-## Shared / Attached Browser Flow
-
-When `--cdp-url` is provided to `agentyc mcp` (or `agentyc serve`):
-
-- The server attaches to an already-running browser instead of launching one.
-- It enables the required CDP domains browser-wide and on the first page target.
-- The attached browser is not torn down when the MCP session ends.
-
-### Parallel Automation
-
-Multiple subagent processes can share one browser:
-
-1. A primary agent starts a shared browser with
-   `agentyc browser --port 9222 --detach` and captures the printed CDP URL.
-2. Each subagent runs its own `agentyc mcp --cdp-url <url>` process.
-3. `browser_new_tab` gives each subagent an isolated working surface; state
-   snapshots, refs, and network logs are scoped per tab while cookies and
-   storage remain shared across the profile.
-
-## Request Flows
-
-All MCP tool calls follow the same path:
-
-1. The MCP client sends a stdio (or HTTP) `tools/call`.
-2. `rmcp` routes it to the matching `#[rmcp::tool]` method on `BrowserServer`.
-3. The method deserializes typed params and calls the relevant `tools::*` fn.
-4. Browser tools lazily launch / attach a browser if needed.
-5. The function drives Chrome through `agentyc_cdp` and returns text — or text
-   plus image content for `browser_get_state` and `browser_screenshot`.
-
-### `browser_get_state`
-
-1. The server reads the DOM and interactive elements over CDP.
-2. The state module compacts and serializes the snapshot.
-3. The server returns JSON text plus optional image content.
-4. Clients should prefer `mode="min"` + `since_hash` for follow-up polling.
-
-### `browser_extract_content`
-
-1. The client sends `query`, optional `extract_links`, and optional `output_schema`.
-2. `agentyc_dom` produces clean markdown / structured nodes from the page.
-3. `agentyc_tools` picks a deterministic route.
-4. The server returns deterministic content, or a deterministic-route error.
+Neither this architecture description nor the presence of code/tests is proof
+of a live production deployment or of end-to-end behavior with a user's Chrome
+profile. Live rollout evidence is tracked separately.
