@@ -8,8 +8,8 @@ use crate::{
     errors::{CoreError, ErrorCode, FrameError},
     events::EventRecord,
     ids::{
-        ArtifactId, BrokerEpoch, ClientId, ConnectionEpoch, ConnectionNonce, EventSequence,
-        IdempotencyKey, PrincipalId, ProfileBindingId, RequestId,
+        ArtifactId, BrokerEpoch, ClientId, ConnectionEpoch, ConnectionNonce, ContentHash,
+        EventSequence, IdempotencyKey, PrincipalId, ProfileBindingId, RequestId,
     },
     states::Capability,
 };
@@ -24,6 +24,34 @@ pub const DEFAULT_MAX_FRAME_PAYLOAD_BYTES: usize = MAX_CONTROL_FRAME_PAYLOAD_BYT
 pub const FRAME_PREFIX_BYTES: usize = 4;
 /// Maximum artifact chunk accepted in one artifact envelope.
 pub const MAX_ARTIFACT_CHUNK_BYTES: usize = 256 * 1024;
+/// Maximum assembled size of one artifact.
+pub const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum chunks in one artifact.
+pub const MAX_ARTIFACT_CHUNKS: u16 = 256;
+/// Maximum artifact data buffered at once per connection.
+pub const MAX_IN_FLIGHT_ARTIFACT_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum artifact bytes transferred per connection before reset.
+pub const MAX_CUMULATIVE_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum encoded UTF-8 byte length of a cancellation reason.
+pub const MAX_CANCEL_REASON_BYTES: usize = 256;
+/// Maximum nesting depth in a serialized wait condition.
+pub const MAX_WAIT_CONDITION_DEPTH: usize = 8;
+/// Maximum number of nodes in a serialized wait condition.
+pub const MAX_WAIT_CONDITION_NODES: usize = 32;
+/// Maximum payload keys in one wait condition.
+pub const MAX_WAIT_CONDITION_FIELDS: usize = 16;
+/// Maximum encoded size of one wait condition payload key or value.
+pub const MAX_WAIT_CONDITION_TEXT_BYTES: usize = 4 * 1024;
+
+fn validate_protocol_version(protocol: u16) -> Result<(), CoreError> {
+    if protocol != PROTOCOL_VERSION {
+        return Err(CoreError::new(
+            ErrorCode::ProtocolMismatch,
+            format!("unsupported protocol version {protocol}"),
+        ));
+    }
+    Ok(())
+}
 
 /// Resume position supplied during a handshake or reconnect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,6 +429,327 @@ impl ArtifactEnvelope {
     }
 }
 
+/// Digest algorithm advertised by the current artifact wire contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactDigestAlgorithm {
+    /// Deterministic FNV-1a-64 fingerprint; detects corruption but is not cryptographic.
+    Fnv1a64,
+}
+
+/// Metadata declaring a bounded artifact transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactBeginEnvelope {
+    /// Protocol version for this envelope.
+    pub protocol: u16,
+    /// Opaque artifact identity issued by the host.
+    pub artifact_id: ArtifactId,
+    /// Optional request that produced the artifact.
+    pub request_id: Option<RequestId>,
+    /// Artifact media category.
+    pub artifact_kind: ArtifactKind,
+    /// Total assembled artifact size.
+    pub total_bytes: u64,
+    /// Maximum bytes in each chunk.
+    pub chunk_size: u32,
+    /// Number of chunks declared for this artifact.
+    pub chunk_count: u16,
+    /// Declared digest algorithm.
+    pub digest_algorithm: ArtifactDigestAlgorithm,
+    /// Digest of the complete assembled artifact.
+    pub digest: ContentHash,
+    /// Whether the artifact has been redacted under policy.
+    pub redacted: bool,
+}
+
+impl ArtifactBeginEnvelope {
+    /// Validate total, chunk, and digest metadata before admitting a transfer.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_protocol_version(self.protocol)?;
+        let chunk_size = u64::from(self.chunk_size);
+        if self.total_bytes > MAX_ARTIFACT_BYTES {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                format!("artifact size must not exceed {MAX_ARTIFACT_BYTES} bytes"),
+            ));
+        }
+        if chunk_size == 0 || chunk_size > MAX_ARTIFACT_CHUNK_BYTES as u64 {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                format!(
+                    "artifact chunk size must be between 1 and {MAX_ARTIFACT_CHUNK_BYTES} bytes"
+                ),
+            ));
+        }
+        let expected_chunks = self.total_bytes.div_ceil(chunk_size);
+        if expected_chunks > u64::from(MAX_ARTIFACT_CHUNKS)
+            || u64::from(self.chunk_count) != expected_chunks
+        {
+            return Err(CoreError::invalid_argument(
+                "artifact chunk_count does not match total_bytes and chunk_size",
+            ));
+        }
+        if self.digest_algorithm != ArtifactDigestAlgorithm::Fnv1a64
+            || self
+                .digest
+                .as_str()
+                .split_once(':')
+                .map(|(algorithm, _)| algorithm)
+                != Some("fnv1a64")
+        {
+            return Err(CoreError::invalid_argument(
+                "artifact digest algorithm does not match digest metadata",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One ordered chunk in an explicit artifact transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactChunkEnvelope {
+    /// Protocol version for this envelope.
+    pub protocol: u16,
+    /// Artifact identity declared by `artifact_begin`.
+    pub artifact_id: ArtifactId,
+    /// Connection epoch that owns this transfer.
+    pub connection_epoch: ConnectionEpoch,
+    /// Zero-based chunk sequence.
+    pub chunk_sequence: u16,
+    /// Bounded chunk bytes.
+    pub bytes: Vec<u8>,
+}
+
+impl ArtifactChunkEnvelope {
+    /// Validate protocol version and the hard per-chunk size bound.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_protocol_version(self.protocol)?;
+        if self.bytes.len() > MAX_ARTIFACT_CHUNK_BYTES {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                format!("artifact chunk exceeds {MAX_ARTIFACT_CHUNK_BYTES} bytes"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate this chunk against its transfer declaration.
+    pub fn validate_against(&self, begin: &ArtifactBeginEnvelope) -> Result<(), CoreError> {
+        self.validate()?;
+        begin.validate()?;
+        if self.artifact_id != begin.artifact_id || self.chunk_sequence >= begin.chunk_count {
+            return Err(CoreError::invalid_argument(
+                "artifact chunk identity or sequence is outside its declaration",
+            ));
+        }
+        let expected_len = if self.chunk_sequence + 1 == begin.chunk_count {
+            let prior_bytes = u64::from(self.chunk_sequence) * u64::from(begin.chunk_size);
+            (begin.total_bytes - prior_bytes) as usize
+        } else {
+            begin.chunk_size as usize
+        };
+        if self.bytes.len() != expected_len || self.bytes.len() > MAX_ARTIFACT_CHUNK_BYTES {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "artifact chunk size does not match its declaration",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Minimal receiver-side state enforcing ordered chunks for one artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactTransferProgress {
+    artifact_id: ArtifactId,
+    begin: ArtifactBeginEnvelope,
+    connection_epoch: ConnectionEpoch,
+    next_chunk_sequence: u16,
+    received_bytes: u64,
+}
+
+impl ArtifactTransferProgress {
+    /// Start tracking a validated artifact declaration on one connection.
+    pub fn begin(
+        begin: &ArtifactBeginEnvelope,
+        connection_epoch: ConnectionEpoch,
+    ) -> Result<Self, CoreError> {
+        begin.validate()?;
+        Ok(Self {
+            artifact_id: begin.artifact_id.clone(),
+            begin: begin.clone(),
+            connection_epoch,
+            next_chunk_sequence: 0,
+            received_bytes: 0,
+        })
+    }
+
+    /// Accept exactly the next declared chunk and return its byte count.
+    pub fn accept_chunk(&mut self, chunk: &ArtifactChunkEnvelope) -> Result<usize, CoreError> {
+        chunk.validate_against(&self.begin)?;
+        if chunk.artifact_id != self.artifact_id
+            || chunk.connection_epoch != self.connection_epoch
+            || chunk.chunk_sequence != self.next_chunk_sequence
+        {
+            return Err(CoreError::invalid_argument(
+                "artifact chunk is late, duplicated, out of order, or from another connection",
+            ));
+        }
+        let received_bytes = self
+            .received_bytes
+            .checked_add(chunk.bytes.len() as u64)
+            .ok_or_else(|| CoreError::new(ErrorCode::MessageTooLarge, "artifact size overflow"))?;
+        if received_bytes > self.begin.total_bytes {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "received artifact bytes exceed declaration",
+            ));
+        }
+        self.received_bytes = received_bytes;
+        self.next_chunk_sequence += 1;
+        Ok(chunk.bytes.len())
+    }
+
+    /// Verify that every declared chunk and byte was received before end validation.
+    pub fn validate_complete(&self) -> Result<(), CoreError> {
+        if self.artifact_id != self.begin.artifact_id
+            || self.next_chunk_sequence != self.begin.chunk_count
+            || self.received_bytes != self.begin.total_bytes
+        {
+            return Err(CoreError::invalid_argument(
+                "artifact transfer ended before all declared chunks arrived",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Completion metadata for an explicit artifact transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactEndEnvelope {
+    /// Protocol version for this envelope.
+    pub protocol: u16,
+    /// Artifact identity declared by `artifact_begin`.
+    pub artifact_id: ArtifactId,
+    /// Total bytes received.
+    pub total_bytes: u64,
+    /// Number of chunks received.
+    pub chunk_count: u16,
+    /// Digest algorithm used for the completed artifact.
+    pub digest_algorithm: ArtifactDigestAlgorithm,
+    /// Digest of the completed artifact.
+    pub digest: ContentHash,
+}
+
+impl ArtifactEndEnvelope {
+    /// Validate protocol version and declared transfer bounds.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_protocol_version(self.protocol)?;
+        if self.total_bytes > MAX_ARTIFACT_BYTES || self.chunk_count > MAX_ARTIFACT_CHUNKS {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "artifact_end exceeds declared transfer bounds",
+            ));
+        }
+        if self.digest_algorithm != ArtifactDigestAlgorithm::Fnv1a64
+            || self
+                .digest
+                .as_str()
+                .split_once(':')
+                .map(|(algorithm, _)| algorithm)
+                != Some("fnv1a64")
+        {
+            return Err(CoreError::invalid_argument(
+                "artifact digest algorithm does not match digest metadata",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate completion metadata and verify the assembled bytes.
+    pub fn validate_against(
+        &self,
+        begin: &ArtifactBeginEnvelope,
+        assembled_bytes: &[u8],
+    ) -> Result<(), CoreError> {
+        self.validate()?;
+        begin.validate()?;
+        if self.artifact_id != begin.artifact_id
+            || self.total_bytes != begin.total_bytes
+            || self.chunk_count != begin.chunk_count
+            || self.digest_algorithm != begin.digest_algorithm
+            || self.digest != begin.digest
+        {
+            return Err(CoreError::invalid_argument(
+                "artifact_end metadata does not match artifact_begin",
+            ));
+        }
+        if assembled_bytes.len() as u64 != begin.total_bytes
+            || ContentHash::from_bytes(assembled_bytes) != begin.digest
+        {
+            return Err(CoreError::invalid_argument(
+                "assembled artifact size or digest does not match declaration",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Per-connection accounting for buffered and cumulatively transferred artifact bytes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactTransferBudget {
+    in_flight_bytes: usize,
+    cumulative_bytes: u64,
+}
+
+impl ArtifactTransferBudget {
+    /// Account for receiving bytes on a connection.
+    pub fn receive(&mut self, bytes: usize) -> Result<(), CoreError> {
+        let in_flight = self.in_flight_bytes.checked_add(bytes);
+        let cumulative = self.cumulative_bytes.checked_add(bytes as u64);
+        if in_flight.is_none_or(|total| total > MAX_IN_FLIGHT_ARTIFACT_BYTES)
+            || cumulative.is_none_or(|total| total > MAX_CUMULATIVE_ARTIFACT_BYTES)
+        {
+            return Err(CoreError::new(
+                ErrorCode::MessageTooLarge,
+                "connection artifact transfer budget exceeded",
+            ));
+        }
+        self.in_flight_bytes = in_flight.expect("checked above");
+        self.cumulative_bytes = cumulative.expect("checked above");
+        Ok(())
+    }
+
+    /// Release bytes after the receiver has streamed or discarded them.
+    pub fn release(&mut self, bytes: usize) -> Result<(), CoreError> {
+        self.in_flight_bytes = self.in_flight_bytes.checked_sub(bytes).ok_or_else(|| {
+            CoreError::invalid_argument("released artifact bytes exceed in-flight bytes")
+        })?;
+        Ok(())
+    }
+
+    /// Bytes currently held in transfer buffers.
+    pub const fn in_flight_bytes(&self) -> usize {
+        self.in_flight_bytes
+    }
+
+    /// Artifact bytes received since the connection's last explicit reset.
+    pub const fn cumulative_bytes(&self) -> u64 {
+        self.cumulative_bytes
+    }
+
+    /// Reset the cumulative budget after all transfer buffers have been released.
+    pub fn reset_cumulative(&mut self) -> Result<(), CoreError> {
+        if self.in_flight_bytes != 0 {
+            return Err(CoreError::invalid_argument(
+                "cannot reset artifact budget while bytes remain in flight",
+            ));
+        }
+        self.cumulative_bytes = 0;
+        Ok(())
+    }
+}
+
 /// Envelope used to cancel a request that has not completed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancelEnvelope {
@@ -410,6 +759,114 @@ pub struct CancelEnvelope {
     pub request_id: RequestId,
     /// Optional bounded reason.
     pub reason: Option<String>,
+}
+
+impl CancelEnvelope {
+    /// Validate protocol version and bounded cancellation metadata.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        validate_protocol_version(self.protocol)?;
+        if self
+            .reason
+            .as_ref()
+            .is_some_and(|reason| reason.is_empty() || reason.len() > MAX_CANCEL_REASON_BYTES)
+        {
+            return Err(CoreError::invalid_argument(format!(
+                "cancellation reason must be between 1 and {MAX_CANCEL_REASON_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Serializable condition that can complete an event-driven wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum WaitCondition {
+    /// Match any event of one logical kind.
+    EventKind {
+        /// Event category to observe.
+        event: crate::events::EventKind,
+    },
+    /// Match an optional event kind and all listed payload fields.
+    Event {
+        /// Optional event category.
+        event: Option<crate::events::EventKind>,
+        /// Required event payload fields.
+        #[serde(default)]
+        payload: BTreeMap<String, String>,
+    },
+    /// Match one exact payload key/value pair on any event kind.
+    Payload {
+        /// Payload key.
+        key: String,
+        /// Required value.
+        value: String,
+    },
+    /// Match an event whose generation watermark reaches a target.
+    GenerationAtLeast {
+        /// Minimum generation watermark.
+        generation: crate::events::GenerationWatermark,
+    },
+    /// Match when any nested condition matches.
+    Any {
+        /// Nested conditions.
+        conditions: Vec<WaitCondition>,
+    },
+    /// Match when every nested condition matches the same event.
+    All {
+        /// Nested conditions.
+        conditions: Vec<WaitCondition>,
+    },
+}
+
+impl WaitCondition {
+    /// Validate recursive complexity and bounded string fields.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        fn visit(
+            condition: &WaitCondition,
+            depth: usize,
+            nodes: &mut usize,
+        ) -> Result<(), CoreError> {
+            *nodes += 1;
+            if depth > MAX_WAIT_CONDITION_DEPTH || *nodes > MAX_WAIT_CONDITION_NODES {
+                return Err(CoreError::new(
+                    ErrorCode::MessageTooLarge,
+                    "wait condition exceeds its depth or node bound",
+                ));
+            }
+            let bounded =
+                |text: &str| !text.is_empty() && text.len() <= MAX_WAIT_CONDITION_TEXT_BYTES;
+            match condition {
+                WaitCondition::Event { payload, .. } => {
+                    if payload.len() > MAX_WAIT_CONDITION_FIELDS
+                        || payload
+                            .iter()
+                            .any(|(key, value)| !bounded(key) || !bounded(value))
+                    {
+                        return Err(CoreError::invalid_argument(
+                            "wait event payload keys and values must be non-empty and bounded",
+                        ));
+                    }
+                }
+                WaitCondition::Payload { key, value } => {
+                    if !bounded(key) || !bounded(value) {
+                        return Err(CoreError::invalid_argument(
+                            "wait payload key and value must be non-empty and bounded",
+                        ));
+                    }
+                }
+                WaitCondition::Any { conditions } | WaitCondition::All { conditions } => {
+                    for child in conditions {
+                        visit(child, depth + 1, nodes)?;
+                    }
+                }
+                WaitCondition::EventKind { .. } | WaitCondition::GenerationAtLeast { .. } => {}
+            }
+            Ok(())
+        }
+
+        visit(self, 0, &mut 0)
+    }
 }
 
 /// Envelope used to request event replay after a cursor.
@@ -437,6 +894,12 @@ pub enum Envelope<P = BTreeMap<String, String>> {
     Event(EventEnvelope<P>),
     /// Bounded artifact chunk.
     Artifact(ArtifactEnvelope),
+    /// Start of an explicit bounded artifact transfer.
+    ArtifactBegin(ArtifactBeginEnvelope),
+    /// Ordered chunk in an explicit artifact transfer.
+    ArtifactChunk(ArtifactChunkEnvelope),
+    /// Completion of an explicit artifact transfer.
+    ArtifactEnd(ArtifactEndEnvelope),
     /// Request cancellation.
     Cancel(CancelEnvelope),
     /// Event resume request.
@@ -453,6 +916,9 @@ impl<P> Envelope<P> {
             Self::Response(value) => value.protocol,
             Self::Event(value) => value.protocol,
             Self::Artifact(value) => value.protocol,
+            Self::ArtifactBegin(value) => value.protocol,
+            Self::ArtifactChunk(value) => value.protocol,
+            Self::ArtifactEnd(value) => value.protocol,
             Self::Cancel(value) => value.protocol,
             Self::Resume(value) => value.protocol,
         }
@@ -467,6 +933,19 @@ impl<P> Envelope<P> {
                 ErrorCode::ProtocolMismatch,
                 format!("unsupported protocol version {}", self.protocol()),
             ))
+        }
+    }
+
+    /// Validate protocol version and fields that can be checked without transfer state.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        self.validate_protocol()?;
+        match self {
+            Self::Artifact(value) => value.validate(),
+            Self::ArtifactBegin(value) => value.validate(),
+            Self::ArtifactChunk(value) => value.validate(),
+            Self::ArtifactEnd(value) => value.validate(),
+            Self::Cancel(value) => value.validate(),
+            _ => Ok(()),
         }
     }
 }
@@ -654,8 +1133,8 @@ mod tests {
     use crate::{
         events::GenerationWatermark,
         ids::{
-            ArtifactId, ClientId, ConnectionEpoch, ConnectionNonce, EventId, ProfileBindingId,
-            SpaceId,
+            ArtifactId, ClientId, ConnectionEpoch, ConnectionNonce, EventId, Generation,
+            ProfileBindingId, SpaceId,
         },
         states::Capability,
     };
@@ -794,5 +1273,173 @@ mod tests {
         let envelope = Envelope::Event(event);
         assert_eq!(envelope.protocol(), PROTOCOL_VERSION);
         envelope.validate_protocol().expect("current protocol");
+    }
+
+    #[test]
+    fn explicit_artifact_lifecycle_checks_order_size_digest_and_budgets() {
+        let bytes = b"artifact payload";
+        let begin = ArtifactBeginEnvelope {
+            protocol: PROTOCOL_VERSION,
+            artifact_id: ArtifactId::from_suffix("transfer").expect("artifact"),
+            request_id: None,
+            artifact_kind: ArtifactKind::Binary,
+            total_bytes: bytes.len() as u64,
+            chunk_size: 8,
+            chunk_count: 2,
+            digest_algorithm: ArtifactDigestAlgorithm::Fnv1a64,
+            digest: ContentHash::from_bytes(bytes),
+            redacted: true,
+        };
+        begin.validate().expect("valid declaration");
+        let epoch = ConnectionEpoch::new(2);
+        let mut progress = ArtifactTransferProgress::begin(&begin, epoch);
+        let mut budget = ArtifactTransferBudget::default();
+        let chunks = [
+            ArtifactChunkEnvelope {
+                protocol: PROTOCOL_VERSION,
+                artifact_id: begin.artifact_id.clone(),
+                connection_epoch: epoch,
+                chunk_sequence: 0,
+                bytes: bytes[..8].to_vec(),
+            },
+            ArtifactChunkEnvelope {
+                protocol: PROTOCOL_VERSION,
+                artifact_id: begin.artifact_id.clone(),
+                connection_epoch: epoch,
+                chunk_sequence: 1,
+                bytes: bytes[8..].to_vec(),
+            },
+        ];
+        assert!(
+            progress
+                .as_mut()
+                .expect("progress")
+                .accept_chunk(&chunks[1])
+                .is_err()
+        );
+        let mut assembled = Vec::new();
+        for chunk in &chunks {
+            let length = progress
+                .as_mut()
+                .expect("progress")
+                .accept_chunk(chunk)
+                .expect("ordered chunk");
+            budget.receive(length).expect("budget");
+            assembled.extend_from_slice(&chunk.bytes);
+        }
+        progress
+            .as_ref()
+            .expect("progress")
+            .validate_complete()
+            .expect("complete transfer");
+        let mut wrong_digest = assembled.clone();
+        wrong_digest[0] ^= 1;
+        let end = ArtifactEndEnvelope {
+            protocol: PROTOCOL_VERSION,
+            artifact_id: begin.artifact_id.clone(),
+            total_bytes: begin.total_bytes,
+            chunk_count: begin.chunk_count,
+            digest_algorithm: begin.digest_algorithm,
+            digest: begin.digest.clone(),
+        };
+        end.validate_against(&begin, &assembled)
+            .expect("verified artifact");
+        assert!(end.validate_against(&begin, &wrong_digest).is_err());
+        assert_eq!(budget.in_flight_bytes(), bytes.len());
+        budget.release(bytes.len()).expect("release buffer");
+        assert_eq!(budget.in_flight_bytes(), 0);
+
+        let mut invalid = begin.clone();
+        invalid.total_bytes = MAX_ARTIFACT_BYTES + 1;
+        assert_eq!(
+            invalid.validate().expect_err("aggregate bound").code,
+            ErrorCode::MessageTooLarge
+        );
+        let mut invalid = begin.clone();
+        invalid.chunk_count = MAX_ARTIFACT_CHUNKS + 1;
+        assert!(invalid.validate().is_err());
+        let mut over_budget = ArtifactTransferBudget::default();
+        for _ in 0..(MAX_CUMULATIVE_ARTIFACT_BYTES as usize / MAX_IN_FLIGHT_ARTIFACT_BYTES) {
+            over_budget
+                .receive(MAX_IN_FLIGHT_ARTIFACT_BYTES)
+                .expect("within in-flight and cumulative budgets");
+            over_budget
+                .release(MAX_IN_FLIGHT_ARTIFACT_BYTES)
+                .expect("release in-flight bytes");
+        }
+        assert!(over_budget.receive(1).is_err());
+        assert!(over_budget.reset_cumulative().is_ok());
+        assert_eq!(over_budget.cumulative_bytes(), 0);
+    }
+
+    #[test]
+    fn cancellation_validation_is_bounded_and_wait_conditions_serialize() {
+        let mut cancel = CancelEnvelope {
+            protocol: PROTOCOL_VERSION,
+            request_id: crate::ids::RequestId::from_suffix("cancel").expect("request"),
+            reason: Some("caller stopped waiting".to_owned()),
+        };
+        cancel.validate().expect("valid cancel");
+        let mut invalid_cancel = cancel.clone();
+        invalid_cancel.protocol = PROTOCOL_VERSION + 1;
+        assert_eq!(
+            invalid_cancel.validate().expect_err("version").code,
+            ErrorCode::ProtocolMismatch
+        );
+        cancel.reason = Some("x".repeat(MAX_CANCEL_REASON_BYTES + 1));
+        assert_eq!(
+            cancel.validate().expect_err("bounded reason").code,
+            ErrorCode::InvalidArgument
+        );
+        cancel.reason = None;
+
+        let legacy_cancel: CancelEnvelope = serde_json::from_value(serde_json::json!({
+            "protocol": PROTOCOL_VERSION,
+            "request_id": "req_cancel",
+            "reason": null
+        }))
+        .expect("legacy cancellation fields remain readable");
+        assert_eq!(legacy_cancel.reason, None);
+
+        let condition = WaitCondition::GenerationAtLeast {
+            generation: GenerationWatermark {
+                page_generation: Generation::new(4),
+                ..GenerationWatermark::default()
+            },
+        };
+        condition.validate().expect("bounded condition");
+        let json = serde_json::to_value(&condition).expect("serialize wait condition");
+        assert_eq!(json["kind"], "generation_at_least");
+        assert_eq!(json["generation"]["page_generation"], 4);
+        let event_wait = WaitCondition::EventKind {
+            event: crate::events::EventKind::PageChanged,
+        };
+        assert_eq!(
+            serde_json::to_value(event_wait).expect("serialize event wait")["kind"],
+            "event_kind"
+        );
+        assert!(
+            WaitCondition::Payload {
+                key: "x".repeat(MAX_WAIT_CONDITION_TEXT_BYTES + 1),
+                value: "y".to_owned(),
+            }
+            .validate()
+            .is_err()
+        );
+
+        let legacy = ArtifactEnvelope {
+            protocol: PROTOCOL_VERSION,
+            artifact_id: ArtifactId::from_suffix("legacy").expect("artifact"),
+            request_id: None,
+            artifact_kind: ArtifactKind::Binary,
+            chunk_sequence: 0,
+            final_chunk: true,
+            bytes: vec![1],
+        };
+        let legacy_json =
+            serde_json::to_value(Envelope::<BTreeMap<String, String>>::Artifact(legacy))
+                .expect("serialize compatible artifact");
+        assert_eq!(legacy_json["kind"], "artifact");
+        assert!(legacy_json.get("final_chunk").is_some());
     }
 }
