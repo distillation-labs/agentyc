@@ -3,8 +3,15 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
 
+const manifest = JSON.parse(
+  await readFile(new URL("../manifest.json", import.meta.url), "utf8"),
+);
+const contentScriptEntry = manifest.content_scripts.find(
+  (entry) => entry.all_frames === false && entry.world === "ISOLATED",
+);
+const contentScriptPath = contentScriptEntry?.js?.[0];
 const contentBridgeSource = await readFile(
-  new URL("../src/content-bridge.js", import.meta.url),
+  new URL(`../${contentScriptPath}`, import.meta.url),
   "utf8",
 );
 const pageBridgeSource = await readFile(
@@ -74,13 +81,64 @@ function contentHarness() {
       },
     },
   );
+  const target = {
+    isConnected: true,
+    disabled: false,
+    readOnly: false,
+    tagName: "BUTTON",
+    innerText: "Continue",
+    attributes: [
+      { name: "id", value: "target" },
+      { name: "aria-label", value: "Continue" },
+    ],
+    getAttribute(name) {
+      if (name === "id") return "target";
+      if (name === "aria-label") return "Continue";
+      return null;
+    },
+    getBoundingClientRect() {
+      return {
+        left: 40,
+        top: 30,
+        right: 160,
+        bottom: 70,
+        width: 120,
+        height: 40,
+      };
+    },
+    contains(node) {
+      return node === target;
+    },
+  };
+  const documentLike = {
+    title: "Trusted title",
+    body: {
+      innerText: "Trusted document text",
+      querySelectorAll() {
+        return [target];
+      },
+    },
+    documentElement: { clientWidth: 800, clientHeight: 600 },
+    defaultView: {
+      innerWidth: 800,
+      innerHeight: 600,
+      getComputedStyle() {
+        return { display: "block", visibility: "visible", opacity: "1" };
+      },
+    },
+    querySelector(selector) {
+      if (selector === "#target") return target;
+      return null;
+    },
+    elementFromPoint() {
+      return target;
+    },
+  };
+  target.ownerDocument = documentLike;
   runScript(contentBridgeSource, {
     window: windowLike,
     chrome: { runtime },
-    document: {
-      title: "Trusted title",
-      body: { innerText: "Trusted document text" },
-    },
+    document: documentLike,
   });
   const ready = sent[0];
   const request = (overrides = {}) => ({
@@ -106,7 +164,15 @@ function contentHarness() {
   };
 }
 
-test("production content bridge accepts only extension requests and exposes no Native Messaging API", () => {
+test("manifest-selected classic bridge handles actionability and rejects hostile requests", () => {
+  assert.equal(manifest.content_scripts.length, 1);
+  assert.ok(contentScriptEntry);
+  assert.deepEqual(contentScriptEntry.js, ["src/content-bridge.js"]);
+  assert.equal(contentScriptEntry.world, "ISOLATED");
+  assert.equal(contentScriptEntry.all_frames, false);
+  assert.doesNotMatch(contentBridgeSource, /\b(?:import|export)\b/);
+  assert.doesNotMatch(contentBridgeSource, /connectNative|postMessage/);
+
   const harness = contentHarness();
   const { ready, sent, runtimeListener } = harness;
   assert.equal(ready.type, "agentyc.content.ready");
@@ -138,6 +204,28 @@ test("production content bridge accepts only extension requests and exposes no N
   );
   assert.equal(sent.at(-1).type, "agentyc.content.result");
   assert.equal(sent.at(-1).result.title, "Trusted title");
+
+  const actionability = harness.request({
+    request_id: "request_actionability_1",
+    operation: "element.actionability",
+    payload: { selector: "#target" },
+  });
+  assert.equal(
+    runtimeListener(actionability, { id: "test-extension-id" })?.ok,
+    true,
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1).result)), {
+    connected: true,
+    visible: true,
+    disabled: false,
+    readonly: false,
+    covered: false,
+    overlay_present: false,
+    hit_target: true,
+    moving: false,
+    offscreen: false,
+    user_control: false,
+  });
 
   for (const invalid of [
     harness.request({ nonce: "nonce_wrong_value" }),
