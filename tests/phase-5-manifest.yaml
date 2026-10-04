@@ -5,107 +5,135 @@
   "release_eligible": false,
   "plan": "docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-5-context-and-automation.md",
   "traceability": "docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-5-traceability.md",
-  "dependency": {
-    "phase": 4,
-    "status": "active",
-    "real_chrome_gate": false
-  },
-  "tasks": [
+  "dependency": { "phase": 4, "status": "active", "real_chrome_gate": false },
+  "tasks":
+    [
+      {
+        "id": "P5-T1",
+        "status": "implemented_unverified",
+        "validation":
+          [
+            "cargo test -p agentyc-host --lib --locked",
+            "cargo test -p agentyc-host --test phase5_edge_cases --locked",
+            "npm test --prefix extension"
+          ],
+        "evidence": ["offline_unit_and_integration_tests"],
+        "blockers": ["production_event_reconnect_and_overflow_evidence"]
+      },
+      {
+        "id": "P5-T2",
+        "status": "implemented_unverified",
+        "validation":
+          [
+            "cargo test -p agentyc-host --lib --locked",
+            "cargo test -p agentyc-host --test phase5_broker_integration --locked"
+          ],
+        "evidence": ["broker_clean_cache_and_ref_path_tests"],
+        "blockers":
+          [
+            "keyed_cache_is_not_yet_the_only_production_snapshot_store",
+            "live_scan_and_delta_measurements"
+          ]
+      },
+      {
+        "id": "P5-T3",
+        "status": "implemented_unverified",
+        "validation":
+          [
+            "cargo test -p agentyc-host --test phase5_broker_integration --locked"
+          ],
+        "evidence": ["broker_ref_issue_resolve_invalidate_test"],
+        "blockers": ["live_nested_frame_and_oopif_resolution"]
+      },
+      {
+        "id": "P5-T4",
+        "status": "implemented_unverified",
+        "validation":
+          [
+            "cargo test -p agentyc-host --lib --locked",
+            "cargo test -p agentyc-host --test phase5_edge_cases --locked",
+            "npm test --prefix extension"
+          ],
+        "evidence":
+          ["typed_wait_engine_extension_wait_adapter_and_local_cancel_e2e"],
+        "blockers": ["Native Messaging typed-wait live reconnect evidence"]
+      },
+      {
+        "id": "P5-T5",
+        "status": "implemented_unverified",
+        "validation":
+          [
+            "cargo test -p agentyc-host --test phase5_broker_integration --locked",
+            "npm test --prefix extension"
+          ],
+        "evidence":
+          ["mandatory_actionability_and_extension_actionability_tests"],
+        "blockers": ["live hidden-covered-moving-oopif fixture matrix"]
+      },
+      {
+        "id": "P5-T6",
+        "status": "implemented_unverified",
+        "validation":
+          [
+            "cargo test -p agentyc-host --test host_core --locked",
+            "npm test --prefix extension"
+          ],
+        "evidence": ["unknown_outcome_and_reconciliation_tests"],
+        "blockers": ["Native reconnect inventory reconciliation evidence"]
+      },
+      {
+        "id": "P5-T7",
+        "status": "implemented_unverified",
+        "validation":
+          [
+            "cargo test -p agentyc-host --lib --locked",
+            "npm test --prefix extension"
+          ],
+        "evidence": ["scoped_policy_redaction_and_broker_observability_tests"],
+        "blockers":
+          [
+            "dialog/download/mock lifecycle routing, download capability decision, and live two-space evidence"
+          ]
+      },
+      {
+        "id": "P5-T8",
+        "status": "pending",
+        "validation":
+          [
+            "python3 scripts/run_p5_performance.py --mode live --live-input <production-package> --artifact-dir artifacts/p5-performance",
+            "python3 scripts/check_p5_performance.py --mode live --artifact-dir artifacts/p5-performance"
+          ],
+        "evidence": [],
+        "blockers":
+          [
+            "production_path benchmark with 200 p95 and 1000 p99 samples per blocking cell"
+          ]
+      }
+    ],
+  "required_live_evidence":
     {
-      "id": "P5-T1",
-      "status": "implemented_unverified",
-      "validation": [
-        "cargo test -p agentyc-host --lib --locked",
-        "cargo test -p agentyc-host --test phase5_edge_cases --locked",
-        "npm test --prefix extension"
-      ],
-      "evidence": ["offline_unit_and_integration_tests"],
-      "blockers": ["production_event_reconnect_and_overflow_evidence"]
+      "phase4_real_chrome_gate": false,
+      "production_path_performance": false,
+      "native_reconnect": false,
+      "oopif_frame_matrix": false,
+      "artifact_streaming": false,
+      "user_tab_responsiveness": false
     },
-    {
-      "id": "P5-T2",
-      "status": "implemented_unverified",
-      "validation": [
-        "cargo test -p agentyc-host --lib --locked",
-        "cargo test -p agentyc-host --test phase5_broker_integration --locked"
-      ],
-      "evidence": ["broker_clean_cache_and_ref_path_tests"],
-      "blockers": ["keyed_cache_is_not_yet_the_only_production_snapshot_store", "live_scan_and_delta_measurements"]
-    },
-    {
-      "id": "P5-T3",
-      "status": "implemented_unverified",
-      "validation": ["cargo test -p agentyc-host --test phase5_broker_integration --locked"],
-      "evidence": ["broker_ref_issue_resolve_invalidate_test"],
-      "blockers": ["live_nested_frame_and_oopif_resolution"]
-    },
-    {
-      "id": "P5-T4",
-      "status": "implemented_unverified",
-      "validation": [
-        "cargo test -p agentyc-host --lib --locked",
-        "cargo test -p agentyc-host --test phase5_edge_cases --locked",
-        "npm test --prefix extension"
-      ],
-      "evidence": ["typed_wait_engine_and_extension_wait_adapter"],
-      "blockers": ["Native Messaging typed-wait live reconnect evidence", "blocking wait cancellation over local IPC"]
-    },
-    {
-      "id": "P5-T5",
-      "status": "implemented_unverified",
-      "validation": [
-        "cargo test -p agentyc-host --test phase5_broker_integration --locked",
-        "npm test --prefix extension"
-      ],
-      "evidence": ["mandatory_actionability_and_extension_actionability_tests"],
-      "blockers": ["live hidden-covered-moving-oopif fixture matrix"]
-    },
-    {
-      "id": "P5-T6",
-      "status": "implemented_unverified",
-      "validation": ["cargo test -p agentyc-host --test host_core --locked", "npm test --prefix extension"],
-      "evidence": ["unknown_outcome_and_reconciliation_tests"],
-      "blockers": ["Native reconnect inventory reconciliation evidence"]
-    },
-    {
-      "id": "P5-T7",
-      "status": "implemented_unverified",
-      "validation": ["cargo test -p agentyc-host --lib --locked", "npm test --prefix extension"],
-      "evidence": ["scoped_policy_and_redaction_tests"],
-      "blockers": ["production broker side-state routing and download capability decision"]
-    },
-    {
-      "id": "P5-T8",
-      "status": "pending",
-      "validation": [
-        "python3 scripts/run_p5_performance.py --mode live --live-input <production-package> --artifact-dir artifacts/p5-performance",
-        "python3 scripts/check_p5_performance.py --mode live --artifact-dir artifacts/p5-performance"
-      ],
-      "evidence": [],
-      "blockers": ["production_path benchmark with 200 p95 and 1000 p99 samples per blocking cell"]
-    }
-  ],
-  "required_live_evidence": {
-    "phase4_real_chrome_gate": false,
-    "production_path_performance": false,
-    "native_reconnect": false,
-    "oopif_frame_matrix": false,
-    "artifact_streaming": false,
-    "user_tab_responsiveness": false
-  },
-  "required_checks": [
-    "cargo fmt --all -- --check",
-    "cargo test -p agentyc-host --lib --locked",
-    "cargo test -p agentyc-host --test host_core --test phase5_edge_cases --test phase5_broker_integration --locked",
-    "npm test --prefix extension",
-    "npm run check --prefix extension",
-    "python3 scripts/check_p5_performance.py --mode offline --artifact-dir artifacts/p5-performance-smoke-final"
-  ],
-  "nonclaims": [
-    "Phase 4 real existing-profile Chrome gate",
-    "production-path live performance",
-    "release eligibility",
-    "enterprise policy and managed distribution",
-    "live OOPIF and browser/worker/host restart evidence"
-  ]
+  "required_checks":
+    [
+      "cargo fmt --all -- --check",
+      "cargo test -p agentyc-host --lib --locked",
+      "cargo test -p agentyc-host --test host_core --test phase5_edge_cases --test phase5_broker_integration --locked",
+      "npm test --prefix extension",
+      "npm run check --prefix extension",
+      "python3 scripts/check_p5_performance.py --mode offline --artifact-dir artifacts/p5-performance-smoke-final"
+    ],
+  "nonclaims":
+    [
+      "Phase 4 real existing-profile Chrome gate",
+      "production-path live performance",
+      "release eligibility",
+      "enterprise policy and managed distribution",
+      "live OOPIF and browser/worker/host restart evidence"
+    ]
 }
