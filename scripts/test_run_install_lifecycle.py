@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -15,7 +16,7 @@ import run_install_lifecycle as lifecycle
 
 
 class Phase4LifecycleLaneTests(unittest.TestCase):
-    def _live_record(self) -> dict[str, object]:
+    def _live_record(self) -> dict[str, Any]:
         source = lifecycle.safe_extension_dir(None)
         fixture_url = lifecycle.safe_fixture_url(None, source)
         record = lifecycle._offline_record(source, fixture_url)
@@ -123,10 +124,20 @@ class Phase4LifecycleLaneTests(unittest.TestCase):
                     )
                 )
 
+    def test_persisted_record_allows_bounded_validation_metadata(self) -> None:
+        record = self._live_record()
+        record["record_validation"] = {"status": "passed", "errors": []}
+        lifecycle.DEFAULT_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=lifecycle.DEFAULT_ARTIFACT_DIR) as temporary:
+            path = lifecycle.write_record(Path(temporary), record)
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["record_validation"]["status"], "passed")
+
     def test_persisted_record_is_source_bound_and_tampering_fails_closed(self) -> None:
         record = self._live_record()
-        with tempfile.TemporaryDirectory(dir=drill.ARTIFACT_ROOT) as temporary:
-            artifact_dir = Path(temporary) / "p4"
+        lifecycle.DEFAULT_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=lifecycle.DEFAULT_ARTIFACT_DIR) as temporary:
+            artifact_dir = Path(temporary)
             path = lifecycle.write_record(artifact_dir, record)
             persisted = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["build_tuple"]["phase"], 4)
