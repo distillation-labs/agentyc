@@ -174,7 +174,7 @@ degraded -> recovering -> ready | orphaned
 - [x] No browser process launch/download in the new host path.
 - [x] Ledger stores logical state and action metadata only.
 - [x] All mutation paths check lease epoch three times.
-- [x] User/unmanaged pages cannot be closed by release, stop, crash recovery, update, uninstall, or rollback.
+- [x] User/unmanaged pages cannot be closed by release, stop, crash recovery, update, or uninstall.
 - [x] Profile binding/rebinding and user-intent tickets are explicit security gates.
 - [x] Direct CDP and `BrowserSession` are behind explicit legacy/test boundaries.
 - [x] Host crash/extension loss/Chrome loss classify work correctly.
