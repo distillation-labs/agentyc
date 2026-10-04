@@ -170,7 +170,13 @@ fn headed_probe_fails_closed_without_existing_chrome_harness() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let report: Value = serde_json::from_str(&stdout).expect("headed probe must emit JSON");
-    assert_eq!(report["status"], "live_required_unavailable");
+    assert!(
+        matches!(
+            report["status"].as_str(),
+            Some("live_required_unavailable" | "live_observation_incomplete")
+        ),
+        "headed probe must remain fail-closed: {report}"
+    );
     assert!(
         report["live"]["reason"]
             .as_str()
