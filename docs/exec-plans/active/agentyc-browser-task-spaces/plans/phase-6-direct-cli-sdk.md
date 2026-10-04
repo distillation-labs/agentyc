@@ -34,7 +34,7 @@ Replace the current one-shot/active-page CLI experience with a persistent host c
 
 ## Unresolved questions
 
-- **U6-1:** package registry/distribution for Node SDK; owner: Japneet Kalkat; Phase 0 must record the Node floor and preview distribution before P6-T3.
+- **U6-1:** package registry/distribution for Node SDK; owner: Japneet Kalkat; Phase 0 must record the Node floor and distribution approach before P6-T3.
 - **U6-2:** none; naming is closed. User-facing CLI/SDK/domain term is `space`, canonical field is `space_id`; `group_id` is a deprecated compatibility alias only and never a Chrome visual-group identifier.
 
 ## Scope
@@ -184,8 +184,8 @@ The SDK:
 ## Handoff out
 
 - **Artifacts:** direct CLI, Node SDK, batch/repl, docs/skill/plugin migration, direct performance metrics.
-- **Next phase:** Phase 7 hardens and releases the direct existing-Chrome path; Phase 8 then migrates existing MCP stdio/HTTP clients onto the same host broker.
-- **Residuals:** direct release evidence and legacy MCP protocol behavior remain.
+- **Next phase:** Phase 7 hardens, validates, and launches the direct existing-Chrome path; Phase 8 then migrates existing MCP stdio/HTTP clients onto the same host broker.
+- **Residuals:** direct launch evidence and legacy MCP protocol behavior remain.
 
 ## Exit gate
 
