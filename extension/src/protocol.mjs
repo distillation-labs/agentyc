@@ -113,6 +113,7 @@ const MUTATING_METHODS = Object.freeze(
   new Set([
     "page.create",
     "page.adopt",
+    "page.rebind",
     "page.close",
     "page.navigate",
     "page.reload",
