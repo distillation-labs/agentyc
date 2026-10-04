@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
-  <title id="title">Agent loop</title>
-  <desc id="desc">Two opposing execution arrows in a vermilion square</desc>
-  <rect width="128" height="128" rx="28" fill="#FF5A36" />
-  <path d="M29 62a35 35 0 0 1 55-27" fill="none" stroke="#FFF6E8" stroke-width="13" stroke-linecap="butt" />
-  <path d="m84 24 15 12-20 2z" fill="#FFF6E8" />
-  <path d="M99 66a35 35 0 0 1-55 27" fill="none" stroke="#131313" stroke-width="13" stroke-linecap="butt" />
-  <path d="m44 104-15-12 20-2z" fill="#131313" />
-</svg>
