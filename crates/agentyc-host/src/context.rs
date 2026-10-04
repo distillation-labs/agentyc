@@ -29,6 +29,8 @@ pub enum ContextMode {
     Full,
     /// Return all logical keys with optional fields compacted.
     Compact,
+    /// Return the complete bounded subtree selected by [`ContextRequest::focus`].
+    Focus,
     /// Return a bounded patch against the supplied base.
     Delta,
 }
@@ -97,6 +99,13 @@ pub struct ContextFocus {
     pub element_key: Option<ElementKey>,
 }
 
+impl ContextFocus {
+    /// Return whether no logical focus target was supplied.
+    pub const fn is_empty(&self) -> bool {
+        self.frame_id.is_none() && self.element_key.is_none()
+    }
+}
+
 /// Compatibility alias for callers that use a short focus-key name.
 pub type FocusKey = ContextFocus;
 
@@ -134,6 +143,11 @@ pub struct ContextCacheKey {
 impl ContextCacheKey {
     /// Construct a cache key from a broker read, request, and logical focus.
     pub fn from_read(read: &SnapshotRead, request: &ContextRequest, focus: ContextFocus) -> Self {
+        let focus = if request.focus.is_empty() {
+            focus
+        } else {
+            request.focus.clone()
+        };
         Self::from_read_with_generation(
             read,
             request,
@@ -153,6 +167,11 @@ impl ContextCacheKey {
         focus: ContextFocus,
         generation: PageGeneration,
     ) -> Self {
+        let focus = if request.focus.is_empty() {
+            focus
+        } else {
+            request.focus.clone()
+        };
         Self {
             space_id: read.envelope.space_id.clone(),
             page_id: read.envelope.page_id.clone(),
@@ -202,7 +221,8 @@ fn context_mode_rank(mode: ContextMode) -> u8 {
         ContextMode::Auto => 0,
         ContextMode::Full => 1,
         ContextMode::Compact => 2,
-        ContextMode::Delta => 3,
+        ContextMode::Focus => 3,
+        ContextMode::Delta => 4,
     }
 }
 
@@ -224,6 +244,8 @@ pub enum ContextRepresentation {
     Compact,
     /// Validated delta body.
     Delta,
+    /// Complete focused subtree.
+    Focus,
     /// A resynchronization marker is required.
     Resync,
 }
@@ -284,6 +306,8 @@ pub struct ContextRequest {
     pub mode: ContextMode,
     /// Optional validated base envelope for delta construction.
     pub base: Option<SnapshotEnvelope>,
+    /// Logical frame and/or element focus for a focused context request.
+    pub focus: ContextFocus,
     /// Maximum serialized context bytes, including metadata/body estimates.
     pub max_serialized_bytes: Option<usize>,
     /// Optional token limits applied after deterministic byte measurement.
@@ -322,6 +346,21 @@ impl ContextRequest {
             mode: ContextMode::Compact,
             ..Self::default()
         }
+    }
+
+    /// Construct a focused subtree representation request.
+    pub fn focus() -> Self {
+        Self {
+            mode: ContextMode::Focus,
+            ..Self::default()
+        }
+    }
+
+    /// Set the logical frame and/or element focus.
+    #[must_use]
+    pub fn with_focus(mut self, focus: ContextFocus) -> Self {
+        self.focus = focus;
+        self
     }
 
     /// Construct a delta request against a base envelope.
@@ -364,6 +403,11 @@ impl ContextRequest {
 
     /// Build the compatibility cache key for this request and broker read.
     pub fn cache_key(&self, read: &SnapshotRead, focus: ContextFocus) -> ContextCacheKey {
+        let focus = if self.focus.is_empty() {
+            focus
+        } else {
+            self.focus.clone()
+        };
         ContextCacheKey::from_read(read, self, focus)
     }
 
@@ -374,6 +418,11 @@ impl ContextRequest {
         focus: ContextFocus,
         generation: PageGeneration,
     ) -> ContextCacheKey {
+        let focus = if self.focus.is_empty() {
+            focus
+        } else {
+            self.focus.clone()
+        };
         ContextCacheKey::from_read_with_generation(read, self, focus, generation)
     }
 }
@@ -383,6 +432,7 @@ impl Default for ContextRequest {
         Self {
             mode: ContextMode::Auto,
             base: None,
+            focus: ContextFocus::default(),
             max_serialized_bytes: None,
             token_budget: None,
             tokenizer: None,
@@ -593,12 +643,39 @@ impl ContextBuilder {
             .validate()
             .map_err(|error| agentyc_core::CoreError::invalid_argument(error.to_string()))?;
         validate_tokenizer(request, tokenizer)?;
+        let focus_requested = request.mode == ContextMode::Focus || !request.focus.is_empty();
+        validate_focus_request_shape(request, focus_requested)?;
+        if focus_requested {
+            validate_focus_provenance(envelope, cache_state)?;
+        }
         if cache_state == CacheState::Cached
             && !scan_performed
             && request.clean_cache_metadata_only
             && request.mode != ContextMode::Delta
         {
-            return self.metadata_only(envelope, cache_state, scan_performed, request, tokenizer);
+            if !focus_requested {
+                return self.metadata_only(
+                    envelope,
+                    cache_state,
+                    scan_performed,
+                    request,
+                    tokenizer,
+                );
+            }
+            if let SnapshotBody::Elements { elements } = &envelope.delta_or_elements {
+                let (elements, _) = redact_elements(elements, &request.redaction);
+                let _ = focus_elements(&elements, &request.focus, &envelope.frame_versions)?;
+                return self.metadata_only(
+                    envelope,
+                    cache_state,
+                    scan_performed,
+                    request,
+                    tokenizer,
+                );
+            }
+            return Err(agentyc_core::CoreError::stale_ref(
+                "focused context requires a complete retained snapshot body",
+            ));
         }
 
         if request.mode == ContextMode::Delta {
@@ -670,6 +747,11 @@ impl ContextBuilder {
                 redact_elements(&current_document.elements, &request.redaction)
             }
             SnapshotBody::Resync { .. } => (Vec::new(), false),
+        };
+        let current_elements = if focus_requested {
+            focus_elements(&current_elements, &request.focus, &envelope.frame_versions)?
+        } else {
+            current_elements
         };
         let compact_elements = compact_elements(&current_elements, &request.redaction);
         let full_body = SnapshotBody::Elements {
@@ -952,6 +1034,217 @@ fn validate_tokenizer(
         )));
     }
     Ok(())
+}
+
+fn validate_focus_request_shape(
+    request: &ContextRequest,
+    focus_requested: bool,
+) -> Result<(), agentyc_core::CoreError> {
+    if request.mode == ContextMode::Focus && request.focus.is_empty() {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "focus context requires a frame_id or element_key target",
+        ));
+    }
+    if focus_requested && request.focus.is_empty() {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "focused context requires a non-empty logical target",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_focus_provenance(
+    envelope: &SnapshotEnvelope,
+    cache_state: CacheState,
+) -> Result<(), agentyc_core::CoreError> {
+    if matches!(cache_state, CacheState::Stale | CacheState::Invalidated)
+        || matches!(
+            envelope.cache_state,
+            CacheState::Stale | CacheState::Invalidated
+        )
+    {
+        return Err(agentyc_core::CoreError::stale_ref(
+            "focused context requires a current snapshot cache entry",
+        ));
+    }
+    if !envelope.coherent
+        || envelope.truncated
+        || envelope.resync_required
+        || envelope.coverage != SnapshotCoverage::Complete
+    {
+        return Err(agentyc_core::CoreError::stale_ref(
+            "focused context requires a complete coherent snapshot",
+        ));
+    }
+    Ok(())
+}
+
+fn focus_elements(
+    elements: &[agentyc_core::SnapshotElement],
+    focus: &ContextFocus,
+    frame_versions: &BTreeMap<FrameId, FrameVersion>,
+) -> Result<Vec<agentyc_core::SnapshotElement>, agentyc_core::CoreError> {
+    if focus.is_empty() {
+        return Err(agentyc_core::CoreError::invalid_argument(
+            "focused context requires a logical target",
+        ));
+    }
+    let by_key: BTreeMap<&ElementKey, &agentyc_core::SnapshotElement> = elements
+        .iter()
+        .map(|element| (&element.key, element))
+        .collect();
+    if let Some(frame_id) = &focus.frame_id
+        && !frame_versions.contains_key(frame_id)
+    {
+        return Err(agentyc_core::CoreError::stale_ref(format!(
+            "focused logical frame {frame_id} is not present in the current snapshot"
+        )));
+    }
+    let frame_scope = focus
+        .frame_id
+        .as_ref()
+        .map(|frame_id| frame_scope_keys(elements, &by_key, frame_id, frame_versions.len()))
+        .transpose()?;
+
+    let keys = if let Some(element_key) = &focus.element_key {
+        if !by_key.contains_key(element_key) {
+            return Err(agentyc_core::CoreError::stale_ref(format!(
+                "focused element {element_key} is not present in the current snapshot"
+            )));
+        }
+        if let Some(frame_scope) = &frame_scope
+            && !frame_scope.contains(element_key)
+        {
+            return Err(agentyc_core::CoreError::stale_ref(
+                "focused element is not in the requested logical frame",
+            ));
+        }
+        subtree_keys(elements, &by_key, element_key)?
+    } else {
+        frame_scope.ok_or_else(|| {
+            agentyc_core::CoreError::invalid_argument(
+                "focused context requires a frame_id or element_key target",
+            )
+        })?
+    };
+
+    Ok(elements
+        .iter()
+        .filter(|element| keys.contains(&element.key))
+        .cloned()
+        .collect())
+}
+
+fn frame_scope_keys<'a>(
+    elements: &'a [agentyc_core::SnapshotElement],
+    by_key: &BTreeMap<&'a ElementKey, &'a agentyc_core::SnapshotElement>,
+    frame_id: &FrameId,
+    frame_count: usize,
+) -> Result<BTreeSet<ElementKey>, agentyc_core::CoreError> {
+    if frame_count == 0 {
+        return Err(agentyc_core::CoreError::stale_ref(
+            "focused logical frame is absent from the snapshot provenance",
+        ));
+    }
+    let has_frame_marker = elements.iter().any(|element| {
+        matches!(element.kind, ElementKind::Frame)
+            && (element.attributes.contains_key("frame_id")
+                || element.attributes.contains_key("logical_frame_id"))
+    });
+    let markers: Vec<&agentyc_core::SnapshotElement> = elements
+        .iter()
+        .filter(|element| {
+            matches!(element.kind, ElementKind::Frame)
+                && ["frame_id", "logical_frame_id"].iter().any(|name| {
+                    element
+                        .attributes
+                        .get(*name)
+                        .is_some_and(|value| value == frame_id.as_str())
+                })
+        })
+        .collect();
+    match markers.as_slice() {
+        [marker] => subtree_keys(elements, by_key, &marker.key),
+        [] if has_frame_marker => Err(agentyc_core::CoreError::stale_ref(
+            "focused logical frame has no current snapshot mapping",
+        )),
+        [] if frame_count == 1 => {
+            for element in elements {
+                ancestor_keys(by_key, &element.key)?;
+            }
+            Ok(elements.iter().map(|element| element.key.clone()).collect())
+        }
+        [] => Err(agentyc_core::CoreError::stale_ref(
+            "focused logical frame cannot be mapped to snapshot elements",
+        )),
+        _ => Err(agentyc_core::CoreError::stale_ref(
+            "focused logical frame mapping is ambiguous",
+        )),
+    }
+}
+
+fn subtree_keys(
+    elements: &[agentyc_core::SnapshotElement],
+    by_key: &BTreeMap<&ElementKey, &agentyc_core::SnapshotElement>,
+    target: &ElementKey,
+) -> Result<BTreeSet<ElementKey>, agentyc_core::CoreError> {
+    let mut keys = ancestor_keys(by_key, target)?;
+    for element in elements {
+        if is_descendant_of(by_key, &element.key, target)? {
+            keys.insert(element.key.clone());
+        }
+    }
+    Ok(keys)
+}
+
+fn ancestor_keys(
+    by_key: &BTreeMap<&ElementKey, &agentyc_core::SnapshotElement>,
+    target: &ElementKey,
+) -> Result<BTreeSet<ElementKey>, agentyc_core::CoreError> {
+    let mut keys = BTreeSet::new();
+    let mut current = Some(target);
+    while let Some(key) = current {
+        if !keys.insert(key.clone()) {
+            return Err(agentyc_core::CoreError::stale_ref(
+                "focused snapshot contains a cyclic ancestor chain",
+            ));
+        }
+        let element = by_key.get(key).ok_or_else(|| {
+            agentyc_core::CoreError::stale_ref("focused snapshot contains a missing ancestor")
+        })?;
+        current = element.parent.as_ref();
+    }
+    Ok(keys)
+}
+
+fn is_descendant_of(
+    by_key: &BTreeMap<&ElementKey, &agentyc_core::SnapshotElement>,
+    element_key: &ElementKey,
+    target: &ElementKey,
+) -> Result<bool, agentyc_core::CoreError> {
+    if element_key == target {
+        return Ok(true);
+    }
+    let Some(element) = by_key.get(element_key) else {
+        return Ok(false);
+    };
+    let mut visited = BTreeSet::new();
+    let mut current = element.parent.as_ref();
+    while let Some(key) = current {
+        if key == target {
+            return Ok(true);
+        }
+        if !visited.insert(key.clone()) {
+            return Err(agentyc_core::CoreError::stale_ref(
+                "focused snapshot contains a cyclic parent chain",
+            ));
+        }
+        let Some(parent) = by_key.get(key) else {
+            return Ok(false);
+        };
+        current = parent.parent.as_ref();
+    }
+    Ok(false)
 }
 
 fn base_resync_reason(
@@ -1327,6 +1620,17 @@ fn select_body(
             .map(|(representation, body, _)| {
                 (*representation, body.clone(), envelope.coverage, false)
             }),
+        ContextMode::Focus => candidates
+            .iter()
+            .find(|(representation, _, _)| *representation == ContextRepresentation::Full)
+            .map(|(_, body, _)| {
+                (
+                    ContextRepresentation::Focus,
+                    body.clone(),
+                    envelope.coverage,
+                    false,
+                )
+            }),
         ContextMode::Delta => {
             if !delta_available {
                 None
@@ -1364,8 +1668,9 @@ fn representation_rank(representation: ContextRepresentation) -> u8 {
     match representation {
         ContextRepresentation::Delta => 0,
         ContextRepresentation::Compact => 1,
-        ContextRepresentation::Full => 2,
-        ContextRepresentation::Metadata | ContextRepresentation::Resync => 3,
+        ContextRepresentation::Focus => 2,
+        ContextRepresentation::Full => 3,
+        ContextRepresentation::Metadata | ContextRepresentation::Resync => 4,
     }
 }
 
@@ -1513,6 +1818,65 @@ mod tests {
                 order: index,
             })
             .collect()
+    }
+
+    fn focus_tree_envelope() -> SnapshotEnvelope {
+        envelope_with_elements(
+            vec![
+                agentyc_core::SnapshotElement {
+                    key: ElementKey::from_suffix("root").expect("root"),
+                    parent: None,
+                    kind: ElementKind::Root,
+                    text: None,
+                    attributes: BTreeMap::new(),
+                    order: 0,
+                },
+                agentyc_core::SnapshotElement {
+                    key: ElementKey::from_suffix("section").expect("section"),
+                    parent: Some(ElementKey::from_suffix("root").expect("root")),
+                    kind: ElementKind::Element,
+                    text: Some("Section".to_owned()),
+                    attributes: BTreeMap::from([("role".to_owned(), "region".to_owned())]),
+                    order: 1,
+                },
+                agentyc_core::SnapshotElement {
+                    key: ElementKey::from_suffix("target").expect("target"),
+                    parent: Some(ElementKey::from_suffix("section").expect("section")),
+                    kind: ElementKind::Element,
+                    text: Some("Focused target".to_owned()),
+                    attributes: BTreeMap::from([("aria-label".to_owned(), "target".to_owned())]),
+                    order: 2,
+                },
+                agentyc_core::SnapshotElement {
+                    key: ElementKey::from_suffix("target-child").expect("target child"),
+                    parent: Some(ElementKey::from_suffix("target").expect("target")),
+                    kind: ElementKind::Control,
+                    text: Some("Focused control".to_owned()),
+                    attributes: BTreeMap::from([("name".to_owned(), "child".to_owned())]),
+                    order: 3,
+                },
+                agentyc_core::SnapshotElement {
+                    key: ElementKey::from_suffix("sibling").expect("sibling"),
+                    parent: Some(ElementKey::from_suffix("section").expect("section")),
+                    kind: ElementKind::Control,
+                    text: Some("Sibling".to_owned()),
+                    attributes: BTreeMap::new(),
+                    order: 4,
+                },
+            ],
+            1,
+            1,
+        )
+    }
+
+    fn body_keys(output: &ContextOutput) -> Vec<String> {
+        match output.body.as_ref() {
+            Some(SnapshotBody::Elements { elements }) => elements
+                .iter()
+                .map(|element| element.key.as_str().to_owned())
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     #[test]
@@ -1775,6 +2139,219 @@ mod tests {
             ContextRepresentation::Resync
         );
         assert!(operation_limited.metadata.resync_required);
+    }
+
+    #[test]
+    fn focus_returns_a_full_subtree_distinct_from_compact() {
+        let envelope = focus_tree_envelope();
+        let read = SnapshotRead {
+            envelope: envelope.clone(),
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+        let compact = ContextBuilder::new()
+            .build(&read, &ContextRequest::compact())
+            .expect("compact context");
+        let focused = ContextBuilder::new()
+            .build(
+                &read,
+                &ContextRequest::focus().with_focus(ContextFocus {
+                    frame_id: None,
+                    element_key: Some(ElementKey::from_suffix("target").expect("target")),
+                }),
+            )
+            .expect("focused context");
+
+        assert_eq!(
+            focused.metadata.representation,
+            ContextRepresentation::Focus
+        );
+        assert_eq!(
+            body_keys(&focused),
+            vec![
+                "element_root",
+                "element_section",
+                "element_target",
+                "element_target-child",
+            ]
+        );
+        assert!(
+            !body_keys(&focused)
+                .iter()
+                .any(|key| key == "element_sibling")
+        );
+        assert_ne!(focused.body, compact.body);
+        let Some(SnapshotBody::Elements { elements }) = focused.body.as_ref() else {
+            panic!("focused context must contain an element body");
+        };
+        let target = elements
+            .iter()
+            .find(|element| element.key.as_str() == "element_target")
+            .expect("focused target");
+        assert_eq!(target.text.as_deref(), Some("Focused target"));
+        assert_eq!(
+            target.parent.as_ref().map(ElementKey::as_str),
+            Some("element_section")
+        );
+        envelope
+            .validate()
+            .expect("original envelope remains valid");
+        assert_eq!(focused.metadata.snapshot_hash, envelope.snapshot_hash);
+    }
+
+    #[test]
+    fn focus_accepts_a_proven_frame_and_rejects_unmapped_multi_frame_content() {
+        let envelope = focus_tree_envelope();
+        let read = SnapshotRead {
+            envelope: envelope.clone(),
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+        let focused = ContextBuilder::new()
+            .build(
+                &read,
+                &ContextRequest::focus().with_focus(ContextFocus {
+                    frame_id: Some(FrameId::from_suffix("main").expect("main frame")),
+                    element_key: None,
+                }),
+            )
+            .expect("single-frame focus");
+        assert_eq!(body_keys(&focused).len(), 5);
+
+        let mut multi_frame = envelope;
+        multi_frame.frame_versions.insert(
+            FrameId::from_suffix("child").expect("child frame"),
+            FrameVersion::new(1),
+        );
+        let error = ContextBuilder::new()
+            .build(
+                &SnapshotRead {
+                    envelope: multi_frame,
+                    cache_state: CacheState::Fresh,
+                    scan_performed: true,
+                },
+                &ContextRequest::focus().with_focus(ContextFocus {
+                    frame_id: Some(FrameId::from_suffix("child").expect("child frame")),
+                    element_key: None,
+                }),
+            )
+            .expect_err("unmapped frame focus must fail closed");
+        assert_eq!(error.code, agentyc_core::ErrorCode::StaleRef);
+    }
+
+    #[test]
+    fn focus_rejects_missing_unknown_and_stale_targets() {
+        let envelope = focus_tree_envelope();
+        let read = SnapshotRead {
+            envelope: envelope.clone(),
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+        let missing = ContextBuilder::new()
+            .build(&read, &ContextRequest::focus())
+            .expect_err("missing focus must fail");
+        assert_eq!(missing.code, agentyc_core::ErrorCode::InvalidArgument);
+
+        let unknown = ContextBuilder::new()
+            .build(
+                &read,
+                &ContextRequest::focus().with_focus(ContextFocus {
+                    frame_id: None,
+                    element_key: Some(ElementKey::from_suffix("missing").expect("missing")),
+                }),
+            )
+            .expect_err("unknown element must fail");
+        assert_eq!(unknown.code, agentyc_core::ErrorCode::StaleRef);
+
+        let mut partial = envelope.clone();
+        partial.coherent = false;
+        partial.coverage = SnapshotCoverage::Partial;
+        let partial_error = ContextBuilder::new()
+            .build(
+                &SnapshotRead {
+                    envelope: partial,
+                    cache_state: CacheState::Fresh,
+                    scan_performed: true,
+                },
+                &ContextRequest::focus().with_focus(ContextFocus {
+                    frame_id: None,
+                    element_key: Some(ElementKey::from_suffix("target").expect("target")),
+                }),
+            )
+            .expect_err("partial focused context must fail closed");
+        assert_eq!(partial_error.code, agentyc_core::ErrorCode::StaleRef);
+
+        let stale_error = ContextBuilder::new()
+            .build(
+                &SnapshotRead {
+                    envelope,
+                    cache_state: CacheState::Stale,
+                    scan_performed: false,
+                },
+                &ContextRequest::focus().with_focus(ContextFocus {
+                    frame_id: None,
+                    element_key: Some(ElementKey::from_suffix("target").expect("target")),
+                }),
+            )
+            .expect_err("stale focused context must fail closed");
+        assert_eq!(stale_error.code, agentyc_core::ErrorCode::StaleRef);
+    }
+
+    #[test]
+    fn focus_cache_keys_partition_mode_and_logical_target() {
+        let envelope = focus_tree_envelope();
+        let read = SnapshotRead {
+            envelope,
+            cache_state: CacheState::Fresh,
+            scan_performed: true,
+        };
+        let target = ContextFocus {
+            frame_id: Some(FrameId::from_suffix("main").expect("main frame")),
+            element_key: Some(ElementKey::from_suffix("target").expect("target")),
+        };
+        let focused = ContextRequest::focus().with_focus(target.clone());
+        let focused_key = focused.cache_key(&read, ContextFocus::default());
+        assert_eq!(focused_key.focus, target);
+        assert_eq!(focused_key.mode, ContextMode::Focus);
+
+        let compact_key = ContextRequest::compact().cache_key(&read, ContextFocus::default());
+        assert_ne!(focused_key, compact_key);
+
+        let other_key = ContextRequest::focus()
+            .with_focus(ContextFocus {
+                frame_id: target.frame_id.clone(),
+                element_key: Some(ElementKey::from_suffix("section").expect("section")),
+            })
+            .cache_key(&read, ContextFocus::default());
+        assert_ne!(focused_key, other_key);
+
+        let fallback_key = ContextRequest::focus().cache_key(&read, target.clone());
+        assert_eq!(fallback_key.focus, target);
+    }
+
+    #[test]
+    fn clean_focused_cache_returns_metadata_without_a_body() {
+        let mut envelope = focus_tree_envelope();
+        envelope.cache_state = CacheState::Cached;
+        let read = SnapshotRead {
+            envelope,
+            cache_state: CacheState::Cached,
+            scan_performed: false,
+        };
+        let output = ContextBuilder::new()
+            .build(
+                &read,
+                &ContextRequest::focus().with_focus(ContextFocus {
+                    frame_id: None,
+                    element_key: Some(ElementKey::from_suffix("target").expect("target")),
+                }),
+            )
+            .expect("clean focused context");
+        assert!(output.is_clean_cache_metadata_only());
+        assert_eq!(
+            output.metadata.representation,
+            ContextRepresentation::Metadata
+        );
     }
 
     #[test]
