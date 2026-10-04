@@ -19,6 +19,25 @@ const proof = (spaceId = "space_one", pageId = "page_one") => ({
   lease_epoch: 1,
 });
 
+function hostEvent(
+  hello,
+  { sequence, brokerEpoch = 1, connectionEpoch = 1, cursor },
+) {
+  return {
+    protocol: 1,
+    kind: "event",
+    nonce: hello.nonce,
+    sequence,
+    broker_epoch: brokerEpoch,
+    connection_epoch: connectionEpoch,
+    worker_instance_epoch: hello.worker_instance_epoch,
+    browser_session_epoch: hello.browser_session_epoch,
+    event: "host.cursor_test",
+    payload: { source: "host" },
+    ...(cursor ? { cursor } : {}),
+  };
+}
+
 test("Native Messaging reconnect starts a fresh nonce/sequence and never replays a mutation", async () => {
   const chrome = new FakeChrome();
   const unknown = [];
@@ -54,6 +73,142 @@ test("Native Messaging reconnect starts a fresh nonce/sequence and never replays
     secondPort.sent.some((message) => message.method === "page.navigate"),
     false,
   );
+  client.stop();
+});
+
+test("Native Messaging reconnect resumes the broker cursor without reusing envelope sequence", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const firstPort = chrome.lastPort;
+  const firstHello = firstPort.sent[0];
+  firstPort.receive(makeHostHelloOk(firstHello));
+  firstPort.receive(
+    hostEvent(firstHello, {
+      sequence: 2,
+      cursor: { broker_epoch: 1, sequence: 41 },
+    }),
+  );
+  assert.deepEqual(client.connectionInfo.resumeCursor, {
+    broker_epoch: 1,
+    sequence: 41,
+  });
+
+  firstPort.disconnect();
+  await client.reconnect();
+  const secondPort = chrome.lastPort;
+  const secondHello = secondPort.sent[0];
+  assert.equal(secondHello.sequence, 1);
+  assert.deepEqual(secondHello.resume_from, {
+    broker_epoch: 1,
+    sequence: 41,
+  });
+  assert.notEqual(secondHello.sequence, secondHello.resume_from.sequence);
+  secondPort.receive({
+    ...makeHostHelloOk(secondHello, { connectionEpoch: 2 }),
+    resume: "accepted",
+  });
+  assert.equal(client.connected, true);
+  assert.equal(client.connectionInfo.resumeStatus, "accepted");
+  client.stop();
+});
+
+test("Native Messaging clears a retained cursor after a broker epoch resync", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const firstPort = chrome.lastPort;
+  const firstHello = firstPort.sent[0];
+  firstPort.receive(makeHostHelloOk(firstHello));
+  firstPort.receive(
+    hostEvent(firstHello, {
+      sequence: 2,
+      cursor: { broker_epoch: 1, sequence: 9 },
+    }),
+  );
+  firstPort.disconnect();
+
+  await client.reconnect();
+  const secondPort = chrome.lastPort;
+  const secondHello = secondPort.sent[0];
+  assert.deepEqual(secondHello.resume_from, {
+    broker_epoch: 1,
+    sequence: 9,
+  });
+  secondPort.receive({
+    ...makeHostHelloOk(secondHello, {
+      brokerEpoch: 2,
+      connectionEpoch: 2,
+    }),
+    resume: "resync_required",
+  });
+  assert.equal(client.connected, true);
+  assert.equal(client.connectionInfo.resumeCursor, undefined);
+  assert.equal(client.connectionInfo.resumeStatus, "resync_required");
+
+  secondPort.disconnect();
+  await client.reconnect();
+  const thirdHello = chrome.lastPort.sent[0];
+  assert.equal(thirdHello.sequence, 1);
+  assert.equal(Object.hasOwn(thirdHello, "resume_from"), false);
+  client.stop();
+});
+
+test("Native Messaging rejects a stale broker cursor independently of envelope ordering", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const port = chrome.lastPort;
+  const hello = port.sent[0];
+  port.receive(makeHostHelloOk(hello));
+  port.receive(
+    hostEvent(hello, {
+      sequence: 2,
+      cursor: { broker_epoch: 1, sequence: 10 },
+    }),
+  );
+  port.receive(
+    hostEvent(hello, {
+      sequence: 3,
+      cursor: { broker_epoch: 1, sequence: 9 },
+    }),
+  );
+  assert.equal(client.state, "rejected");
+  assert.equal(port.disconnected, true);
+});
+
+test("Native Messaging source event sequence is not retained as a broker cursor", async () => {
+  const chrome = new FakeChrome();
+  const client = new NativeMessagingClient({
+    chromeApi: chrome,
+    workerInstanceEpoch: 1,
+    browserSessionEpoch: 1,
+    autoReconnect: false,
+  });
+  await client.connect();
+  const port = chrome.lastPort;
+  const hello = port.sent[0];
+  port.receive(makeHostHelloOk(hello));
+  const event = client.sendEvent("extension.source_test", { value: true });
+  assert.equal(event.sequence, 2);
+  assert.equal(event.payload.event_sequence, 1);
+  assert.equal(client.connectionInfo.resumeCursor, undefined);
+  assert.equal(Object.hasOwn(hello, "resume_from"), false);
   client.stop();
 });
 
@@ -536,6 +691,425 @@ test("frame and execution-context events retain logical attribution without raw 
   });
   assert.equal(frames.contexts.size, 0);
   assert.equal(routed.length, 6);
+});
+
+test("detached frame and context reuse gets fresh identities and drops late events", () => {
+  const frames = new FramesRegistry();
+  frames.bindTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindSession({
+    tabId: 1,
+    sessionId: "child-session",
+    spaceId: "space_one",
+    pageId: "page_one",
+    targetId: "target-one",
+  });
+  const first = frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-frame",
+    logicalFrameId: "logical-frame-one",
+    parentFrameId: "parent-frame",
+  });
+  const firstContext = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextCreated",
+    params: {
+      context: { id: 7, auxData: { frameId: "raw-frame" } },
+    },
+  });
+  assert.equal(firstContext.frame_id, first.frame_id);
+  assert.equal(frames.contextFor(1, "child-session", 7)?.contextGeneration, 1);
+
+  const detached = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Page.frameDetached",
+    params: { frameId: "raw-frame", reason: "removed" },
+  });
+  assert.equal(detached.frame_id, first.frame_id);
+  assert.equal(frames.frameFor(1, "child-session", "raw-frame"), undefined);
+  assert.equal(frames.contextFor(1, "child-session", 7), undefined);
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Page.frameNavigated",
+      params: {
+        frame: {
+          id: "raw-frame",
+          parentId: "parent-frame",
+          url: "https://late.agent.test/",
+        },
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Runtime.executionContextCreated",
+      params: {
+        context: { id: 7, auxData: { frameId: "raw-frame" } },
+      },
+    }),
+    null,
+  );
+
+  const replacement = frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-frame",
+    parentFrameId: "parent-frame",
+  });
+  assert.notEqual(replacement.frame_id, first.frame_id);
+  assert.equal(replacement.frame_version, first.frame_version + 1);
+  const recreatedContext = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextCreated",
+    params: {
+      context: { id: 7, auxData: { frameId: "raw-frame" } },
+    },
+  });
+  assert.equal(recreatedContext.frame_id, replacement.frame_id);
+  assert.equal(frames.contextFor(1, "child-session", 7)?.contextGeneration, 2);
+  assert.equal(recreatedContext.params.context.id, undefined);
+  assert.equal(recreatedContext.params.context.auxData.frameId, undefined);
+});
+
+test("execution context destroy and reuse gets a new context generation", () => {
+  const frames = new FramesRegistry();
+  frames.bindTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindSession({
+    tabId: 1,
+    sessionId: "child-session",
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-frame",
+    logicalFrameId: "logical-context-frame",
+  });
+  frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextCreated",
+    params: {
+      context: { id: 11, auxData: { frameId: "raw-frame" } },
+    },
+  });
+  const destroyed = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextDestroyed",
+    params: { executionContextId: 11 },
+  });
+  assert.equal(destroyed.frame_id, "logical-context-frame");
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Runtime.consoleAPICalled",
+      params: { executionContextId: 11, type: "log", args: [] },
+    }),
+    null,
+  );
+
+  const recreated = frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextCreated",
+    params: {
+      context: { id: 11, auxData: { frameId: "raw-frame" } },
+    },
+  });
+  assert.equal(recreated.frame_id, "logical-context-frame");
+  assert.equal(frames.contextFor(1, "child-session", 11)?.contextGeneration, 2);
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Runtime.consoleAPICalled",
+      params: { executionContextId: 11, type: "log", args: [] },
+    }).frame_id,
+    "logical-context-frame",
+  );
+});
+
+test("session invalidation retires mappings, generations, and late events", () => {
+  const frames = new FramesRegistry();
+  frames.bindTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindSession({
+    tabId: 1,
+    sessionId: "child-session",
+    spaceId: "space_one",
+    pageId: "page_one",
+    targetId: "target-one",
+  });
+  const firstGeneration = frames.getSessionGeneration(1, "child-session");
+  const first = frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-frame",
+    logicalFrameId: "logical-session-frame",
+  });
+  const lost = frames.invalidateSession(1, "child-session", "detached");
+  assert.equal(lost.event, "debugger.session_lost");
+  assert.equal(frames.getSessionGeneration(1, "child-session"), undefined);
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Network.requestWillBeSent",
+      params: { requestId: "late-request", url: "https://late.agent.test/" },
+    }),
+    null,
+  );
+
+  frames.bindSession({
+    tabId: 1,
+    sessionId: "child-session",
+    spaceId: "space_one",
+    pageId: "page_one",
+    targetId: "target-two",
+  });
+  assert.equal(
+    frames.getSessionGeneration(1, "child-session"),
+    firstGeneration + 1,
+  );
+  const replacement = frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-frame",
+  });
+  assert.notEqual(replacement.frame_id, first.frame_id);
+  assert.equal(replacement.frame_version, first.frame_version + 1);
+});
+
+test("stale related-target detach cannot invalidate a replacement session", async () => {
+  const chrome = new FakeChrome();
+  const frames = new FramesRegistry();
+  const bridge = new DebuggerBridge({ chromeApi: chrome, frames });
+  bridge.attached.set(1, {
+    spaceId: "space_one",
+    pageId: "page_one",
+    targetGeneration: 1,
+    documentGeneration: 1,
+    navigationGeneration: 1,
+  });
+
+  assert.equal(
+    bridge.handleRelatedTargetAttached(
+      { tabId: 1 },
+      {
+        sessionId: "child-session",
+        targetInfo: {
+          type: "iframe",
+          targetId: "target-one",
+          url: "https://child.agent.test/",
+        },
+      },
+    ),
+    true,
+  );
+  const firstGeneration = frames.getSessionGeneration(1, "child-session");
+  assert.equal(
+    bridge.handleRelatedTargetAttached(
+      { tabId: 1 },
+      {
+        sessionId: "child-session",
+        targetInfo: {
+          type: "iframe",
+          targetId: "target-two",
+          url: "https://replacement.agent.test/",
+        },
+      },
+    ),
+    true,
+  );
+  const replacementGeneration = frames.getSessionGeneration(1, "child-session");
+  assert.equal(replacementGeneration, firstGeneration + 1);
+  assert.equal(
+    bridge.handleRelatedTargetDetached(
+      { tabId: 1 },
+      { sessionId: "child-session", targetId: "target-one" },
+    ),
+    false,
+  );
+  assert.equal(
+    frames.getSessionGeneration(1, "child-session"),
+    replacementGeneration,
+  );
+  assert.equal(
+    bridge.handleRelatedTargetDetached(
+      { tabId: 1 },
+      { sessionId: "child-session", targetId: "target-two" },
+    ),
+    true,
+  );
+  assert.equal(frames.getInternalBinding(1, "child-session"), undefined);
+  await wait();
+});
+
+test("detaching a parent retires dependent frame and context mappings", () => {
+  const frames = new FramesRegistry();
+  frames.bindTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindSession({
+    tabId: 1,
+    sessionId: "child-session",
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-parent",
+    logicalFrameId: "logical-parent",
+  });
+  frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-child",
+    logicalFrameId: "logical-child",
+    parentFrameId: "raw-parent",
+  });
+  frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Runtime.executionContextCreated",
+    params: {
+      context: { id: 13, auxData: { frameId: "raw-child" } },
+    },
+  });
+
+  frames.routeDebuggerEvent({
+    tabId: 1,
+    sessionId: "child-session",
+    method: "Page.frameDetached",
+    params: { frameId: "raw-parent", reason: "removed" },
+  });
+  assert.equal(frames.frameFor(1, "child-session", "raw-child"), undefined);
+  assert.equal(frames.contextFor(1, "child-session", 13), undefined);
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Page.frameNavigated",
+      params: {
+        frame: { id: "raw-child", parentId: "raw-parent" },
+      },
+    }),
+    null,
+  );
+});
+
+test("mapped root navigation advances binding and frame generations", () => {
+  const frames = new FramesRegistry();
+  frames.bindTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindFrame({
+    tabId: 1,
+    frameId: "raw-root-frame",
+    logicalFrameId: "logical-root-frame",
+  });
+
+  const navigated = frames.routeDebuggerEvent({
+    tabId: 1,
+    method: "Page.frameNavigated",
+    params: {
+      frame: { id: "raw-root-frame", url: "https://next.agent.test/" },
+    },
+  });
+  assert.equal(navigated.frame_id, "logical-root-frame");
+  assert.equal(navigated.document_generation, 2);
+  assert.equal(navigated.navigation_generation, 2);
+  assert.equal(frames.getInternalBinding(1).documentGeneration, 2);
+  assert.equal(frames.frameFor(1, undefined, "raw-root-frame").frameVersion, 2);
+});
+
+test("parent mismatches do not route stale frame events", () => {
+  const frames = new FramesRegistry();
+  frames.bindTab({
+    tabId: 1,
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindSession({
+    tabId: 1,
+    sessionId: "child-session",
+    spaceId: "space_one",
+    pageId: "page_one",
+  });
+  frames.bindFrame({
+    tabId: 1,
+    sessionId: "child-session",
+    frameId: "raw-frame",
+    logicalFrameId: "logical-parent-frame",
+    parentFrameId: "parent-one",
+  });
+
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Page.frameNavigated",
+      params: {
+        frame: { id: "orphan-frame", url: "https://orphan.agent.test/" },
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Page.frameNavigated",
+      params: {
+        frame: {
+          id: "raw-frame",
+          parentId: "parent-two",
+          url: "https://wrong-parent.agent.test/",
+        },
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    frames.routeDebuggerEvent({
+      tabId: 1,
+      sessionId: "child-session",
+      method: "Page.frameAttached",
+      params: { frameId: "raw-frame", parentFrameId: "parent-two" },
+    }),
+    null,
+  );
+  assert.equal(
+    frames.frameFor(1, "child-session", "raw-frame").rawParentFrameId,
+    "parent-one",
+  );
 });
 
 test("debugger detach is a loss event and does not trigger an automatic reattach", async () => {
