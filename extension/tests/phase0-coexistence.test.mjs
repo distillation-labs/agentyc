@@ -291,6 +291,68 @@ test("stale or duplicate fence epochs are rejected and never lower the barrier",
   worker.stop();
 });
 
+test("acknowledged lease fences can rebind one retained inactive page", async () => {
+  const chrome = new FakeChrome({
+    tabs: [{ id: 1, active: true, url: "https://user.test/" }],
+  });
+  const { worker, port, hello } = await boot(chrome);
+  const created = await sendRequest(
+    port,
+    hello,
+    2,
+    createPage("space_rebind", "page_rebind", 1, "rebind"),
+  );
+  assert.equal(created.ok, true);
+  const fenced = await sendRequest(
+    port,
+    hello,
+    3,
+    fenceRequest("space_rebind", 2, "rebind"),
+  );
+  assert.equal(fenced.kind, "fence_ack");
+  assert.equal(
+    worker.tabs.getInternalByPage("page_rebind").bindingState,
+    "user_owned",
+  );
+
+  const rebound = await sendRequest(port, hello, 4, {
+    kind: "request",
+    request_id: "req_rebind",
+    action_id: "action_rebind",
+    method: "page.rebind",
+    space_id: "space_rebind",
+    page_id: "page_rebind",
+    lease_epoch: 2,
+    params: {
+      target_generation: 2,
+      navigation_generation: 2,
+      document_generation: 2,
+      ownership_proof: proof(
+        "rebind",
+        "space_rebind",
+        "page_rebind",
+        2,
+        "rebind",
+        {
+          rebind: true,
+          target_generation: 2,
+          profile_instance_id: worker.metadata.profileInstanceId,
+          browser_session_epoch: worker.metadata.browserSessionEpoch,
+        },
+      ),
+    },
+  });
+  assert.equal(rebound.ok, true);
+  assert.equal(rebound.result.binding_state, "bound");
+  assert.equal(rebound.result.lease_epoch, 2);
+  assert.equal(rebound.result.target_generation, 2);
+  assert.equal(
+    worker.tabs.getInternalByPage("page_rebind").bindingState,
+    "bound",
+  );
+  worker.stop();
+});
+
 test("fence floor survives worker restart inside one browser session", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://user.test/" }],
