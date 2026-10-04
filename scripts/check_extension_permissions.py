@@ -12,9 +12,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_DOC_BYTES = 4 * 1024 * 1024
+MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_MATRIX_BYTES = 8 * 1024 * 1024
 DEFAULT_DOC = Path("docs/security/extension-permissions.md")
+DEFAULT_MANIFEST = Path("extension/manifest.json")
 DEFAULT_MATRIX = Path("artifacts/p0-capabilities.json")
+ERROR_REGISTRY = Path("extension/src/protocol.mjs")
 VALID_STATUSES = {"supported", "partial", "unsupported", "legacy-only"}
 REQUIRED_DEBUGGER_DOMAINS = {
     "Accessibility",
@@ -26,7 +29,6 @@ REQUIRED_DEBUGGER_DOMAINS = {
     "Network",
     "Page",
     "Runtime",
-    "Target",
 }
 REQUIRED_MARKERS = (
     "required baseline permissions",
@@ -57,6 +59,16 @@ REQUIRED_MARKERS = (
     "typed",
     "automatic browser download",
     "automatic browser launch",
+    "artifact approval",
+    "artifact_denied",
+    "origin/frame/navigation/document scope",
+    "Chrome error classifier",
+    "separate debugger event allowlist",
+    "0.1",
+    "`Target` events are not allowed",
+    "policy_denied",
+    "incognito_not_supported",
+    "unknown",
 )
 
 
@@ -116,6 +128,73 @@ def load_doc(root: Path, requested: str | None) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise PermissionError("extension permission document is not UTF-8") from exc
+
+
+def load_manifest(root: Path, requested: str | None) -> dict[str, Any]:
+    _path, raw = safe_file(root, requested, DEFAULT_MANIFEST, MAX_MANIFEST_BYTES)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise PermissionError("extension manifest is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise PermissionError("extension manifest root must be an object")
+    return value
+
+
+def _reject_main_world(value: Any, path: str = "manifest", depth: int = 0) -> None:
+    if depth > 32:
+        raise PermissionError("extension manifest nesting exceeds the bound")
+    if isinstance(value, dict):
+        if isinstance(value.get("world"), str) and value["world"].upper() == "MAIN":
+            raise PermissionError(f"extension manifest MAIN world is not allowed at {path}.world")
+        for key, child in value.items():
+            _reject_main_world(child, f"{path}.{key}", depth + 1)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_main_world(child, f"{path}[{index}]", depth + 1)
+
+
+def validate_error_registry(root: Path) -> None:
+    _path, raw = safe_file(root, str(ERROR_REGISTRY), ERROR_REGISTRY, MAX_MANIFEST_BYTES)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PermissionError("extension protocol registry is not UTF-8") from exc
+    required = (
+        "export const PUBLIC_ERROR_CODES",
+        '"artifact_denied"',
+        '"download_denied"',
+        '"permission_denied"',
+        '"policy_denied"',
+        '"restricted_url"',
+        '"upload_denied"',
+        '"unknown"',
+    )
+    missing = [marker for marker in required if marker not in text]
+    if missing:
+        raise PermissionError("closed extension error registry is incomplete: " + ", ".join(missing))
+
+
+def validate_manifest(manifest: dict[str, Any]) -> None:
+    if not isinstance(manifest, dict):
+        raise PermissionError("extension manifest root must be an object")
+    if manifest.get("manifest_version") != 3:
+        raise PermissionError("extension manifest must use Manifest V3")
+    permissions = manifest.get("permissions")
+    if not isinstance(permissions, list) or any(
+        not isinstance(permission, str) for permission in permissions
+    ):
+        raise PermissionError("extension manifest permissions must be a string list")
+    if permissions.count("debugger") != 1:
+        raise PermissionError("debugger must appear exactly once in required permissions")
+    for key in ("optional_permissions", "host_permissions", "optional_host_permissions"):
+        if key in manifest:
+            raise PermissionError(f"extension manifest must not declare {key}")
+    if "scripting" in permissions:
+        raise PermissionError("extension manifest must not declare scripting")
+    if manifest.get("incognito") != "not_allowed":
+        raise PermissionError("extension manifest must set incognito to not_allowed")
+    _reject_main_world(manifest)
 
 
 def validate_document(text: str) -> None:
@@ -223,6 +302,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--matrix", help="repository-relative Phase 0 capability matrix")
     parser.add_argument("--document", help="repository-relative extension permission document")
+    parser.add_argument("--manifest", help="repository-relative MV3 extension manifest")
     parser.add_argument("--root", help="repository root; defaults to the checkout containing this script")
     return parser.parse_args(argv)
 
@@ -231,12 +311,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         root = resolve_root(args.root)
+        validate_manifest(load_manifest(root, args.manifest))
+        validate_error_registry(root)
         validate_document(load_doc(root, args.document))
         validate_matrix(load_json(root, args.matrix))
     except (PermissionError, OSError) as exc:
         print(f"check_extension_permissions: FAIL: {exc}", file=sys.stderr)
         return 1
-    print("check_extension_permissions: PASS (required permissions, capability policy, and Phase 0 matrix)")
+    print("check_extension_permissions: PASS (MV3 manifest, required permissions, capability policy, and Phase 0 matrix)")
     return 0
 
 
