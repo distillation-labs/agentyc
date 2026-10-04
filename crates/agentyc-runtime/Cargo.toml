@@ -13,8 +13,12 @@ categories = ["web-programming", "development-tools"]
 
 [dependencies]
 agentyc-browser = { workspace = true }
+agentyc-host = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
