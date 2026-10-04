@@ -1,6 +1,7 @@
 import net from "node:net";
 
 import { AgentycError, mapWireError } from "./errors.mjs";
+import { normalizeDeadline } from "./constants.mjs";
 
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_MAX_PAYLOAD_BYTES = 1024 * 1024;
@@ -25,10 +26,14 @@ function transportError(code, message, details = undefined) {
   return error;
 }
 
-function cancelledTransportError(reason = "the request was cancelled") {
+function cancelledTransportError(
+  reason = "the request was cancelled",
+  dispatched = false,
+) {
   const error = new Error(reason);
   error.name = "AbortError";
   error.cancelled = true;
+  error.dispatched = dispatched;
   return error;
 }
 
@@ -83,39 +88,22 @@ function coreParams(params) {
 
 function decodeJsonField(value) {
   if (typeof value !== "string") return value;
-  const first = value.trimStart()[0];
-  if (first !== "{" && first !== "[") return value;
   try {
     return JSON.parse(value);
   } catch {
+    // Some injected fixtures and older adapters return plain scalar strings.
+    // Keep those strings instead of rejecting the whole response.
     return value;
   }
 }
 
-// Rust's default protocol payload is BTreeMap<String, String>. Decode only
-// fields whose contract carries structured JSON; labels and other scalar values
-// remain strings even when they happen to look like JSON.
-const JSON_RESULT_FIELDS = new Set([
-  "space",
-  "spaces",
-  "page",
-  "pages",
-  "lease",
-  "snapshot",
-  "receipt",
-  "events",
-  "cursor",
-  "resume_result",
-  "payload",
-]);
-
+// Rust's default protocol payload is BTreeMap<String, String>. Every value
+// produced by put_json is JSON text, including scalar strings, numbers, and
+// booleans. Decode every string-map value, while retaining plain legacy strings.
 function decodeResult(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [
-      key,
-      JSON_RESULT_FIELDS.has(key) ? decodeJsonField(entry) : entry,
-    ]),
+    Object.entries(value).map(([key, entry]) => [key, decodeJsonField(entry)]),
   );
 }
 
@@ -223,6 +211,10 @@ export class LocalProtocolTransport {
     this.helloPromise = undefined;
     this.connected = false;
     this.closed = false;
+    // The client uses this marker to distinguish a pre-dispatch abort while
+    // the local transport is still establishing a socket from a dispatched
+    // mutation whose response was cancelled.
+    this.dispatchAware = true;
     this.readBuffer = Buffer.alloc(0);
     this.pending = new Map();
     this.ignoredRequestIds = new Set();
@@ -238,7 +230,7 @@ export class LocalProtocolTransport {
     await this._ensureConnected();
   }
 
-  async request(payload, { signal } = {}) {
+  async request(payload, { signal, onDispatch } = {}) {
     const requests = payload?.requests;
     if (!Array.isArray(requests) || requests.length === 0) {
       throw new AgentycError({
@@ -275,6 +267,7 @@ export class LocalProtocolTransport {
     if (signal?.aborted) throw cancelledTransportError();
 
     let abort;
+    let dispatched = false;
     const result = new Promise((resolve, reject) => {
       const batch = { requestIds, responses: new Map(), resolve, reject };
       for (const requestId of requestIds) this.pending.set(requestId, batch);
@@ -284,6 +277,10 @@ export class LocalProtocolTransport {
       signal?.addEventListener("abort", abort, { once: true });
       try {
         for (const request of requests) {
+          if (!dispatched) {
+            dispatched = true;
+            onDispatch?.();
+          }
           this._writeEnvelope({
             kind: "request",
             protocol: PROTOCOL_VERSION,
@@ -315,7 +312,7 @@ export class LocalProtocolTransport {
         this.pending.delete(requestId);
         this.ignoredRequestIds.add(requestId);
       }
-      batch.reject(cancelledTransportError(reason));
+      batch.reject(cancelledTransportError(reason, true));
     }
     if (!this.connected || batches.size === 0) return;
     const cancelIds = new Set();
@@ -847,11 +844,12 @@ export function createLocalTransport(handler) {
 }
 
 export function makeRequest(method, params = {}, options = {}) {
+  const deadlineMs = normalizeDeadline(options.deadlineMs);
   return {
     request_id: options.requestId ?? nextRequestId(),
     method,
     params,
-    deadline_ms: options.deadlineMs,
+    deadline_ms: deadlineMs,
     idempotency_key: options.idempotencyKey,
   };
 }
