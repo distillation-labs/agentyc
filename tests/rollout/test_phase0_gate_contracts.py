@@ -85,15 +85,51 @@ def _coexistence_report(
 ) -> dict[str, Any]:
     names = scenario_names if scenario_names is not None else list(REQUIRED_SCENARIOS)
     enrollment_evidence = copy.deepcopy(enrollment or _enrollment())
+    receipt_prefixes = (
+        "browser.inventory.initial.",
+        "browser.inventory.isolation.",
+        "browser.inventory.post-action.",
+        "browser.inventory.takeover.",
+        "browser.inventory.return-control.",
+        "browser.inventory.cleanup.",
+        "browser.inventory.checkpoint-worker-restart-recovery.",
+        "browser.inventory.checkpoint-host-restart-recovery.",
+        "browser.inventory.checkpoint-chrome-restart-recovery.",
+        "browser.inventory.checkpoint-extension-update-recovery.",
+    )
+    receipt_operations = [
+        f"{receipt_prefixes[index]}research.1"
+        if index < len(receipt_prefixes)
+        else f"browser.inventory.extra.{index}"
+        for index, _name in enumerate(names)
+    ]
     receipts = [
         {
-            "operation": f"browser.scenario.{index}",
+            "operation": operation,
             "source": "browser",
             "current_run": True,
             "observed": True,
             "browser_observed": True,
         }
-        for index, _name in enumerate(names)
+        for operation in receipt_operations
+    ]
+    transport_receipts = [
+        {
+            "operation": "action.execute.cross_space_rejection",
+            "current_run": True,
+            "observed": True,
+            "ok": False,
+            "expected_rejection": True,
+            "failure_code": "space_forbidden",
+        },
+        {
+            "operation": "action.execute.stale_lease_rejection",
+            "current_run": True,
+            "observed": True,
+            "ok": False,
+            "expected_rejection": True,
+            "failure_code": "stale_lease",
+        },
     ]
     report = {
         "phase": 0,
@@ -136,6 +172,7 @@ def _coexistence_report(
             },
             "enrollment": copy.deepcopy(enrollment_evidence),
             "receipts": receipts,
+            "transport_receipts": transport_receipts,
         },
         "scenarios": [
             {
@@ -146,7 +183,7 @@ def _coexistence_report(
                     "observed": True,
                     "current_run": True,
                     "browser_observed": True,
-                    "receipt_refs": [f"browser.scenario.{index}"],
+                    "receipt_refs": [receipt_operations[index]],
                 },
             }
             for index, name in enumerate(names)
