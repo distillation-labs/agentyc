@@ -329,7 +329,7 @@
 - **Evidence locations:** Phase 0 checker report; 52 extension tests; 38 host tests including bridge event loss; 34 host-core integration tests; 10 direct CLI tests; 13 SDK tests; fmt/diff/compile checks.
 - **Claim:** The bounded Phase 0 checker returns `status: pass`; hardening regressions are covered; primary changed files have no diagnostics.
 - **Decision impact:** Phase 0 closure and Phase 1 activation.
-- **Limits:** The accepted headed artifact predates the final source hardening; deterministic regressions cover the changed code, and a new approved headed capture is required before claiming that artifact as a binary/source-identical release artifact.
+- **Limits:** The accepted ten-scenario artifact predates the final source hardening. A current source-identical headed smoke at `artifacts/p0-coexistence/live-hardening-basic-3/` passed browser inventory, snapshots, actions, focus, isolation, and cleanup; its four disruptive restart/update checkpoints were intentionally not requested. Deterministic regressions cover the hardening, and a new approved full headed capture is required before treating the old ten-scenario artifact as a binary/source-identical release artifact.
 - **Confidence:** high for deterministic code paths; medium for source-identical live runtime evidence.
 
 ## Superseding research limit
