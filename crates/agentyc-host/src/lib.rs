@@ -38,7 +38,7 @@ pub use actionability::{
     PROVENANCE_PAYLOAD_KEY, PostconditionVerifier, REF_PAYLOAD_KEY, check_actionability,
     requires_element_actionability, validate_request_actionability, verify_postcondition,
 };
-pub use actions::{ActionLookup, ActionResult};
+pub use actions::{ActionLookup, ActionResult, ArtifactHandle};
 pub use agentyc_core;
 pub use bridge::{
     Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeRouter, ExtensionEpochs, FakeBridge,
