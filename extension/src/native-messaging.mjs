@@ -41,6 +41,13 @@ function defaultNativeLimits() {
   };
 }
 
+function appendArtifactBytes(existing, chunk) {
+  const output = new Uint8Array(existing.length + chunk.length);
+  output.set(existing, 0);
+  output.set(chunk, existing.length);
+  return output;
+}
+
 function artifactDigest(bytes) {
   let hash = 0xcbf29ce484222325n;
   for (const byte of bytes) {
@@ -99,6 +106,7 @@ export class NativeMessagingClient {
     this.brokerEpoch = undefined;
     this.connectionEpoch = undefined;
     this.outboundSequence = 1;
+    this.eventSequence = 0;
     this.inboundSequence = new SequenceValidator(1);
     this.pendingMutations = new Set();
     this.reconnectTimer = null;
@@ -172,6 +180,7 @@ export class NativeMessagingClient {
         this.brokerEpoch = undefined;
         this.connectionEpoch = undefined;
         this.outboundSequence = 1;
+        this.eventSequence = 0;
         this.inboundSequence.reset(1);
         this.negotiatedCapabilities = [];
         this.limits = defaultNativeLimits();
@@ -519,9 +528,16 @@ export class NativeMessagingClient {
   }
 
   sendEvent(event, payload = {}, scope = {}) {
+    const eventSequence = ++this.eventSequence;
     return this.send("event", {
       event,
-      payload,
+      payload: {
+        ...payload,
+        event_id: createLogicalId("event"),
+        event_sequence: eventSequence,
+        event_source: "extension",
+        ...(event === "heartbeat" ? { heartbeat: true } : {}),
+      },
       ...scope,
     });
   }
@@ -548,7 +564,7 @@ export class NativeMessagingClient {
       }
       this.artifactTransfers.set(envelope.artifact_id, {
         begin: { ...envelope },
-        bytes: [],
+        bytes: new Uint8Array(0),
         nextChunk: 0,
       });
       return;
@@ -595,7 +611,7 @@ export class NativeMessagingClient {
       }
       this.artifactInFlightBytes += bytes.length;
       this.artifactCumulativeBytes += bytes.length;
-      transfer.bytes.push(...bytes);
+      transfer.bytes = appendArtifactBytes(transfer.bytes, bytes);
       transfer.nextChunk += 1;
       return;
     }
@@ -642,7 +658,7 @@ export class NativeMessagingClient {
     }
     this.artifactTransfers.set(envelope.artifact_id, {
       begin: { ...envelope },
-      bytes: [],
+      bytes: new Uint8Array(0),
       nextChunk: 0,
     });
   }
@@ -685,7 +701,7 @@ export class NativeMessagingClient {
     }
     this.artifactInFlightBytes += bytes.length;
     this.artifactCumulativeBytes += bytes.length;
-    transfer.bytes.push(...bytes);
+    transfer.bytes = appendArtifactBytes(transfer.bytes, bytes);
     transfer.nextChunk += 1;
   }
 
