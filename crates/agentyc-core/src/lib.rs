@@ -22,11 +22,16 @@ pub use errors::{CoreError, ErrorCode, ErrorGuidance, FrameError};
 pub use events::{EventCursor, EventKind, EventRecord, EventScope, GenerationWatermark};
 pub use ids::*;
 pub use protocol::{
-    ArtifactEnvelope, ArtifactKind, CancelEnvelope, ClientMetadata,
-    DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventEnvelope, FRAME_PREFIX_BYTES, FrameDecoder,
-    HelloEnvelope, HelloOkEnvelope, HostMetadata, MAX_ARTIFACT_CHUNK_BYTES,
-    MAX_CONTROL_FRAME_PAYLOAD_BYTES, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope,
-    ResumeEnvelope, ResumeResult, decode_frame, decode_utf8, encode_frame, negotiate_version,
+    ArtifactBeginEnvelope, ArtifactChunkEnvelope, ArtifactDigestAlgorithm, ArtifactEndEnvelope,
+    ArtifactEnvelope, ArtifactKind, ArtifactTransferBudget, ArtifactTransferProgress,
+    CancelEnvelope, ClientMetadata, DEFAULT_MAX_FRAME_PAYLOAD_BYTES, Envelope, EventEnvelope,
+    FRAME_PREFIX_BYTES, FrameDecoder, HelloEnvelope, HelloOkEnvelope, HostMetadata,
+    MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNK_BYTES, MAX_ARTIFACT_CHUNKS, MAX_CANCEL_REASON_BYTES,
+    MAX_CONTROL_FRAME_PAYLOAD_BYTES, MAX_CUMULATIVE_ARTIFACT_BYTES, MAX_IN_FLIGHT_ARTIFACT_BYTES,
+    MAX_WAIT_CONDITION_DEPTH, MAX_WAIT_CONDITION_FIELDS, MAX_WAIT_CONDITION_NODES,
+    MAX_WAIT_CONDITION_TEXT_BYTES, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope,
+    ResumeEnvelope, ResumeResult, WaitCondition, decode_frame, decode_utf8, encode_frame,
+    negotiate_version,
 };
 pub use records::{Lease, PageDescriptor, RetentionPolicy, SpaceDescriptor};
 pub use snapshots::{
