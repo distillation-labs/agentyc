@@ -15,7 +15,7 @@ CANONICAL_PHASES = {
     4: "phase-4-extension.md",
     5: "phase-5-context-and-automation.md",
     6: "phase-6-direct-cli-sdk.md",
-    7: "phase-7-direct-rollout.md",
+    7: "phase-7-hardening.md",
     8: "phase-8-mcp-compatibility.md",
 }
 STATUSES = {"pending", "active", "complete", "blocked"}
