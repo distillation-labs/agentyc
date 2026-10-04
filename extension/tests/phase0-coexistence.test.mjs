@@ -88,7 +88,10 @@ function fenceRequest(spaceId, epoch, suffix) {
     method: "fence.barrier",
     space_id: spaceId,
     lease_epoch: epoch,
-    params: { fence_epoch: epoch },
+    params: {
+      fence_epoch: epoch,
+      request_token: `reconcile_${suffix.toLowerCase()}_token`,
+    },
   };
 }
 
