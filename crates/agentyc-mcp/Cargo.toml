@@ -7,48 +7,19 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Host-backed MCP compatibility adapter for agentyc; optional legacy direct-CDP feature."
-keywords = ["mcp", "browser", "automation", "cdp", "agent"]
+description = "Host-backed MCP adapter for agentyc logical browser task spaces."
+keywords = ["mcp", "browser", "automation", "task-space", "agent"]
 categories = ["web-programming", "development-tools", "command-line-utilities"]
 
 [dependencies]
-agentyc-core    = { workspace = true }
-agentyc-host    = { workspace = true }
-agentyc-cdp     = { workspace = true, optional = true }
-agentyc-browser = { workspace = true, optional = true }
-agentyc-runtime = { workspace = true, optional = true }
-agentyc-tools   = { workspace = true, optional = true }
+agentyc-core = { workspace = true }
+agentyc-host = { workspace = true }
 tokio = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
 anyhow = { workspace = true }
-futures = { workspace = true }
-uuid = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
-regex = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
-md5 = { workspace = true, optional = true }
 schemars = { workspace = true }
-dirs = { workspace = true, optional = true }
-url = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-
-[features]
-default = []
-legacy-cdp = [
-    "dep:agentyc-cdp",
-    "dep:agentyc-browser",
-    "dep:agentyc-runtime",
-    "dep:agentyc-tools",
-    "dep:base64",
-    "dep:dirs",
-    "dep:image",
-    "dep:md5",
-    "dep:regex",
-    "dep:url",
-    "dep:uuid",
-]
