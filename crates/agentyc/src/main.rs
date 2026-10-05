@@ -54,33 +54,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run MCP server over stdio (default).
-    Mcp {
-        #[arg(long)]
-        cdp_url: Option<String>,
-        /// Explicitly use the legacy direct-CDP compatibility server.
-        #[arg(long, conflicts_with = "host")]
-        legacy_cdp: bool,
-        /// Expose the extended tool profile (observability: console/network logs,
-        /// mocks, conditions, replay, debug bundle, downloads, trace).
-        #[arg(long)]
-        extended: bool,
-        /// Run the isolated host-backed logical task-space service.
-        #[arg(long, conflicts_with = "legacy_cdp")]
-        host: bool,
-    },
-    /// Run MCP server over Streamable HTTP.
-    Serve {
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-        #[arg(long, default_value = "8765")]
-        port: u16,
-        #[arg(long)]
-        cdp_url: Option<String>,
-        /// Expose the extended tool profile (observability tools).
-        #[arg(long)]
-        extended: bool,
-    },
+    /// Run the host-backed MCP server over stdio.
+    Mcp,
     /// Write the agentyc skills guide to a file.
     Init {
         #[arg(long, default_value = "agentyc-skill.md")]
@@ -210,33 +185,7 @@ async fn run() -> Result<()> {
     };
 
     match cli.command {
-        None => run_host_mcp(&direct_options).await,
-        Some(Cmd::Mcp {
-            cdp_url,
-            legacy_cdp,
-            extended,
-            host,
-        }) => {
-            if host || (!legacy_cdp && cdp_url.is_none()) {
-                run_host_mcp(&direct_options).await
-            } else {
-                if extended {
-                    unsafe { std::env::set_var("AGENTYC_EXTENDED", "1") };
-                }
-                agentyc_mcp::run_stdio(cdp_url.as_deref()).await
-            }
-        }
-        Some(Cmd::Serve {
-            host,
-            port,
-            cdp_url,
-            extended,
-        }) => {
-            if extended {
-                unsafe { std::env::set_var("AGENTYC_EXTENDED", "1") };
-            }
-            run_serve(&host, port, cdp_url.as_deref()).await
-        }
+        None | Some(Cmd::Mcp) => run_host_mcp(&direct_options).await,
         Some(Cmd::Init {
             output,
             print,
@@ -394,30 +343,6 @@ async fn run_repl(cdp_url: Option<String>, headless: Option<bool>) -> Result<()>
     Ok(())
 }
 
-async fn run_serve(host: &str, port: u16, cdp_url: Option<&str>) -> Result<()> {
-    let cdp_url = cdp_url.ok_or_else(|| {
-        anyhow!(
-            "agentyc serve is legacy compatibility mode and requires an explicit --cdp-url; use `agentyc mcp` for the host-backed adapter"
-        )
-    })?;
-    use rmcp::transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-    };
-
-    let cdp_owned = Some(cdp_url.to_string());
-    let service: StreamableHttpService<agentyc_mcp::BrowserServer, LocalSessionManager> =
-        StreamableHttpService::new(
-            move || Ok(agentyc_mcp::BrowserServer::with_cdp_url(cdp_owned.clone())),
-            Default::default(),
-            StreamableHttpServerConfig::default(),
-        );
-    let addr = format!("{host}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    eprintln!("agentyc MCP server listening on http://{addr}/mcp");
-    let router = axum::Router::new().nest_service("/mcp", service);
-    axum::serve(listener, router).await?;
-    Ok(())
-}
 
 fn cmd_init(output: &str, print_only: bool, force: bool) -> Result<()> {
     if print_only {
