@@ -64,7 +64,7 @@ The canonical snapshot/action runtime is transport-neutral and works through the
 
 ### D-15 — MCP compatibility boundary
 
-MCP is a compatibility adapter over `agentyc-host` and `agentyc-core`, not the authority or primary product API. `agentyc mcp` and legacy `agentyc serve` remain available while clients migrate. Existing tool names and required wire behavior are preserved where safe, but global close is scoped to broker-owned pages, raw IDs remain adapter-only, and unsupported Chrome capabilities return typed errors. MCP failures cannot bypass host leases or extension ownership.
+MCP is a compatibility-only adapter over `agentyc-host` and `agentyc-core`, not the authority or primary product API. The shipped service is host-backed logical stdio only; the direct-CDP MCP server, `browser_*` MCP tools, 61/76 profiles, legacy MCP flags, and MCP HTTP `serve` route were removed. No backward-compatibility promise remains for those interfaces. The offline server lists 29 routes; the connected catalog declares 30, with 12 failing closed as `capability_unavailable`. Raw browser IDs are not authority, and MCP failures cannot bypass host leases or extension ownership. Headed live-Chrome and release gates remain open, so MCP is not distribution-ready.
 
 ### D-16 — Primary SDK and CLI
 
