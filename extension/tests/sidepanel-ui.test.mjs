@@ -205,7 +205,9 @@ function createDocument() {
   add(document, main, "input", "profile-disclosure-acknowledged");
   add(document, main, "div", "spaces");
   add(document, main, "span", "connection-status");
-  add(document, main, "ul", "notices");
+  const noticeSection = add(document, main, "section", "notice-section");
+  noticeSection.hidden = true;
+  add(document, noticeSection, "ul", "notices");
 
   const dialog = add(document, document.body, "div", "confirmation-dialog");
   dialog.hidden = true;
@@ -277,6 +279,42 @@ function actionButton(document, action) {
   );
 }
 
+test("side panel distinguishes host waiting, inventory loading, and an empty inventory", async () => {
+  const { document, receive } = await harness("empty-states");
+  const status = document.getElementById("connection-status");
+  const spaces = document.getElementById("spaces");
+
+  assert.equal(status.textContent, "Waiting for host");
+  assert.equal(status.dataset.state, "waiting");
+  assert.match(spaces.textContent, /Start the agentyc host/);
+
+  receive({ type: "agentyc.host_event", event: "native.connected" });
+  assert.equal(status.textContent, "Loading spaces");
+  assert.equal(status.dataset.state, "syncing");
+  assert.match(spaces.textContent, /Waiting for the task-space list/);
+
+  receive({
+    type: "agentyc.host_event",
+    event: "host.spaces",
+    payload: { spaces: [] },
+  });
+  assert.equal(status.textContent, "Connected");
+  assert.equal(status.dataset.state, "connected");
+  assert.match(spaces.textContent, /No task spaces yet/);
+  assert.equal(document.getElementById("notice-section").hidden, true);
+
+  receive({
+    type: "agentyc.event",
+    event: "panel.failed",
+    payload: { message: "Host request failed" },
+  });
+  assert.equal(document.getElementById("notice-section").hidden, false);
+  assert.match(
+    document.getElementById("notices").textContent,
+    /Host request failed/,
+  );
+});
+
 test("side panel renders sanitized space and page warnings without logical or browser IDs", async () => {
   const rawSpaceId = "space_private_42";
   const rawPageId = "page_private_99";
@@ -313,6 +351,7 @@ test("side panel renders sanitized space and page warnings without logical or br
   assert.doesNotMatch(rendered, new RegExp(rawPageId));
   assert.doesNotMatch(rendered, /target_private_1|tabId=77/);
   assert.equal(actionButton(document, "pause").dataset.spaceId, undefined);
+  assert.equal(document.getElementById("notice-section").hidden, true);
 });
 
 test("every non-create action opens a cancellable confirmation and traps keyboard focus", async () => {
