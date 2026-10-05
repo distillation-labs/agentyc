@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
-  "source": "local repository MCP tool surface",
+  "source": "archived direct-CDP MCP surface from the Phase 2 contract baseline",
+  "archive_status": "historical-only",
   "tools": [
     {
       "name": "browser_navigate",
