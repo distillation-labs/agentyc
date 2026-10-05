@@ -49,6 +49,11 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the direct-CDP MCP server, its `browser_*` tools and 61/76 profiles, the `--legacy-cdp` and `--cdp-url` MCP modes, and the Streamable HTTP `serve` command. MCP clients must use the host-backed stdio `agentyc mcp` service; no compatibility bridge remains for the removed surface.
+- Removed the standalone `agentyc browser`, `agentyc run --cdp-url`, and `agentyc repl --cdp-url` commands and their Rust CDP/browser/runtime crates. The host-backed logical CLI, Node SDK, and extension `chrome.debugger` bridge remain.
+
 ## [0.4.1] - 2026-06-13
 
 ### Changed
@@ -126,7 +131,6 @@ that runs a deterministic, CDP-native MCP server for browser automation.
 
 Releases prior to `0.4.0` predate the Rust implementation and are available in the
 project's git history.
-
 
 The first release of the Rust implementation: `agentyc` is a single native binary
 that runs a deterministic, CDP-native MCP server for browser automation.
