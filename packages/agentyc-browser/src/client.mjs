@@ -1,5 +1,10 @@
 import { TaskSpace } from "./space.mjs";
-import { actionStatus, reconcileAction, submitAction } from "./actions.mjs";
+import {
+  actionStatus,
+  assertSupportedAction,
+  reconcileAction,
+  submitAction,
+} from "./actions.mjs";
 import { readEvents } from "./events.mjs";
 import { waitFor } from "./waits.mjs";
 import {
@@ -25,6 +30,12 @@ import {
   transportOptions,
 } from "./constants.mjs";
 import { methodMayHaveSideEffects as registryMethodMayHaveSideEffects } from "./operations.mjs";
+
+function assertDirectRequestSafe(method, params) {
+  if (method === "action.execute") {
+    assertSupportedAction(params?.operation, params?.payload);
+  }
+}
 
 function responseItems(response) {
   if (Array.isArray(response)) return response;
@@ -221,8 +232,22 @@ export class BrowserClient {
     this.closed = false;
   }
 
-  taskSpace(spaceId) {
-    return new TaskSpace(this, assertLogicalId(spaceId, "space_", "spaceId"));
+  taskSpace(spaceIdOrLabel, options = undefined) {
+    if (typeof spaceIdOrLabel !== "string" || spaceIdOrLabel.length === 0) {
+      throw invalidArgument(
+        "taskSpace requires a logical space ID or non-empty label",
+      );
+    }
+    if (options !== undefined) {
+      return this.createSpace(spaceIdOrLabel, options);
+    }
+    if (spaceIdOrLabel.startsWith("space_")) {
+      return new TaskSpace(
+        this,
+        assertLogicalId(spaceIdOrLabel, "space_", "spaceId"),
+      );
+    }
+    return this.createSpace(spaceIdOrLabel, {});
   }
 
   async createSpace(label, options = {}) {
@@ -366,6 +391,7 @@ export class BrowserClient {
   }
 
   async request(method, params = {}, options = {}) {
+    assertDirectRequestSafe(method, params);
     const [result] = await this._send(
       [
         {
@@ -392,6 +418,9 @@ export class BrowserClient {
       ),
       signal: entry.signal ?? options.signal,
     }));
+    for (const entry of entries) {
+      assertDirectRequestSafe(entry.request.method, entry.request.params);
+    }
     return this._send(entries, options.signal);
   }
 
@@ -418,9 +447,10 @@ export class BrowserClient {
         guidance: "retry",
       });
     }
-    await this.transport.reconnect();
+    const resume = await this.transport.reconnect();
     this.closed = false;
     this.connected = true;
+    return resume;
   }
 
   async close() {
@@ -505,6 +535,13 @@ export class BrowserClient {
         if (failures.length > 0) {
           if (entries.length === 1) throw failures[0].error;
           throw new BatchError({ failures, results });
+        }
+        if (typeof this.transport.rememberCursor === "function") {
+          for (const result of results) {
+            if (result && typeof result === "object") {
+              this.transport.rememberCursor(result.cursor);
+            }
+          }
         }
         return results;
       } catch (error) {
