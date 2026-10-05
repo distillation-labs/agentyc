@@ -1,8 +1,8 @@
 name: Feature Request
 description: Suggest an improvement for the agentyc MCP browser runtime
 title: "Feature request: ..."
-type: 'Enhancement'
-labels: ['enhancement']
+type: "Enhancement"
+labels: ["enhancement"]
 body:
   - type: textarea
     id: current_problem
@@ -34,7 +34,7 @@ body:
       description: |
         List any current workaround, custom script, prompt strategy, or manual step you are using.
       placeholder: |
-        Example: I currently poll browser_list_tabs after every click and diff the results.
+        Example: I currently poll host_page_list after every action and compare logical page records.
     validations:
       required: false
 
@@ -59,7 +59,7 @@ body:
       label: Which tool or API surface is involved?
       description: |
         List the MCP tool names or CLI flags affected, if known.
-      placeholder: "Example: browser_click, browser_list_tabs"
+      placeholder: "Example: host_action_execute, host_page_list"
     validations:
       required: false
 
