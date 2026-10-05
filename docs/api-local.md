@@ -31,6 +31,16 @@ const transport = createLocalTransport({
             },
           };
         }
+        if (entry.method === "space.claim") {
+          return {
+            request_id: entry.request_id,
+            ok: true,
+            result: {
+              space_id: "space_research",
+              lease: { lease_epoch: 1 },
+            },
+          };
+        }
         if (entry.method === "page.create") {
           return {
             request_id: entry.request_id,
@@ -44,6 +54,20 @@ const transport = createLocalTransport({
             },
           };
         }
+        if (entry.method === "snapshot.read") {
+          return {
+            request_id: entry.request_id,
+            ok: true,
+            result: { refs: { submit: "ref_button" }, snapshot_hash: "demo" },
+          };
+        }
+        if (entry.method === "action.execute") {
+          return {
+            request_id: entry.request_id,
+            ok: true,
+            result: { action_id: "action_demo", status: "succeeded" },
+          };
+        }
         return { request_id: entry.request_id, ok: true, result: {} };
       }),
     };
@@ -55,8 +79,11 @@ const client = await connect({ transport });
 const space = await client.createSpace("research", {
   acceptSharedProfileDisclosure: true,
 });
-const page = space.page("main"); // lazy logical handle
-await page.create(); // sends logical page.create
+await space.claim();
+const page = await space.newPage("main"); // requires the claimed lease
+const snapshot = await page.snapshot();
+const receipt = await page.action("click", { ref: snapshot.refs.submit });
+await client.close();
 ```
 
 The public handles are `TaskSpace` and `Page`. Their public identities are logical values only. There are no browser target, tab, session, debugger, or process IDs in the SDK API.
@@ -77,9 +104,11 @@ await space.returnControl();
 
 Task spaces share the user's existing browser profile state. Calling `client.createSpace(label, options)` requires `{ acceptSharedProfileDisclosure: true }`. Omission throws an `AgentycError` with code `permission_denied`.
 
-`TaskSpace.page(label)` creates a lazy handle that resolves an existing page by label on first use; labels must identify exactly one page within the space. Use `TaskSpace.page(pageId)` to address a known logical ID. `TaskSpace.newPage(label)` sends a logical page-create request immediately. Page creation, snapshots, close, and actions require a claimed lease; the SDK rejects missing lease epochs before dispatch. Lease epochs are retained after claim/renew/takeover and cleared after return, finish, or release.
+`TaskSpace.page(label)` creates a lazy handle that resolves an existing page by label on first use; labels must identify exactly one page within the space. Use `TaskSpace.page(pageId)` to address a known logical ID. `TaskSpace.newPage(label)` sends a logical page-create request immediately. Page creation, snapshots, close, and actions require a claimed lease; the SDK rejects missing lease epochs before dispatch. Lease epochs are retained after claim/renew/takeover and cleared after return, finish, release, pause, or handoff.
 
-The SDK exposes host-backed `finish(options?)` and `release(options?)` transitions. Both accept `{ leaseEpoch, now }` and send those authorization values to the host; the SDK never simulates lifecycle transitions locally.
+`client.taskSpace(spaceId)` returns a synchronous handle for an existing logical ID. `client.taskSpace(label, { acceptSharedProfileDisclosure: true })` is the async create-by-label form and returns a `TaskSpace`; it does not claim a lease automatically. A call without the disclosure option is rejected rather than creating a space implicitly.
+
+The SDK exposes host-backed `finish(options?)`, `release(options?)`, `pause({ ttl?, now? })`, and `handoff({ ttl?, now? })` transitions. Pause and handoff use the host fencing methods and clear the cached lease epoch only after success; the SDK never simulates lifecycle changes locally. Side-panel controls remain a separate host path and require their own host-issued tickets.
 
 ## Snapshots, actions, waits, and events
 
@@ -92,9 +121,9 @@ await space.waitFor({ kind: "page_changed" }, { timeoutMs: 10_000 });
 
 ### Supported helpers and capability limits
 
-Actions may be dispatched through `page.action(operation, payload?, options?)`. The canonical action names are `navigate`, `click`, `input`, `evaluate`, `scroll`, `wait`, `screenshot`, `storage_write`, `cookie_write`, `upload`, and `close`; availability is still determined by the connected host and extension.
+Actions may be dispatched through `page.action(operation, payload?, options?)`. The canonical action names are `navigate`, `click`, `input`, `evaluate`, `scroll`, `wait`, `screenshot`, `storage_write`, `cookie_write`, `upload`, and `close`. The direct SDK currently rejects `evaluate`, `storage_write`, `cookie_write`, `upload`, and payloads marked with a sensitive boundary before dispatch because it has no host-issued user-intent-ticket flow; the host remains the authorization boundary. The same guard applies to raw `client.request()` and `client.batch()` calls so they cannot bypass these direct-interface limits.
 
-The SDK implements `page.goto()`, `page.click()`, `page.type()`, `page.fill()`, `page.scroll()`, `page.evaluate()`, and `page.waitForURL()` as wrappers over those canonical operations. `page.press()`, `page.select()`, and `page.upload()` currently fail locally with `CapabilityUnavailableError`; the current extension action policy does not provide those semantics. `type` and `fill` both map to the host's `input` operation. The SDK does not claim those operations have passed live Chrome validation.
+The SDK implements `page.goto()`, `page.click()`, `page.type()`, `page.fill()`, `page.scroll()`, and `page.waitForURL()` over supported operations. `page.evaluate()` and direct calls to the four sensitive operations fail locally with `permission_denied` until the host provides an intent-ticket flow. `page.press()` and `page.select()` fail locally with `CapabilityUnavailableError` because the current action contract does not provide those semantics. `type` and `fill` both map to the host's `input` operation. Fake-host tests do not constitute live Chrome validation.
 
 Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` registers a local listener and performs one retained-event resume; the current local socket does not push a continuous event stream. For ongoing observation, use repeated `client.events(...)` reads or a bounded `waitFor(...)`. Callers must resync when the host reports a lagged or invalid cursor.
 
