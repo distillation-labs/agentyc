@@ -23,8 +23,9 @@ Prove the target product boundary before activating later phases and launching t
 
 - The historical/explicit legacy CLI path launches a temporary profile when no `--cdp-url` is supplied: `crates/agentyc/src/main.rs::run_action`, `crates/agentyc-runtime/src/lib.rs::BrowserRuntime::open`, `crates/agentyc-browser/src/launcher.rs`.
 - The legacy browser session assumes one `active_page`: `crates/agentyc-browser/src/session.rs`.
-- The historical/explicit legacy MCP path owns browser/server state and lazily opens a browser: `crates/agentyc-mcp/src/tools/mod.rs`, `tools/navigation.rs`, `lib.rs`.
+- At the time of the Phase 0 baseline, the direct-CDP MCP path owned browser/server state and could open a browser. That implementation, its `browser_*` tools, profile counts, and HTTP route have since been removed; the archived baseline is not the current MCP contract.
 - Normal direct CLI and host-backed MCP clients use the owner-only local socket; only the explicit offline seam constructs a fake broker. The Chrome-launched `agentyc-native-host` owns the durable broker and a separate Native Messaging stdio bridge. See [the host-backed probe audit](../../../../../research/phase-0-host-backed-probe.md).
+- The historical P0 catalog recorded the former direct-CDP MCP's 61/76 profiles. Those counts are not current MCP tool counts. The current host-backed logical stdio inventory is documented in `docs/mcp-compatibility.md`; headed live Chrome through MCP has not run and MCP is not distribution-ready.
 - Chrome 136+ ignores remote-debugging port/pipe switches against the default data directory unless a non-standard `--user-data-dir` is supplied (S-018). The product's existing-profile lane independently forbids copied CDP endpoints, profile copies, launch, and download; this is not a claim that Chrome forbids every opt-in debugging mechanism.
 - `chrome.debugger` requires a sensitive permission, has an allowlisted CDP domain set, and supports flat related sessions from Chrome 125 (S-019).
 - Native Messaging has exact-origin registration and bounded messages; it is not itself automation (S-020).
@@ -65,8 +66,8 @@ The source audit then hardened same-session recovery, lifecycle invalidation, pe
 - Real Chrome debugger attach/event/frame/OOPIF capability tests.
 - Two-space/two-agent/user-tab coexistence vertical slice for the direct product.
 - Baselines for current direct CLI, proposed persistent host/SDK, snapshot scans/tokens, action latency, Chrome CPU/RSS, and extension/host recovery.
-- A production-grade test manifest, deterministic clock/scheduler/fake-Chrome harness, replayable fault traces, realistic MCP workflow corpus, and headed-Chrome matrix.
-- Capability matrix for all current default/extended MCP operations mapped to extension-supported, partial, legacy-only, or unsupported.
+- A production-grade test manifest, deterministic clock/scheduler/fake-Chrome harness, replayable fault traces, historical MCP workflow fixtures, and headed-Chrome matrix.
+- Historical capability matrix for the removed default/extended direct-CDP MCP catalog; it is not a current MCP support inventory.
 - Distribution/installer feasibility for macOS first, with Linux/Windows evidence or explicit later owner.
 
 ### Out of scope
@@ -115,9 +116,9 @@ The test manifest names preflight and drill targets separately. No combined live
   - **Owner:** Japneet Kalkat.
 
 - [x] P0-T1 — Record the current baseline and exact legacy surfaces.
-  - **Files/surfaces:** `Cargo.toml`, current `README.md`, `crates/agentyc/src/{main.rs,frontend.rs}`, `crates/agentyc-runtime/src/lib.rs`, `crates/agentyc-browser/src/{session.rs,launcher.rs,profile.rs}`, `crates/agentyc-mcp/src/{lib.rs,state.rs,tools/}`; output `research/phase-0-baseline.md`.
+  - **Files/surfaces:** Phase 0 recorded `Cargo.toml`, `README.md`, `crates/agentyc/src/{main.rs,frontend.rs}`, `crates/agentyc-runtime/src/lib.rs`, `crates/agentyc-browser/src/{session.rs,launcher.rs,profile.rs}`, and the then-existing direct-CDP MCP sources; the latter were removed after Phase 0. Output: `research/phase-0-baseline.md`.
   - **Done when:** commit, versions, current test results, default/extended tool counts, process-per-command latency, browser launch behavior, global close behavior, raw-ID outputs, and known false-green paths are recorded.
-  - **Validation:** `cargo build -p agentyc --locked`; `cargo metadata --no-deps --format-version 1 --locked`; `cargo test -p agentyc-tests --test mcp_protocol --locked`; `cargo test -p agentyc-tests --test benchmark --locked -- --test-threads=1`; archive logs under `artifacts/p0-current/`.
+  - **Validation:** The recorded Phase 0 commands and archived logs under `artifacts/p0-current/` describe the repository state at that time. They are not current MCP route or release evidence.
   - **Owner:** Japneet Kalkat.
 
 - [x] P0-T2 — Build a test-only extension/native-host vertical slice.
