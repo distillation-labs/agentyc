@@ -1,9 +1,7 @@
 //! Host-backed MCP compatibility adapter.
 //!
-//! This module is deliberately separate from [`crate::BrowserServer`]. The
-//! legacy server keeps its existing CDP/runtime tools and transport behavior;
-//! this adapter exposes the host broker's logical contracts as stable MCP tool
-//! results without adding those operations to the legacy default router.
+//! This adapter exposes the host broker's logical contracts as stable MCP tool
+//! results. Browser ownership, lifecycle, and authorization remain in the host.
 //!
 //! Every operation below uses the host-issued authority returned by
 //! [`Broker::hello`]. Callers provide only validated logical identities such as
