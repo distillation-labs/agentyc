@@ -1,152 +1,97 @@
 ---
 phase: 8
-name: MCP compatibility adapter and legacy migration
+name: Host-backed MCP compatibility and release validation
 status: pending
 owner: Japneet Kalkat
-primary_outcome: Existing MCP clients continue to work through a scoped adapter over the host broker without becoming a second state authority or bypassing extension/profile/user-control policy; MCP remains independently releasable after the direct product.
+primary_outcome: Validate the host-backed logical MCP stdio adapter without presenting declared routes as live support; MCP remains unavailable for distribution until all Phase 8 release gates pass.
 depends_on: phase-7
 ---
 
-# Phase 8 — MCP compatibility adapter and legacy migration
+# Phase 8 — Host-backed MCP compatibility and release validation
 
 ## Objective
 
-Preserve useful existing MCP clients while making the direct local host/CLI/SDK the canonical product. Map MCP sessions/connections to host principals/spaces, keep safe legacy responses, scope unsafe operations, and define a deprecation path without mixing MCP protocol eras into core state.
+Validate the current host-backed logical MCP adapter as a separate compatibility surface. Preserve the direct CLI/SDK as the primary interface. Do not restore the removed direct-CDP `BrowserServer`, `browser_*` MCP tools, legacy CDP MCP mode, or MCP HTTP `serve` route as part of this phase.
 
-## Handoff in
+## Current verified facts
 
-- **Inputs:** direct launch validation evidence; host/core contracts; direct CLI/SDK; extension capability matrix; existing `rmcp 1.7` tests and docs.
-- **Target boundary for this phase:** after P8-T1, the MCP adapter calls host operations through a client and cannot access `BrowserRuntime`, `CdpClient`, active-page state, or extension internals directly. The current direct ownership is a known pre-phase condition and is removed by the scoped migration tasks below.
-- **Do not reopen:** MCP is compatibility-only; local protocol/core are canonical; no automatic launch/download; no global close; raw IDs adapter-only.
+- `agentyc mcp` (and `agentyc` with no subcommand) runs the host-backed logical MCP service over stdio only.
+- The deterministic in-process offline server exposes 29 logical routes.
+- The connected remote catalog declares 30 routes. Twelve fail closed with typed `capability_unavailable` before forwarding: `host_space_describe`, `host_lease_takeover_with_control_ticket`, `host_lease_control_ticket`, `host_lease_acknowledge_return_control`, `host_lease_acknowledge_fence`, `host_page_bind`, `host_page_mark_lost`, `host_snapshot_put`, `host_snapshot_mark_dirty`, `host_action_enqueue`, `host_action_dispatch`, and `host_event_publish`.
+- A route declaration is not proof of connected support. Headed live Chrome has not yet been run through MCP, including the local host socket, Native Messaging bridge, extension, and Chrome.
+- MCP is **not distribution-ready**. Offline contracts do not close the live or release gates.
+- The standalone `browser`, `run`, and `repl` commands remain separate direct-CDP CLI utilities. They are not MCP transports or tools and are not removed by this plan.
 
-## Confirmed facts
-
-- `crates/agentyc-mcp/src/lib.rs` and `tools/` currently own tool routes/state.
-- `crates/agentyc/src/main.rs::run_serve` creates a server per legacy HTTP session.
-- `rmcp = 1.7` implements the existing legacy Streamable HTTP behavior; existing `2024-11-05` initialize fixtures must remain green during migration. Current repository evidence is 61 default tools, 76 total declarations, and 15 extended observability tools; comments and always-61 server metadata are inconsistent and must be corrected/frozen by this phase.
-- Existing docs/skills recommend MCP and tab IDs and must be corrected by the direct-interface phase.
-
-## Working assumptions
-
-- `agentyc mcp` uses a local host client; if no host/extension exists it returns `extension_not_connected` rather than launching Chrome.
-- `agentyc serve` shares one authenticated host client/broker outside the MCP session factory; each MCP transport connection gets a host-assigned principal and connection context. stdio gets a process-connection principal; HTTP obtains its context only after exact loopback/Origin/Host/auth admission. `Mcp-Session-Id` is not authentication.
-- Legacy tool schemas remain stable where required; new space/page features are additive or exposed through the compatibility adapter profile.
-- A compatibility selected/default space is a convenience, not a process-global browser selection or authorization.
-
-## Unresolved questions
-
-- **U8-MCP-1:** exact legacy tool subset to deprecate first; owner: Japneet Kalkat; decide from client usage/evals.
-- **U8-MCP-2:** end-of-life date for raw `tab_id`/`target_id`; owner: Japneet Kalkat; require a release note and adapter version before removal.
+Source of truth: `docs/mcp-compatibility.md` and the host MCP implementation under `crates/agentyc-mcp/src/`.
 
 ## Scope
 
 ### In scope
 
-- MCP server/client adapter over host broker.
-- stdio and legacy Streamable HTTP connection/principal mapping.
-- Existing tool result/error/state compatibility.
-- Scoped legacy tab/session mapping.
-- MCP cancellation/disconnect/unknown mapping.
-- Production-grade protocol, schema, concurrency, fault, replay, and host-backed real-browser test corpus.
-- Default/extended tool profile and deprecation docs/tests.
+- Verify the offline and connected MCP route catalogs, argument/result schemas, and fail-closed handling for unavailable remote routes.
+- Decide and document the support disposition for each unavailable remote route; do not infer support from catalog declaration.
+- Validate stdio lifecycle, cancellation, structured tool errors, and unknown-outcome behavior against the host-backed implementation.
+- Run headed Chrome workflows over the real host socket, Native Messaging bridge, extension, and existing Chrome profile.
+- Define and pass the independent MCP release gate using reproducible, redacted artifacts.
+- Keep public docs, skills, plugins, and evidence manifests aligned with the shipped MCP surface.
 
 ### Out of scope
 
-- Modern MCP wire upgrade.
-- New primary task-space UX.
-- Direct CDP/temporary browser behavior.
-- Remote multi-tenant MCP service.
-
-## Adapter rules
-
-- MCP session ID is a transport connection ID only; never a space ID, lease, auth token, or browser target.
-- Each connection gets an implicit compatibility space only when a legacy call requires it; new direct clients must create/select explicitly.
-- `browser_list_tabs` maps to structured pages in the selected compatibility space; raw `tab_id`/`target_id` fields are included only in an explicitly marked legacy response and are never accepted as authority.
-- `browser_close_tab`, `browser_close_session`, and `browser_close_all` all resolve through the host: close-tab requires the selected compatibility page to be broker-owned, freshly generation-proven, and covered by a single-use user-intent ticket; close-session closes only that connection's selected owned pages with the same ticket/proof; close-all means selected-space owned-page cleanup with the same ticket/proof. None may call old `BrowserSession::close_all` or close user/unmanaged tabs.
-- An abrupt HTTP TCP reset/response-stream loss is not equivalent to graceful DELETE: queued work is cancelled, an already-dispatched mutation is `unknown`, waits are cancelled, the connection is marked disconnected, principal/space leases remain until their normal expiry or explicit release, and pages are retained. Graceful DELETE performs the same action classification but may release only connection-scoped selection, never page ownership implicitly.
-- `browser_evaluate`, storage/cookie, upload, download, and permissions use host policy/capability/lease checks and may return typed unsupported/confirmation errors.
-- MCP tool execution failures return a successful JSON-RPC result with `CallToolResult.isError=true` and canonical error code/action/reconcile metadata. Malformed requests, unknown tools, invalid protocol/session state, and transport failures remain JSON-RPC errors. The mapping is explicit for `timeout`, `cancelled`, `unknown_outcome`, `user_control_required`, `capability_unavailable`, `permission_denied`, and `host_draining`.
-- Adapter event subscriptions filter host sequences by connection/space/page; event lag returns resync guidance.
-- A legacy request cannot use raw target IDs to bypass logical resolution or ownership.
+- MCP HTTP or Streamable HTTP transport.
+- Direct-CDP or temporary-browser MCP modes.
+- The deleted `BrowserServer` and `browser_*` MCP tool catalog.
+- Changing the standalone direct-CDP `browser`, `run`, or `repl` CLI utilities.
+- Treating deterministic offline tests as live Chrome, distribution, or release evidence.
 
 ## Tasks
 
-- [ ] P8-T1 — Make `BrowserServer` a host-client adapter.
-  - **Files:** `crates/agentyc-mcp/{Cargo.toml,src/lib.rs,state.rs,connection.rs,adapter.rs,compat.rs,tools/mod.rs,tools/*.rs}`; `scripts/check_mcp_deps.py`; update workspace dependencies; add the host-client dependency selected by the final workspace graph.
-  - **Done when:** `crates/agentyc-mcp/Cargo.toml` no longer depends directly on `agentyc-cdp`, `agentyc-browser`, or `agentyc-runtime` for production behavior; server state contains host client, connection context, compatibility selection, and bounded adapter caches only; tool modules call canonical operations; no MCP module owns browser/CDP/page state, snapshot construction, active-page authority, or global cleanup.
-  - **Validation:** `python3 scripts/check_mcp_deps.py`; `rg -n "CdpClient|BrowserRuntime|active_page|close_all|Target\\.|Runtime\\.evaluate" crates/agentyc-mcp/src crates/agentyc-mcp/Cargo.toml` returns only documented adapter-test/compatibility references; `cargo metadata --format-version 1 --locked` verifies the MCP package's direct dependency list; adapter unit tests and a host-backed smoke test pass.
+- [ ] P8-T1 — Freeze the current logical stdio contract.
+  - **Files:** `crates/agentyc-mcp/src/{host_adapter.rs,host_server.rs,remote_host_server.rs}`, `tests/mcp_protocol.rs`, MCP contract fixtures, `docs/mcp-compatibility.md`.
+  - **Done when:** tests establish the 29-route offline surface and 30-route connected catalog; each of the 12 unavailable remote routes returns the typed error before forwarding; no removed legacy MCP route is advertised; schema and result/error behavior are versioned.
+  - **Validation:** focused offline stdio tests and exact route/schema comparison pass; every assertion distinguishes offline route availability from connected capability.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P8-T2 — Integrate stdio and legacy HTTP with one host broker.
-  - **Files:** `crates/agentyc/src/main.rs::{run_serve,Cmd::Mcp,Cmd::Serve}`, `crates/agentyc-mcp/src/{lib.rs,connection.rs}`; HTTP admission middleware; `tests/mcp_http_lifecycle.rs`.
-  - **Done when:** stdio connects to host; HTTP service factory shares one host client/broker; MCP sessions have separate host-assigned principals/selected context; no session creates a new browser owner; loopback/Origin/Host/token policy rejects unauthenticated requests before session creation and non-loopback is disabled by default.
-  - **Validation:** `cargo test -p agentyc-tests --test mcp_http_lifecycle --locked`; two HTTP sessions and one stdio client operate separate spaces concurrently; host/extension events remain scoped; HTTP tests cover missing/wrong Origin, Host, bearer token, session-header spoofing, DELETE/EOF teardown, and loopback-only binding.
+- [ ] P8-T2 — Close support decisions for unavailable remote routes.
+  - **Files:** route support decision record, adapter implementation/tests, `docs/mcp-compatibility.md`.
+  - **Done when:** each unavailable route is either implemented and independently tested through the host protocol or explicitly remains unsupported with its typed fallback and user-facing limitation; no route is called supported merely because it is declared.
+  - **Validation:** route-by-route disposition review and tests prove unsupported calls fail closed without forwarding or side effects.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P8-T3 — Migrate navigation/state/interaction/inspection/frame/storage/tab tools.
-  - **Files:** `crates/agentyc-mcp/src/tools/{navigation.rs,state_tools.rs,interaction.rs,inspection.rs,frames_storage.rs,tabs_session.rs,observability.rs}`.
-  - **Done when:** every call resolves logical space/page and host policy before operation; legacy tab/session fields map only through compatibility; unsupported extension capability is typed; no active-page fallback can cross connections.
-  - **Validation:** `cargo test -p agentyc-mcp --locked`; `cargo test -p agentyc-tests --test mcp_event_scope --locked`; existing tool tests plus cross-space, stale ref, user takeover, extension disconnect, and unsupported capability tests.
+- [ ] P8-T3 — Run live headed-Chrome MCP workflows.
+  - **Files:** host/extension integration tests and redacted Phase 8 live artifacts.
+  - **Done when:** the stdio process is exercised through the owner-only host socket, Native Messaging bridge, enrolled extension, and headed Chrome; every supported workflow has observed browser-side outcomes, while unsupported routes return their documented typed errors. Cover logical space/page scoping, navigation and actions, snapshots/refs, cancellation and disconnect, takeover/fencing, reconnect/reconciliation, and unrelated user-tab safety.
+  - **Validation:** repeatable live run with environment/build tuple, route results, semantic assertions, cleanup evidence, and redacted artifacts. A failed or unavailable preflight is a blocker, not a pass.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P8-T4 — Preserve required legacy protocol behavior with wire-level conformance.
-  - **Files:** `tests/mcp_protocol.rs`, new `tests/mcp_http_lifecycle.rs`, `tests/mcp_event_scope.rs`, `tests/mcp_wire_corpus.rs`, `crates/agentyc-tests/Cargo.toml` test manifest, `tests/fixtures/mcp/{stdio,http}/`.
-  - **Done when:** the accepted-version matrix is empirically frozen: `2024-11-05` is accepted and the existing initialize/session fixture remains supported; `2025-11-25` is rejected/not claimed by this `rmcp 1.7` product unless a future deliberate SDK upgrade changes the decision; `2026-07-28` is unsupported. Stdio lifecycle covers `initialize`, `initialized`, shutdown, notifications, malformed JSON/JSON-RPC, invalid params, unknown methods/tools, duplicate IDs, out-of-order responses, EOF, deadlines, and cancellation. HTTP covers exact `Content-Type`/`Accept`/version headers, loopback/Origin/Host admission, session creation, missing/unknown/expired/spoofed `Mcp-Session-Id`, `Last-Event-ID`, SSE event IDs/data framing, GET/POST/DELETE, reset, reconnect, and status behavior.
-  - **Validation:** `cargo build -p agentyc --locked`; `cargo test -p agentyc-tests --test mcp_protocol --locked`; `cargo test -p agentyc-tests --test mcp_http_lifecycle --locked`; `cargo test -p agentyc-tests --test mcp_event_scope --locked`; `cargo test -p agentyc-tests --test mcp_wire_corpus --locked`; accepted-version/feature report includes `rmcp 1.7.0`, `Cargo.toml`, `Cargo.lock`, accepted `2024-11-05`, rejected/not-claimed `2025-11-25`, and rejected `2026-07-28`; archive sanitized wire transcripts and status/header matrix under `artifacts/p8-mcp-protocol/`.
+- [ ] P8-T4 — Pass the independent MCP release gate.
+  - **Files:** MCP section of `docs/release-gate.md`, Phase 8 report/artifacts, relevant CI policy and manifests.
+  - **Done when:** protocol and schema tests, security/error mapping, concurrency and disconnect behavior, supported-route live Chrome evidence, unsupported-route dispositions, release support decision, and redacted artifacts all pass; the report explicitly distinguishes measured, unavailable, and unsupported capabilities.
+  - **Validation:** the release checker rejects missing live evidence, offline-only evidence, skipped required tests, undeclared routes, unsupported-route claims, and incomplete artifacts. No gate is marked passed until its actual evidence is present.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P8-T5 — Map unknown/cancel/reconcile and user-control errors.
-  - **Files:** adapter error mapping, MCP action status/reconcile tools if retained, connection teardown hooks, `tests/mcp_http_disconnect.rs`, `tests/mcp_error_matrix.rs`.
-  - **Done when:** lost response after dispatch returns canonical `unknown_outcome` with action/reconcile guidance; user takeover is not auto-retried; a cancelled queued action is `cancelled`, a dispatched mutation with lost response is `unknown`, a wait is independently cancellable, abrupt HTTP reset is classified as specified above, stdio EOF and HTTP DELETE use their distinct teardown semantics, and leases are not released merely because an arbitrary payload/session ID disappears. Every canonical error maps to stable `{code,message,retryable,action_id,reconcile_token,next_action}` fields without string-substring classification; tool failures retain `isError=true`, while protocol/transport failures remain JSON-RPC errors.
-  - **Validation:** `cargo test -p agentyc-tests --test mcp_http_disconnect --locked`; `cargo test -p agentyc-tests --test mcp_error_matrix --locked`; disconnect-after-send navigation/click/form/close; takeover during dispatch; queued cancellation; wait cancellation; stdio EOF; HTTP DELETE; reconnect status query and lease-retention tests; every error fixture asserts layer, status, canonical code, retryability, and redaction.
-  - **Owner:** Japneet Kalkat.
-
-- [ ] P8-T6 — Publish deprecation and migration matrix.
-  - **Files:** `docs/api.md`, `docs/migration-mcp-to-cli.md`, README/skills/plugin, changelog, `scripts/check_mcp_docs.py`.
-  - **Done when:** direct CLI/SDK is primary; MCP is compatibility; raw tab fields and global/tab-centric tools have deprecation/replacement; no docs teach `[id] name`.
-  - **Validation:** `python3 scripts/check_mcp_docs.py --negative-output-audit`; documentation examples and legacy client smoke test pass; no primary docs recommend MCP, tab IDs, global close, or browser launch.
-  - **Owner:** Japneet Kalkat.
-
-- [ ] P8-T7 — Lock adapter security, schemas, and compatibility gates.
-  - **Files:** MCP integration tests, host authorization, release docs, server metadata/profile code, `scripts/check_mcp_compat.py`, versioned tool manifests under `tests/fixtures/mcp/schemas/`.
-  - **Done when:** MCP cannot bypass host leases, raw IDs, user-control state, capability denial, or cleanup ownership; compatibility profile is independently versioned; default profile is exactly the measured 61-tool set, extended profile is exactly the measured 76-tool set, profile selection/advertisement is explicit, `ServerInfo` no longer claims 61 when extended is active, and every tool manifest records schema, output, side effects, authority, deprecation, and error mapping.
-  - **Validation:** `python3 scripts/check_mcp_compat.py --report artifacts/p8-mcp-compatibility`; adversarial adapter suite; deterministic default/extended tool-name/count/schema/order report; `isError` versus JSON-RPC error matrix; cancellation/disconnect report; legacy initialize/session fixtures; no-direct-CDP grep; raw-ID bypass and cross-space mutation attempts.
-  - **Owner:** Japneet Kalkat.
-
-- [ ] P8-T8 — Validate MCP through the real host, extension, and headed Chrome.
-  - **Files:** `tests/mcp_existing_chrome.rs`, `tests/fixtures/mcp/workflows/`, `scripts/run_mcp_existing_chrome.py`, extension/native-host test lane.
-  - **Done when:** stdio and legacy HTTP execute against the real host, Native Messaging bridge, extension, and headed Chrome without a CDP URL, browser launch, or downloaded browser; every supported tool is proven or explicitly marked partial/unsupported with its typed fallback. Workflows cover navigation/redirects, snapshots/deltas/refs, click/type/fill/select/scroll, waits, frames/OOPIFs, dialogs, storage/cookies, downloads/uploads, screenshots/PDF, stale refs, takeover, worker/host/browser restart, disconnect/reconnect, and unrelated user-tab coexistence across concurrent spaces.
-  - **Validation:** `python3 scripts/run_mcp_existing_chrome.py --headed --transports stdio,http --spaces 2 --agents 2 --artifact-dir artifacts/p8-mcp-existing-chrome`; every scenario asserts semantic result, scope, receipt, postcondition, event cursor, cleanup, and redaction; upload sanitized transcripts, screenshots only through protected artifact paths, environment/build manifest, and replay seed.
-  - **Owner:** Japneet Kalkat.
-
-- [ ] P8-T9 — Integrate MCP quality gates into CI and define the independent MCP release lane.
-  - **Files:** planned `.github/test-policy.yaml` and existing `.github/workflows/test.yaml`/`.github/workflows/workflow.yml` only after Phase 7 creates them (add only MCP lane sections), `tests/test-manifest.yaml` (existing manifest from Phase 0; add MCP entries only), MCP section of `docs/release-gate.md`, and planned `scripts/run_mcp_benchmark.py`, `scripts/run_mcp_load_test.py`, `scripts/run_mcp_soak_test.py`, `scripts/run_mcp_chaos_test.py`, `scripts/run_mcp_release_drill.py`.
-  - **Done when:** required PR lanes cover pure/component/process/MCP contract/lifecycle/concurrency/fault/redaction suites; nightly covers MCP headed-Chrome workflows, context/token benchmarks, load/saturation, soak/leak, chaos/fault matrix, fuzz corpus, and install/update; an explicit `mcp-compatibility-gate` job emits a versioned report/artifact and is required by MCP compatibility publication, while `publish-binaries` remains dependent on the independent Phase 7 direct-product gate. The MCP gate covers supported OS/Chrome matrix and every supported tool's real-browser evidence. Pinned Rust/rmcp/Node/npm/Chrome versions, isolated state/ports, bounded timeouts, descendant cleanup, sample accounting, and sanitized failure artifacts are enforced. No required MCP test is ignored or silently skipped; the frozen legacy MCP baseline runs through Phases 0–7.
-  - **Validation:** `python3 scripts/check_test_manifest.py tests/test-manifest.yaml`; `python3 scripts/run_mcp_benchmark.py --min-samples-p95 200 --min-samples-p99 1000 --artifact-dir artifacts/p8-mcp-performance/`; `python3 scripts/run_mcp_load_test.py --artifact-dir artifacts/p8-mcp-load/`; `python3 scripts/run_mcp_soak_test.py --artifact-dir artifacts/p8-mcp-soak/`; `python3 scripts/run_mcp_chaos_test.py --manifest tests/test-manifest.yaml --artifact-dir artifacts/p8-mcp-chaos/`; `python3 scripts/run_mcp_release_drill.py --artifact-dir artifacts/p8-mcp-release/`; CI dry-run proves every required entry executed and every attempted sample/fault is accounted for; failures upload logs, wire transcripts, redacted traces, environment manifests, seeds, replay commands, and the separate direct/MCP gate reports.
+- [ ] P8-T5 — Complete migration and support documentation.
+  - **Files:** README, CLI/configuration/architecture docs, skills and plugin docs, Phase 8 plan and registry.
+  - **Done when:** documentation describes only host-backed logical MCP over stdio; the 29/30 route distinction and 12 unavailable routes are explicit where relevant; direct-CDP CLI utilities are clearly separate; no documentation recommends the removed MCP tools, flags, or HTTP route.
+  - **Validation:** documentation reference and stale-surface audit passes; release readiness remains explicitly false until P8-T1 through P8-T4 and the release decision are complete.
   - **Owner:** Japneet Kalkat.
 
 ## Quality checklist
 
-- [ ] MCP has no canonical browser state.
-- [ ] HTTP sessions share the host broker intentionally and pass authentication/origin admission before MCP session creation.
-- [ ] Stdio/HTTP connection identity is not browser/page ownership.
-- [ ] Global close is gone or strictly scoped to owned pages.
-- [ ] Legacy raw fields are adapter-only and deprecated.
-- [ ] Existing protocol tests are green without changing modern/legacy claims.
-- [ ] Every close path is scoped; no legacy global `close_all` reaches the new host.
-- [ ] Default/extended profile counts and server metadata are consistent and frozen.
-- [ ] Cancellation, EOF, DELETE, and lost-dispatch semantics are tested at the MCP boundary.
-- [ ] Stdio and HTTP wire behavior has sanitized transcript/golden coverage.
-- [ ] Default/extended tool manifests are exact, ordered, schema-golden, and side-effect documented.
-- [ ] MCP concurrency, event replay/backpressure, cancellation, reconnect, and host-backed headed-Chrome workflows are release-gated.
-- [ ] Required lanes cannot pass through skipped tests, swallowed errors, missing Chrome, or missing redacted artifacts.
+- [ ] MCP exposes host-backed logical operations only.
+- [ ] MCP transport is stdio only; no HTTP route is claimed.
+- [ ] Offline 29-route and remote 30-route catalogs are described distinctly.
+- [ ] All 12 currently unavailable remote routes fail closed as `capability_unavailable` unless their support is implemented and proven.
+- [ ] Headed Chrome validation covers the real host, Native Messaging bridge, extension, and Chrome path.
+- [ ] No offline, declaration-only, source-inspection, or operator-acknowledgment evidence is treated as live support.
+- [ ] Required release artifacts and security/error gates pass before MCP is described as distribution-ready.
+- [ ] Standalone `browser`, `run`, and `repl` CLI utilities remain accurately documented as a separate interface.
 
 ## Handoff out
 
-- **Artifacts:** MCP adapter, protocol/lifecycle/event tests, legacy mapping, migration/deprecation docs.
-- **Next phase:** maintenance follows the direct product release; new transport or remote-service work opens a separate plan.
-- **Residuals:** modern MCP and remote service remain separate future decisions.
+- **Artifacts:** versioned stdio route/schema contract, route-disposition record, headed-Chrome evidence, release report, migration/support docs.
+- **Next phase:** maintenance follows the release decision; new transports or remote service work require a separate plan.
+- **Residuals:** any unsupported route remains listed with its typed fallback and owner/trigger for reconsideration.
 
 ## Exit gate
 
-Advance only when legacy protocol/tool tests pass through the host adapter, two MCP connections share one broker safely, no MCP path bypasses policy/leases, migration docs make direct CLI/SDK primary, and MCP compatibility has a separate release/support decision.
+Keep this phase `pending` until the stdio contract is verified, all unavailable-route decisions are explicit, headed live Chrome workflows pass through the real host/extension path, and the independent MCP release gate and support decision genuinely pass. Offline tests and a declared route catalog alone cannot complete Phase 8 or establish distribution readiness.
