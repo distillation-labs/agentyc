@@ -24,8 +24,8 @@ Agent CLI / persistent Node SDK
        -> Chrome side panel for task-space control
   -> existing Chrome pages
 
-Legacy MCP stdio/HTTP
-  -> compatibility adapter
+Host-backed logical MCP stdio
+  -> MCP adapter
   -> same agentyc-host broker
 ```
 
@@ -39,7 +39,7 @@ The default path does **not** download a browser, launch a second browser, requi
 4. A persistent local protocol and SDK remove per-command runtime startup and let multiple agent processes share one authoritative broker.
 5. The retained lease, ledger, snapshot, event, actionability, and unknown-outcome mechanisms transfer the useful ego-lite patterns without copying its proprietary browser host or arbitrary execution model.
 
-**Accepted trade-offs:** Extension installation and sensitive permissions are required; ordinary Chrome task spaces share profile cookies/storage/extensions/history/permissions; the native host, installer, side panel, and local protocol add product surfaces; MCP compatibility needs a second adapter contract.
+**Accepted trade-offs:** Extension installation and sensitive permissions are required; ordinary Chrome task spaces share profile cookies/storage/extensions/history/permissions; the native host, installer, side panel, and local protocol add product surfaces; MCP remains a separate compatibility contract with its own pending release gates.
 
 **Top risks:** debugger/enterprise policy restrictions, profile-sharing surprises, Native Messaging origin or payload bugs, MV3 worker restarts, stale tab/document/ref routing, user takeover races, extension distribution, and false token/performance claims.
 
@@ -107,10 +107,11 @@ Every bullet below is a target or requirement for the planned work, not a statem
 
 ### Compatibility
 
-- Existing MCP stdio/legacy HTTP remains available through an adapter over the host broker.
-- Existing safe tool names and required response conventions remain supported where possible.
-- Legacy `tab_id`/`target_id` fields are adapter-only and deprecated; compatibility calls resolve through a selected/default space but cannot bypass leases.
-- Existing direct CDP/temporary-browser workflows remain explicit legacy/test modes and never become the default fallback.
+- The host-backed logical MCP adapter runs over stdio only; no MCP HTTP transport is shipped.
+- The offline server exposes 29 routes; the connected remote catalog declares 30, with 12 currently returning `capability_unavailable`.
+- The removed direct-CDP MCP `BrowserServer`, `browser_*` tools, legacy MCP mode, and `serve` HTTP route are not current compatibility surfaces.
+- Standalone `browser`, `run`, and `repl` direct-CDP CLI utilities remain available separately; they do not add MCP routes or transports.
+- Headed live Chrome has not yet been run through MCP; MCP is not distribution-ready until Phase 8's live and release gates pass.
 
 ## Canonical space, page, and Chrome tab-group semantics
 
@@ -138,18 +139,18 @@ Reopen deferred items only on a documented trigger in `research/decision-superse
 
 ## Success measures
 
-| Area              | Initial gate                                                                                                                                                                            | Evidence                                                     |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Existing Chrome   | Normal user-approved Chrome works without `--cdp-url`, remote-debugging flags, downloaded browser, or automatic launch                                                                  | Phase 0/4/7 headed Chrome artifacts                          |
-| Task spaces       | Two or more spaces can run concurrently; durable page labels resume across agent reconnect; zero cross-space mutation                                                                   | Host/extension isolation suite                               |
-| User safety       | Zero user-tab closes, zero stale-agent mutations after takeover, and stop/takeover behavior is visible and bounded                                                                      | Adversarial headed-Chrome tests                              |
-| Reliability       | No operation exceeds its deadline; disconnect after dispatch is typed `unknown`; stale refs/events cannot affect replacement pages                                                      | Fault-injection and recovery tests                           |
-| Context           | Clean cache causes zero DOM scans; delta median target ≤35% of equivalent full snapshot and actual tokenizer metadata is reported                                                       | Snapshot/token benchmark; threshold may be signed in Phase 0 |
-| Speed             | Warm host metadata p95 ≤50 ms; batch script cuts agent round trips by ≥50% on the reference scenario; action latency is within the Phase 0 budget                                       | Direct CLI/SDK benchmark                                     |
-| Human coexistence | User can browse unrelated tabs while two spaces work; extension does not steal focus except explicit user action                                                                        | Manual headed workflow                                       |
-| Native bridge     | Malformed, oversized, wrong-origin, truncated, replayed, and version-mismatched messages fail closed                                                                                    | Native host/extension protocol tests                         |
-| Compatibility     | Frozen legacy MCP baseline remains green through Phases 0–7; MCP compatibility release additionally passes wire, concurrency, fault, context, and host-backed headed-Chrome conformance | Phase 7 baseline plus Phase 8 MCP release suite              |
-| Operations        | Metrics identify broker/profile/space/page/action/lease epoch without cookies, tokens, headers, page bodies, screenshots, or raw browser IDs                                            | Redaction and runbook review                                 |
+| Area              | Initial gate                                                                                                                                                                      | Evidence                                                     |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Existing Chrome   | Normal user-approved Chrome works without `--cdp-url`, remote-debugging flags, downloaded browser, or automatic launch                                                            | Phase 0/4/7 headed Chrome artifacts                          |
+| Task spaces       | Two or more spaces can run concurrently; durable page labels resume across agent reconnect; zero cross-space mutation                                                             | Host/extension isolation suite                               |
+| User safety       | Zero user-tab closes, zero stale-agent mutations after takeover, and stop/takeover behavior is visible and bounded                                                                | Adversarial headed-Chrome tests                              |
+| Reliability       | No operation exceeds its deadline; disconnect after dispatch is typed `unknown`; stale refs/events cannot affect replacement pages                                                | Fault-injection and recovery tests                           |
+| Context           | Clean cache causes zero DOM scans; delta median target ≤35% of equivalent full snapshot and actual tokenizer metadata is reported                                                 | Snapshot/token benchmark; threshold may be signed in Phase 0 |
+| Speed             | Warm host metadata p95 ≤50 ms; batch script cuts agent round trips by ≥50% on the reference scenario; action latency is within the Phase 0 budget                                 | Direct CLI/SDK benchmark                                     |
+| Human coexistence | User can browse unrelated tabs while two spaces work; extension does not steal focus except explicit user action                                                                  | Manual headed workflow                                       |
+| Native bridge     | Malformed, oversized, wrong-origin, truncated, replayed, and version-mismatched messages fail closed                                                                              | Native host/extension protocol tests                         |
+| Compatibility     | Host-backed logical MCP stdio contract is tested offline; separate MCP release requires supported-route live headed-Chrome evidence and explicit decisions for unavailable routes | Phase 8 MCP release suite                                    |
+| Operations        | Metrics identify broker/profile/space/page/action/lease epoch without cookies, tokens, headers, page bodies, screenshots, or raw browser IDs                                      | Redaction and runbook review                                 |
 
 Targets marked initial are provisional until Phase 0 records real Chrome, model-token, and end-to-end baselines.
 
@@ -188,12 +189,12 @@ These gates apply to the planned agentyc path and remain unproven until Phase 0,
 
 ## Production-grade validation bar
 
-The direct CLI/SDK path and the MCP compatibility adapter share one mandatory evidence program, but retain separate validation gates: the direct product is gated by direct-product evidence plus the frozen legacy MCP baseline; MCP compatibility is additionally gated by Phase 8 host-backed protocol and real-browser conformance. Protocol-only tests cannot validate browser automation. The test strategy is defined in `research/production-test-strategy.md` and is a phase-gated requirement.
+The direct CLI/SDK path and the host-backed MCP adapter have separate validation gates. Direct-product evidence does not establish MCP compatibility; offline MCP protocol tests do not establish live browser behavior. MCP release requires Phase 8 host-backed protocol checks, explicit support dispositions, headed-Chrome conformance through the real host/extension path, and a passing independent release gate. The test strategy is defined in `research/production-test-strategy.md` and is a phase-gated requirement.
 
 - Required layers are pure unit/property, deterministic component, process/Native Messaging, headed existing-Chrome, and nightly/pre-release load/soak/chaos.
 - Required tests fail on missing Chrome, skipped/ignored coverage, swallowed tool errors, leaked child processes, or missing redacted artifacts; retries may classify flakes but cannot make a failed required test pass.
-- Realistic MCP scenarios must exercise navigation, redirects, dynamic DOM, frames/OOPIFs, dialogs, downloads/uploads, waits, snapshots/refs, user takeover, concurrent spaces, host/extension/worker/browser restarts, reconnects, and unrelated user-tab coexistence through the real host/extension/Chrome path before MCP compatibility release.
-- The MCP suite must verify wire lifecycle, HTTP/SSE/session behavior, exact tool/schema manifests, stable error mapping, cancellation, disconnect/unknown outcomes, event replay/backpressure, concurrency/fairness, ownership, and every supported tool in real headed Chrome; these are Phase 8 MCP gates, not hidden prerequisites for the direct Phase 7 launch.
+- Headed MCP scenarios must exercise supported logical operations, snapshots/refs, user takeover, concurrent spaces, host/extension/worker/browser restarts, reconnects, and unrelated user-tab coexistence through the real host/extension/Chrome path before MCP release. Unsupported routes must return their typed fallback.
+- The MCP suite must verify stdio lifecycle, exact current route/schema manifests, stable error mapping, cancellation, disconnect/unknown outcomes, event replay/backpressure, concurrency/fairness, ownership, and every supported route in headed Chrome. No HTTP/SSE behavior is shipped or claimed; these are Phase 8 gates, not prerequisites for the direct product.
 - Context and speed gates report transport bytes, serialized tokens, deployed model-context tokens, scan/queue/bridge/browser/serialization timings, cache state, actionable-control coverage, stale-ref/unknown rates, event lag, CPU/RSS, and human-tab responsiveness separately. Tail gates use at least 200 valid samples for p95 and 1,000 for p99 with bootstrap confidence intervals; thirty samples are smoke-only.
 - Any authorization bypass, cross-space mutation, user-tab close, stale-agent mutation after takeover, secret leak, blind mutation replay, or silent unknown-success is an automatic launch blocker.
 
@@ -212,7 +213,7 @@ The launch tuple is versioned and published before launch: Chrome milestone/plat
 
 - Rust workspace: edition 2024; the supported compiler floor is the pinned `rust-toolchain.toml` value created in Phase 0, not the historical README claim.
 - Planned Node package: `packages/agentyc-browser/`, with its own `package.json` and `package-lock.json`; npm is the selected package manager, and the Node floor is frozen by Phase 0 before SDK implementation.
-- MCP: current `rmcp = 1.7` legacy behavior is preserved first; default and extended profiles are measured and frozen from the repository, not assumed from comments.
+- MCP: the current host-backed adapter uses stdio. Offline and connected route catalogs are distinct; declared remote routes are not support evidence, and the Phase 8 release gate remains pending.
 
 ## Architecture ownership
 
@@ -225,7 +226,7 @@ The launch tuple is versioned and published before launch: Chrome milestone/plat
 | `crates/agentyc-runtime/`             | compatibility facade and shared operation implementation while modules migrate                                   | a second authority or default browser launch             |
 | `extension/`                          | MV3 manifest, service worker, debugger/tabs/frame bridge, side panel, browser events                             | authoritative leases, secrets, raw agent policy          |
 | `crates/agentyc/`                     | `host`, `space`, `page`, `action`, `wait`, `extension`, and legacy commands; stdout/stderr discipline            | direct MCP state ownership                               |
-| `crates/agentyc-mcp/`                 | legacy protocol/tool adapter over host client                                                                    | direct CDP, active-page authority, canonical space state |
+| `crates/agentyc-mcp/`                 | host-backed logical MCP adapter over the host client                                                             | direct CDP, active-page authority, canonical space state |
 | `crates/agentyc-browser/`             | explicit legacy CDP/managed-browser compatibility and test harness during migration                              | default discovery/launch/download of Chrome              |
 | `packages/agentyc-browser/` (planned) | thin typed Node client over the local protocol                                                                   | a browser runtime or hidden evaluator                    |
 
@@ -237,7 +238,7 @@ New/touched implementation files stay at or below 400 lines where practical; ext
 - **Extension-owned:** Chrome API calls, debugger attachment, tab/window/group inventory, frame/session event capture, content-script lifecycle, side-panel rendering, and browser-specific capability reporting.
 - **Agent-owned:** labels, task intent, requested URLs/actions, snapshot budgets, explicit confirmation choices, and follow-up decisions after typed outcomes.
 - **User-owned:** Chrome profile, unmanaged tabs, takeover/return control, permission approval, login/payment/destructive confirmation, and final page retention.
-- **MCP adapter-owned:** legacy schema conversion and session/connection mapping only.
+- **MCP adapter-owned:** logical host-route schemas and stdio request/result mapping only.
 
 ### Profile and trust matrix
 
