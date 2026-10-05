@@ -13,7 +13,17 @@ when_to_use: >
 metadata:
   version: "1.0.0"
   category: research-and-optimization
-  tags: [research, autoresearch, experimentation, benchmarking, hypotheses, ablation, optimization, self-improvement]
+  tags:
+    [
+      research,
+      autoresearch,
+      experimentation,
+      benchmarking,
+      hypotheses,
+      ablation,
+      optimization,
+      self-improvement,
+    ]
 license: Proprietary
 ---
 
@@ -45,18 +55,16 @@ target is met or the bottleneck is disproven.
 
 ## Agentyc Defaults
 
-Canonical benchmark surfaces:
+Current verification surfaces:
 
-- `AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture`
-  — cold-start, tools/list latency, per-call MCP overhead, and sustained throughput with regression ceilings
-- `AGENTYC_HEADLESS=1 AGENTYC_TEST_SCALE=25 cargo test -p agentyc-tests --test e2e_suite`
-  — scaled end-to-end soak over the deterministic tool surface
-
-Guardrail surfaces:
-
-- `cargo test --workspace` — unit + integration tests (browser tests need Chrome)
+- `cargo test -p agentyc-host --all-targets --locked` — broker, local IPC, and Native Messaging
+- `cargo test -p agentyc-mcp --all-targets --locked` — host-backed MCP adapter
+- `cargo test -p agentyc-tests --test mcp_protocol --locked` — MCP stdio wire contract
+- `npm test --prefix extension` and `npm test --prefix packages/agentyc-browser` — extension and Node SDK
 - `cargo fmt --all -- --check` — formatting
 - `cargo clippy --workspace --all-targets -- -D warnings` — lints
+
+No current MCP performance or live-browser benchmark is release-eligible. Historical direct-CDP benchmark outputs are not valid substitutes.
 
 When the question is "browser excellence," name the exact metric you are moving: task completion,
 false-positive completion rate, average or p95 tool latency, token/context footprint, recall,
@@ -184,19 +192,21 @@ Valid stop conditions:
 Example 1: Root-cause investigation plus experiment loop
 User says: "Research why browser action success fell and keep trying fixes until we get back above 95%."
 Actions:
+
 - establish the baseline and failure clusters
 - rank the most plausible hypotheses
 - run one-variable experiments in priority order
 - keep only changes that beat the noise floor and preserve guardrails
-Result: a ranked explanation plus a durable sequence of validated improvements
+  Result: a ranked explanation plus a durable sequence of validated improvements
 
 Example 2: Outside-mechanism transfer
 User says: "Compare how leading agent systems handle long-horizon reliability and test what transfers here."
 Actions:
+
 - identify mechanisms, not marketing claims
 - map each mechanism onto agentyc constraints
 - choose the cheapest discriminating experiments first
-Result: adopt, adapt, or avoid guidance tied to measurable tests
+  Result: adopt, adapt, or avoid guidance tied to measurable tests
 
 ## Troubleshooting
 
