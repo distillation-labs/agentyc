@@ -14,6 +14,36 @@ fn run_cli(state_dir: &std::path::Path, args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn help_exposes_only_host_backed_commands_and_mcp_options() {
+    let binary = env!("CARGO_BIN_EXE_agentyc");
+    let root_help = Command::new(binary)
+        .arg("--help")
+        .output()
+        .expect("root help");
+    assert!(root_help.status.success());
+    let root_help = String::from_utf8(root_help.stdout).expect("root help UTF-8");
+    for removed in ["  serve ", "  browser ", "  run ", "  repl "] {
+        assert!(
+            !root_help.lines().any(|line| line.starts_with(removed)),
+            "removed command still appears in help: {removed}"
+        );
+    }
+
+    let mcp_help = Command::new(binary)
+        .args(["mcp", "--help"])
+        .output()
+        .expect("MCP help");
+    assert!(mcp_help.status.success());
+    let mcp_help = String::from_utf8(mcp_help.stdout).expect("MCP help UTF-8");
+    for removed in ["--cdp-url", "--legacy-cdp", "--extended"] {
+        assert!(
+            !mcp_help.contains(removed),
+            "removed MCP option remains: {removed}"
+        );
+    }
+}
+
+#[test]
 fn direct_success_emits_one_structured_json_value_on_stdout() {
     let directory = tempdir().expect("state directory");
     let output = run_cli(
