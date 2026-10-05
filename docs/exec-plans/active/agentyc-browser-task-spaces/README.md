@@ -29,7 +29,7 @@ Host-backed logical MCP stdio
   -> same agentyc-host broker
 ```
 
-The default path does **not** download a browser, launch a second browser, require a copied CDP URL, or expose MCP as the primary agent interface. The existing `agentyc-browser` launcher/CDP path remains explicit legacy/test compatibility only.
+The default path does **not** download a browser, launch a second browser, require a copied CDP URL, or expose MCP as the primary agent interface. The standalone direct-CDP CLI and Rust runtime crates described in the early plan were removed. The Node SDK at `packages/agentyc-browser` and extension `chrome.debugger` backend remain; CDP used inside independent installation/test harnesses is not a user-facing interface.
 
 **Why this wins now:**
 
@@ -53,7 +53,7 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 
 **Proven by repository/source inspection:**
 
-- Current agentyc legacy behavior and its one-shot/active-page constraints are recorded in the Phase 0 plan.
+- The Phase 0 plan records the earlier direct-CDP behavior and its one-shot/active-page constraints as historical evidence; those CLI/runtime surfaces have since been removed.
 - The checked-in ego-lite API/schema/source/tests establish reference behavior for task/page handles, output handling, page discovery, and error classification; the compatibility mapping and deliberate existing-Chrome differences are recorded in `research/ego-lite-pattern-audit.md`, and that reference does not prove agentyc behavior.
 - The checked-in plan and manifest checker definitions establish required validation structure; they do not prove that the planned targets have run or passed.
 
@@ -66,7 +66,7 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 
 - The accepted headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` proves the two-space/two-agent current-run coexistence gate, user-tab/focus preservation, isolation, fencing, cleanup, and restart/update observations through the product host-backed direct CLI. The source-identical smoke `artifacts/p0-coexistence/live-hardening-basic-3/` additionally passes current-source browser inventory, snapshots, actions, focus, isolation, and cleanup; disruptive restart/update actions remain operator-approved checkpoints.
 - The current checker returns `status: pass` with coexistence, installation, live Chrome, live Native Messaging, and performance gates passed. The disposable P0 lane is not existing-profile proof.
-- Deterministic validation includes 72 extension tests, 67 host-library tests, 66 host integration tests, 15 direct CLI tests, 28 core tests, 77 harness tests, and the Phase 1/2/3/4 quality and contract checkers. Phase 3 adds stale-owner lock recovery, endpoint metadata, Native Messaging shim forwarding, peer-credential admission, broker scheduler permits, pause/handoff fences, profile rebind fencing, and an explicit legacy runtime boundary.
+- Deterministic validation includes 72 extension tests, 67 host-library tests, 66 host integration tests, 15 direct CLI tests, 28 core tests, 77 harness tests, and the Phase 1/2/3/4 quality and contract checkers. Phase 3 adds stale-owner lock recovery, endpoint metadata, Native Messaging shim forwarding, peer-credential admission, broker scheduler permits, pause/handoff fences, and profile rebind fencing. Its explicit legacy runtime boundary was later removed with the standalone direct-CDP CLI crates.
 
 **Explicit residuals, not hidden blockers:** OOPIF/flat debugger session graph, full reference-equivalent refs/actionability/waits/dialog/file chooser, selected-page retention, ordinary-user Web Store/managed distribution, Linux/Windows registration, deployed-model tokenizer/human responsiveness baselines remain owned by later phases. They are not claimed by the Phase 0 gate.
 
@@ -74,7 +74,7 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 
 ## Planned capability target — not yet proven
 
-Every bullet below is a target or requirement for the planned work, not a statement that agentyc implements it or that live Chrome has validated it. It remains gated by Phase 0 and the later production phases.
+Every bullet below is a target or requirement for planned work, not a statement that agentyc implements it or that live Chrome has validated it. The current shipped CLI command tree is listed in `docs/cli.md`; no standalone direct-CDP CLI commands are shipped. Remaining targets are gated by Phase 0 and later production phases.
 
 ### Agent and task-space experience
 
@@ -110,7 +110,7 @@ Every bullet below is a target or requirement for the planned work, not a statem
 - The host-backed logical MCP adapter runs over stdio only; no MCP HTTP transport is shipped.
 - The offline server exposes 29 routes; the connected remote catalog declares 30, with 12 currently returning `capability_unavailable`.
 - The removed direct-CDP MCP `BrowserServer`, `browser_*` tools, legacy MCP mode, and `serve` HTTP route are not current compatibility surfaces.
-- Standalone `browser`, `run`, and `repl` direct-CDP CLI utilities remain available separately; they do not add MCP routes or transports.
+- The standalone direct-CDP `browser`, `run`, and `repl` CLI commands have been removed. The Node SDK remains at `packages/agentyc-browser`, and the extension continues to use `chrome.debugger`; internal CDP test/installation harnesses are not user interfaces.
 - Headed live Chrome has not yet been run through MCP; MCP is not distribution-ready until Phase 8's live and release gates pass.
 
 ## Canonical space, page, and Chrome tab-group semantics
@@ -219,16 +219,15 @@ The launch tuple is versioned and published before launch: Chrome milestone/plat
 
 ### Canonical crates and surfaces
 
-| Surface                               | Owns                                                                                                             | Must not own                                             |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `crates/agentyc-core/`                | transport-neutral IDs, records, states, errors, envelopes, snapshots, refs, receipts, events                     | Chrome APIs, MCP, process lifecycle                      |
-| `crates/agentyc-host/`                | broker, local IPC, Native Messaging bridge, ledger, leases, scheduler, Chrome adapter, reconciliation, redaction | UI rendering, MCP-specific schemas, arbitrary page code  |
-| `crates/agentyc-runtime/`             | compatibility facade and shared operation implementation while modules migrate                                   | a second authority or default browser launch             |
-| `extension/`                          | MV3 manifest, service worker, debugger/tabs/frame bridge, side panel, browser events                             | authoritative leases, secrets, raw agent policy          |
-| `crates/agentyc/`                     | `host`, `space`, `page`, `action`, `wait`, `extension`, and legacy commands; stdout/stderr discipline            | direct MCP state ownership                               |
-| `crates/agentyc-mcp/`                 | host-backed logical MCP adapter over the host client                                                             | direct CDP, active-page authority, canonical space state |
-| `crates/agentyc-browser/`             | explicit legacy CDP/managed-browser compatibility and test harness during migration                              | default discovery/launch/download of Chrome              |
-| `packages/agentyc-browser/` (planned) | thin typed Node client over the local protocol                                                                   | a browser runtime or hidden evaluator                    |
+| Surface                     | Owns                                                                                                             | Must not own                                             |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `crates/agentyc-core/`      | transport-neutral IDs, records, states, errors, envelopes, snapshots, refs, receipts, events                     | Chrome APIs, MCP, process lifecycle                      |
+| `crates/agentyc-host/`      | broker, local IPC, Native Messaging bridge, ledger, leases, scheduler, Chrome adapter, reconciliation, redaction | UI rendering, MCP-specific schemas, arbitrary page code  |
+| `extension/`                | MV3 manifest, service worker, debugger/tabs/frame bridge, side panel, browser events                             | authoritative leases, secrets, raw agent policy          |
+| `crates/agentyc/`           | shipped host-backed logical CLI, MCP stdio entry point, and skill initialization                                 | direct MCP state ownership                               |
+| `crates/agentyc-mcp/`       | host-backed logical MCP adapter over the host client                                                             | direct CDP, active-page authority, canonical space state |
+| `crates/agentyc-tests/`     | integration and test harnesses; any internal CDP use remains test-only                                           | user-facing CLI or product browser runtime               |
+| `packages/agentyc-browser/` | typed Node SDK over the local protocol; distinct from the removed Rust crate of the same base name               | a browser launcher or hidden evaluator                   |
 
 New/touched implementation files stay at or below 400 lines where practical; extract protocol, state-machine, bridge, scheduler, snapshot, and UI modules rather than creating a single broker file.
 
