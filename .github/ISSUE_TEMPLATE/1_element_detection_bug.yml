@@ -48,12 +48,12 @@ body:
         A description of the issue + screenshots, and the exact MCP tool calls or coding-agent instructions that led to it (redact sensitive data).
         To help us fix it even faster, screenshot the Chome devtools [`Computed Styles` pane](https://developer.chrome.com/docs/devtools/css/reference#computed) for each failing element.
       placeholder: |
-        🎯 Goal: Compare the prices of 3 items on a few seller pages
+        🎯 Goal: Read the pages owned by a task space
         💬 Tool sequence:
-          1. browser_navigate https://example.com
-          2. browser_click index=12
-          3. browser_type index=19 text="abc"  <- ❌ selection/input goes wrong here
-        ☝️ please include real URLs 🔗 and screenshots 📸 when possible!
+          1. host_space_list {}
+          2. host_page_list {"space_id":"space_<redacted>"}
+          3. host_snapshot_read {"space_id":"space_<redacted>","page_id":"page_<redacted>","lease_epoch":1}  <- ❌ expected snapshot is missing
+        ☝️ redact URLs, IDs, and any sensitive content before sharing.
     validations:
       required: true
 
@@ -90,9 +90,9 @@ body:
       description: Include the JSON-RPC tool calls that reproduce the issue.
       render: json
       placeholder: |
-        {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"https://example.com"}}}
-        {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_get_state","arguments":{"mode":"full"}}}
-        {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_click","arguments":{"ref":"e42"}}}
+        {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_space_list","arguments":{}}}
+        {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"host_page_list","arguments":{"space_id":"space_<redacted>"}}}
+        {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"host_snapshot_read","arguments":{"space_id":"space_<redacted>","page_id":"page_<redacted>","lease_epoch":1}}}
 
   - type: textarea
     id: logs
