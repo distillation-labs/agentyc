@@ -103,17 +103,13 @@ connected remote catalog declares 30, with 12 returning
 `capability_unavailable`. Headed live Chrome validation has not yet run, so MCP
 is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
 
-## Standalone direct-CDP CLI utilities (not MCP)
+## Removed legacy CLI paths
 
-| Command                                                 | Behavior                                                                                                    |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `agentyc browser [--port PORT] [--headless] [--detach]` | Launches Chrome with a temporary profile and prints its CDP WebSocket URL.                                  |
-| `agentyc run --cdp-url URL ...`                         | Runs one browser command against an explicitly supplied endpoint; the endpoint is required at runtime.      |
-| `agentyc repl --cdp-url URL`                            | Starts an interactive session against an explicitly supplied endpoint; the endpoint is required at runtime. |
-
-These commands are separate standalone CLI utilities; they do not provide an
-MCP transport or tool surface. CDP URLs are debugger credentials; do not expose
-them to untrusted clients.
+The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url`
+commands are removed and are not configurable or available as user-facing CLI
+interfaces. Internal test or installation harnesses may use CDP without
+creating a shipped CLI surface. The Node SDK at `packages/agentyc-browser` and
+the extension's `chrome.debugger` backend remain separate supported components.
 
 ## Logging
 
