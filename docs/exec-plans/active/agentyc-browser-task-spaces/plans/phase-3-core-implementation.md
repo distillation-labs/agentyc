@@ -9,6 +9,8 @@ depends_on: phase-2
 
 # Phase 3 — Host broker, ledger, and Chrome bridge core
 
+> This completed plan preserves the Phase 3 implementation record. References to `agentyc-runtime`, the Rust `agentyc-browser` crate, and `agentyc-cdp` describe the phase-era design; these standalone direct-CDP runtime crates and CLI paths were later removed. The Node SDK package and extension `chrome.debugger` backend remain, and internal test harnesses may still use CDP.
+
 ## Objective
 
 Implement the authoritative host control plane below all frontends. It must serve multiple agent processes for one Chrome profile, preserve logical task spaces across client reconnect, fence stale clients, and communicate through a replaceable Chrome bridge without allowing MCP/CLI modules to own raw browser state.
@@ -22,7 +24,7 @@ Implement the authoritative host control plane below all frontends. It must serv
 ## Confirmed facts
 
 - Current `BrowserSession` has one active page and unsafe global `close_all`; it cannot remain authoritative.
-- `agentyc-cdp` can remain behind a legacy/test transport while the extension bridge is added.
+- At Phase 3 planning time, `agentyc-cdp` was considered as a legacy/test transport behind the extension bridge; that Rust crate was later removed.
 - Native Messaging host processes may reconnect or be started more than once; a host lock/forwarding design is required.
 - Logical ledger records cannot replay browser side effects after Chrome/host loss.
 
