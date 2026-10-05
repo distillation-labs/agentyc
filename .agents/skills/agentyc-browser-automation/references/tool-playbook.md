@@ -94,31 +94,19 @@ try {
 }
 ```
 
-## Legacy MCP Compatibility Tool Routing
+## MCP compatibility boundary
 
-The tools below represent the explicit legacy direct-CDP compatibility adapter, not the canonical host-backed task-space product.
+Agentyc MCP exposes host-backed logical operations over stdio only. Do not route work to the removed `browser_*` tool names. The offline server lists 29 routes; the connected remote catalog declares 30, with 12 returning `capability_unavailable`. Headed live Chrome validation has not run, so MCP is not distribution-ready. Use [MCP compatibility](../../../../docs/mcp-compatibility.md) for current route details and blockers.
 
-| Goal              | First choice                                                    | Escalate when                                                |
-| ----------------- | --------------------------------------------------------------- | ------------------------------------------------------------ |
-| Discover controls | `browser_get_state(mode="min")`                                 | Use `full` when target is omitted; `focus` for one known ref |
-| Read text         | `browser_search_page` or `browser_get_html`                     | Use extraction routes for structured content                 |
-| Click/type/select | `browser_click`, `browser_type`, `browser_select_option`        | Re-read state after navigation, focus, or DOM changes        |
-| Submit and verify | Action + `browser_wait_for_response`/`browser_wait_for_element` | Inspect network or console if no result appears              |
-| Search long pages | `browser_search_page`                                           | Use `browser_scroll_to_text` for visual context              |
-| Extract data      | `browser_extract_content`                                       | Use `browser_get_html` only for unsupported structures       |
-| Inspect a frame   | `browser_list_frames`                                           | Then `browser_get_frame_html(frame_id=...)`                  |
-| Persist auth      | `browser_save_state` / `browser_load_state`                     | Use cookies/storage tools for a single value                 |
-| Diagnose failure  | `browser_get_console_logs` + `browser_get_network_log`          | Inspect one request and export a debug bundle                |
-| Manage tabs       | `browser_list_tabs` / `browser_switch_tab`                      | Wait for a tab before switching if a click opens one         |
-| Wait for change   | `since_hash` or a specific wait tool                            | Use a short fixed wait only when no signal exists            |
-| Run arbitrary JS  | `browser_evaluate`                                              | Only when no dedicated tool expresses the operation          |
+## Standalone direct-CDP CLI utilities (not MCP)
 
-### Legacy direct-CDP CLI and REPL
-
-Use legacy direct-CDP commands for explicit backwards compatibility only:
+The following commands remain separate from MCP:
 
 ```bash
-agentyc run --headless=true navigate https://example.com
-agentyc run --headless=true evaluate 'document.title'
-agentyc repl --headless=true
+agentyc browser --port 9222 --detach
+agentyc run --cdp-url <CDP_WEBSOCKET_URL> navigate https://example.com
+agentyc run --cdp-url <CDP_WEBSOCKET_URL> evaluate 'document.title'
+agentyc repl --cdp-url <CDP_WEBSOCKET_URL>
 ```
+
+`browser` launches Chrome with a temporary profile and prints its CDP URL. `run` and `repl` require an explicit endpoint at runtime. These utilities do not add an MCP transport or tool surface.
