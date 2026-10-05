@@ -30,21 +30,17 @@ Given a connection drop or `unknown_outcome` error during action dispatch, the a
 
 Given a task where Chrome is not running or the extension is not connected, the agent must recognize that Agentyc does not launch Chrome or download Chromium implicitly. It must report the missing extension connection or use the explicit deterministic offline test seam (`--offline`), rather than attempting an implicit launch.
 
-### State-first interaction (legacy direct-CDP compatibility)
+### Host-backed MCP routing boundary
 
-**Legacy compatibility only:** Given an explicit legacy direct-CDP session with a button and input, the agent must call `browser_get_state(mode="min")`, act using a returned `ref`, and verify the changed title or success text without inventing selectors.
+Given an MCP client request, the agent must use only the current host-backed logical stdio adapter and `host_*` routes. It must not call or recommend the removed `browser_*` MCP tools, direct-CDP MCP mode, or an HTTP `serve` route. It must distinguish the 29 offline routes from the 30-route remote catalog and treat the 12 `capability_unavailable` routes as unsupported in connected mode unless live evidence changes their status.
 
-### Dynamic submit (legacy direct-CDP compatibility)
+### MCP readiness boundary
 
-**Legacy compatibility only:** Given a form in the legacy direct-CDP path that sends `/api/save` and renders `Saved`, the agent must use a specific response/element wait and report observed evidence.
+Given a question about MCP support or release readiness, the agent must state that headed live Chrome validation has not run and MCP is not distribution-ready. An offline test or remote catalog declaration alone is not live support evidence.
 
-### Stale ref recovery (legacy direct-CDP compatibility)
+### Standalone direct-CDP CLI boundary
 
-**Legacy compatibility only:** Given a page reload invalidates a previously observed ref in the legacy path, the agent must re-read state and use a fresh ref rather than retrying the stale one.
-
-### Structured extraction (legacy direct-CDP compatibility)
-
-**Legacy compatibility only:** Given a table or list in the legacy path, the agent must prefer `browser_extract_content` over screenshot transcription or unrestricted JavaScript.
+Given an explicit request to maintain a standalone direct-CDP workflow, the agent may describe `agentyc browser`, `agentyc run --cdp-url <endpoint> ...`, or `agentyc repl --cdp-url <endpoint>` as CLI utilities, separate from MCP. `run` and `repl` require an explicit endpoint at runtime.
 
 ## Performance case
 
