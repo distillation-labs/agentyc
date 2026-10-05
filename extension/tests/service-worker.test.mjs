@@ -375,6 +375,11 @@ test("runtime listeners register before metadata await, onMessage uses literal t
 
   assert.equal(chrome.runtime.onMessage.listeners.size, 1);
   assert.equal(chrome.runtime.onStartup.listeners.size, 1);
+  assert.equal(chrome.tabs.onCreated.listeners.size, 1);
+  assert.equal(chrome.tabs.onUpdated.listeners.size, 1);
+  assert.equal(chrome.tabGroups.onCreated.listeners.size, 1);
+  assert.equal(chrome.debugger.onEvent.listeners.size, 1);
+  assert.equal(chrome.debugger.onDetach.listeners.size, 1);
 
   const runtimeListener = [...chrome.runtime.onMessage.listeners][0];
   let responded = false;
@@ -393,6 +398,9 @@ test("runtime listeners register before metadata await, onMessage uses literal t
   resolveMetadata({ agentyc_extension_metadata: {} });
   await start;
   await wait();
+  assert.equal(chrome.tabs.onCreated.listeners.size, 1);
+  assert.equal(chrome.tabGroups.onCreated.listeners.size, 1);
+  assert.equal(chrome.debugger.onEvent.listeners.size, 1);
   assert.deepEqual(chrome.sidePanelBehaviorCalls, [
     { openPanelOnActionClick: true },
   ]);
@@ -408,4 +416,7 @@ test("runtime listeners register before metadata await, onMessage uses literal t
   assert.equal(worker.metadata.browserSessionEpoch, beforeStartupEpoch + 1);
 
   worker.stop();
+  assert.equal(chrome.tabs.onCreated.listeners.size, 0);
+  assert.equal(chrome.tabGroups.onCreated.listeners.size, 0);
+  assert.equal(chrome.debugger.onEvent.listeners.size, 0);
 });
