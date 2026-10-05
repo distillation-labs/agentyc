@@ -9,21 +9,23 @@
   "artifact": "artifacts/p3-core-review.md",
   "traceability": "docs/traceability-phase-3-core.md",
   "chrome_audit": "docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-3-chrome-docs-audit.md",
-  "required_tests": [
-    "cargo test -p agentyc-host --locked --test host_lifecycle",
-    "cargo test -p agentyc-host --locked --test native_messaging",
-    "cargo test -p agentyc-host --locked --test lease_state_machine",
-    "cargo test -p agentyc-host --locked --test local_ipc_adversarial",
-    "cargo test -p agentyc-host --locked --test protocol_edge_cases",
-    "cargo test -p agentyc-runtime --locked",
-    "cargo fmt --all -- --check",
-    "git diff --check"
-  ],
+  "required_tests":
+    [
+      "cargo test -p agentyc-host --locked --test host_lifecycle",
+      "cargo test -p agentyc-host --locked --test native_messaging",
+      "cargo test -p agentyc-host --locked --test lease_state_machine",
+      "cargo test -p agentyc-host --locked --test local_ipc_adversarial",
+      "cargo test -p agentyc-host --locked --test protocol_edge_cases",
+      "cargo test -p agentyc --all-targets --locked",
+      "cargo fmt --all -- --check",
+      "git diff --check"
+    ],
   "topology": "single_broker_native_shim_forwarding",
-  "nonclaims": [
-    "live existing-profile Chrome remains Phase 4 evidence",
-    "production installer and cross-platform registration remain later evidence",
-    "OOPIF/session graph and full browser automation remain later phases",
-    "release eligibility is false"
-  ]
+  "nonclaims":
+    [
+      "live existing-profile Chrome remains Phase 4 evidence",
+      "production installer and cross-platform registration remain later evidence",
+      "OOPIF/session graph and full browser automation remain later phases",
+      "release eligibility is false"
+    ]
 }
