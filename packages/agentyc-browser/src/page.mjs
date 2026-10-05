@@ -10,7 +10,7 @@ import {
   requireLeaseEpoch,
   transportOptions,
 } from "./constants.mjs";
-import { operationForAction } from "./operations.mjs";
+import { assertSupportedAction } from "./actions.mjs";
 
 /**
  * Page helper -> canonical action operation. Helpers never invent operations:
@@ -194,6 +194,7 @@ export class Page {
 
   async create(options = {}) {
     if (this._id) return this;
+    if (this._resolvePromise) return this._resolvePromise;
     if (!this._label)
       throw new TypeError("a lazy page handle needs a label before creation");
     if (this._createPromise) return this._createPromise;
@@ -230,6 +231,7 @@ export class Page {
   /** Resolve this label to exactly one existing logical page without creating it. */
   async resolve(options = {}) {
     if (this._id) return this;
+    if (this._createPromise) return this._createPromise;
     if (!this._label)
       throw new TypeError("a lazy page handle needs a label before resolution");
     if (this._resolvePromise) return this._resolvePromise;
@@ -278,6 +280,7 @@ export class Page {
   }
 
   async action(operation, payload = {}, options = {}) {
+    assertSupportedAction(operation, payload);
     const leaseEpoch = requireLeaseEpoch(
       options.leaseEpoch ?? this.space.leaseEpoch,
     );
@@ -300,9 +303,7 @@ export class Page {
 
   _helperAction(helper, payload, options) {
     const operation = PAGE_HELPER_OPERATIONS[helper];
-    if (!operationForAction(operation)) {
-      throw invalidArgument(`unsupported action operation: ${operation}`);
-    }
+    assertSupportedAction(operation, payload);
     return this.action(operation, payload, options ?? {});
   }
 
@@ -376,6 +377,7 @@ export class Page {
    * uploads, in which case the host error is surfaced as-is.
    */
   async upload(_target, _fields = {}, _options = {}) {
+    assertSupportedAction("upload");
     throw new CapabilityUnavailableError(
       "file upload is not enabled by the current extension action policy",
       { capability: "upload" },
