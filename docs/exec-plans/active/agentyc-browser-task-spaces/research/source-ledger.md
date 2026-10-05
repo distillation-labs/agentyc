@@ -1,12 +1,14 @@
 # Source ledger — agentyc Browser Task Spaces
 
-## S-001 — Current agentyc repository baseline
+> Historical research snapshot captured 2026-10-01 at commit `0c97698`; entries below describe that repository state, not current source or shipped interfaces. Direct-CDP CLI/runtime crates referenced in this ledger were later removed. The Node SDK and extension `chrome.debugger` backend are separate and remain.
+
+## S-001 — Historical agentyc repository baseline
 
 - **Canonical repository:** local workspace `/Users/japneetkalkat/agentyc`, commit `0c97698`
 - **Source class:** local repository
 - **Version/freshness:** workspace version `2.0.0`, Rust edition 2024; retrieved 2026-10-01
 - **Evidence locations:** `Cargo.toml`; `crates/agentyc-mcp/src/lib.rs`; `crates/agentyc-mcp/src/tools/mod.rs`; `crates/agentyc-mcp/src/state.rs`; `crates/agentyc-browser/src/session.rs`; `crates/agentyc-runtime/src/lib.rs`; `crates/agentyc-cdp/src/client.rs`; tests/docs listed in `README.md` and `docs/architecture.md`
-- **Claim:** The current architecture has one MCP `ServerState`, one `BrowserSession.active_page`, four-character tab aliases, global event/capture state, full-scan state hashing, and unsafe global close/session placeholders.
+- **Claim at the captured commit:** The then-current architecture had one MCP `ServerState`, one `BrowserSession.active_page`, four-character tab aliases, global event/capture state, full-scan state hashing, and unsafe global close/session placeholders. Those direct-CDP MCP and CLI implementations were subsequently removed.
 - **Decision impact:** D-01, D-02, D-03, D-04, D-05; all phases
 - **Limits:** Static code evidence; does not prove live Chrome behavior.
 - **Confidence:** high
@@ -18,7 +20,7 @@
 - **Source class:** local operational evidence
 - **Version/freshness:** commit `0c97698`; retrieved 2026-10-01
 - **Evidence locations:** `tests/mcp_protocol.rs`; `tests/browser_automation.rs`; `tests/e2e_suite.rs`; `tests/benchmark.rs`; `crates/agentyc-tests/src/runner.rs`; `docs/release-gate.md`
-- **Claim:** Current gates cover protocol/tool compatibility, basic browser lifecycle, and MCP transport overhead, but not group isolation, context tokens, concurrent ownership, or scoped event correctness.
+- **Claim at the captured commit:** The gates covered the old protocol/tool surface, basic browser lifecycle, and modeled MCP transport overhead, but not group isolation, context tokens, concurrent ownership, or scoped event correctness. Those reports do not describe or validate the current host-backed MCP.
 - **Decision impact:** D-01, D-04, D-05; Phase 0 and Phase 7 direct-launch validation
 - **Limits:** Some browser tests require Chrome and existing scenario runner has false-green paths.
 - **Confidence:** high
