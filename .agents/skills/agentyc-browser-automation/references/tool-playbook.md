@@ -28,19 +28,9 @@ Use logical space/page operations for primary workflows. Create or select a task
 
 ### Supported operations vs. planned methods
 
-Direct actions strictly execute using `action execute --operation <OPERATION>` (CLI) or `page.action(operation, payload)` (SDK).
-Supported operations:
+Direct actions strictly execute using `action execute --operation <OPERATION>` (CLI) or `page.action(operation, payload)` (SDK). Currently available operations are `navigate`, `click`, `input`, `scroll`, `wait`, `screenshot`, and `close`. `evaluate`, `storage_write`, `cookie_write`, and `upload` fail locally with `permission_denied`; the direct interfaces do not expose a host-issued user-intent-ticket flow.
 
-- `navigate`: `{ "url": "https://example.com" }`
-- `click`: `{ "ref": "ref_button" }`
-- `input`: `{ "ref": "ref_field", "value": "text" }`
-- `evaluate`: `{ "expression": "document.title" }`
-- `scroll`: `{ "direction": "down", "amount": "300" }`
-- `wait`: `{ "condition": "network_idle" }`
-- `screenshot`: viewport capture
-- `storage_write`, `cookie_write`, `upload`, `close`
-
-In the CLI, mutations use `agentyc action execute --operation <OPERATION>`; convenience subcommands such as `agentyc wait url` and `agentyc action click` are not implemented. The Node SDK does provide `Page.goto()`, `Page.click()`, and `Page.waitForURL()` helpers, which dispatch through the canonical host protocol. Do not infer CLI commands from SDK methods.
+In the CLI, mutations use `agentyc action execute --operation <OPERATION>`; convenience subcommands such as `agentyc wait url` and `agentyc action click` are not implemented. The Node SDK provides helpers such as `Page.goto()`, `Page.click()`, and `Page.waitForURL()` over available operations. Do not infer CLI commands from SDK methods.
 
 ### Boundaries and execution limits
 
@@ -98,15 +88,6 @@ try {
 
 Agentyc MCP exposes host-backed logical operations over stdio only. Do not route work to the removed `browser_*` tool names. The offline server lists 29 routes; the connected remote catalog declares 30, with 12 returning `capability_unavailable`. Headed live Chrome validation has not run, so MCP is not distribution-ready. Use [MCP compatibility](../../../../docs/mcp-compatibility.md) for current route details and blockers.
 
-## Standalone direct-CDP CLI utilities (not MCP)
+## Removed standalone direct-CDP CLI paths
 
-The following commands remain separate from MCP:
-
-```bash
-agentyc browser --port 9222 --detach
-agentyc run --cdp-url <CDP_WEBSOCKET_URL> navigate https://example.com
-agentyc run --cdp-url <CDP_WEBSOCKET_URL> evaluate 'document.title'
-agentyc repl --cdp-url <CDP_WEBSOCKET_URL>
-```
-
-`browser` launches Chrome with a temporary profile and prints its CDP URL. `run` and `repl` require an explicit endpoint at runtime. These utilities do not add an MCP transport or tool surface.
+The standalone `browser`, `run --cdp-url`, and `repl --cdp-url` CLI commands have been removed. Use the host-backed commands in the routing table above or the Node SDK at `packages/agentyc-browser`. The extension's `chrome.debugger` backend remains; direct-CDP test or installation harnesses are internal and are not user interfaces.
