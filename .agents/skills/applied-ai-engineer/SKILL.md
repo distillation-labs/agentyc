@@ -15,7 +15,21 @@ when_to_use: >
 metadata:
   version: "0.3.0"
   category: engineering
-  tags: [applied-ai, harness, evals, observability, rollout, reliability, benchmarking, routing, context, safety, experimentation, research]
+  tags:
+    [
+      applied-ai,
+      harness,
+      evals,
+      observability,
+      rollout,
+      reliability,
+      benchmarking,
+      routing,
+      context,
+      safety,
+      experimentation,
+      research,
+    ]
 license: Proprietary
 ---
 
@@ -92,16 +106,21 @@ You turn AI ideas into systems that can be measured, debugged, and shipped.
 - If a proposed change is still speculative, narrow it into a measurable slice or hand off to `breakthrough-autoresearch`.
 - Do not ship a browser or MCP improvement without naming the benchmark surface that proves it.
 
-In agentyc, prefer the existing benchmark and quality surfaces:
+In agentyc, use the host-backed test surfaces:
 
-- `cargo test --workspace` — unit + integration tests (browser tests need Chrome)
-- `AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture` — performance gate
+- `cargo test -p agentyc-host --all-targets --locked` — broker, local IPC, and Native Messaging
+- `cargo test -p agentyc-mcp --all-targets --locked` — host-backed MCP adapter
+- `cargo test -p agentyc-tests --test mcp_protocol --locked` — MCP stdio wire contract
+- `npm test --prefix extension` and `npm test --prefix packages/agentyc-browser` — extension and Node SDK
 - `cargo fmt --all -- --check` — formatting
 - `cargo clippy --workspace --all-targets -- -D warnings` — lints
 
+No current MCP performance benchmark is release-eligible; the removed direct-CDP benchmark is not a valid substitute.
+
 For browser automation evals, treat these additional dimensions:
+
 - action success rate over representative page structures (forms, modals, SPAs, infinite scroll)
-- latency under active CDP interception and network conditions
+- latency under the extension debugger bridge and controlled network conditions
 - correctness under concurrent tab operations
 - extraction quality across DOM complexity tiers
 
@@ -270,20 +289,22 @@ Return results in this order:
 Example 1: Productionizing a promising prototype
 User says: "This retrieval change looks promising. Make it safe to ship."
 Actions:
+
 - define the primary metric and rollout guardrails
 - add or tighten the eval harness
 - implement the smallest hardening slice
 - add observability and rollback criteria
-Result: a measurable, guarded implementation path instead of a prototype-only win
+  Result: a measurable, guarded implementation path instead of a prototype-only win
 
 Example 2: Regression hardening
 User says: "This agent now fails more often on SPA pages. Add regression protection."
 Actions:
+
 - reproduce the failure on representative cases
 - encode the failure into tests or evals
 - add the minimal fix and verify before/after
 - document rollback and monitoring hooks
-Result: the regression is measurable and cannot silently return
+  Result: the regression is measurable and cannot silently return
 
 ## Troubleshooting
 
