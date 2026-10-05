@@ -34,9 +34,9 @@ body:
       description: Include the exact JSON-RPC tool calls that reproduced the issue, redact any sensitive URLs and keys.
       render: json
       placeholder: |
-        {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"browser_navigate","arguments":{"url":"https://example.com"}}}
-        {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"browser_get_state","arguments":{"mode":"min"}}}
-        {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"browser_click","arguments":{"ref":"e42"}}}
+        {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_space_list","arguments":{}}}
+        {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"host_page_list","arguments":{"space_id":"space_<redacted>"}}}
+        {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"host_snapshot_read","arguments":{"space_id":"space_<redacted>","page_id":"page_<redacted>","lease_epoch":1}}}
 
   - type: input
     id: client
