@@ -5,7 +5,7 @@ use agentyc_core::{
 };
 use agentyc_host::{
     ACTIONABILITY_PAYLOAD_KEY, ELEMENT_REF_PAYLOAD_KEY, EVIDENCE_PAYLOAD_KEY,
-    PROVENANCE_PAYLOAD_KEY, REF_PAYLOAD_KEY, canonical_action_hash,
+    PROVENANCE_PAYLOAD_KEY, REF_PAYLOAD_KEY, canonical_action_hash, request_requires_intent,
 };
 use serde_json::{Value, json};
 
@@ -38,6 +38,12 @@ fn execute(context: &DirectContext, args: ActionExecuteArgs) -> DirectResult<Val
     let payload_supplied = args.payload.is_some();
     let payload = parse_payload(args.payload.as_deref())?;
     validate_page_operation(operation, page_id.as_ref(), &payload)?;
+    if request_requires_intent(operation, &payload) {
+        return Err(agentyc_core::CoreError::new(
+            agentyc_core::ErrorCode::PermissionDenied,
+            "sensitive action requires a host-issued user-intent ticket; the direct CLI has no ticket-issuance flow",
+        ));
+    }
     let postcondition = parse_postcondition(args.postcondition.as_deref())?;
     let now = timestamp(args.now);
 
