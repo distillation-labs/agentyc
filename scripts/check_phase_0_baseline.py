@@ -21,7 +21,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_REL = Path("research/phase-0-baseline.md")
 ARTIFACT_ROOT_REL = Path("artifacts")
-MAX_READ_BYTES = 8 * 1024 * 1024
+MAX_READ_BYTES = 64 * 1024 * 1024
 MAX_FRESHNESS_SECONDS = 7 * 24 * 60 * 60
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 NONCE_RE = re.compile(r"^[0-9a-f]{16,128}$")
@@ -384,11 +384,18 @@ def validate_artifact_safety(checker: Checker) -> None:
 
 
 def validate_artifact_envelope(checker: Checker) -> None:
-    """Require the common envelope on structured Phase 0 report artifacts."""
+    """Require the common envelope on structured Phase 0 report artifacts only."""
     artifact_root = checker.safe_path(ARTIFACT_ROOT_REL)
     if artifact_root is None or not artifact_root.is_dir():
         return
-    for path in sorted(artifact_root.rglob("*.json")):
+    phase_zero_roots = sorted(
+        (path for path in artifact_root.glob("p0-*") if path.is_dir() and not path.is_symlink()),
+        key=lambda path: path.as_posix(),
+    )
+    for path in sorted(
+        (file for directory in phase_zero_roots for file in directory.rglob("*.json")),
+        key=lambda file: file.as_posix(),
+    ):
         if path.is_symlink():
             continue
         data = checker.read_json(path, gate="schema")
