@@ -9,6 +9,8 @@ depends_on: phase-5
 
 # Phase 6 — Direct CLI and SDK
 
+> This plan's command examples describe a proposed interface, not the current shipped CLI. See `docs/cli.md` for the host-backed logical command tree. The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI paths were removed; `run --session` below was a separate host-backed proposal and is not currently shipped. The Node SDK remains at `packages/agentyc-browser`.
+
 ## Objective
 
 Replace the current one-shot/active-page CLI experience with a persistent host client. Give agents the ego-lite-like task-space/page object model without embedding arbitrary code in the host or requiring MCP.
@@ -28,7 +30,7 @@ Replace the current one-shot/active-page CLI experience with a persistent host c
 
 ## Working assumptions
 
-- Agents can call a long-lived `agentyc host` or `agentyc run --session` process and can install/use a thin Node SDK where code batching is valuable. npm is the selected package manager; the Node floor, package lockfile, and registry/private distribution are frozen by Phase 0.
+- The original proposal was for agents to call a long-lived `agentyc host` or `agentyc run --session` process and install/use a thin Node SDK. These host-backed commands are not current shipped commands; use the CLI tree in `docs/cli.md`. The Node SDK in `packages/agentyc-browser` is a separate shipped package.
 - CLI stdout remains machine-readable when `--json`; diagnostics/progress go to stderr.
 - A persistent SDK connection can multiplex requests and events and keep space/page handles in user code, not process-global host selection.
 
@@ -56,7 +58,7 @@ Replace the current one-shot/active-page CLI experience with a persistent host c
 
 ## CLI contract
 
-Representative commands:
+Proposed command tree (not the current shipped CLI):
 
 ```text
 agentyc host start|status|stop
@@ -75,7 +77,7 @@ Rules:
 - `--yes`/explicit confirmation is required for adoption, destructive actions, upload, cookies, and evaluate according to policy.
 - Exit codes distinguish usage, host unavailable, permission/capability, runtime failure, timeout/cancel, and unknown action outcome.
 - `run` executes a sequence through one persistent connection; `repl` uses the same host client and is not an independent browser runtime.
-- The standalone `agentyc browser`, `run --cdp-url`, and `repl --cdp-url` utilities remain separate from the default host-backed command path; they are not MCP modes. Their removal is outside this completed Phase 6 contract.
+- The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI paths were subsequently removed. CDP used by internal installation/test harnesses is not a user-facing interface; the extension's `chrome.debugger` backend remains.
 
 ### Planned output lifecycle
 
