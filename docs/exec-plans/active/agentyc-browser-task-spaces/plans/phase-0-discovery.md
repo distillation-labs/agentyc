@@ -21,8 +21,7 @@ Prove the target product boundary before activating later phases and launching t
 
 ## Confirmed facts
 
-- The historical/explicit legacy CLI path launches a temporary profile when no `--cdp-url` is supplied: `crates/agentyc/src/main.rs::run_action`, `crates/agentyc-runtime/src/lib.rs::BrowserRuntime::open`, `crates/agentyc-browser/src/launcher.rs`.
-- The legacy browser session assumes one `active_page`: `crates/agentyc-browser/src/session.rs`.
+- The Phase 0 baseline recorded a standalone direct-CDP CLI path that could launch a temporary profile and a browser session with one `active_page`. Those CLI commands and Rust crates were later removed; these are historical findings, not current code paths.
 - At the time of the Phase 0 baseline, the direct-CDP MCP path owned browser/server state and could open a browser. That implementation, its `browser_*` tools, profile counts, and HTTP route have since been removed; the archived baseline is not the current MCP contract.
 - Normal direct CLI and host-backed MCP clients use the owner-only local socket; only the explicit offline seam constructs a fake broker. The Chrome-launched `agentyc-native-host` owns the durable broker and a separate Native Messaging stdio bridge. See [the host-backed probe audit](../../../../../research/phase-0-host-backed-probe.md).
 - The historical P0 catalog recorded the former direct-CDP MCP's 61/76 profiles. Those counts are not current MCP tool counts. The current host-backed logical stdio inventory is documented in `docs/mcp-compatibility.md`; headed live Chrome through MCP has not run and MCP is not distribution-ready.
