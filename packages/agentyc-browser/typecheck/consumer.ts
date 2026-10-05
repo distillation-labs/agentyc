@@ -23,6 +23,9 @@ const results: Promise<{ ok: boolean }[]> = client.batch<{ ok: boolean }>([
 ]);
 
 void client.createSpace("alpha", disclosure);
+void client.taskSpace("new-alpha", disclosure);
+void space.pause({ ttl: 60_000 });
+void space.handoff({ ttl: 60_000 });
 void page.create({ leaseEpoch: 1, deadlineMs: 1_000 });
 void page.action(
   "click",
@@ -62,6 +65,9 @@ void helperOperation;
 void page.waitForURL(/example/);
 // @ts-expect-error Snapshot modes are a closed set.
 void page.snapshot({ mode: "verbose" });
+
+// @ts-expect-error Creating from a label requires explicit shared-profile disclosure.
+void client.taskSpace("missing-disclosure");
 
 // @ts-expect-error Logical space IDs cannot be used as action IDs.
 const invalidActionId: LogicalActionId = spaceId;
