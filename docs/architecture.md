@@ -84,30 +84,29 @@ schema and recovery details are in [Configuration](configuration.md).
 
 The root `Cargo.toml` is the workspace source of truth. The current split is:
 
-| Crate             | Responsibility                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------ |
-| `agentyc-core`    | Logical IDs, protocol envelopes, schemas, records, and state/action contracts.                         |
-| `agentyc-host`    | Broker, durable ledger, leases/fences, local IPC, Native Messaging bridge, events, and host lifecycle. |
-| `agentyc`         | Host-backed logical CLI/MCP dispatch plus separate standalone browser/CDP CLI commands.                |
-| `agentyc-mcp`     | Host-backed logical MCP adapter.                                                                       |
-| `agentyc-cdp`     | Chrome DevTools Protocol client for standalone direct-CDP CLI utilities.                               |
-| `agentyc-browser` | Chrome discovery, launch, profile, and session lifecycle for standalone CLI/test use.                  |
-| `agentyc-runtime` | Runtime wrapper used by standalone direct-CDP CLI utilities.                                           |
-| `agentyc-dom`     | DOM serialization, clickable-element detection, and HTML-to-markdown utilities.                        |
-| `agentyc-tools`   | Deterministic extraction utilities for standalone direct-CDP CLI use.                                  |
-| `agentyc-tests`   | Integration-test harness and browser test support.                                                     |
+| Crate           | Responsibility                                                                                         |
+| --------------- | ------------------------------------------------------------------------------------------------------ |
+| `agentyc-core`  | Logical IDs, protocol envelopes, schemas, records, and state/action contracts.                         |
+| `agentyc-host`  | Broker, durable ledger, leases/fences, local IPC, Native Messaging bridge, events, and host lifecycle. |
+| `agentyc`       | Host-backed logical CLI dispatch, MCP stdio entry point, and skill initialization.                     |
+| `agentyc-mcp`   | Host-backed logical MCP adapter.                                                                       |
+| `agentyc-tests` | Integration-test harness; internal CDP use is test-only, not a user-facing CLI.                        |
 
 ## CLI Dispatch
 
-`crates/agentyc/src/main.rs` dispatches these paths:
+`crates/agentyc/src/main.rs` dispatches the shipped host-backed paths:
 
-1. `agentyc` and `agentyc mcp` run the host-backed logical MCP service over
-   stdio. No MCP HTTP route or direct-CDP MCP mode is shipped.
+1. `agentyc` and `agentyc mcp` run the logical MCP service over stdio only.
+   No MCP HTTP route or direct-CDP MCP mode is shipped.
 2. `agentyc space`, `page`, `snapshot`, `action`, `events`, `host`, `wait`,
    and `extension` are direct logical host-backed CLI commands.
-3. `agentyc browser`, `run --cdp-url`, and `repl --cdp-url` remain separate
-   standalone direct-CDP CLI utilities. They do not add MCP tools or transports.
-4. `agentyc init` writes the bundled agent skills guide.
+3. `agentyc init` writes the bundled agent skills guide.
+
+Standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI
+paths were removed. The Node SDK at `packages/agentyc-browser` remains; this is
+not the removed Rust `agentyc-browser` crate. The extension's `chrome.debugger`
+backend also remains. Internal CDP test or installation harnesses are not CLI
+interfaces.
 
 Tracing writes to stderr; stdout remains available for MCP framing or the
 structured JSON emitted by direct commands.
@@ -123,23 +122,14 @@ has not yet been run, and MCP is not distribution-ready. See
 [MCP compatibility](mcp-compatibility.md) for route-level details and release
 blockers.
 
-## Standalone Direct-CDP CLI Utilities
-
-`agentyc browser` launches Chrome with a temporary profile and prints a CDP
-WebSocket URL. `agentyc run --cdp-url <url>` and `agentyc repl --cdp-url <url>`
-operate against an explicitly supplied endpoint. These standalone CLI commands
-are separate from MCP; they do not restore the removed direct-CDP `BrowserServer`,
-`browser_*` tools, `--legacy-cdp` mode, or `serve` HTTP route. The host-backed
-logical adapter does not fall back to these utilities.
-
 ## Public Logical State
 
 Host-backed page snapshots and action results are scoped by `space_id` and
 `page_id`, with lease and generation checks. Refs are valid only for their
 logical page and snapshot/document context. The extension supplies bounded
 page observations and capability results; host policy decides whether those
-observations can support an operation. The standalone direct-CDP CLI utilities
-are not part of the MCP contract.
+observations can support an operation. The removed standalone direct-CDP CLI
+paths are not part of the MCP contract.
 
 Neither this architecture description nor the presence of code/tests is proof
 of a live production deployment or of end-to-end behavior with a user's Chrome
