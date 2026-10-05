@@ -15,14 +15,13 @@ use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 mod commands;
-mod frontend;
 
 use commands::direct::{
     ActionCommand as DirectActionCommand, DirectCommand, DirectCommandError, DirectOptions,
     EventsArgs, ExtensionCommand, HostCommand, PageCommand as DirectPageCommand, SnapshotArgs,
     SpaceCommand, WaitArgs,
 };
-use frontend::{Action, dispatch, render_error, render_json, runtime_config};
+
 
 const SKILL_MD: &str = include_str!("../../../SKILL.md");
 
@@ -65,31 +64,7 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Launch Chrome with remote debugging and print the CDP WebSocket URL.
-    Browser {
-        #[arg(long, default_value = "9222")]
-        port: u16,
-        #[arg(long)]
-        headless: bool,
-        #[arg(long)]
-        detach: bool,
-    },
-    /// Run shared browser automation commands.
-    Run {
-        #[arg(long)]
-        cdp_url: Option<String>,
-        #[arg(long)]
-        headless: Option<bool>,
-        #[command(subcommand)]
-        action: Action,
-    },
-    /// Run the shared browser automation command REPL.
-    Repl {
-        #[arg(long)]
-        cdp_url: Option<String>,
-        #[arg(long)]
-        headless: Option<bool>,
-    },
+
     /// Manage logical task spaces through the host broker.
     Space {
         #[command(subcommand)]
@@ -191,17 +166,7 @@ async fn run() -> Result<()> {
             print,
             force,
         }) => cmd_init(&output, print, force),
-        Some(Cmd::Browser {
-            port,
-            headless,
-            detach,
-        }) => cmd_browser(port, headless, detach).await,
-        Some(Cmd::Run {
-            cdp_url,
-            headless,
-            action,
-        }) => run_action(cdp_url, headless, action).await,
-        Some(Cmd::Repl { cdp_url, headless }) => run_repl(cdp_url, headless).await,
+
         Some(Cmd::Space { command }) => run_direct(DirectCommand::Space(command), direct_options),
         Some(Cmd::Page { command }) => run_direct(DirectCommand::Page(command), direct_options),
         Some(Cmd::Snapshot(args)) => run_direct(DirectCommand::Snapshot(args), direct_options),
@@ -283,66 +248,6 @@ fn host_principal(explicit: Option<&str>) -> Result<PrincipalId> {
     }
 }
 
-async fn run_action(cdp_url: Option<String>, headless: Option<bool>, action: Action) -> Result<()> {
-    let cdp_url = cdp_url.ok_or_else(|| {
-        anyhow!(
-            "legacy direct-CDP run requires an explicit --cdp-url; the default product path does not launch Chrome"
-        )
-    })?;
-    let runtime =
-        agentyc_runtime::BrowserRuntime::open(runtime_config(Some(cdp_url), headless)).await?;
-    match dispatch(&runtime, action).await {
-        Ok(value) => println!("{}", render_json(&value)),
-        Err(error) => {
-            println!("{}", render_error(&error));
-            runtime.close().await.ok();
-            return Err(anyhow!("command failed: {error}"));
-        }
-    }
-    runtime.close().await.ok();
-    Ok(())
-}
-
-async fn run_repl(cdp_url: Option<String>, headless: Option<bool>) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    let cdp_url = cdp_url.ok_or_else(|| {
-        anyhow!(
-            "legacy direct-CDP repl requires an explicit --cdp-url; the default product path does not launch Chrome"
-        )
-    })?;
-    let runtime =
-        agentyc_runtime::BrowserRuntime::open(runtime_config(Some(cdp_url), headless)).await?;
-    let stdin = BufReader::new(tokio::io::stdin());
-    let mut lines = stdin.lines();
-    eprintln!("agentyc REPL — type 'help' for commands, 'exit' to close");
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if matches!(line, "exit" | "quit") {
-            break;
-        }
-        if line == "help" {
-            println!(
-                "navigate <url> [--new-tab] | state | evaluate <javascript> | tabs list|new|switch|close | close"
-            );
-            continue;
-        }
-        match frontend::parse_line(line) {
-            Ok(action) => match dispatch(&runtime, action).await {
-                Ok(value) => println!("{}", render_json(&value)),
-                Err(error) => println!("{}", render_error(error)),
-            },
-            Err(error) if error.is_empty() => {}
-            Err(error) => println!("{}", render_error(error)),
-        }
-    }
-    runtime.close().await.ok();
-    Ok(())
-}
-
 
 fn cmd_init(output: &str, print_only: bool, force: bool) -> Result<()> {
     if print_only {
@@ -365,65 +270,5 @@ fn cmd_init(output: &str, print_only: bool, force: bool) -> Result<()> {
     println!("Add this file to your coding agent context:");
     println!("  Claude Code:  add \"{output}\" to CLAUDE.md with @{output}");
     println!("  Cursor:       copy to .cursor/rules/agentyc.md");
-    Ok(())
-}
-
-async fn cmd_browser(port: u16, headless: bool, detach: bool) -> Result<()> {
-    let chrome = agentyc_browser::find_chrome_binary().ok_or_else(|| {
-        anyhow!("Could not find Chrome or Chromium. Install Chrome and try again.")
-    })?;
-    let user_data_dir = tempfile::Builder::new().prefix("agentyc-cli-").tempdir()?;
-
-    let mut args = vec![
-        format!("--remote-debugging-port={port}"),
-        format!("--user-data-dir={}", user_data_dir.path().display()),
-        "--no-first-run".to_string(),
-        "--no-default-browser-check".to_string(),
-        "--disable-background-networking".to_string(),
-    ];
-    if headless {
-        args.push("--headless=new".to_string());
-    }
-
-    let mut child = tokio::process::Command::new(&chrome)
-        .args(&args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-
-    // Poll /json/version until ready
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-    let mut cdp_url: Option<String> = None;
-    while tokio::time::Instant::now() < deadline {
-        if let Ok(resp) = reqwest::get(format!("http://localhost:{port}/json/version")).await {
-            if let Ok(data) = resp.json::<serde_json::Value>().await {
-                if let Some(url) = data["webSocketDebuggerUrl"].as_str() {
-                    cdp_url = Some(url.to_string());
-                    break;
-                }
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-
-    let url = match cdp_url {
-        Some(url) => url,
-        None => {
-            let _ = child.kill().await;
-            return Err(anyhow!(
-                "Chrome did not start within 15 seconds on port {port}"
-            ));
-        }
-    };
-    println!("{url}");
-
-    if !detach {
-        let _ = child.wait().await;
-    } else {
-        // Detached mode intentionally transfers ownership to the caller. The
-        // caller can terminate the browser using the printed CDP endpoint.
-        std::mem::forget(user_data_dir);
-        std::mem::forget(child);
-    }
     Ok(())
 }
