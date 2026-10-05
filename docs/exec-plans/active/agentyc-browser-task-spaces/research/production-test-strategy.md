@@ -42,7 +42,7 @@ Each supported MCP tool is mapped to a scenario containing setup, protocol trans
 - Use refs to click, type, fill, select, scroll, upload, and evaluate only when capability and user authority permit.
 - Exercise hidden, disabled, covered, moving, rerendered, stale, cross-origin, and detached controls.
 - Take over a space from the side panel while queued and dispatched actions exist, then return control and resume.
-- Disconnect stdio, reset HTTP streams, issue DELETE, restart the host, reconnect the extension, terminate the MV3 worker, detach the debugger, restart Chrome, and reconcile without replaying mutations.
+- Disconnect the MCP stdio process, restart the host, reconnect the extension, terminate the MV3 worker, detach the debugger, restart Chrome, and reconcile without replaying mutations.
 - Browse unrelated user tabs while two spaces work; activate or edit agent-owned tabs without treating focus or page events as takeover.
 - Attempt cross-space actions, raw-ID bypasses, unowned closes, session spoofing, stale refs, wrong generations, and forged user-intent tickets.
 
@@ -50,14 +50,14 @@ A scenario is not successful because a process exits cleanly. It must assert sem
 
 ## MCP contract coverage
 
-The MCP compatibility suite freezes and tests:
+The current MCP contract and release suite must test:
 
 - Stdio initialize/initialized/shutdown lifecycle, notifications, malformed JSON/JSON-RPC, invalid params, unknown methods/tools, duplicate IDs, out-of-order responses, EOF, deadlines, and cancellation.
-- Legacy Streamable HTTP method/status/header/session behavior, exact loopback/Origin/Host admission, `Mcp-Session-Id`, `Last-Event-ID`, SSE framing, GET/POST/DELETE, reset, reconnect, and session spoofing.
-- Exact default and extended tool manifests: names, ordering, schemas, descriptions, defaults, output shape, side effects, required authority, deprecation markers, and error mapping.
-- Canonical error mapping: tool execution errors preserve `CallToolResult.isError=true`; protocol/transport errors remain JSON-RPC errors. Every error includes stable code, retryability, action/reconcile guidance, and no secrets/raw browser IDs.
-- Multiple connections sharing one broker, same-connection multiplexing, out-of-order responses, per-space mutation ordering, fairness, backpressure, event isolation, duplicate idempotency keys, lease expiry, takeover fences, cancellation, reconnect, and replay gaps.
-- Host-backed real-browser execution for every supported tool; unsupported/partial capabilities are explicit typed results rather than false success.
+- The host-backed inventory: 29 offline routes and 30 connected-catalog routes, each named `host_*`; the 12 unavailable routes must return typed `capability_unavailable` before forwarding.
+- The actual input schemas, logical identity scope, disclosure requirements, structured results, and error mapping for the shipped host-backed routes. Do not use archived default/extended manifests as current tool evidence.
+- Canonical error mapping: tool execution errors preserve `CallToolResult.isError=true`; protocol/transport errors remain protocol/transport errors. Errors include stable codes and reconciliation guidance without secrets or raw browser IDs.
+- Multiple connections sharing one broker, out-of-order responses, per-space mutation ordering, event isolation, duplicate idempotency keys, lease expiry, takeover fences, cancellation, disconnect/reconnect, and replay gaps.
+- Host-backed real-browser execution for every supported workflow; unsupported routes must fail closed. There is no MCP HTTP transport or profile-based tool selection.
 
 ## Context and speed measurements
 
