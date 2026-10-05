@@ -13,6 +13,10 @@ depends_on: phase-1
 
 Define the contracts before implementing the broker or extension. The local protocol and `agentyc-core` are canonical; the CLI/SDK and MCP adapter serialize them. No contract may expose raw Chrome tab IDs, CDP target/session IDs, or `[id] name` presentation.
 
+## Current MCP boundary
+
+The direct-CDP MCP server, its 61/76-tool profiles, and HTTP transport were removed after this plan was completed. The old MCP profiles and HTTP fixtures below are archived Phase 2 evidence only; they are not current routes, support claims, or release requirements. Current MCP is host-backed logical stdio only; its offline server lists 29 routes, its connected catalog declares 30 (12 return `capability_unavailable`), and headed live Chrome validation remains open. See [`docs/mcp-compatibility.md`](../../../../mcp-compatibility.md).
+
 ## Handoff in
 
 - **Inputs:** Phase 1 architecture/invariants; Phase 0 capability and budget addendum; D-09–D-17.
@@ -21,7 +25,7 @@ Define the contracts before implementing the broker or extension. The local prot
 
 ## Confirmed facts
 
-- Existing MCP schemas/tool errors live in `crates/agentyc-mcp/src/lib.rs`, `state.rs`, and `tools/`; compatibility fields must be isolated.
+- At Phase 2 planning time, MCP schemas and errors lived in a direct-CDP server. That implementation was later removed; current logical routes are in `crates/agentyc-mcp/src/host_server.rs` and `remote_host_server.rs`.
 - Existing CLI output is ad hoc JSON and current `run` closes the runtime per command.
 - Native Messaging and local IPC have different framing/limits; the bridge must not conflate them.
 - SDK/client connections need out-of-order response matching, cancellation, reconnect, and event resume.
@@ -37,7 +41,7 @@ Define the contracts before implementing the broker or extension. The local prot
 
 - **U2-1:** final ID prefix/length and whether IDs need sortable encoding; owner: Japneet Kalkat; freeze in P2-T1.
 - **U2-2:** exact artifact transport for screenshots/PDFs; owner: Japneet Kalkat; freeze in P2-T4.
-- **U2-3:** legacy MCP profile facts; owner: Japneet Kalkat; Phase 2 records repository measurements and fixtures, while Phase 8 freezes the compatibility release. Current source has 76 tool declarations, 61 default tools, and 15 extended observability tools; comments and server metadata are inconsistent and must not be treated as the contract.
+- **U2-3 (closed as historical):** the direct-CDP MCP profile measurements belonged to the removed implementation. The old fixtures remain archived only; current route counts and unavailable capabilities are in `docs/mcp-compatibility.md`. Phase 8 owns current live support and distribution validation.
 
 ## Scope
 
@@ -187,10 +191,10 @@ Required error codes include `extension_not_connected`, `profile_not_found`, `sp
   - **Validation:** protocol/client contract tests; example script uses `taskSpace(...).page(...).snapshot(...)` without raw IDs.
   - **Owner:** Japneet Kalkat.
 
-- [x] P2-T7 — Define MCP adapter and legacy deprecation matrix.
-  - **Files:** `crates/agentyc-mcp/src/{compat.rs,adapter.rs,connection.rs}` design; `crates/agentyc-mcp/src/state.rs` migration boundary; `docs/api.md`; `tests/mcp_protocol.rs` expected fixtures; planned `tests/fixtures/mcp/{stdio,http,schemas,errors,workflows}/`.
-  - **Done when:** legacy stdio/HTTP connection maps to a host-assigned principal, default compatibility `space` behavior is explicit, unsafe global operations become scoped, raw fields are adapter-only, unsupported extension capabilities have typed MCP errors, and modern MCP remains separate. The matrix distinguishes tool execution failures (`CallToolResult.isError=true`) from JSON-RPC protocol errors and defines rmcp 1.7 cancellation/disconnect/EOF behavior. It includes exact versioned default/extended tool manifests, schemas, side effects, authority, deprecation, and stable error mappings.
-  - **Validation:** compatibility matrix covers measured default 61 and extended 76 tools, profile advertisement, accepted `2024-11-05`, explicit rejection/not-claim for `2025-11-25` and `2026-07-28` under `rmcp 1.7`, HTTP session/GET/SSE/DELETE/header behavior, `isError`, state fields, `tab_id`, cancellation, abrupt disconnect, host ownership, duplicate/out-of-order requests, event replay, and schema goldens. Archive sanitized wire transcripts and manifests.
+- [x] P2-T7 — Define the historical MCP contract record.
+  - **Files:** original Phase 2 MCP fixtures under `tests/fixtures/mcp/`; current evidence at `crates/agentyc-mcp/src/{host_server.rs,remote_host_server.rs,host_adapter.rs}`, `tests/mcp_protocol.rs`, and `docs/mcp-compatibility.md`.
+  - **Done when:** the Phase 2 contract record captured the then-current MCP declarations and protocol assumptions. The direct-CDP MCP server and HTTP route were later removed; archived profile/schema fixtures are not current capabilities.
+  - **Validation:** current offline stdio routes and shared-profile disclosure are tested by `tests/mcp_protocol.rs`; current remote route limitations and the live Chrome release gap are recorded in `docs/mcp-compatibility.md`. The archived 61/76 profiles and HTTP fixtures are not release evidence.
   - **Owner:** Japneet Kalkat.
 
 - [x] P2-T8 — Audit all primary outputs for identity leakage.
