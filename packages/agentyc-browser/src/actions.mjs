@@ -51,6 +51,58 @@ function actionArgumentError(operation) {
   });
 }
 
+function actionCapabilityError(operation, definition, reason = undefined) {
+  return new AgentycError({
+    code: "permission_denied",
+    message:
+      reason ??
+      definition.unsupportedReason ??
+      `action operation ${operation} is unavailable in the direct interface`,
+    retryable: false,
+    guidance: "none",
+    details: { operation },
+  });
+}
+
+function payloadRequiresIntent(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  const sensitiveBoundaries = new Set([
+    "login_challenge",
+    "payment",
+    "destructive_submit",
+    "permission",
+    "upload",
+    "cookies",
+    "cookie",
+    "evaluate",
+  ]);
+  return Object.entries(payload).some(([key, value]) => {
+    const normalizedKey = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    return (
+      (normalizedKey === "sensitiveboundary" ||
+        normalizedKey === "policyboundary") &&
+      typeof value === "string" &&
+      sensitiveBoundaries.has(value)
+    );
+  });
+}
+
+export function assertSupportedAction(operation, payload = undefined) {
+  const definition = operationForAction(operation);
+  if (!definition) throw actionArgumentError(operation);
+  if (!definition.supported) throw actionCapabilityError(operation, definition);
+  if (payloadRequiresIntent(payload)) {
+    throw actionCapabilityError(
+      operation,
+      definition,
+      "sensitive action payload requires a host-issued user-intent ticket; the direct interfaces do not expose ticket issuance",
+    );
+  }
+  return definition;
+}
+
 export async function submitAction(client, request) {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw invalidArgument("action request must be an object");
@@ -69,9 +121,7 @@ export async function submitAction(client, request) {
     ...input
   } = request;
 
-  if (!operationForAction(input.operation)) {
-    throw actionArgumentError(input.operation);
-  }
+  assertSupportedAction(input.operation, input.payload);
 
   const completeRequest = Object.fromEntries(
     Object.entries({
