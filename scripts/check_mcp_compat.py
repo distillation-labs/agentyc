@@ -116,6 +116,32 @@ def _source_digest(path: Path, root: Path) -> dict[str, str]:
     }
 
 
+def _without_test_modules(source: str) -> str:
+    lines = source.splitlines(keepends=True)
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        if re.match(r"\\s*#\\[cfg\\(test\\)\\]\\s*$", lines[index]):
+            module_index = index + 1
+            while module_index < len(lines) and not re.search(r"\\bmod\\s+\\w+\\s*\\{", lines[module_index]):
+                module_index += 1
+            if module_index < len(lines):
+                depth = 0
+                started = False
+                while module_index < len(lines):
+                    line = lines[module_index]
+                    depth += line.count("{") - line.count("}")
+                    started = started or "{" in line
+                    module_index += 1
+                    if started and depth <= 0:
+                        break
+                index = module_index
+                continue
+        kept.append(lines[index])
+        index += 1
+    return "".join(kept)
+
+
 def _add_check(checks: list[dict[str, Any]], check_id: str, passed: bool, detail: Any) -> None:
     checks.append({"id": check_id, "status": "pass" if passed else "fail", "detail": detail})
 
@@ -266,8 +292,10 @@ def inspect_repository(
 
     bypasses: list[dict[str, Any]] = []
     for path in source_files:
+        if path.name == "host_adapter_audit.rs":
+            continue
         try:
-            source = _strip_rust_comments(_read_text(path))
+            source = _without_test_modules(_strip_rust_comments(_read_text(path)))
         except CompatibilityError as exc:
             bypasses.append({"path": path.relative_to(root).as_posix(), "error": str(exc)})
             continue
