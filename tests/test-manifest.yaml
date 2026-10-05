@@ -221,7 +221,7 @@ commands:
     status: "required"
     layer: "process"
     environment: ["local"]
-    fixture: "legacy-mcp"
+    fixture: "host-backed-mcp"
     owner: "Japneet Kalkat"
     quarantine: false
     command:
