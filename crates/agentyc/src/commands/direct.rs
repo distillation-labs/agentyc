@@ -1,9 +1,8 @@
 //! Direct host-backed interfaces for logical task spaces and pages.
 //!
-//! This module is deliberately separate from the legacy CDP/runtime frontend. The
-//! direct path opens the durable host ledger, performs the core handshake, and
-//! talks only in logical identities. It never launches a browser or accepts a
-//! copied browser debugging endpoint.
+//! This module implements the host-backed CLI. It opens the durable host ledger,
+//! performs the core handshake, and talks only in logical identities. It never
+//! launches a browser or accepts a copied browser debugging endpoint.
 
 use std::{
     cell::RefCell,
@@ -738,8 +737,8 @@ pub(crate) fn remote_field(
                 Some('{') | Some('[') | Some('"')
             ) =>
         {
-            // The legacy string-map adapter may return a scalar string without
-            // JSON quotes. Structured-looking values remain strict so malformed
+            // The string-map wire format can carry scalar strings without JSON
+            // quotes. Structured-looking values remain strict so malformed
             // objects and arrays cannot silently change result shape.
             Ok(Value::String(encoded.clone()))
         }
@@ -1445,7 +1444,7 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_extension_is_structured_and_never_legacy_runtime() {
+    fn unavailable_extension_is_structured_and_does_not_launch_a_browser() {
         let directory = tempdir().expect("tempdir");
         let mut opts = options(directory.path());
         opts.offline = false;
@@ -1484,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_string_map_decoding_accepts_json_scalars_and_legacy_raw_strings() {
+    fn remote_string_map_decoding_preserves_unquoted_scalar_strings() {
         let response = BTreeMap::from([
             ("object".to_owned(), r#"{"ok":true}"#.to_owned()),
             ("array".to_owned(), "[1,2]".to_owned()),
