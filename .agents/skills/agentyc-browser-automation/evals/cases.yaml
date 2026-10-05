@@ -38,9 +38,9 @@ Given an MCP client request, the agent must use only the current host-backed log
 
 Given a question about MCP support or release readiness, the agent must state that headed live Chrome validation has not run and MCP is not distribution-ready. An offline test or remote catalog declaration alone is not live support evidence.
 
-### Standalone direct-CDP CLI boundary
+### Removed standalone direct-CDP CLI boundary
 
-Given an explicit request to maintain a standalone direct-CDP workflow, the agent may describe `agentyc browser`, `agentyc run --cdp-url <endpoint> ...`, or `agentyc repl --cdp-url <endpoint>` as CLI utilities, separate from MCP. `run` and `repl` require an explicit endpoint at runtime.
+Given an explicit request to maintain a standalone direct-CDP workflow, the agent must state that the `browser`, `run --cdp-url`, and `repl --cdp-url` CLI paths have been removed and must not provide invocation guidance for them. It should distinguish internal CDP-based installation/test harnesses from user-facing commands and preserve the extension's `chrome.debugger` backend and Node SDK.
 
 ## Performance case
 
