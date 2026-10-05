@@ -61,6 +61,7 @@ impl ScrollDir {
 pub struct BrowserServer {
     state: SharedState,
     tool_router: ToolRouter<Self>,
+    extended_profile: bool,
 }
 
 impl BrowserServer {
@@ -69,6 +70,10 @@ impl BrowserServer {
     }
 
     pub fn with_cdp_url(cdp_url: Option<String>) -> Self {
+        Self::with_profile(cdp_url, tools::extended_profile())
+    }
+
+    fn with_profile(cdp_url: Option<String>, extended_profile: bool) -> Self {
         let state = Arc::new(Mutex::new(ServerState::with_cdp_url(cdp_url)));
         let mut tr = Self::tool_router_nav()
             + Self::tool_router_state()
@@ -78,7 +83,7 @@ impl BrowserServer {
             + Self::tool_router_tabs();
         // Opt-in extended profile adds the observability tools. Kept out of the
         // default set so tools/list stays small and context-cheap for agents.
-        if tools::extended_profile() {
+        if extended_profile {
             tr += Self::tool_router_observability();
         }
         // Strip verbose schemars-generated fields from every tool's inputSchema
@@ -87,6 +92,7 @@ impl BrowserServer {
         Self {
             state,
             tool_router: tr,
+            extended_profile,
         }
     }
 
@@ -1520,8 +1526,35 @@ impl BrowserServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for BrowserServer {
     fn get_info(&self) -> ServerInfo {
+        let instructions = if self.extended_profile {
+            "agentyc browser automation — 76 tools (extended profile)"
+        } else {
+            "agentyc browser automation — 61 tools (default profile)"
+        };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("agentyc browser automation — 61 tools")
+            .with_instructions(instructions)
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn server_info_matches_the_selected_tool_profile() {
+        let default = BrowserServer::with_profile(None, false);
+        let extended = BrowserServer::with_profile(None, true);
+
+        assert_eq!(default.tool_router.map.len(), 61);
+        assert_eq!(extended.tool_router.map.len(), 76);
+        assert_eq!(
+            serde_json::to_value(default.get_info()).expect("default server info")["instructions"],
+            "agentyc browser automation — 61 tools (default profile)"
+        );
+        assert_eq!(
+            serde_json::to_value(extended.get_info()).expect("extended server info")["instructions"],
+            "agentyc browser automation — 76 tools (extended profile)"
+        );
     }
 }
 
