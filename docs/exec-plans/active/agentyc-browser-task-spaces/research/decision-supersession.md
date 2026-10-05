@@ -68,7 +68,7 @@ MCP is a compatibility-only adapter over `agentyc-host` and `agentyc-core`, not 
 
 ### D-16 — Primary SDK and CLI
 
-The canonical agent surface is the local protocol plus a persistent JSON CLI and a thin typed Node SDK that uses the same envelopes. Both expose task-space-scoped operations and can batch a multi-step script over one connection. The SDK is a client only; it does not embed a second browser runtime or execute arbitrary code inside the host.
+The planned canonical surface was the local protocol plus a persistent JSON CLI and a thin typed Node SDK that uses the same envelopes. As shipped, the CLI exposes host-backed logical subcommands per invocation, while the Node SDK at `packages/agentyc-browser` remains a client over the local protocol. The standalone direct-CDP `browser`, `run`, and `repl` CLI paths and their Rust runtime crates were removed; extension `chrome.debugger` and independent test/installation harnesses remain distinct from user-facing direct-CDP commands.
 
 Example shape (planned; aligned to the checked-in ego-lite reference, not an implemented agentyc API):
 
