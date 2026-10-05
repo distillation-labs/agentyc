@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { connect } from "../src/index.mjs";
@@ -57,7 +57,9 @@ async function startRustHost(t, stateDirectory, socketPath) {
         clearTimeout(timeout);
         clearInterval(poll);
         rejectReady(
-          new Error(`Rust host exited before readiness (${child.exitCode}): ${stderr}`),
+          new Error(
+            `Rust host exited before readiness (${child.exitCode}): ${stderr}`,
+          ),
         );
       }
     }, 20);
@@ -92,7 +94,7 @@ test(
     const root = await mkdtemp(join(tmpdir(), "agentyc-sdk-rust-host-"));
     t.after(() => rm(root, { recursive: true, force: true }));
     const stateDirectory = join(root, "state");
-    const socketPath = join(root, "host.sock");
+    const socketPath = join("/tmp", `ayb-${basename(root)}.sock`);
     await startRustHost(t, stateDirectory, socketPath);
 
     const client = await connect({ socketPath });
@@ -106,9 +108,13 @@ test(
     });
     assert.match(space.id, /^space_/);
 
-    const cursorResult = await client.request("events.cursor", {}, {
-      mayHaveSideEffects: false,
-    });
+    const cursorResult = await client.request(
+      "events.cursor",
+      {},
+      {
+        mayHaveSideEffects: false,
+      },
+    );
     const cursor = cursorResult.cursor;
     const wait = client.waitFor(
       { kind: "event_kind", event: "lease.changed" },
@@ -140,7 +146,9 @@ test(
       afterSequence: cursor.sequence,
     });
     assert.equal(afterResume.resume, "accepted");
-    assert.ok(afterResume.events.some((event) => event.event === "lease.changed"));
+    assert.ok(
+      afterResume.events.some((event) => event.event === "lease.changed"),
+    );
 
     await client.reconnect();
     assert.equal((await client.hostStatus()).lifecycle, "ready");
