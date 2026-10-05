@@ -92,9 +92,11 @@
 
 **Stop rationale:** Transport changes do not invalidate the reliability/context mechanisms; only runtime evidence can tune them.
 
-## D-15 — MCP compatibility boundary
+## D-15 — MCP compatibility boundary (historical decision)
 
-**Recommendation:** Keep MCP as an adapter over the host broker/core. Preserve legacy `agentyc mcp`/`serve` and required `rmcp 1.7` stdio/legacy Streamable HTTP behavior during migration, but do not make MCP the canonical state owner, primary UX, or release acceptance gate. Freeze the measured default and extended tool profiles, preserve `isError=true` for tool execution failures, distinguish protocol JSON-RPC errors, scope every close path to broker-owned pages, keep raw IDs adapter-only, and map each transport connection to a host-assigned principal.
+> Superseded by the user-directed legacy MCP removal recorded in [`decision-supersession.md`](decision-supersession.md): no direct-CDP MCP tools, 61/76 profiles, or MCP HTTP transport remain shipped. The current host-backed stdio MCP is not distribution-ready pending Phase 8 live and release gates.
+
+**Recommendation at decision time:** Keep MCP as an adapter over the host broker/core. Preserve legacy `agentyc mcp`/`serve` and required `rmcp 1.7` stdio/legacy Streamable HTTP behavior during migration, but do not make MCP the canonical state owner, primary UX, or release acceptance gate. Freeze the measured default and extended tool profiles, preserve `isError=true` for tool execution failures, distinguish protocol JSON-RPC errors, scope every close path to broker-owned pages, keep raw IDs adapter-only, and map each transport connection to a host-assigned principal.
 
 **Why this wins now:** Existing clients need a migration path, but the clarified product explicitly removes MCP as primary. The adapter can preserve compatibility without coupling host identity to `rmcp 1.7` (S-003–S-008).
 
