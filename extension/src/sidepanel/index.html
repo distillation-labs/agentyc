@@ -3,14 +3,12 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>agentyc task spaces</title>
+        <title>Agentyc</title>
         <link rel="stylesheet" href="styles.css" />
     </head>
     <body>
-        <header>
-            <div>
-                <h1>Task spaces</h1>
-            </div>
+        <header class="panel-header">
+            <h1>Task spaces</h1>
             <span
                 id="connection-status"
                 class="status"
@@ -23,7 +21,7 @@
         <main>
             <section class="create-card" aria-labelledby="create-title">
                 <h2 id="create-title">Create a space</h2>
-                <p id="profile-disclosure">
+                <p id="profile-disclosure" class="profile-disclosure">
                     This space uses your existing Chrome profile. Cookies,
                     storage, history, permissions, and installed extensions are
                     shared; this is not an isolation boundary.
@@ -44,14 +42,21 @@
                         autocomplete="off"
                         placeholder="Research"
                     />
-                    <button id="create-space" type="button">Create</button>
+                    <button id="create-space" class="primary" type="button">
+                        Create
+                    </button>
                 </div>
             </section>
-            <section aria-labelledby="spaces-title">
-                <h2 id="spaces-title" class="sr-only">Available spaces</h2>
-                <div id="spaces"></div>
+            <section class="spaces-section" aria-labelledby="spaces-title">
+                <h2 id="spaces-title">Your spaces</h2>
+                <div id="spaces" aria-live="polite"></div>
             </section>
-            <section class="notice-card" aria-labelledby="notice-title">
+            <section
+                id="notice-section"
+                class="notice-card"
+                aria-labelledby="notice-title"
+                hidden
+            >
                 <h2 id="notice-title">Notices</h2>
                 <ul id="notices" aria-live="polite"></ul>
             </section>
