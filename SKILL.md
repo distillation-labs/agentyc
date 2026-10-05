@@ -1,11 +1,11 @@
 ---
 name: agentyc-browser-automation
 description: >
-  Gives coding agents a deterministic browser-automation superpower through the Agentyc
-  direct CLI and SDK, with MCP retained as a compatibility adapter. Use for web QA,
+  Gives coding agents deterministic browser automation through Agentyc's host-backed
+  logical CLI and Node SDK, with MCP retained as a compatibility adapter. Use for web QA,
   UI workflows, extraction, auth-state handling, multi-page task-space work, network
   debugging, and browser-mediated verification. It teaches the read-ref-act-verify loop,
-  the narrowest-tool routing strategy, and when to use the direct CLI, SDK, or MCP adapter.
+  the narrowest-tool routing strategy, and when to use the host-backed CLI, Node SDK, or MCP adapter.
 metadata:
   version: "2.0.0"
   category: browser-automation
@@ -16,7 +16,7 @@ license: MIT
 
 # Agentyc Browser Automation
 
-Give the coding agent deterministic browser automation through Agentyc. The direct CLI and SDK is the primary interface; MCP is compatibility-only. Direct-CDP and temporary-browser paths are explicit legacy test modes. The agent should scope work by logical task space and page, inspect scoped state, act on stable references, and verify the user-visible result.
+Give the coding agent deterministic browser automation through Agentyc. The host-backed logical CLI and Node SDK are the primary interfaces; MCP is compatibility-only. The agent should scope work by logical task space and page, inspect scoped state, act on stable references, and verify the user-visible result.
 
 ## Architectural and security boundaries
 
@@ -35,7 +35,7 @@ In the CLI, mutations use `agentyc action execute --operation <OPERATION>`; conv
 
 ## Choose the right frontend
 
-- **Direct CLI and SDK (primary):** use logical task spaces and pages through the host-owned protocol for standard agent workflows.
+- **Host-backed CLI and Node SDK (primary):** use logical task spaces and pages through the host-owned protocol for standard agent workflows.
 - **MCP (compatibility-only):** use only when an existing agent client strictly requires an MCP stdio adapter. Do not treat MCP as the canonical state owner.
 - **REPL / Run (legacy compatibility):** use `agentyc run` or `agentyc repl` only when explicitly maintaining legacy direct-CDP compatibility scripts.
 
@@ -126,7 +126,7 @@ MCP exposes host-backed logical operations over stdio only. The offline server l
 }
 ```
 
-## Standalone direct-CDP CLI utilities (not MCP)
+## Standalone direct-CDP CLI utilities (compatibility path; not MCP)
 
 The CLI still includes `agentyc browser [--port PORT] [--headless] [--detach]` to launch a temporary-profile Chrome, `agentyc run --cdp-url <endpoint> ...` for one command, and `agentyc repl --cdp-url <endpoint>` for an interactive session. These are separate CLI utilities; their existence does not add MCP tools or transports. `run` and `repl` require an explicit endpoint at runtime.
 
