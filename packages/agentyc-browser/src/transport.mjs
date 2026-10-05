@@ -258,6 +258,7 @@ export class LocalProtocolTransport {
     this.deliveredEventCursors = new Set();
     this.lastCursor = undefined;
     this.connectionNonce = undefined;
+    this.helloOk = undefined;
   }
 
   async connect() {
@@ -451,18 +452,7 @@ export class LocalProtocolTransport {
     const resumeResult = decodeJsonField(raw.resume_result);
     const cursor = decodeJsonField(raw.cursor);
     const events = decodeJsonField(raw.events);
-    if (
-      cursor &&
-      typeof cursor === "object" &&
-      !Array.isArray(cursor) &&
-      cursor.broker_epoch !== undefined &&
-      cursor.sequence !== undefined
-    ) {
-      this.lastCursor = {
-        broker_epoch: cursor.broker_epoch,
-        sequence: cursor.sequence,
-      };
-    }
+    this.rememberCursor(cursor);
     if (Array.isArray(events)) {
       for (const event of events) this._deliverEvent(event);
     }
@@ -497,10 +487,34 @@ export class LocalProtocolTransport {
     }
   }
 
+  rememberCursor(cursor) {
+    if (
+      !cursor ||
+      typeof cursor !== "object" ||
+      Array.isArray(cursor) ||
+      cursor.broker_epoch === undefined ||
+      cursor.sequence === undefined
+    ) {
+      return this.lastCursor;
+    }
+    this.lastCursor = {
+      broker_epoch: normalizeWatermark(cursor.broker_epoch, "broker_epoch"),
+      sequence: normalizeWatermark(cursor.sequence, "sequence"),
+    };
+    return this.lastCursor;
+  }
+
   async reconnect() {
     await this.close();
     this.closed = false;
     await this._ensureConnected();
+    if (this.lastCursor) {
+      return this.resume({
+        afterEpoch: this.lastCursor.broker_epoch,
+        afterSequence: this.lastCursor.sequence,
+      });
+    }
+    return this.helloOk?.resume;
   }
 
   async close() {
@@ -767,6 +781,7 @@ export class LocalProtocolTransport {
           );
           return;
         }
+        this.helloOk = envelope;
         this._helloResolve(envelope);
         this._helloResolve = undefined;
         this._helloReject = undefined;
