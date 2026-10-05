@@ -44,12 +44,38 @@ struct RemoteToolSpec {
 }
 
 const NO_FIELDS: &[FieldSpec] = &[];
-const LABEL_FIELDS: &[FieldSpec] = &[FieldSpec {
-    name: "label",
-    kind: "string",
-    description: "Human-readable logical label.",
-    required: true,
-}];
+const SPACE_CREATE_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "label",
+        kind: "string",
+        description: "Human-readable logical label.",
+        required: true,
+    },
+    FieldSpec {
+        name: "profile_scope",
+        kind: "string",
+        description: "Must be shared_existing_profile; automation uses the existing Chrome profile.",
+        required: true,
+    },
+    FieldSpec {
+        name: "shared_state_notice",
+        kind: "string",
+        description: "Must be shared_profile_state; cookies, sessions, and storage are shared.",
+        required: true,
+    },
+    FieldSpec {
+        name: "isolation_claim",
+        kind: "boolean",
+        description: "Must be false; a logical task space is not a browser-profile isolation boundary.",
+        required: true,
+    },
+    FieldSpec {
+        name: "profile_disclosure_acknowledged",
+        kind: "boolean",
+        description: "Must be true only after the user explicitly acknowledges the shared-profile disclosure.",
+        required: true,
+    },
+];
 const SPACE_ID_FIELDS: &[FieldSpec] = &[FieldSpec {
     name: "space_id",
     kind: "string",
@@ -442,8 +468,8 @@ const REMOTE_TOOL_SPECS: &[RemoteToolSpec] = &[
     RemoteToolSpec {
         name: "host_space_create",
         method: "space.create",
-        description: "Create a logical task space. Fields: label (required logical label).",
-        fields: LABEL_FIELDS,
+        description: "Create a logical task space in the existing shared Chrome profile. Fields: label, profile_scope, shared_state_notice, isolation_claim, and profile_disclosure_acknowledged are required. The disclosure must be explicitly acknowledged; task spaces are not profile isolation boundaries.",
+        fields: SPACE_CREATE_FIELDS,
         supported_by_local_protocol: true,
     },
     RemoteToolSpec {
@@ -682,7 +708,15 @@ impl RemoteHostBrowserServer {
     fn build_tool_router() -> ToolRouter<Self> {
         let mut router = ToolRouter::new();
         for spec in REMOTE_TOOL_SPECS {
-            let tool = Tool::new(spec.name, spec.description, schema_for_fields(spec.fields));
+            let description = if spec.supported_by_local_protocol {
+                spec.description.to_owned()
+            } else {
+                format!(
+                    "{} This tool is unsupported by the current owner-host protocol and returns a typed capability_unavailable error; use the direct CLI/SDK where available.",
+                    spec.description
+                )
+            };
+            let tool = Tool::new(spec.name, description, schema_for_fields(spec.fields));
             router.add_route(ToolRoute::new_dyn(
                 tool,
                 move |context: ToolCallContext<'_, Self>| {
