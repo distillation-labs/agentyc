@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use agentyc_core::{
     ActionOperation, ActionRequest, ContentHash, CoreError, EventCursor, EventKind, Generation,
-    HelloEnvelope, LeaseEpoch, Postcondition, SnapshotEnvelope, Timestamp,
+    HelloEnvelope, LeaseEpoch, Postcondition, ProfileDisclosure, SnapshotEnvelope, Timestamp,
 };
 use agentyc_host::{Broker, EventQuery, HostError};
 use anyhow::Result as AnyhowResult;
@@ -75,8 +75,17 @@ impl From<HostAdapter> for HostBrowserServer {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct SpaceLabelParams {
+struct SpaceCreateParams {
+    /// Human-readable logical task-space label.
     label: String,
+    /// Must be `shared_existing_profile`; Chrome uses the existing profile.
+    profile_scope: String,
+    /// Must be `shared_profile_state`; cookies, sessions, and storage are shared.
+    shared_state_notice: String,
+    /// Must be false; a task space is not a browser-profile isolation boundary.
+    isolation_claim: bool,
+    /// Must be true only after the user explicitly acknowledges the disclosure.
+    profile_disclosure_acknowledged: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -362,16 +371,25 @@ impl HostBrowserServer {
         Ok(self.adapter.list_spaces())
     }
 
-    /// Create a logical task space.
+    /// Create a logical task space in the existing shared Chrome profile.
     #[rmcp::tool(
         name = "host_space_create",
-        description = "Create a logical task space."
+        description = "Create a logical task space in the existing shared Chrome profile. Acknowledgement is required; task spaces do not isolate cookies, sessions, or storage."
     )]
     async fn host_space_create(
         &self,
-        p: rmcp::handler::server::wrapper::Parameters<SpaceLabelParams>,
+        p: rmcp::handler::server::wrapper::Parameters<SpaceCreateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        Ok(self.adapter.create_space(p.0.label))
+        let params = p.0;
+        Ok(self.adapter.create_space(
+            params.label,
+            ProfileDisclosure {
+                profile_scope: params.profile_scope,
+                shared_state_notice: params.shared_state_notice,
+                isolation_claim: params.isolation_claim,
+                acknowledged: params.profile_disclosure_acknowledged,
+            },
+        ))
     }
 
     /// Describe one logical task space.
@@ -1045,8 +1063,14 @@ mod tests {
     #[tokio::test]
     async fn two_spaces_keep_page_operations_scoped() {
         let (_directory, server) = server();
-        let first = server.adapter.create_space("one");
-        let second = server.adapter.create_space("two");
+        let disclosure = || ProfileDisclosure {
+            profile_scope: ProfileDisclosure::PROFILE_SCOPE.to_owned(),
+            shared_state_notice: ProfileDisclosure::SHARED_STATE_NOTICE.to_owned(),
+            isolation_claim: false,
+            acknowledged: true,
+        };
+        let first = server.adapter.create_space("one", disclosure());
+        let second = server.adapter.create_space("two", disclosure());
         let first_space = content(&first)["result"]["space_id"]
             .as_str()
             .expect("first space")
