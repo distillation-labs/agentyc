@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "agentyc Existing Chrome",
+  "name": "Agentyc",
   "version": "0.1.0",
   "description": "Host-authorized logical task spaces for an existing Chrome profile.",
   "icons": {
@@ -33,7 +33,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open agentyc task spaces"
+    "default_title": "Open Agentyc task spaces"
   },
   "side_panel": {
     "default_path": "src/sidepanel/index.html"
