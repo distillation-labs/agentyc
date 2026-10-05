@@ -126,12 +126,6 @@ The direct local CLI/SDK boundary is primary. MCP is compatibility-only and maps
 
 `agentyc mcp` (or `agentyc` with no subcommand) runs the host-backed logical MCP service over stdio only. There is no `agentyc serve` MCP HTTP route, direct-CDP MCP mode, or `browser_*` MCP tool surface. The offline server lists 29 routes; the connected remote catalog declares 30, and 12 currently return typed `capability_unavailable` errors. Headed live Chrome validation has not yet run, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
 
-## Standalone direct-CDP CLI utilities
+## Removed legacy CLI paths
 
-These commands remain separate CLI utilities and do not change the MCP surface:
-
-- `agentyc browser [--port PORT] [--headless] [--detach]` launches Chrome with a temporary profile and prints its CDP WebSocket URL.
-- `agentyc run --cdp-url URL ...` runs one browser command against the supplied endpoint; the endpoint is required at runtime.
-- `agentyc repl --cdp-url URL` starts an interactive session against the supplied endpoint; the endpoint is required at runtime.
-
-The host-backed logical CLI/MCP path does not fall back to these utilities.
+The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` commands are not part of the shipped CLI command tree above. The shipped CLI uses host-backed logical subcommands; internal installation and test harnesses that use CDP do not provide a user-facing CLI. This does not remove the Node SDK at `packages/agentyc-browser` or the extension's `chrome.debugger` backend.
