@@ -148,15 +148,11 @@ The host/core contracts, MV3 extension package, Native Messaging host, direct CL
 | `AGENTYC_ALLOWED_DOMAINS` | Comma-separated domain allowlist for constrained workflows.            |
 | `AGENTYC_LOGGING_LEVEL`   | Log level for diagnostics emitted to stderr (`warn`, `info`, `debug`). |
 
-### Standalone direct-CDP CLI utilities (separate from MCP)
+### CLI scope
 
-These explicit utilities remain available in the CLI and do not select or extend the MCP interface:
+The CLI exposes the host-backed logical commands listed in [Direct CLI](docs/cli.md), plus `agentyc mcp` and `agentyc init`. Standalone direct-CDP `browser`, `run`, and `repl` commands have been removed; CDP-based installation or test harnesses are not user-facing CLI interfaces.
 
-- `agentyc browser [--port PORT] [--headless] [--detach]` launches Chrome with a temporary profile and prints its CDP WebSocket URL.
-- `agentyc run --cdp-url URL ...` runs one browser command against the supplied endpoint; `--cdp-url` is required at runtime.
-- `agentyc repl --cdp-url URL` starts an interactive session against the supplied endpoint; `--cdp-url` is required at runtime.
-
-The host-backed CLI/MCP path does not call these utilities or fall back to their browser lifecycle. See [Direct CLI](docs/cli.md) for command separation and [Configuration](docs/configuration.md) for current host settings.
+The Node SDK remains in `packages/agentyc-browser`; it is distinct from the removed Rust `agentyc-browser` crate. The extension's `chrome.debugger` backend also remains and is not a standalone CLI.
 
 ---
 
