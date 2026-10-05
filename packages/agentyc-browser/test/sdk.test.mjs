@@ -11,6 +11,7 @@ import {
   CancelledError,
   UnknownOutcomeError,
   connect,
+  createLocalTransport,
   isAgentycError,
 } from "../src/index.mjs";
 
@@ -86,6 +87,51 @@ test("logical space and lazy page handles never expose browser identities", asyn
   assert.equal(Object.hasOwn(space, "browserId"), false);
 });
 
+test("offline skill example completes a task-space read-act flow through the SDK", async () => {
+  const results = {
+    "space.create": { space: { space_id: "space_demo", label: "research" } },
+    "space.claim": { space_id: "space_demo", lease: { lease_epoch: 1 } },
+    "page.create": {
+      page: { page_id: "page_main", space_id: "space_demo", label: "main" },
+    },
+    "snapshot.read": {
+      refs: { submit: "ref_button" },
+      snapshot_hash: "demo",
+    },
+    "action.execute": { action_id: "action_demo", status: "succeeded" },
+  };
+  const methods = [];
+  const transport = createLocalTransport(({ requests }) => ({
+    responses: requests.map(({ request_id, method }) => {
+      methods.push(method);
+      return {
+        request_id,
+        ok: true,
+        result: results[method] ?? {},
+      };
+    }),
+  }));
+  const client = await connect({ transport });
+  const space = await client.createSpace("research", {
+    acceptSharedProfileDisclosure: true,
+  });
+  await space.claim();
+  const page = await space.newPage("main");
+  const snapshot = await page.snapshot();
+  const receipt = await page.action("click", { ref: snapshot.refs.submit });
+  await client.close();
+
+  assert.deepEqual(methods, [
+    "space.create",
+    "space.claim",
+    "page.create",
+    "snapshot.read",
+    "action.execute",
+  ]);
+  assert.equal(receipt.action_id, "action_demo");
+  assert.equal(receipt.status, "succeeded");
+});
+
 test("space finish and release send host authorization parameters", async () => {
   const transport = new FakeTransport();
   transport.handler = (request) => ({
@@ -127,6 +173,60 @@ test("space finish and release send host authorization parameters", async () => 
     lease_epoch: 7,
     now: 30,
   });
+});
+
+test("pause and handoff use host fencing transitions and clear the cached lease", async () => {
+  const transport = new FakeTransport();
+  const client = await connect({ transport });
+  const space = client.taskSpace("space_alpha");
+  space.leaseEpoch = 7;
+
+  await space.pause({ ttl: 250, now: 11 });
+  assert.equal(transport.calls[0].requests[0].method, "space.pause");
+  assert.match(transport.calls[0].requests[0].request_id, /^req_/);
+  assert.deepEqual(transport.calls[0].requests[0].params, {
+    space_id: "space_alpha",
+    ttl: 250,
+    now: 11,
+  });
+  assert.equal(space.leaseEpoch, undefined);
+
+  space.leaseEpoch = 8;
+  await space.handoff({ now: 12 });
+  assert.equal(transport.calls[1].requests[0].method, "space.handoff");
+  assert.deepEqual(transport.calls[1].requests[0].params, {
+    space_id: "space_alpha",
+    ttl: 60_000,
+    now: 12,
+  });
+  assert.equal(space.leaseEpoch, undefined);
+});
+
+test("raw and batched requests cannot bypass sensitive SDK action guards", async () => {
+  const transport = new FakeTransport();
+  const client = await connect({ transport });
+  const blocked = [
+    () => client.request("action.execute", { operation: "evaluate" }),
+    () =>
+      client.request("action.execute", {
+        operation: "click",
+        payload: { sensitive_boundary: "payment" },
+      }),
+
+    () =>
+      client.batch([
+        { method: "space.list" },
+        {
+          method: "action.execute",
+          params: { operation: "storage_write" },
+        },
+      ]),
+  ];
+
+  for (const invoke of blocked) {
+    await assert.rejects(invoke, (error) => error.code === "permission_denied");
+  }
+  assert.equal(transport.calls.length, 0);
 });
 
 test("batch sends several logical requests through one transport call", async () => {
@@ -200,7 +300,12 @@ test("wire errors map to typed extension and reconciliation errors", async () =>
     ],
   });
   await assert.rejects(
-    () => client.request("action.execute", {}, { mayHaveSideEffects: true }),
+    () =>
+      client.request(
+        "action.execute",
+        { operation: "click" },
+        { mayHaveSideEffects: true },
+      ),
     (error) =>
       error instanceof AgentycError &&
       error.code === "reconciliation_required" &&
@@ -277,7 +382,7 @@ test("batch failures preserve successful results and logical failure identity", 
         { method: "space.list" },
         {
           method: "action.execute",
-          params: { action_id: "action_demo" },
+          params: { action_id: "action_demo", operation: "click" },
         },
       ]),
     (error) => {
@@ -301,6 +406,8 @@ test("central side-effect classification never reconnects lifecycle or page muta
     "space.claim",
     "space.renew",
     "space.takeover",
+    "space.pause",
+    "space.handoff",
     "space.return",
     "space.finish",
     "space.release",
@@ -317,7 +424,11 @@ test("central side-effect classification never reconnects lifecycle or page muta
     const client = await connect({ transport });
     transport.failNext = true;
     await assert.rejects(
-      () => client.request(method, {}),
+      () =>
+        client.request(
+          method,
+          method === "action.execute" ? { operation: "click" } : {},
+        ),
       (error) => error instanceof UnknownOutcomeError,
       method,
     );
@@ -333,6 +444,7 @@ test("unknown outcomes retain request and action identity", async () => {
     () =>
       client.request("action.execute", {
         action_id: "action_lost",
+        operation: "click",
       }),
     (error) => {
       assert.ok(error instanceof UnknownOutcomeError);
@@ -409,6 +521,7 @@ function startProtocolFixture(socketPath) {
         const payload = buffer.subarray(4, length + 4);
         buffer = buffer.subarray(length + 4);
         const envelope = JSON.parse(payload.toString("utf8"));
+        server.received.push(envelope);
         if (envelope.kind === "hello") {
           server.hellos.push(envelope);
           socket.write(
@@ -505,6 +618,7 @@ function startProtocolFixture(socketPath) {
     });
   });
   server.hellos = [];
+  server.received = [];
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(socketPath, () => resolve(server));
@@ -562,6 +676,11 @@ test("local protocol transport uses Rust-compatible framing, handshake, events, 
       broker_epoch: 4,
       sequence: 7,
     });
+    assert.equal(
+      server.received.filter((envelope) => envelope.kind === "resume").length,
+      3,
+      "reconnect performs an explicit cursor resume",
+    );
     assert.equal(unsubscribe(), true);
   } finally {
     await client?.close();
