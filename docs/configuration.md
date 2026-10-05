@@ -22,14 +22,14 @@ MCP client process. When the host/extension bridge is unavailable, operations
 that need Chrome return a typed unavailable/capability error; the client does
 not fall back to CDP or launch a browser.
 
-| Option / variable | Default | Description |
-| --- | --- | --- |
-| `--state-dir PATH` | `~/.agentyc/state` | Host state directory. Takes precedence over `AGENTYC_STATE_DIR`. |
-| `AGENTYC_STATE_DIR` | `~/.agentyc/state` | Host state directory used by the CLI and Native Messaging host. |
-| `AGENTYC_HOST_SOCKET` | `<state-dir>/host.sock` | Override the owner-only local host socket path. |
-| `--principal PRINCIPAL` / `AGENTYC_PRINCIPAL` | `principal_cli` | Logical client principal/routing identity; not authentication against another process running as the same OS user. |
-| `--offline` | off | Use the deterministic fake-host seam for local tests/contracts; it does not connect to Chrome. |
-| `--json` | off | Emit compact direct-command JSON instead of pretty-printed JSON. |
+| Option / variable                             | Default                 | Description                                                                                                        |
+| --------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `--state-dir PATH`                            | `~/.agentyc/state`      | Host state directory. Takes precedence over `AGENTYC_STATE_DIR`.                                                   |
+| `AGENTYC_STATE_DIR`                           | `~/.agentyc/state`      | Host state directory used by the CLI and Native Messaging host.                                                    |
+| `AGENTYC_HOST_SOCKET`                         | `<state-dir>/host.sock` | Override the owner-only local host socket path.                                                                    |
+| `--principal PRINCIPAL` / `AGENTYC_PRINCIPAL` | `principal_cli`         | Logical client principal/routing identity; not authentication against another process running as the same OS user. |
+| `--offline`                                   | off                     | Use the deterministic fake-host seam for local tests/contracts; it does not connect to Chrome.                     |
+| `--json`                                      | off                     | Emit compact direct-command JSON instead of pretty-printed JSON.                                                   |
 
 The extension must already be installed/enrolled and connected for Chrome-backed
 operations. The product path uses the current Chrome profile. Cookies,
@@ -42,13 +42,13 @@ The host uses `${AGENTYC_STATE_DIR:-~/.agentyc/state}` unless configured with
 `--state-dir PATH` for a CLI client. The directory is private host-owned state,
 not a user-editable configuration file location.
 
-| Entry | Purpose |
-| --- | --- |
-| `ledger.json` | Atomically replaced durable JSON state; current `schema_version` is `2`. |
-| `broker.lock` | Exclusive single-broker ownership lock, held while the broker is open and removed by its owner on clean drop. |
-| `host.sock` | Owner-only Unix socket for local CLI/MCP clients; default path can be overridden by `AGENTYC_HOST_SOCKET`. |
-| `ledger.json.tmp-<pid>-<sequence>` | Transient private file used for a durable replacement; removed after failed writes where possible. |
-| `ledger.json.quarantine-<pid>-<sequence>` | Best-effort private preserved copy when ledger JSON is corrupt, invalid, or has an unsupported schema. |
+| Entry                                     | Purpose                                                                                                       |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `ledger.json`                             | Atomically replaced durable JSON state; current `schema_version` is `2`.                                      |
+| `broker.lock`                             | Exclusive single-broker ownership lock, held while the broker is open and removed by its owner on clean drop. |
+| `host.sock`                               | Owner-only Unix socket for local CLI/MCP clients; default path can be overridden by `AGENTYC_HOST_SOCKET`.    |
+| `ledger.json.tmp-<pid>-<sequence>`        | Transient private file used for a durable replacement; removed after failed writes where possible.            |
+| `ledger.json.quarantine-<pid>-<sequence>` | Best-effort private preserved copy when ledger JSON is corrupt, invalid, or has an unsupported schema.        |
 
 The JSON ledger stores the schema and broker/connection epoch counters, host-
 assigned identity counters, logical spaces/pages and their lifecycle/lease
@@ -93,51 +93,33 @@ closed. If validation or persistence fails, stop and retain the ledger and
 quarantine copy for a compatible recovery path; do not delete them to force
 initialization. A restart requires clients and the extension to reconnect.
 
-## Explicit Legacy CDP/MCP Compatibility
+## MCP boundary
 
-The following entry points are compatibility or test paths, not the default
-existing-Chrome architecture:
+`agentyc mcp` runs the host-backed logical MCP service over stdio only. MCP
+uses the local host socket in connected mode and the deterministic in-process
+fake host with `--offline`. It does not accept a CDP URL, launch a browser, or
+fall back to standalone CDP utilities. The offline catalog has 29 routes; the
+connected remote catalog declares 30, with 12 returning
+`capability_unavailable`. Headed live Chrome validation has not yet run, so MCP
+is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
 
-| Command | Behavior |
-| --- | --- |
-| `agentyc mcp --legacy-cdp [--cdp-url URL]` | Legacy direct-CDP MCP `BrowserServer`; without a URL this explicitly selected mode may use its managed-test browser lifecycle. |
-| `agentyc serve --cdp-url URL [--host HOST] [--port PORT]` | Legacy Streamable HTTP MCP server attached to the explicitly supplied debugger endpoint. `--cdp-url` is required; host defaults to `127.0.0.1`, port to `8765`, and the MCP route is `/mcp`. |
-| `agentyc browser [--port PORT] [--headless] [--detach]` | Explicitly launches a temporary-profile Chrome with remote debugging and prints its CDP WebSocket URL. |
-| `agentyc run --cdp-url URL ...` | Legacy direct-CDP command runner; URL is required. |
-| `agentyc repl --cdp-url URL` | Legacy direct-CDP REPL; URL is required. |
+## Standalone direct-CDP CLI utilities (not MCP)
 
-The host-backed `agentyc`/`agentyc mcp` path never calls these commands or
-falls back to their browser lifecycle. CDP URLs are debugger credentials; do
-not expose them to untrusted clients.
+| Command                                                 | Behavior                                                                                                    |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `agentyc browser [--port PORT] [--headless] [--detach]` | Launches Chrome with a temporary profile and prints its CDP WebSocket URL.                                  |
+| `agentyc run --cdp-url URL ...`                         | Runs one browser command against an explicitly supplied endpoint; the endpoint is required at runtime.      |
+| `agentyc repl --cdp-url URL`                            | Starts an interactive session against an explicitly supplied endpoint; the endpoint is required at runtime. |
 
-### Legacy Environment Variables
-
-These settings configure the legacy browser runtime where supported. They do
-not switch the canonical host-backed path into CDP mode.
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `AGENTYC_HEADLESS` | visible browser | Set to `1` to request headless Chrome for a legacy managed launch. |
-| `AGENTYC_ALLOWED_DOMAINS` | unrestricted | Comma-separated domain allowlist for legacy `browser_navigate`. |
-| `AGENTYC_ACTION_TIMEOUT_S` | `180` | Per-action timeout in seconds for legacy CDP operations. |
-| `AGENTYC_CDP_TIMEOUT_S` | `60` | CDP response timeout in seconds. |
-| `AGENTYC_PROXY_URL` | unset | Chromium proxy URL for legacy managed launches. |
-| `AGENTYC_PROXY_BYPASS` | unset | Comma-separated proxy bypass list. |
-| `AGENTYC_PROXY_USERNAME` | unset | Proxy username. |
-| `AGENTYC_PROXY_PASSWORD` | unset | Proxy password. |
-| `PLAYWRIGHT_BROWSERS_PATH` | platform discovery | Additional legacy Chrome/Chromium binary search location. |
-
-An attached legacy browser is reused and is not torn down when the MCP session
-ends. Managed legacy launch uses a per-session/temporary profile and downloads
-under `~/Downloads/agentyc-mcp` where the older runtime supports it. Shared
-CDP tabs still share cookies and storage within their Chrome profile and do
-not provide logical space isolation.
+These commands are separate standalone CLI utilities; they do not provide an
+MCP transport or tool surface. CDP URLs are debugger credentials; do not expose
+them to untrusted clients.
 
 ## Logging
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `AGENTYC_LOGGING_LEVEL` | `warn` | Rust tracing `EnvFilter` directive such as `warn`, `info`, or `debug`. Logs go to stderr. |
+| Variable                | Default | Description                                                                               |
+| ----------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `AGENTYC_LOGGING_LEVEL` | `warn`  | Rust tracing `EnvFilter` directive such as `warn`, `info`, or `debug`. Logs go to stderr. |
 
 ## Agent Skills and Plugin
 
