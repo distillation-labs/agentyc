@@ -135,12 +135,12 @@ The canonical agent object is a task space, not an active tab. A persistent CLI/
 
 ### Current-code migration implications
 
-- The default `agentyc`/`agentyc mcp` path uses the host-backed service and does not launch Chrome. Standalone `browser`, `run`, and `repl` remain separate direct-CDP utilities.
-- The standalone direct-CDP CLI still has active-page/tab-oriented internals; they are isolated from the host-backed MCP and direct task-space interfaces.
-- `crates/agentyc-mcp` now exposes host-backed logical operations and does not own browser state. The old direct-CDP MCP server and tool modules were removed.
-- `crates/agentyc/src/main.rs::run_action` currently opens/closes a runtime per command; the new CLI/SDK uses a persistent host connection.
-- `crates/agentyc-browser/src/launcher.rs` and `profile.rs` support separate standalone direct-CDP CLI utilities; they are not used by the default host-backed MCP path.
-- A new `agentyc-core` crate owns transport-neutral types; a new `agentyc-host` crate owns the local broker, Native Messaging bridge, persistence, and extension adapter; a new `extension/` tree owns Chrome integration and the side panel.
+- The default `agentyc`/`agentyc mcp` path uses the host-backed service and does not launch Chrome. The standalone direct-CDP `browser`, `run`, and `repl` CLI paths described in the earlier baseline were removed.
+- The earlier standalone direct-CDP CLI's active-page/tab-oriented internals were removed with its Rust runtime crates; they are not current CLI or MCP interfaces.
+- `crates/agentyc-mcp` exposes host-backed logical operations and does not own browser state. The old direct-CDP MCP server and tool modules were removed.
+- The per-command `run_action` runtime path was part of the earlier CLI and was removed; the current CLI exposes the host-backed logical command tree in `docs/cli.md`.
+- The Rust `agentyc-browser`, `agentyc-cdp`, and `agentyc-runtime` crates and their launcher/profile/session CLI path were removed. The Node SDK at `packages/agentyc-browser` is distinct and remains. The extension's `chrome.debugger` backend also remains; internal CDP harnesses are test/installation-only.
+- `agentyc-core` owns transport-neutral types; `agentyc-host` owns the local broker, Native Messaging bridge, persistence, and extension adapter; `extension/` owns Chrome integration and the side panel.
 
 ### Release blockers for the new target
 
