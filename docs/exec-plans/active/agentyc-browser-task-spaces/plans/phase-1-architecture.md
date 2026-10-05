@@ -22,7 +22,7 @@ Turn the Phase 0 evidence into normative component boundaries, state machines, c
 ## Confirmed facts
 
 - `agentyc-core`, `agentyc-host`, the MV3 extension, the direct CLI, and the thin Node SDK now exist and passed their Phase 0 deterministic gates.
-- The legacy `agentyc-runtime`/`agentyc-browser` CDP/process path remains explicit compatibility/test-only; the existing-Chrome product path is the extension/native host/local socket.
+- At Phase 1 planning time, the `agentyc-runtime`/`agentyc-browser` CDP/process path was retained as explicit compatibility/test-only. Those Rust crates and standalone CLI paths were later removed; the existing-Chrome product path remains the extension/native host/local socket.
 - `agentyc-mcp` remains a compatibility adapter over the host broker; it is not the canonical state owner.
 - MV3 service workers can terminate; host persistence is authoritative, while same-session exact-tab recovery is bounded and browser-session changes require host rebind (S-021).
 - Chrome debugger target/session/frame identity remains distinct from durable product identity; root-target support is proven, while flat related-target/OOPIF routing is a Phase 1 capability decision (S-019).
@@ -203,7 +203,9 @@ The host may accept an extension connection only after exact extension ID, profi
 | agent pages                   | claimed by space after creation             | scoped cleanup only                    |
 | Chrome tab group              | visual mapping only                         | never authorization                    |
 
-## Module/dependency map
+## Module/dependency map (Phase 1 design record)
+
+> This map records the planned dependency layout at Phase 1. Its `agentyc-runtime`, Rust `agentyc-browser`, `agentyc-cdp`, `agentyc-dom`, and `agentyc-tools` entries are historical; those standalone direct-CDP runtime crates were later removed. The Node SDK package and extension `chrome.debugger` backend are distinct and remain.
 
 ```text
 agentyc-core
@@ -225,7 +227,7 @@ agentyc-browser
 - [x] P1-T1 — Publish the component and ownership record.
   - **Files:** this phase, `docs/architecture.md`, new `docs/architecture-existing-chrome.md`, `plans/PLAN_INDEX.md`.
   - **Done when:** every state/flow has one owner; `space`/`space_id` is canonical; MCP, CLI, SDK, extension, and host dependencies are explicit; no raw Chrome state escapes the host/extension adapter; the phase registry has one executable file per phase.
-  - **Validation:** `python3 scripts/check_exec_plan.py docs/exec-plans/active/agentyc-browser-task-spaces` (new deterministic checker); `rg -n "CdpClient|BrowserRuntime|active_page" crates/agentyc-mcp crates/agentyc/src` with only legacy allowlisted paths; architecture artifact `artifacts/p1-architecture-review.md`.
+  - **Validation at completion:** the Phase 1 source audit allowed then-existing direct-CDP compatibility paths. Those runtime crates and commands were later removed; current removal is guarded by `scripts/check_phase_3_core.py`, `scripts/check_mcp_deps.py`, and CLI help regression tests. The architecture artifact remains `artifacts/p1-architecture-review.md`.
   - **Owner:** Japneet Kalkat.
 
 - [x] P1-T2 — Freeze domain IDs, generations, and public presentation rules.
