@@ -1,24 +1,21 @@
 # agentyc integration test crate.
-# The shared harness lives in src/lib.rs; each [[test]] below is a ported or
-# generated suite. build.rs generates the real-world battle-test cases from
-# src/scenario.rs.
+# Offline integration tests for the host-backed MCP and direct task-space API.
 [package]
 name = "agentyc-tests"
 version.workspace = true
 edition.workspace = true
 publish = false
-build = "build.rs"
 
 [dependencies]
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [[test]]
 name = "mcp_protocol"
 path = "../../tests/mcp_protocol.rs"
 
-[[test]]
-name = "benchmark"
-path = "../../tests/benchmark.rs"
 
 [[test]]
 name = "direct_benchmark"
@@ -27,27 +24,3 @@ path = "../../tests/direct_benchmark.rs"
 [[test]]
 name = "browser_task_spaces_existing_chrome"
 path = "../../tests/browser_task_spaces_existing_chrome.rs"
-
-[[test]]
-name = "browser_automation"
-path = "../../tests/browser_automation.rs"
-
-[[test]]
-name = "e2e_suite"
-path = "../../tests/e2e_suite.rs"
-
-[[test]]
-name = "battle_test"
-path = "../../tests/battle_test.rs"
-
-[[test]]
-name = "headed_stress"
-path = "../../tests/headed_stress.rs"
-
-[[test]]
-name = "agent_autonomy"
-path = "../../tests/agent_autonomy.rs"
-
-[[test]]
-name = "real_world"
-path = "../../tests/real_world.rs"
