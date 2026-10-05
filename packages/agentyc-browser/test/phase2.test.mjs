@@ -53,8 +53,14 @@ test("createSpace requires exact disclosure acknowledgement and sends canonical 
   assert.equal(transport.calls.length, 0);
 
   transport.handler = (request) =>
-    responseFor(request, { space: { space_id: "space_consented", label: "ok" } });
+    responseFor(request, {
+      space: { space_id: "space_consented", label: "ok" },
+    });
   await client.createSpace("ok", { acceptSharedProfileDisclosure: true });
+  const task = await client.taskSpace("ok", {
+    acceptSharedProfileDisclosure: true,
+  });
+  assert.equal(task.id, "space_consented");
   assert.deepEqual(transport.calls[0].requests[0].params, {
     label: "ok",
     profile_scope: "shared_existing_profile",
@@ -62,6 +68,10 @@ test("createSpace requires exact disclosure acknowledgement and sends canonical 
     isolation_claim: false,
     profile_disclosure_acknowledged: true,
   });
+  assert.deepEqual(
+    transport.calls[1].requests[0].params,
+    transport.calls[0].requests[0].params,
+  );
 });
 
 test("waits carry logical scope, use the bounded default, and reject invalid timeouts", async () => {
@@ -69,10 +79,13 @@ test("waits carry logical scope, use the bounded default, and reject invalid tim
   const client = await connect({ transport });
   transport.handler = (request) => responseFor(request, { wait: "matched" });
 
-  await client.waitFor({ kind: "event_kind", event: "page.changed" }, {
-    spaceId: "space_wait",
-    pageId: "page_wait",
-  });
+  await client.waitFor(
+    { kind: "event_kind", event: "page.changed" },
+    {
+      spaceId: "space_wait",
+      pageId: "page_wait",
+    },
+  );
   assert.deepEqual(transport.calls[0].requests[0].params, {
     condition: { kind: "event_kind", event: "page.changed" },
     timeout_ms: DEFAULT_WAIT_TIMEOUT_MS,
@@ -114,7 +127,11 @@ test("claim, renew, and takeover apply the same default lease TTL", async () => 
     transport.calls.map((call) => call.requests[0].params.ttl),
     [DEFAULT_LEASE_TTL_MS, DEFAULT_LEASE_TTL_MS, DEFAULT_LEASE_TTL_MS],
   );
-  assert.ok(transport.calls.every((call) => Number.isSafeInteger(call.requests[0].params.now)));
+  assert.ok(
+    transport.calls.every((call) =>
+      Number.isSafeInteger(call.requests[0].params.now),
+    ),
+  );
 });
 
 test("reconciliation requires a lease epoch before dispatch", async () => {
@@ -175,7 +192,8 @@ test("actions validate the registry and carry now, idempotency, request identity
   });
 
   await assert.rejects(
-    () => client.submitAction({ space_id: "space_action", operation: "unknown" }),
+    () =>
+      client.submitAction({ space_id: "space_action", operation: "unknown" }),
     (error) => error.code === "invalid_argument",
   );
   assert.equal(transport.calls.length, 1);
@@ -220,7 +238,22 @@ test("operation registry exposes every core action and explicit unsupported mapp
     assert.equal(operationForAction(operation)?.cli.option, "--operation");
   }
   assert.equal(operationForMethod("lease.acquire")?.sdk, "TaskSpace.claim");
+  assert.equal(operationForMethod("space.pause")?.sdk, "TaskSpace.pause");
+  assert.equal(operationForMethod("space.handoff")?.sdk, "TaskSpace.handoff");
   assert.equal(operationForMethod("page.adopt")?.supported, false);
+  for (const operation of [
+    "evaluate",
+    "storage_write",
+    "cookie_write",
+    "upload",
+  ]) {
+    const definition = operationForAction(operation);
+    assert.equal(definition.supported, false, operation);
+    assert.match(
+      definition.unsupportedReason,
+      /host-issued user-intent ticket/,
+    );
+  }
   assert.ok(
     OPERATION_REGISTRY.filter((entry) => entry.supported).every(
       (entry) => entry.sdk && entry.cli?.command?.length,
