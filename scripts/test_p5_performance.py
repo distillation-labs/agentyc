@@ -144,6 +144,20 @@ class Phase5EvidenceTests(unittest.TestCase):
             checked["baseline_manifest"],
         )
         self.assertTrue((self.artifact_dir / "generation-manifest.json").is_file())
+        required_envelope = {
+            "schema_version",
+            "build_tuple",
+            "environment",
+            "timestamp",
+            "command",
+            "result",
+            "redaction_status",
+        }
+        for name in ("baseline-manifest.json", "generation-manifest.json"):
+            with self.subTest(name=name):
+                artifact = json.loads((self.artifact_dir / name).read_text())
+                self.assertTrue(required_envelope.issubset(artifact))
+                self.assertEqual(artifact["redaction_status"]["status"], "applied")
         self.assertTrue((self.artifact_dir / "COMMIT").is_file())
 
 
