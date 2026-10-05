@@ -24,8 +24,8 @@ Allowed status transitions are `pending -> active -> complete` or `pending -> ac
 - Do not infer phase activation from files being present. Phase 1, Phase 2, and Phase 3 are complete only because their checked tasks, quality gates, and evidence records pass; Phase 4 is the sole active phase. Core/host/extension/direct-client slices remain subject to their owning phase gates. Phase 0 may audit and probe the existing host-backed path; deterministic host tests or disposable probes do not close its live existing-profile gate. Future dependencies must name existing versus planned prerequisites.
 - Every task names whether a path is existing or planned/new. Planned files are created by the task that first owns them. Later sequential phases may modify an existing shared artifact only when the task says so and limits its owned section: Phase 1 owns architecture checkers, Phase 5 owns direct context benchmarks, Phase 7 owns direct release/CI sections, and Phase 8 owns MCP adapter/release sections.
 - The canonical domain term is `space`; `space_id` is the canonical field. `group_id` is only a deprecated compatibility alias or a visual-group hint.
-- MCP is an adapter over the same host broker. Its compatibility tests and server must remain runnable throughout Phases 0–7, but MCP compatibility is not a prerequisite for direct launch.
-- The direct product gate must not change the legacy MCP implementation silently. Any compatibility change is isolated to Phase 8 or explicitly recorded as a migration prerequisite.
+- MCP is a host-backed logical adapter over the same host broker and currently runs over stdio only. The offline server exposes 29 routes; the connected remote catalog declares 30, with 12 returning `capability_unavailable`. MCP compatibility is not a prerequisite for direct launch, but it is not distribution-ready until Phase 8's live and release gates pass.
+- Direct-product validation is not MCP release evidence. Any MCP surface or support-status change must be recorded in Phase 8; do not imply the removed direct-CDP MCP server, `browser_*` tools, or HTTP transport remain available.
 
 ## Required phase artifact convention
 
