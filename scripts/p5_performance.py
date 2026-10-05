@@ -493,6 +493,20 @@ def _base_report(
         bootstrap_resamples=bootstrap_resamples,
         evidence_mode=evidence_mode,
     )
+    add_envelope(
+        baseline,
+        kind="p5-performance-baseline-manifest",
+        command=command,
+        build_tuple={
+            "source_class": "offline_fixture_model" if evidence_mode == "offline" else "production_path",
+            "commit": baseline["commit"],
+            "build_mode": baseline["build_mode"],
+            "fixture_data_hash": baseline["fixture_data_hash"],
+            "tokenizer": baseline["tokenizer"]["name"],
+        },
+        result={"status": "complete", "kind": "p5-performance-baseline-manifest"},
+        nonce=nonce,
+    )
     report: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "phase": PHASE,
@@ -792,6 +806,18 @@ def publish_artifact(artifact_dir: str | Path, report: dict[str, Any], samples: 
             "raw_sample_files": [name for name, _ in chunks],
             "redaction_status": {"status": "applied", "policy": "central-allowlist-bounded-recursive-redaction"},
         }
+        add_envelope(
+            generation,
+            kind="p5-performance-generation",
+            command=staged_report["command"],
+            build_tuple={
+                "source_class": staged_report["evidence_mode"],
+                "commit": staged_report["baseline_manifest"]["commit"],
+            },
+            environment=staged_report["environment"],
+            result={"status": "complete", "file_count": len(file_names)},
+            nonce=staged_report.get("nonce"),
+        )
         write_json_atomic(stage / "generation-manifest.json", generation)
         manifest_hash = hashlib.sha256((stage / "generation-manifest.json").read_bytes()).hexdigest()
         write_text_atomic(
