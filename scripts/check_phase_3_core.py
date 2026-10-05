@@ -127,7 +127,8 @@ def check(root: Path = ROOT) -> dict[str, Any]:
     bridge = read_text(root, Path("crates/agentyc-host/src/bridge.rs"))
     local_ipc = read_text(root, Path("crates/agentyc-host/src/local_ipc.rs"))
     native = read_text(root, Path("crates/agentyc-host/src/native_messaging.rs"))
-    runtime = read_text(root, Path("crates/agentyc-runtime/src/lib.rs"))
+    cli = read_text(root, Path("crates/agentyc/src/main.rs"))
+    cli_manifest = read_text(root, Path("crates/agentyc/Cargo.toml"))
 
     for marker in (
         "Ledger::open",
@@ -154,8 +155,12 @@ def check(root: Path = ROOT) -> dict[str, Any]:
         require(marker in local_ipc, f"local IPC security marker missing: {marker}")
     for marker in ("NativeForwardServer", "forward_stdio_to_owner", "MAX_NATIVE_CONTROL_BYTES"):
         require(marker in native, f"Native Messaging marker missing: {marker}")
-    for marker in ("LegacyBrowserRuntime", "pub type BrowserRuntime = LegacyBrowserRuntime", "HostClient"):
-        require(marker in runtime or marker == "HostClient", f"runtime boundary marker missing: {marker}")
+    for marker in ("LocalSocketClient::connect", "run_remote_host_stdio"):
+        require(marker in cli, f"host-backed CLI/MCP routing marker missing: {marker}")
+    for crate in ("agentyc-cdp", "agentyc-browser", "agentyc-runtime"):
+        require(crate not in cli_manifest, f"removed direct-CDP crate remains in CLI dependencies: {crate}")
+    for crate_path in ("crates/agentyc-cdp", "crates/agentyc-browser", "crates/agentyc-runtime"):
+        require(not (root / crate_path).exists(), f"removed direct-CDP crate path remains: {crate_path}")
 
     for test_path in (
         Path("crates/agentyc-host/tests/host_lifecycle.rs"),
