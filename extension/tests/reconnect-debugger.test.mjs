@@ -261,15 +261,21 @@ test("Native Messaging disconnect requests an immediate reconnect before backoff
   await wait();
 
   firstPort.disconnect();
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 0);
-  timers.shift().callback();
   await wait();
+  assert.equal(chrome.ports.length, 2);
   assert.notEqual(chrome.lastPort, firstPort);
+  assert.equal(timers.length, 0);
+
+  // A disconnect before the replacement handshake completes is a failed
+  // reconnect and should use backoff rather than recurse immediately.
+  chrome.lastPort.disconnect();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 1000);
   client.stop();
+  assert.equal(timers.length, 0);
 });
 
-test("default reconnect timers preserve the platform receiver", async () => {
+test("default reconnect timers preserve the platform receiver", () => {
   const chrome = new FakeChrome();
   const timers = [];
   const originalSetTimeout = globalThis.setTimeout;
@@ -293,12 +299,11 @@ test("default reconnect timers preserve the platform receiver", async () => {
       browserSessionEpoch: 1,
       autoReconnect: true,
     });
-    await client.connect();
-    const port = chrome.lastPort;
-    port.receive(makeHostHelloOk(port.sent[0]));
-    port.disconnect();
+    client.scheduleReconnect();
     assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 1000);
     client.stop();
+    assert.equal(timers.length, 0);
   } finally {
     globalThis.setTimeout = originalSetTimeout;
     globalThis.clearTimeout = originalClearTimeout;
