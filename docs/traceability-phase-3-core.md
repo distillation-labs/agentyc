@@ -1,18 +1,18 @@
 # Phase 3 core traceability
 
-Evidence mode: deterministic repository and process tests. The selected U3-1 topology is `single_broker_native_shim_forwarding`.
+Historical Phase 3 evidence: deterministic repository and process tests for the then-current workspace. The selected U3-1 topology is `single_broker_native_shim_forwarding`. The `agentyc-runtime`/`LegacyBrowserRuntime` path in P3-T9 was later removed with the standalone direct-CDP Rust crates; this traceability record is not a current crate inventory.
 
-| Task | Implementation | Required evidence |
-| --- | --- | --- |
-| P3-T1 | `crates/agentyc-host/src/{broker.rs,host.rs,ledger.rs}` | `host_lifecycle` lock, stale-owner recovery, lifecycle, endpoint tests |
-| P3-T2 | `crates/agentyc-host/src/{local_ipc.rs,protocol.rs}` | peer-credential admission, bounded framing, clean/truncated EOF, multi-client tests |
-| P3-T3 | `crates/agentyc-host/src/{native_messaging.rs,bin/agentyc-native-host.rs}` | exact origin, Native Messaging framing, one-owner forwarding endpoint, reconnect router |
-| P3-T4 | `crates/agentyc-host/src/{ledger.rs,broker.rs}` | atomic replacement, quarantine, schema/limits, profile rebind and lifecycle tests |
-| P3-T5 | `crates/agentyc-host/src/{broker.rs,leases.rs}` | takeover, pause, handoff, expiry, fence acknowledgement, stale-epoch tests |
-| P3-T6 | `crates/agentyc-host/src/{scheduler.rs,broker.rs}` | broker dispatch/read permit integration and cancellation/deadline/backpressure unit tests |
-| P3-T7 | `crates/agentyc-host/src/{bridge.rs,native_messaging.rs}` | `BridgeRouter`, logical-only bridge boundary, extension epoch/fence tests |
-| P3-T8 | `crates/agentyc-host/src/{broker.rs,ledger.rs}` | idempotency, unknown outcome, reconciliation, cleanup proof tests |
-| P3-T9 | `crates/agentyc-runtime/src/{lib.rs,host_client.rs}` | explicit `HostClient` path and `LegacyBrowserRuntime` compatibility alias; no default flip |
+| Task  | Implementation                                                             | Required evidence                                                                          |
+| ----- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| P3-T1 | `crates/agentyc-host/src/{broker.rs,host.rs,ledger.rs}`                    | `host_lifecycle` lock, stale-owner recovery, lifecycle, endpoint tests                     |
+| P3-T2 | `crates/agentyc-host/src/{local_ipc.rs,protocol.rs}`                       | peer-credential admission, bounded framing, clean/truncated EOF, multi-client tests        |
+| P3-T3 | `crates/agentyc-host/src/{native_messaging.rs,bin/agentyc-native-host.rs}` | exact origin, Native Messaging framing, one-owner forwarding endpoint, reconnect router    |
+| P3-T4 | `crates/agentyc-host/src/{ledger.rs,broker.rs}`                            | atomic replacement, quarantine, schema/limits, profile rebind and lifecycle tests          |
+| P3-T5 | `crates/agentyc-host/src/{broker.rs,leases.rs}`                            | takeover, pause, handoff, expiry, fence acknowledgement, stale-epoch tests                 |
+| P3-T6 | `crates/agentyc-host/src/{scheduler.rs,broker.rs}`                         | broker dispatch/read permit integration and cancellation/deadline/backpressure unit tests  |
+| P3-T7 | `crates/agentyc-host/src/{bridge.rs,native_messaging.rs}`                  | `BridgeRouter`, logical-only bridge boundary, extension epoch/fence tests                  |
+| P3-T8 | `crates/agentyc-host/src/{broker.rs,ledger.rs}`                            | idempotency, unknown outcome, reconciliation, cleanup proof tests                          |
+| P3-T9 | `crates/agentyc-runtime/src/{lib.rs,host_client.rs}`                       | explicit `HostClient` path and `LegacyBrowserRuntime` compatibility alias; no default flip |
 
 ## U3-1 decision
 
