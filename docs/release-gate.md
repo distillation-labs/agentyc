@@ -1,12 +1,11 @@
 # Release Gate
 
-Direct binary release runs are blocked unless both the legacy cargo gate and the
+Direct binary release runs are blocked unless both the existing cargo gate and the
 fail-closed direct-product gate pass. The direct gate is implemented in
 `.github/workflows/workflow.yml` as `direct-release-gate`, which
-`publish-binaries` depends on. MCP compatibility has an independent planned
-`mcp-compatibility-gate` with its own versioned report and artifact; MCP
-adapter/package publication depends on that gate, but direct binary publication
-does not silently claim MCP compatibility-release evidence.
+`publish-binaries` depends on. Phase 8 defines a separate planned MCP release
+gate; no MCP distribution release is eligible today. Direct binary publication
+does not claim MCP compatibility-release evidence.
 The legacy `release-gate` job remains a compatibility baseline. The planned gate
 policy does not enforce the full production matrix through that legacy job by
 itself; `direct-release-gate` owns the direct-product policy.
@@ -31,14 +30,7 @@ browser while validating artifacts.
 
 ## Performance and context regression gate
 
-`tests/benchmark.rs` remains a historical legacy-MCP transport baseline. It
-must not be treated as the direct browser-task completion benchmark. Until
-Phase 7-T10 rewires CI, the existing workflow still executes its legacy
-assertions; this planning document does not claim that the current workflow
-already enforces the new gates. The required direct and host-backed MCP benchmarks must report transport bytes, UTF-8 bytes, serialized
-payload tokens, deployed model-context tokens, scan/queue/bridge/browser/
-serialization timings, cache state, actionable-control coverage, stale-ref and
-unknown rates, event lag, CPU/RSS, queue depth, and human-tab responsiveness.
+Older MCP/process benchmark records describe a removed direct-CDP MCP surface and are historical only; they are not current host-backed MCP performance evidence. This planning document does not claim that the current workflow enforces a production MCP benchmark gate. The direct-product benchmark reports transport bytes, UTF-8 bytes, serialized payload tokens, deployed model-context tokens, scan/queue/bridge/browser/serialization timings, cache state, actionable-control coverage, stale-ref and unknown rates, event lag, CPU/RSS, queue depth, and human-tab responsiveness. MCP requires a separate Phase 8 benchmark and release artifact; no live MCP benchmark has been run.
 
 Blocking tail metrics require at least 200 valid samples for p95 and 1,000 for
 p99, with bootstrap 95% confidence intervals and raw samples. Thirty samples
@@ -126,17 +118,9 @@ every declared fault. Missing or unaccounted chaos faults fail closed. Live
 claims from disposable CDP, host-only, acknowledgement, or byte-estimate
 evidence fail closed. A threshold change requires a reason and a new decision id.
 
-The required production performance suite must compare legacy MCP one-shot, persistent MCP, the local
-protocol, SDK sequential calls, SDK batch calls, full/min/delta snapshots,
-clean/dirty cache, and event-driven waits against polling. Clean snapshots must
-perform zero DOM/AX scans; deltas must preserve equivalent actionable coverage
-or fall back to full/min.
+The direct-product production performance suite compares the local protocol, SDK sequential calls, SDK batch calls, full/min/delta snapshots, clean/dirty cache, and event-driven waits against polling. Clean snapshots must perform zero DOM/AX scans; deltas must preserve equivalent actionable coverage or fall back to full/min. MCP performance is a separate Phase 8 evidence item and has no completed live baseline.
 
-Run the legacy baseline directly:
-
-```bash
-AGENTYC_HEADLESS=1 cargo test -p agentyc-tests --test benchmark -- --nocapture
-```
+The removed legacy MCP benchmark command is not a current validation command. Do not use historical output as current MCP performance or release evidence.
 
 Run the direct benchmark in its explicit disposable-browser lane:
 
@@ -162,17 +146,12 @@ The release gate requires the test pyramid in
 Direct rollout requires:
 
 - pure unit/property and deterministic component tests;
-- process, Native Messaging, CLI/SDK, and the frozen legacy MCP stdio/HTTP baseline;
+- process, Native Messaging, and CLI/SDK integration for the direct product;
 - headed existing-Chrome workflows with disposable profiles and a local fixture server;
 - load/saturation, multi-hour soak/leak, chaos/fault-injection, fuzz, install/update,
   and rollback evidence for the direct product's nightly/pre-release lanes.
 
-MCP compatibility has a separate Phase 8 release gate. It additionally requires
-wire lifecycle, HTTP/SSE/session, exact tool/schema manifests, stable error
-mapping, concurrency/fairness, event replay/backpressure, cancellation,
-reconnect/unknown outcomes, and every supported tool through the real
-host/extension/headed-Chrome path. Direct rollout does not silently claim those
-Phase 8 guarantees.
+MCP compatibility has a separate Phase 8 release gate and is not distribution-ready. The shipped MCP surface is host-backed logical stdio only: offline lists 29 routes; the connected remote catalog declares 30, with 12 returning `capability_unavailable`. No MCP HTTP transport or removed `browser_*` tool surface is shipped. Headed live Chrome has not yet been run through MCP. Phase 8 requires an explicit disposition for every unavailable route, stdio lifecycle/error/concurrency evidence, and supported-route workflows through the real host socket, Native Messaging bridge, extension, and headed Chrome. Direct rollout does not claim these MCP guarantees.
 
 Every required lane fails on missing Chrome, skipped/ignored tests, swallowed
 tool errors, leaked child processes, missing redacted artifacts, or unbounded
