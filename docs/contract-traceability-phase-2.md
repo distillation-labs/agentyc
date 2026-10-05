@@ -8,8 +8,9 @@ This registry connects each Phase 2 task and quality check to deterministic repo
 - Phase 2 is complete under its deterministic contract/evidence exit gate. This is not a production or release certificate.
 - The machine-readable manifest is `tests/phase-2-manifest.yaml`.
 - The review artifact is `artifacts/p2-contracts-review.md`.
-- The MCP fixture index is `tests/fixtures/mcp/index.v1.json`.
-- MCP is compatibility-only. The versioned fixtures record rmcp 1.7's accepted `2024-11-05` era and do not claim `2025-11-25` or `2026-07-28`.
+- The Phase 2 MCP fixture index is `tests/fixtures/mcp/index.v1.json`; its profile and HTTP fixtures are retained as historical contract inputs, not current shipped MCP capabilities.
+- Current MCP behavior is defined by [MCP compatibility](mcp-compatibility.md): host-backed logical stdio only; 29 offline routes, 30 declared connected routes with 12 `capability_unavailable`; headed live Chrome has not run, and MCP is not distribution-ready.
+- The rmcp 1.7 protocol-version record in the historical fixtures is not a claim of MCP HTTP transport or release readiness.
 
 ## Task traceability
 
@@ -73,15 +74,15 @@ Tests: `packages/agentyc-browser/test/phase2.test.mjs::createSpace requires exac
 
 Evidence: `packages/agentyc-browser/src/operations.mjs`, `packages/agentyc-browser/src/client.mjs`, `crates/agentyc/src/commands/direct.rs`, `crates/agentyc/src/commands/direct/spaces.rs`, `crates/agentyc/src/commands/direct/pages.rs`, `docs/cli.md`.
 
-### P2-T7 — MCP compatibility matrix and fixtures
+### P2-T7 — MCP compatibility evidence (historical Phase 2 record)
 
-Modules: `crates/agentyc-mcp/src/host_adapter.rs`, `crates/agentyc-mcp/src/host_server.rs`, `crates/agentyc-mcp/src/remote_host_server.rs`, `crates/agentyc-mcp/src/legacy.rs`, `tests/mcp_protocol.rs`, `docs/mcp-compatibility.md`.
+Current modules: `crates/agentyc-mcp/src/host_adapter.rs`, `crates/agentyc-mcp/src/host_server.rs`, `crates/agentyc-mcp/src/remote_host_server.rs`, `tests/mcp_protocol.rs`, and `docs/mcp-compatibility.md`. The former direct-CDP MCP source is removed and is not a current evidence path.
 
-Fixtures: `tests/fixtures/mcp/index.v1.json`, `tests/fixtures/mcp/manifests/default.v1.json`, `tests/fixtures/mcp/manifests/extended.v1.json`, `tests/fixtures/mcp/schemas/tools.v1.json`, `tests/fixtures/mcp/errors/v1.json`, `tests/fixtures/mcp/workflows/stdio.v1.json`, `tests/fixtures/mcp/workflows/http.v1.json`, `tests/fixtures/mcp/workflows/host-backed.v1.json`, `tests/fixtures/mcp/transcripts/stdio-initialize.v1.jsonl`, `tests/fixtures/mcp/transcripts/tool-error.v1.jsonl`, `tests/fixtures/mcp/transcripts/http-session.v1.jsonl`.
+Retained Phase 2 fixtures: `tests/fixtures/mcp/index.v1.json`, `tests/fixtures/mcp/manifests/default.v1.json`, `tests/fixtures/mcp/manifests/extended.v1.json`, `tests/fixtures/mcp/schemas/tools.v1.json`, `tests/fixtures/mcp/errors/v1.json`, `tests/fixtures/mcp/workflows/stdio.v1.json`, `tests/fixtures/mcp/workflows/http.v1.json`, `tests/fixtures/mcp/workflows/host-backed.v1.json`, `tests/fixtures/mcp/transcripts/stdio-initialize.v1.jsonl`, `tests/fixtures/mcp/transcripts/tool-error.v1.jsonl`, and `tests/fixtures/mcp/transcripts/http-session.v1.jsonl`. These are archived contract evidence and do not describe a current profile or shipped HTTP transport.
 
-Tests: `tests/mcp_protocol.rs::test_tool_count_is_61`, `tests/mcp_protocol.rs::test_all_tool_names_present`, `tests/mcp_protocol.rs::test_server_name_in_tool_descriptions`.
+Current offline protocol tests: `tests/mcp_protocol.rs::tool_list_contains_only_host_backed_logical_operations`, `tests/mcp_protocol.rs::space_creation_denies_missing_shared_profile_acknowledgement`, and `tests/mcp_protocol.rs::create_space_lease_and_logical_page_over_stdio`.
 
-Evidence: `crates/agentyc-mcp/src/host_adapter.rs`, `crates/agentyc-mcp/src/host_server.rs`, `crates/agentyc-mcp/src/remote_host_server.rs`, `crates/agentyc-mcp/src/legacy.rs`, `tests/mcp_protocol.rs`, `docs/mcp-compatibility.md`.
+Current behavior and blockers: offline lists 29 logical routes; the connected remote catalog declares 30 and 12 return `capability_unavailable`. Headed live Chrome has not run through the host socket, Native Messaging bridge, extension, and Chrome; MCP is not distribution-ready.
 
 ### P2-T8 — primary-output identity audit
 
@@ -109,11 +110,11 @@ Evidence: `SKILL.md`, `docs/cli.md`, `docs/api-local.md`, `docs/architecture-exi
 
 ## Operation mapping inventory
 
-The central registry in `packages/agentyc-browser/src/operations.mjs` is the source for these keys. Each is represented in the manifest with wire, SDK, CLI, MCP, support status, evidence, and any explicit gap reason:
+This list and its MCP mapping fields are the completed Phase 2 deterministic registry record, not the current MCP support matrix. They do not establish connected-route support. Current MCP route availability and typed gaps are defined in `docs/mcp-compatibility.md`. The central registry in `packages/agentyc-browser/src/operations.mjs` remains the source for direct wire/SDK/CLI operations:
 
-`space.create`, `space.list`, `space.prune`, `space.claim`, `space.renew`, `space.takeover`, `space.takeover_with_control_ticket`, `space.return`, `space.finish`, `space.release`, `page.create`, `page.create_managed`, `page.close`, `page.list`, `page.inventory`, `action.execute`, `action.status`, `action.reconcile`, `snapshot.read`, `events.read`, `wait.for`, `host.status`, `action.cancel`, `page.navigate`, `page.adopt`, `action.navigate`, `action.click`, `action.input`, `action.evaluate`, `action.scroll`, `action.wait`, `action.screenshot`, `action.storage_write`, `action.cookie_write`, `action.upload`, `action.close`.
+`action.cancel`, `action.click`, `action.close`, `action.execute`, `action.input`, `action.navigate`, `action.reconcile`, `action.screenshot`, `action.scroll`, `action.status`, `action.wait`, `events.read`, `host.status`, `page.adopt`, `page.close`, `page.create`, `page.create_managed`, `page.inventory`, `page.list`, `page.navigate`, `snapshot.read`, `space.claim`, `space.create`, `space.finish`, `space.handoff`, `space.list`, `space.pause`, `space.prune`, `space.release`, `space.renew`, `space.return`, `space.takeover`, `space.takeover_with_control_ticket`, `wait.for`.
 
-Direct CLI `page close` is lease-authorized and maps to the same `page.close` wire method as the SDK and host adapter. Other direct-only operations without measured host-backed MCP routes remain explicitly marked as MCP adapter deferrals, not parity claims.
+The Phase 2 record maps direct CLI `page close` to the `page.close` wire method. These mappings are historical contract traceability, not current MCP parity claims; the current host-backed MCP route catalog and unsupported remote capabilities are documented separately.
 
 ## MCP fixture inventory
 
@@ -129,12 +130,12 @@ Direct CLI `page close` is lease-authorized and maps to the same `page.close` wi
 - `tests/fixtures/mcp/transcripts/tool-error.v1.jsonl`
 - `tests/fixtures/mcp/transcripts/http-session.v1.jsonl`
 
-The default manifest records 61 tools; the extended manifest records 76 in the checked-in catalog order. The schemas and transcripts are sanitized: no credentials, external URLs, page bodies, live browser identifiers, or CDP endpoints. These are later phases' release inputs, not a release claim in Phase 2.
+The default and extended profile fixtures are retained as historical Phase 2 records only; they are not current tool catalogs and do not describe shipped MCP capabilities. The schemas and transcripts are sanitized contract inputs, not current release evidence. Current MCP runs over stdio only, has 12 unavailable routes in its connected catalog, has not been run through headed live Chrome, and is not distribution-ready.
 
 ## Error and identity boundaries
 
-`tests/fixtures/mcp/errors/v1.json` covers every canonical error code with retryability, guidance, next step, CLI mapping, SDK mapping, and MCP classification. `space_id` is canonical. Raw tab/target/session fields are never authority. Compatibility-only fields are allowlisted explicitly in `crates/agentyc-mcp/src/legacy.rs`, `docs/api.md`, and the redacted schema fixture.
+`tests/fixtures/mcp/errors/v1.json` is a historical Phase 2 error contract fixture. `space_id` is canonical. Current host-backed MCP accepts logical identities; raw tab/target/session identifiers are not authority and the removed direct-CDP adapter is not a current allowlist. See `docs/mcp-compatibility.md` for current errors and route boundaries.
 
 ## Explicit nonclaims
 
-Phase 1 is preserved and remains complete, but its deterministic evidence does not claim production distribution or existing-profile rollout. Phase 2 is complete under deterministic contract evidence: this artifact and manifest do not claim live Chrome, host/extension/MCP transport, or production release behavior. Phase 3 is active for the broker/ledger implementation. Later phases own ordinary-user distribution, OOPIF/session-graph support, selected-page retention, deployed-tokenizer performance, rollback/kill-switch drills, load/soak/chaos, human responsiveness, and the Phase 8 MCP release gate.
+Phase 1 is preserved and remains complete, but its deterministic evidence does not claim production distribution or existing-profile rollout. Phase 2 is complete under deterministic contract evidence: this artifact and manifest do not claim live Chrome, host/extension/MCP transport, or production release behavior. Phase 3 is complete and Phase 4 is active for the MV3 extension and task-space UI. Later phases own ordinary-user distribution, OOPIF/session-graph support, selected-page retention, deployed-tokenizer performance, rollback/kill-switch drills, load/soak/chaos, human responsiveness, and the still-pending Phase 8 MCP release gate.
