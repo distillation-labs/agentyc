@@ -1,7 +1,6 @@
 //! Host-backed MCP stdio service for logical browser task spaces.
 //!
-//! This module is intentionally independent from the legacy [`crate::BrowserServer`].
-//! It accepts only logical identities and delegates all authorization, lifecycle,
+//! It accepts only logical identities and delegates authorization, lifecycle,
 //! lease, snapshot, action, and event behavior to [`HostAdapter`].
 
 use std::collections::BTreeMap;
