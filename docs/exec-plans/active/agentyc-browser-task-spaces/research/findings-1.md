@@ -1,6 +1,8 @@
-# Findings — current agentyc gaps and ego-lite patterns worth transferring
+# Historical findings — direct-CDP gaps and ego-lite patterns
 
-## 1. Current control-plane shape
+> Sections 1–6 record an earlier direct-CDP implementation and are historical, not current-code findings. Section 7 supersedes their architecture recommendations. The direct-CDP MCP server, browser tool catalog, profiles, and HTTP route described below were removed. Current MCP status is in [`docs/mcp-compatibility.md`](../../../../mcp-compatibility.md); it is not distribution-ready pending live headed-Chrome and release gates.
+
+## 1. Historical control-plane shape
 
 The current path is:
 
@@ -23,7 +25,7 @@ Evidence:
 
 This is adequate for one serialized agent, but not for multiple task spaces. A “tab group” implemented only as a label would not solve ownership because all tools resolve the same mutable page and event buffers.
 
-## 2. Current tab/session hazards
+## 2. Historical tab/session hazards
 
 - Public tab identity is the last four characters of a CDP target ID (`agentyc-browser/src/session.rs:35-46`). Collision detection reduces ambiguity but does not make the alias stable across target recreation.
 - `switch_tab` detaches the old active session before fully attaching and enabling domains for the new target (`session.rs:328-389`). A failed attach loses the previous page.
@@ -31,7 +33,7 @@ This is adequate for one serialized agent, but not for multiple task spaces. A �
 - `close_all` closes every visible page target, including attached-browser tabs not owned by agentyc (`session.rs:297-313`).
 - Current docs claim tab-scoped logs and isolated subagent tabs, but the implementation has global/method-only capture paths (`docs/architecture.md:182-191`; `tools/mod.rs:409-560`).
 
-## 3. Current context path and its limit
+## 3. Historical context path and its limit
 
 `browser_get_state` supports `auto`, `full`, `min`, `focus`, and `since_hash` (`crates/agentyc-mcp/src/lib.rs:313-360`; `state.rs:289-407`). It already has useful compaction, but:
 
@@ -43,7 +45,7 @@ This is adequate for one serialized agent, but not for multiple task spaces. A �
 
 The refactor should make “unchanged” a cache result, not merely a smaller response after a scan. The output should carry snapshot version/hash, space/page identity, token estimate, budget/truncation, and a compact delta or resync marker.
 
-## 4. Reliability and speed hazards
+## 4. Historical reliability and speed hazards
 
 ### CDP transport/events
 
@@ -105,8 +107,8 @@ Agent CLI / persistent SDK
        -> content-script/page bridge where needed
   -> user's already-running Chrome
 
-Legacy MCP stdio/HTTP
-  -> compatibility adapter
+Host-backed MCP stdio
+  -> logical adapter
   -> same host broker
 ```
 
@@ -133,13 +135,13 @@ The canonical agent object is a task space, not an active tab. A persistent CLI/
 
 ### Current-code migration implications
 
-- `BrowserRuntime::open` currently launches when no `cdp_url` is given; the new default must discover the local host/extension and fail with `extension_not_connected`, never launch Chrome.
-- `BrowserSession.active_page`, `PageSession.tab_id`, `TabInfo.target_id`, and `close_all` cannot remain authoritative. They move behind an explicit legacy/direct adapter.
-- `crates/agentyc-mcp` must stop owning browser state and call `BrowserBroker` through the host/runtime adapter.
+- The default `agentyc`/`agentyc mcp` path uses the host-backed service and does not launch Chrome. Standalone `browser`, `run`, and `repl` remain separate direct-CDP utilities.
+- The standalone direct-CDP CLI still has active-page/tab-oriented internals; they are isolated from the host-backed MCP and direct task-space interfaces.
+- `crates/agentyc-mcp` now exposes host-backed logical operations and does not own browser state. The old direct-CDP MCP server and tool modules were removed.
 - `crates/agentyc/src/main.rs::run_action` currently opens/closes a runtime per command; the new CLI/SDK uses a persistent host connection.
-- `crates/agentyc-browser/src/launcher.rs` and `profile.rs` become explicit legacy/test surfaces; no default path may download, discover, or launch a second browser.
+- `crates/agentyc-browser/src/launcher.rs` and `profile.rs` support separate standalone direct-CDP CLI utilities; they are not used by the default host-backed MCP path.
 - A new `agentyc-core` crate owns transport-neutral types; a new `agentyc-host` crate owns the local broker, Native Messaging bridge, persistence, and extension adapter; a new `extension/` tree owns Chrome integration and the side panel.
 
 ### Release blockers for the new target
 
-Any of the following blocks release of the existing-Chrome experience: a cross-space mutation, a user-tab close, stale-agent mutation after takeover, automatic browser launch/download, a Native Messaging origin bypass, unbounded payload allocation, a lost mutation silently reported as success, or a primary output containing raw IDs/`[id] name`.
+Those original blockers describe the target architecture review, not a completed release attestation. Current MCP additionally remains blocked on disposition of 12 unavailable connected routes, headed live-Chrome workflows through the host/extension path, and its independent Phase 8 release gate.
