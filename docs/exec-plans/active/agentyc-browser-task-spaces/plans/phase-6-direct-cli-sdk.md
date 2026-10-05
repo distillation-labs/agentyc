@@ -109,20 +109,24 @@ packages/agentyc-browser/
 Public shape (planned; aligned to the checked-in ego-lite reference):
 
 ```js
-const client = await connect({ profile: "default" });
-const task = await client.taskSpace("research competitors");
-const results = task.page("p1");
-const scratch = await task.newPage();
+const client = await connect({ socketPath: process.env.AGENTYC_HOST_SOCKET });
+const task = await client.createSpace("research competitors", {
+  acceptSharedProfileDisclosure: true,
+});
+await task.claim();
+const results = await task.newPage("results");
+const scratch = await task.newPage("scratch");
 
 await results.goto("https://example.test");
 const snapshot = await results.snapshot({ mode: "min" });
-await results.click(snapshot.refs.submit);
-await results.waitForURL(/\/done$/);
+await results.click({ ref: snapshot.refs.submit });
+await results.waitForURL({ suffix: "/done" });
 
-await task.finish({ keep: ["p1"] });
+await task.finish();
+await client.close();
 ```
 
-`task.page(label)` returns a lazy durable page handle; `task.newPage()` creates a new blank page with a durable label. This is the intended contract shape only: no agentyc SDK implementation or live Chrome evidence is claimed.
+`task.page(label)` returns a lazy handle for an existing page; `task.newPage(label)` creates a blank page and requires a claimed lease. The example uses the current SDK shape; its fake-host tests do not constitute live Chrome evidence. Selected-page retention through `finish({ keep })` is not implemented.
 
 The SDK:
 
