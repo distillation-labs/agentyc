@@ -749,11 +749,6 @@ test("page helpers build canonical action.execute requests", async () => {
       "scroll",
       { deltaY: "400", x: "1", y: "2" },
     ],
-    [
-      () => page.evaluate("document.title"),
-      "evaluate",
-      { expression: "document.title" },
-    ],
   ];
   for (const [invoke, operation, payload] of cases) {
     transport.handler = (request) => ({
@@ -830,7 +825,7 @@ test("page helpers reject invalid input before creating a page or dispatching", 
   assert.equal(transport.calls.length, 0);
 });
 
-test("unsupported key, select, and upload helpers fail before dispatch", async () => {
+test("unsupported key and select helpers fail before dispatch", async () => {
   const transport = new FakeTransport();
   const client = await connect({ transport });
   const page = client.taskSpace("space_unsupported").page("page_unsupported");
@@ -838,11 +833,35 @@ test("unsupported key, select, and upload helpers fail before dispatch", async (
   for (const invoke of [
     () => page.press("Enter"),
     () => page.select("#choice", "b"),
-    () => page.upload("#file", { name: "report.txt" }),
   ]) {
     await assert.rejects(
       invoke,
       (error) => error.code === "capability_unavailable",
+    );
+  }
+  assert.equal(transport.calls.length, 0);
+});
+
+test("sensitive action helpers fail closed before resolving a lazy page", async () => {
+  const transport = new FakeTransport();
+  const client = await connect({ transport });
+  const page = client.taskSpace("space_sensitive").page("lazy-sensitive");
+  const operations = ["evaluate", "storage_write", "cookie_write", "upload"];
+  const invokes = [
+    () => page.evaluate("document.title"),
+    () => page.action("click", { sensitive_boundary: "payment" }),
+    ...operations
+      .slice(1)
+      .map((operation) => () => page.action(operation, { value: "x" })),
+    () => page.upload("#file", { path: "report.txt" }),
+  ];
+
+  for (const invoke of invokes) {
+    await assert.rejects(
+      invoke,
+      (error) =>
+        error.code === "permission_denied" &&
+        error.message.includes("host-issued user-intent ticket"),
     );
   }
   assert.equal(transport.calls.length, 0);
@@ -892,6 +911,19 @@ test("page labels resolve existing records and do not create duplicates", async 
 
 test("page creation is single-flight and requires a claimed lease", async () => {
   const transport = new FakeTransport();
+  transport.handler = (request) => ({
+    responses: request.requests.map((entry) => ({
+      request_id: entry.request_id,
+      ok: true,
+      result: {
+        page: {
+          page_id: "page_created",
+          space_id: "space_claimed",
+          label: "main",
+        },
+      },
+    })),
+  });
   const client = await connect({ transport });
   const unclaimed = client.taskSpace("space_unclaimed").page("main");
   await assert.rejects(
