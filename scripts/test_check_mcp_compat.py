@@ -14,33 +14,27 @@ SPEC.loader.exec_module(checker)
 
 
 class McpCompatibilityCheckerTests(unittest.TestCase):
-    def test_repository_counts_are_inferred_and_live_chrome_is_not_claimed(self) -> None:
+    def test_repository_inventory_is_host_only_and_does_not_claim_live_chrome(self) -> None:
         manifest, report = checker.inspect_repository(checker.ROOT)
-        self.assertEqual(manifest["profile_counts"], {"default": 61, "extended": 76})
-        self.assertEqual(len(manifest["profiles"]["default"]), 61)
-        self.assertEqual(len(manifest["profiles"]["extended"]), 76)
+        self.assertEqual(manifest["profile_counts"], {"offline": 29, "remote": 30})
+        self.assertEqual(len(manifest["tools"]["offline"]), 29)
+        self.assertEqual(len(manifest["tools"]["remote"]), 30)
         self.assertEqual(report["live_chrome"], {"status": "not_run", "claim": False})
-        self.assertEqual(report["status"], "fail")
-        failures = {item["id"] for item in report["checks"] if item["status"] == "fail"}
+        self.assertEqual(report["status"], "pass")
+        failed = [item["id"] for item in report["checks"] if item["status"] == "fail"]
+        self.assertEqual(failed, [])
+        self.assertTrue(all(name.startswith("host_") for name in manifest["tools"]["offline"]))
+        self.assertTrue(all(item["name"].startswith("host_") for item in manifest["tools"]["remote"]))
         self.assertEqual(
-            failures,
-            {
-                "architecture.no_direct_browser_dependencies",
-                "architecture.no_direct_cdp_bypass",
-                "policy.raw_ids_adapter_only",
-                "errors.canonical_iserror_metadata",
-                "manifest.required_tool_evidence",
-            },
+            sum(not item["local_protocol"] for item in manifest["tools"]["remote"]),
+            12,
         )
+        tool_names = manifest["tools"]["offline"] + [item["name"] for item in manifest["tools"]["remote"]]
+        self.assertFalse(any(name.startswith("browser_") for name in tool_names))
 
         envelope_fields = {
-            "schema_version",
-            "build_tuple",
-            "environment",
-            "timestamp",
-            "command",
-            "result",
-            "redaction_status",
+            "schema_version", "build_tuple", "environment", "timestamp", "nonce",
+            "command", "result", "redaction_status",
         }
         self.assertTrue(envelope_fields.issubset(manifest))
         self.assertTrue(envelope_fields.issubset(report))
@@ -50,27 +44,45 @@ class McpCompatibilityCheckerTests(unittest.TestCase):
             [item["id"] for item in report["checks"]],
             [
                 "evidence.required_files",
-                "architecture.no_direct_browser_dependencies",
-                "architecture.no_direct_cdp_bypass",
-                "policy.raw_ids_adapter_only",
-                "catalog.valid",
-                "profiles.exact_counts",
-                "profiles.catalog_matches_declarations",
-                "profiles.documented_baseline",
-                "errors.canonical_iserror_metadata",
-                "manifest.required_tool_evidence",
+                "architecture.host_only_dependencies",
+                "architecture.legacy_modules_removed",
+                "architecture.no_direct_browser_or_raw_id_authority",
+                "tools.host_only_inventory",
+                "tools.unsupported_routes_are_explicit",
+                "protocol.test_covers_host_only_tools",
+                "docs.legacy_removal_and_live_gate_are_explicit",
+                "errors.structured_host_metadata",
             ],
         )
-        self.assertNotIn("<redacted id>", json.dumps(report))
-        self.assertIn("browser_navigate", manifest["profiles"]["default"])
-        self.assertIn("browser_navigate", {item["name"] for item in manifest["tools"]})
 
-    def test_rust_comment_mentions_do_not_count_as_production_bypasses(self) -> None:
-        source = """// CdpClient and target_id in a comment are not executable.
-/* BrowserRuntime */\nfn safe() { let _ = 1; }\n"""
+    def test_parsers_extract_only_declared_host_tools(self) -> None:
+        offline = '''
+#[rmcp::tool(name = "host_space_list", description = "List spaces")]
+async fn host_space_list(&self) -> Result<(), Error> { todo!() }
+'''
+        remote = '''
+const REMOTE_TOOL_SPECS: &[RemoteToolSpec] = &[
+    RemoteToolSpec { name: "host_space_list", method: "space.list", description: "List.", fields: NO_FIELDS, supported_by_local_protocol: true, },
+];
+'''
+        self.assertEqual(checker._tool_declarations(offline), ["host_space_list"])
+        self.assertEqual(
+            checker._remote_tool_declarations(remote),
+            [{"name": "host_space_list", "local_protocol": True}],
+        )
+
+    def test_rust_comment_mentions_do_not_count_as_bypasses(self) -> None:
+        source = "// CdpClient and target_id in a comment are not executable.\n/* BrowserRuntime */\nfn safe() {}\n"
         stripped = checker._strip_rust_comments(source)
-        self.assertIsNone(checker.CDP_BYPASS_RE.search(stripped))
-        self.assertIsNone(checker.RAW_ID_RE.search(stripped))
+        self.assertIsNone(checker.FORBIDDEN_SOURCE.search(stripped))
+
+    def test_missing_evidence_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, report = checker.inspect_repository(Path(directory))
+            self.assertEqual(report["status"], "fail")
+            self.assertEqual(manifest["profile_counts"], {"offline": 0, "remote": 0})
+            required = next(item for item in report["checks"] if item["id"] == "evidence.required_files")
+            self.assertEqual(required["status"], "fail")
 
     def test_report_directory_rejects_traversal_and_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -86,29 +98,14 @@ class McpCompatibilityCheckerTests(unittest.TestCase):
             with self.assertRaises(checker.CompatibilityError):
                 checker.resolve_artifact_dir(root, "artifacts/link/report")
 
-    def test_missing_evidence_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "crates/agentyc-mcp/src").mkdir(parents=True)
-            (root / "artifacts").mkdir()
-            manifest, report = checker.inspect_repository(root)
-            self.assertEqual(report["status"], "fail")
-            self.assertEqual(manifest["profile_counts"], {"default": 0, "extended": 0})
-            required = next(item for item in report["checks"] if item["id"] == "evidence.required_files")
-            self.assertEqual(required["status"], "fail")
-
-    def test_checker_emits_versioned_bounded_artifacts_even_when_gates_fail(self) -> None:
+    def test_checker_writes_bounded_artifacts_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "artifacts").mkdir()
-            output = root / "artifacts/p8-check"
-            manifest = {"schema_version": 1, "manifest_version": "1.0.0"}
-            report = {"schema_version": 1, "report_version": "1.0.0", "status": "fail"}
-            checker._atomic_write(output / "manifest.v1.json", manifest)
-            checker._atomic_write(output / "report.v1.json", report)
-            self.assertEqual(json.loads((output / "manifest.v1.json").read_text()), manifest)
-            self.assertEqual(json.loads((output / "report.v1.json").read_text()), report)
-            self.assertLess((output / "manifest.v1.json").stat().st_size, checker.MAX_OUTPUT_BYTES)
+            output = root / "artifacts/report/manifest.v1.json"
+            checker._atomic_write(output, {"status": "pass"})
+            self.assertEqual(json.loads(output.read_text()), {"status": "pass"})
+            self.assertLess(output.stat().st_size, checker.MAX_OUTPUT_BYTES)
 
 
 if __name__ == "__main__":
