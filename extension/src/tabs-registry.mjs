@@ -197,6 +197,7 @@ export class TabsRegistry {
     this.retiredRawTabIds = new Set();
     this.hostCreatedTabIds = new Set();
     this.removeListeners = [];
+    this.listenersInstalled = false;
     this.started = false;
   }
 
@@ -222,6 +223,7 @@ export class TabsRegistry {
 
   stop() {
     for (const remove of this.removeListeners.splice(0)) remove();
+    this.listenersInstalled = false;
     this.started = false;
   }
 
@@ -302,20 +304,36 @@ export class TabsRegistry {
   }
 
   installListeners() {
+    if (this.listenersInstalled) return;
     const tabs = this.chrome?.tabs;
     if (!tabs) return;
-    const onCreated = (tab) => this.observeTab(tab, "created");
-    const onUpdated = (tabId, changeInfo, tab) =>
-      void this.handleUpdated(tabId, changeInfo, tab);
-    const onRemoved = (tabId, removeInfo) =>
-      this.handleRemoved(tabId, removeInfo);
-    const onReplaced = (addedTabId, removedTabId) =>
-      this.handleReplaced(addedTabId, removedTabId);
-    const onAttached = (tabId, attachInfo) =>
-      this.handleAttached(tabId, attachInfo);
-    const onDetached = (tabId, detachInfo) =>
-      this.handleDetached(tabId, detachInfo);
-    const onActivated = (activeInfo) => this.handleActivated(activeInfo);
+    this.listenersInstalled = true;
+    const whenStarted =
+      (handler) =>
+      (...args) => {
+        if (!this.started) return;
+        return handler(...args);
+      };
+    const onCreated = whenStarted((tab) => this.observeTab(tab, "created"));
+    const onUpdated = whenStarted(
+      (tabId, changeInfo, tab) =>
+        void this.handleUpdated(tabId, changeInfo, tab),
+    );
+    const onRemoved = whenStarted((tabId, removeInfo) =>
+      this.handleRemoved(tabId, removeInfo),
+    );
+    const onReplaced = whenStarted((addedTabId, removedTabId) =>
+      this.handleReplaced(addedTabId, removedTabId),
+    );
+    const onAttached = whenStarted((tabId, attachInfo) =>
+      this.handleAttached(tabId, attachInfo),
+    );
+    const onDetached = whenStarted((tabId, detachInfo) =>
+      this.handleDetached(tabId, detachInfo),
+    );
+    const onActivated = whenStarted((activeInfo) =>
+      this.handleActivated(activeInfo),
+    );
     for (const [event, listener] of [
       [tabs.onCreated, onCreated],
       [tabs.onUpdated, onUpdated],
