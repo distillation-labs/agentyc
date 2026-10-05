@@ -15,7 +15,7 @@ Move the useful ego-lite patterns into the transport-neutral host runtime: compa
 
 ## Handoff in
 
-- **Inputs:** Phase 0 token/latency budgets; Phase 2 snapshot/action/event contracts; Phase 3 broker; Phase 4 debugger/content bridge.
+- **Inputs:** Phase 0 token/latency budgets; Phase 2 snapshot/action/event contracts; Phase 3 broker; Phase 4 debugger/content bridge. The Node SDK remains in `packages/agentyc-browser`; the removed Rust DOM/runtime crates are not current dependencies.
 - **Must already be true:** each operation resolves logical space/page and current generation; extension reports capabilities and events.
 - **Do not reopen:** no full-scan-only `since_hash`; no raw IDs; no fixed sleeps on correctness paths; no blind replay; no unscoped event fallback.
 
@@ -90,19 +90,19 @@ Lease epoch is checked at enqueue, dequeue, and immediately before extension dis
   - **Owner:** Japneet Kalkat.
 
 - [ ] P5-T2 — Implement snapshot cache, dirty tracking, and delta serializer.
-  - **Files:** planned `crates/agentyc-host/src/{snapshot_cache.rs,snapshot_builder.rs}`, reuse `crates/agentyc-dom/src/{service.rs,clickable.rs}`, and document the Phase 8 migration seam from the existing `crates/agentyc-mcp/src/state.rs` path; do not change MCP ownership in this phase.
+  - **Files:** planned `crates/agentyc-host/src/{snapshot_cache.rs,snapshot_builder.rs}`, the extension DOM/debugger bridge, and a documented Phase 8 migration seam from the current host-backed MCP adapter; do not depend on the removed Rust `agentyc-dom` crate or change MCP ownership in this phase.
   - **Done when:** clean cache performs zero DOM/AX scan; dirty capture emits deterministic full/delta; base expiry emits resync; snapshots are space/page scoped and token bounded; dirty reasons conservatively include event gaps, navigation/document/frame replacement, geometry/scroll, raw evaluation, takeover, debugger/worker/host reconnect, and attribution failure; delta chains have bounded depth/operation count and single-flight rebuilds.
   - **Validation:** local fixtures for mutation, rerender, navigation, frame changes, dense tables, dynamic feeds, frame partiality, event gaps, reconnect, cache races, and stale writers; actual tokenizer assertions, hash/delta goldens, scan counters, actionable-control coverage, and resync tests.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P5-T3 — Implement provenance-bearing refs and frame-aware resolution.
-  - **Files:** `crates/agentyc-host/src/ref_registry.rs`, `crates/agentyc-dom/src/service.rs`, extension frame bridge, legacy adapter.
+  - **Files:** `crates/agentyc-host/src/ref_registry.rs`, extension frame bridge, and host/extension tests; the removed Rust `agentyc-dom` crate and legacy direct-CDP adapter are not current dependencies.
   - **Done when:** refs carry frame/document/snapshot/navigation generations, ref epoch, bounded expiry, and last-validated generation; action execution re-resolves and validates the ref inside the same pre-dispatch gate; cached geometry/backend node IDs are never authoritative and stale hints never auto-select replacements.
   - **Validation:** rerender/navigation, same-origin nested frame, OOPIF, cross-origin denial, shadow DOM, detached node, prerender/BFCache replacement, reused frame/context IDs, late old-session events, raw-evaluate invalidation, and same-tab target replacement tests.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P5-T4 — Replace fixed sleeps with event-driven waits.
-  - **Files:** `crates/agentyc-host/src/waits.rs`, extension event mapping, `crates/agentyc-runtime/src/lib.rs`, legacy navigation adapters.
+  - **Files:** `crates/agentyc-host/src/waits.rs`, extension event mapping, and host/extension tests; do not depend on the removed Rust runtime crate or legacy navigation adapter.
   - **Done when:** URL/history/reload/network-idle/request/response/stable-DOM/element/page/download waits use identity/generation, watermarks, monotonic absolute deadlines, cancellation, and semantic postconditions; `network_idle` excludes scoped long-lived requests, WebSockets, downloads, and analytics; DOM stability requires mutation quiet plus geometry stability; polling is only a bounded fallback.
   - **Validation:** delayed navigation, redirect, same-document, response-before-request, event-before-waiter, long-lived requests, DOM/geometry churn, tab creation, generation replacement, disconnect, cancellation, deadline, and extension restart tests.
   - **Owner:** Japneet Kalkat.
