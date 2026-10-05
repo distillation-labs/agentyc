@@ -1,10 +1,10 @@
-"""Generate the Phase 0 capability matrix without launching a browser.
+"""Reproduce the historical Phase 0 capability matrix without launching Chrome.
 
-The default is an offline catalog report: operation statuses are catalog claims,
-not observed browser support, and operation permissions/behavior remain unknown.
-Target/headed/managed modes are explicit live-probe lanes and fail closed when
-their prerequisites or probe implementation are unavailable; this script never
-downloads or launches Chrome and never requires a CDP URL for an existing target.
+The bundled tool catalog is an archived direct-CDP MCP baseline, not the current
+host-backed logical MCP inventory. Offline output records catalog claims only,
+not browser support; permissions and behavior remain unknown. This scaffold's
+live-probe modes are not implemented and fail closed. No output from this script
+is current MCP release evidence.
 """
 
 from __future__ import annotations
