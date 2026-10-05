@@ -22,7 +22,6 @@ use commands::direct::{
     SpaceCommand, WaitArgs,
 };
 
-
 const SKILL_MD: &str = include_str!("../../../SKILL.md");
 
 #[derive(Parser)]
@@ -247,7 +246,6 @@ fn host_principal(explicit: Option<&str>) -> Result<PrincipalId> {
         PrincipalId::from_suffix(value).map_err(|error| anyhow!(error.to_string()))
     }
 }
-
 
 fn cmd_init(output: &str, print_only: bool, force: bool) -> Result<()> {
     if print_only {
