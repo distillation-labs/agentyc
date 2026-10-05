@@ -26,3 +26,13 @@ Audit date: 2026-10-04. This audit uses the current Chrome Developer Documentati
 ## Remaining evidence gates
 
 Headed Chrome 125+ nested-frame/OOPIF behavior, worker/host/browser restart drills, side-panel accessibility and focus workflow, enterprise policy denial, installation/update/uninstall, and existing-profile coexistence remain required live evidence before Phase 4 can be marked complete. The owned disposable production lifecycle lane now has a source-bound live install/update/downgrade/rollback/uninstall record, but it does not substitute for existing-profile, side-panel, OOPIF, restart, policy, or production-distribution evidence. No current artifact claims those remaining results.
+
+## Official service-worker lifecycle refresh — 2026-10-04
+
+Retrieved the current Chrome documentation directly from the official Chrome for Developers pages:
+
+- [Events in service workers](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/events) says extension event listeners should be registered in global scope during synchronous service-worker script execution so Chrome can dispatch events as soon as the worker starts. Page last-updated date: 2023-05-02.
+- [The extension service worker lifecycle](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle) says workers may terminate, global state is lost, `connectNative()` keeps the worker alive while its port is open, and a crashed native host should be reconnected from `onDisconnect`. Page last-updated date: 2023-05-02.
+- [Native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging) reiterates synchronous native framing and origin validation, and its current page (last updated 2026-09-16) recommends reconnecting from the native port's `onDisconnect` handler.
+
+The audit found that runtime listeners were registered before the first await, but tab, tab-group, and debugger listeners were registered only after asynchronous metadata recovery. Those registrations now occur before the first await in `ServiceWorkerController.start()`. `TabsRegistry` ignores event side effects until initialized and performs a fresh tab inventory after metadata is applied, so events arriving during initialization are reconciled from current Chrome state. A live Native Messaging disconnect now invokes the reconnect path from its `onDisconnect` callback; failed reconnects use bounded backoff instead of a zero-delay retry loop. These changes are covered by deterministic service-worker and Native Messaging lifecycle tests; they are not live Chrome restart evidence.
