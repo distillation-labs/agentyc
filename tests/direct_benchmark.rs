@@ -84,9 +84,8 @@ fn local_fixture_contract_is_complete() {
 }
 
 #[test]
-fn mcp_offline_workflow_is_browser_safe() {
-    assert!(TOOL_CATALOG.contains("browser_get_state"));
-    assert!(TOOL_CATALOG.contains("browser_navigate"));
+fn archived_mcp_catalog_is_not_a_current_tool_surface() {
+    assert!(TOOL_CATALOG.contains("\"archive_status\": \"historical-only\""));
     assert!(OFFLINE_WORKFLOW.contains("\"external_requests\": 0"));
     assert!(OFFLINE_WORKFLOW.contains("\"browser_launches\": 0"));
     assert!(OFFLINE_WORKFLOW.contains("\"cdp_urls\": 0"));
