@@ -66,14 +66,26 @@ function render() {
   const root = element("spaces");
   const status = element("connection-status");
   const notices = element("notices");
+  const noticeSection = element("notice-section");
   if (!root || !status || !notices) return;
 
-  status.textContent = state.busy
-    ? "Working"
-    : state.connected
-      ? "Connected"
-      : "Waiting for host";
+  const connectionState = state.busy
+    ? "busy"
+    : !state.connected
+      ? "waiting"
+      : state.spacesLoaded
+        ? "connected"
+        : "syncing";
+  status.textContent =
+    connectionState === "busy"
+      ? "Working"
+      : connectionState === "waiting"
+        ? "Waiting for host"
+        : connectionState === "syncing"
+          ? "Loading spaces"
+          : "Connected";
   setAttribute(status, "data-connected", state.connected);
+  setAttribute(status, "data-state", connectionState);
   const main = document.querySelector?.("main");
   setAttribute(main, "aria-busy", state.busy);
 
@@ -82,7 +94,18 @@ function render() {
   if (state.spaces.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = "No task spaces are available.";
+    if (!state.connected) {
+      setAttribute(empty, "data-state", "waiting");
+      empty.textContent = "Start the agentyc host to load your task spaces.";
+    } else if (!state.spacesLoaded) {
+      setAttribute(empty, "data-state", "syncing");
+      empty.textContent =
+        "Connected to the host. Waiting for the task-space list…";
+    } else {
+      setAttribute(empty, "data-state", "empty");
+      empty.textContent =
+        "No task spaces yet. Create one above to get started.";
+    }
     append(root, empty);
   }
 
@@ -162,6 +185,7 @@ function render() {
       return item;
     }),
   );
+  if (noticeSection) noticeSection.hidden = state.notices.length === 0;
   setControlDisabledState();
 }
 
