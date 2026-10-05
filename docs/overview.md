@@ -36,7 +36,7 @@ there is no model in the loop at all.
 - MCP is host-backed and logical only. It does not expose the removed `browser_*` tools or an HTTP transport.
 - The offline MCP server exposes 29 logical routes. The connected remote catalog declares 30 routes, 12 of which currently fail with `capability_unavailable`.
 - Headed live Chrome has not yet been run through the MCP path; MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
-- The standalone `agentyc browser`, `agentyc run --cdp-url URL`, and `agentyc repl --cdp-url URL` commands remain separate direct-CDP CLI utilities. They do not add MCP tools or transports.
+- The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI commands have been removed. CDP-based installation/test harnesses are not user-facing interfaces; the Node SDK at `packages/agentyc-browser` and extension `chrome.debugger` backend remain.
 - No API key is required.
 
 ## Primary Use Cases
