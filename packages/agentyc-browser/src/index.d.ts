@@ -164,7 +164,7 @@ export interface LocalTransport<R = WireRequest, S = WireResponse> {
   /** True when the transport reports dispatch through `onDispatch`. */
   readonly dispatchAware?: boolean;
   request(payload: R, options?: TransportRequestOptions): Promise<S>;
-  reconnect?(): Promise<void>;
+  reconnect?(): Promise<unknown>;
   close?(): Promise<void>;
   cancel?(requestIds: string[] | string, reason?: string): Promise<void>;
   resume?(options?: EventsOptions): Promise<unknown>;
@@ -173,6 +173,7 @@ export interface LocalTransport<R = WireRequest, S = WireResponse> {
     options?: EventsOptions,
   ): Promise<() => boolean | void>;
   onEvent?(listener: (event: unknown) => void): () => boolean | void;
+  rememberCursor?(cursor: unknown): unknown;
 }
 export interface LocalProtocolOptions {
   socketPath?: string;
@@ -191,6 +192,7 @@ export class LocalProtocolTransport implements LocalTransport<
   readonly connected: boolean;
   readonly closed: boolean;
   readonly dispatchAware: true;
+  readonly helloOk?: unknown;
   connect(): Promise<void>;
   request(
     payload: WireRequest,
@@ -199,11 +201,12 @@ export class LocalProtocolTransport implements LocalTransport<
   cancel(requestIds: string[] | string, reason?: string): Promise<void>;
   resume(options?: EventsOptions): Promise<unknown>;
   onEvent(listener: (event: unknown) => void): () => boolean;
+  rememberCursor(cursor: unknown): unknown;
   subscribe(
     listener: (event: unknown) => void,
     options?: EventsOptions,
   ): Promise<() => boolean>;
-  reconnect(): Promise<void>;
+  reconnect(): Promise<unknown>;
   close(): Promise<void>;
 }
 export function createLocalTransport<R = WireRequest, S = WireResponse>(
@@ -272,6 +275,10 @@ export interface LeaseOptions extends RequestOptions {
 }
 export interface SpaceTransitionOptions extends RequestOptions {
   leaseEpoch?: number;
+  now?: number;
+}
+export interface ControlTransitionOptions extends RequestOptions {
+  ttl?: number;
   now?: number;
 }
 export interface ActionOptions extends PageOptions {
@@ -409,10 +416,7 @@ export class Page {
     fields?: ActionTargetFields,
     options?: ActionOptions,
   ): Promise<never>;
-  evaluate(
-    expression: string,
-    options?: ActionOptions,
-  ): Promise<ActionReceipt | unknown>;
+  evaluate(expression: string, options?: ActionOptions): Promise<never>;
   waitForURL(url: UrlMatcher, options?: WaitOptions): Promise<unknown>;
   close(options?: PageOptions): Promise<unknown>;
   events(options?: EventsOptions): Promise<unknown>;
@@ -463,6 +467,8 @@ export class TaskSpace {
   takeover(options?: LeaseOptions): Promise<unknown>;
   reclaim(options: ReclaimOptions): Promise<unknown>;
   returnControl(options?: LeaseOptions): Promise<unknown>;
+  pause(options: ControlTransitionOptions): Promise<unknown>;
+  handoff(options: ControlTransitionOptions): Promise<unknown>;
   finish(options?: SpaceTransitionOptions): Promise<unknown>;
   release(options?: SpaceTransitionOptions): Promise<unknown>;
   actionStatus(
@@ -483,6 +489,7 @@ export class BrowserClient {
   /** True after close(); requests fail until reconnect() is called. */
   readonly closed: boolean;
   taskSpace(spaceId: LogicalSpaceId): TaskSpace;
+  taskSpace(label: string, options: CreateSpaceOptions): Promise<TaskSpace>;
   createSpace(label: string, options: CreateSpaceOptions): Promise<TaskSpace>;
   listSpaces(options?: RequestOptions): Promise<TaskSpace[]>;
   pruneSpaces(maxCount?: number, options?: RequestOptions): Promise<unknown>;
@@ -528,7 +535,7 @@ export class BrowserClient {
     options?: RequestOptions,
   ): Promise<T[]>;
   cancel(requestId: string | string[], reason?: string): Promise<void>;
-  reconnect(): Promise<void>;
+  reconnect(): Promise<unknown>;
   close(): Promise<void>;
 }
 
