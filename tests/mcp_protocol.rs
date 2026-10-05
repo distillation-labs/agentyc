@@ -14,8 +14,8 @@ fn binary_path() -> std::path::PathBuf {
         .to_path_buf();
     path.push("agentyc");
     if !path.exists() {
-        path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug/agentyc");
+        path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/agentyc");
     }
     path
 }
@@ -60,7 +60,10 @@ impl McpProcess {
                 "clientInfo": {"name": "host-mcp-test", "version": "1"}
             }),
         );
-        assert!(response.get("result").is_some(), "initialize failed: {response:?}");
+        assert!(
+            response.get("result").is_some(),
+            "initialize failed: {response:?}"
+        );
         assert_eq!(response["result"]["protocolVersion"], "2024-11-05");
         this
     }
@@ -86,7 +89,9 @@ impl McpProcess {
 
     fn write_message(&mut self, message: &serde_json::Value) {
         let line = serde_json::to_string(message).expect("serialize MCP request") + "\n";
-        self.stdin.write_all(line.as_bytes()).expect("write MCP request");
+        self.stdin
+            .write_all(line.as_bytes())
+            .expect("write MCP request");
         self.stdin.flush().expect("flush MCP request");
     }
 
@@ -132,13 +137,18 @@ fn tool_list_contains_only_host_backed_logical_operations() {
         "host_action_reconcile",
         "host_event_resume",
     ] {
-        assert!(names.contains(required), "Missing host operation {required}");
+        assert!(
+            names.contains(required),
+            "Missing host operation {required}"
+        );
     }
     assert!(names.iter().all(|name| name.starts_with("host_")));
     assert!(!names.iter().any(|name| name.starts_with("browser_")));
     for tool in tools {
         assert!(
-            tool["description"].as_str().is_some_and(|description| !description.is_empty()),
+            tool["description"]
+                .as_str()
+                .is_some_and(|description| !description.is_empty()),
             "Tool {} has no description",
             tool["name"]
         );
