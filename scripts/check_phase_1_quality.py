@@ -140,12 +140,7 @@ COMMAND_SPECS: tuple[dict[str, Any], ...] = (
 COMMANDS_BY_ID = {command["id"]: command for command in COMMAND_SPECS}
 
 LEGACY_ALLOWLIST: tuple[tuple[str, str], ...] = (
-    ("crates/agentyc-mcp/src/legacy.rs", "legacy_mcp_compatibility"),
-
-    ("crates/agentyc-mcp/src/tools", "legacy_mcp_compatibility"),
     ("crates/agentyc-mcp/src/host_adapter_audit.rs", "test_audit_only"),
-    ("crates/agentyc/src/main.rs", "legacy_cli_compatibility"),
-    ("crates/agentyc/src/frontend.rs", "legacy_cli_compatibility"),
 )
 
 REQUIRED_MUTATIONS: tuple[str, ...] = (
@@ -241,7 +236,7 @@ EVIDENCE_RULES: dict[str, dict[str, Any]] = {
                 "They MUST NOT appear in primary output, authorize an action, or replace a logical handle.",
             ),
             "docs/api.md": (
-                "Raw `tab_id` values are adapter compatibility fields only",
+                "It does not expose the old `browser_*` API, raw tab IDs, a CDP URL",
             ),
             "artifacts/p1-legacy-path-audit.md": (
                 "Legacy CDP/runtime matches are allowlisted only",
