@@ -29,7 +29,7 @@ const SKILL_MD: &str = include_str!("../../../SKILL.md");
 #[derive(Parser)]
 #[command(
     name = "agentyc",
-    about = "Host-backed browser task spaces for coding agents"
+    about = "Host-backed browser task spaces for coding agents",
     version
 )]
 struct Cli {
