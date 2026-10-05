@@ -26,7 +26,7 @@ required-features = ["test-support"]
 [dependencies]
 agentyc-core    = { workspace = true }
 agentyc-host    = { workspace = true }
-agentyc-mcp     = { workspace = true, features = ["legacy-cdp"] }
+agentyc-mcp     = { workspace = true }
 agentyc-cdp     = { workspace = true }
 agentyc-browser = { workspace = true }
 agentyc-runtime = { workspace = true }
@@ -40,8 +40,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
-axum = { workspace = true }
-rmcp = { workspace = true }
+
 tempfile = { workspace = true }
 
 [profile.release]
