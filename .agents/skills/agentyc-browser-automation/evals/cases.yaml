@@ -20,7 +20,7 @@ Given a task space, the agent must address logical pages using logical page IDs 
 
 ### Direct action execution and verification (canonical primary)
 
-Given a target page, the agent must read the logical snapshot (`snapshot` / `page.snapshot()`), target elements using stable logical refs (`ref_`), execute actions using canonical supported operations (`navigate`, `click`, `input`, `evaluate`, etc.), and verify changes against snapshot hashes, event cursors, or action receipts. It must not invent convenience methods (such as `page.goto` or `page.click`) or claim success without evidence.
+Given a target page, the agent must read the logical snapshot (`snapshot` / `page.snapshot()`), target elements using stable logical refs (`ref_`), execute actions using available operations (`navigate`, `click`, `input`, `scroll`, `wait`, `screenshot`, and close only for a host-authorized managed page), and verify changes against snapshot hashes, event cursors, or action receipts. It must not use `evaluate`, `storage_write`, `cookie_write`, or `upload` through the direct interface because no host-issued intent-ticket flow is exposed. The SDK's `page.goto()`, `page.click()`, `page.type()`, `page.fill()`, and `page.waitForURL()` helpers are valid; this does not imply matching convenience commands exist in the CLI. It must not claim success without evidence.
 
 ### Unknown outcome reconciliation (canonical primary)
 
