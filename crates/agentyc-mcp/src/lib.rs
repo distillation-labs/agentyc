@@ -1,7 +1,4 @@
-//! agentyc-mcp: host-backed browser automation MCP servers.
-//!
-//! The direct-CDP compatibility server is available only with the
-//! `legacy-cdp` feature. The host-backed adapters are part of the default API.
+//! agentyc-mcp: host-backed browser task-space MCP servers.
 
 pub mod host_adapter;
 mod host_server;
@@ -13,16 +10,5 @@ pub use remote_host_server::{
     RemoteHostBrowserServer, RemoteHostServer, remote_host_service, run_remote_host_stdio,
 };
 
-#[cfg(feature = "legacy-cdp")]
-mod state;
-#[cfg(feature = "legacy-cdp")]
-mod tools;
-
-#[cfg(feature = "legacy-cdp")]
-mod legacy;
-
-#[cfg(feature = "legacy-cdp")]
-pub use legacy::{BrowserServer, run_stdio};
-
-#[cfg(all(test, feature = "legacy-cdp"))]
+#[cfg(test)]
 mod host_adapter_audit;
