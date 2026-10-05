@@ -29,10 +29,8 @@ use serde_json::{Value, json};
 
 /// A host-backed MCP compatibility adapter for one admitted connection.
 ///
-/// The adapter is not an MCP transport or a tool router. It is a small
-/// transport-independent boundary that can be called by a future stdio or HTTP
-/// MCP surface. [`BrowserServer`](crate::BrowserServer) remains the legacy
-/// default server and does not install these operations in its tool list.
+/// The adapter is transport-independent; the stdio host servers expose its
+/// operations through logical task-space tools.
 #[derive(Clone)]
 pub struct HostAdapter {
     broker: Broker,
