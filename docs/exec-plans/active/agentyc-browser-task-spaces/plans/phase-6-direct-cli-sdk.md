@@ -75,7 +75,7 @@ Rules:
 - `--yes`/explicit confirmation is required for adoption, destructive actions, upload, cookies, and evaluate according to policy.
 - Exit codes distinguish usage, host unavailable, permission/capability, runtime failure, timeout/cancel, and unknown action outcome.
 - `run` executes a sequence through one persistent connection; `repl` uses the same host client and is not an independent browser runtime.
-- `agentyc browser` and `--cdp-url` are marked `legacy-cdp` and do not start from the default command path.
+- The standalone `agentyc browser`, `run --cdp-url`, and `repl --cdp-url` utilities remain separate from the default host-backed command path; they are not MCP modes. Their removal is outside this completed Phase 6 contract.
 
 ### Planned output lifecycle
 
