@@ -18,8 +18,8 @@ use std::{
 use agentyc_core::{
     ActionId, ActionOperation, ActionReceipt, ActionRequest, CacheState, ContentHash, CoreError,
     ErrorCode, EventCursor, EventKind, EventScope, HelloEnvelope, HelloOkEnvelope, IdempotencyKey,
-    LeaseEpoch, PageId, Postcondition, PrincipalId, RequestId, ResumeResult, SnapshotEnvelope,
-    SpaceId, Timestamp,
+    LeaseEpoch, PageId, Postcondition, PrincipalId, ProfileDisclosure, RequestId, ResumeResult,
+    SnapshotEnvelope, SpaceId, Timestamp,
 };
 use agentyc_host::{
     ActionResult, AuthorityTicket, Broker, Connection, ControlReturn, ControlTicket, EventBatch,
@@ -136,9 +136,17 @@ impl HostAdapter {
         host_result(self.broker.list_spaces(self.authority()))
     }
 
-    /// Create a host-assigned logical space.
-    pub fn create_space(&self, label: impl Into<String>) -> CallToolResult {
-        host_result(self.broker.create_space(self.authority(), label))
+    /// Create a host-assigned logical space after explicit shared-profile acknowledgement.
+    pub fn create_space(
+        &self,
+        label: impl Into<String>,
+        disclosure: ProfileDisclosure,
+    ) -> CallToolResult {
+        host_result(self.broker.create_space_with_disclosure(
+            self.authority(),
+            label.into(),
+            disclosure,
+        ))
     }
 
     /// Describe one logical space visible to this connection.
