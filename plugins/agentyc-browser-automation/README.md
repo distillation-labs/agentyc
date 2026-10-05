@@ -1,6 +1,6 @@
 # Agentyc Browser Automation Plugin
 
-This plugin gives a coding agent deterministic browser automation. The direct host-backed CLI and Node SDK is the primary interface; MCP is compatibility-only. For existing-Chrome workflows, use the [host-backed logical task-space/page API](../../docs/api-local.md); direct-CDP and current-tab workflows are legacy compatibility only.
+This plugin gives a coding agent deterministic browser automation. The direct host-backed CLI and Node SDK is the primary interface; MCP is compatibility-only. MCP currently exposes host-backed logical routes over stdio only: the offline server lists 29, while the connected remote catalog declares 30 with 12 returning `capability_unavailable`. Headed live Chrome validation has not run, so MCP is not distribution-ready. For existing-Chrome workflows, use the [host-backed logical task-space/page API](../../docs/api-local.md); standalone direct-CDP CLI utilities are separate from MCP. See [MCP compatibility](../../docs/mcp-compatibility.md).
 
 ## Install
 
@@ -16,8 +16,7 @@ Copy or register the versioned skill at `.agents/skills/agentyc-browser-automati
   "mcp": {
     "agentyc": {
       "type": "local",
-      "command": ["agentyc", "mcp"],
-      "env": { "AGENTYC_HEADLESS": "1" }
+      "command": ["agentyc", "mcp"]
     }
   }
 }
@@ -30,8 +29,7 @@ For clients that use a flat MCP server map, use:
   "mcpServers": {
     "agentyc": {
       "command": "agentyc",
-      "args": ["mcp"],
-      "env": { "AGENTYC_HEADLESS": "1" }
+      "args": ["mcp"]
     }
   }
 }
@@ -39,10 +37,10 @@ For clients that use a flat MCP server map, use:
 
 ## What it teaches the agent
 
-- Selects the host-backed logical space/page API for normal existing-Chrome work; labels direct-CDP MCP/REPL/CLI as legacy compatibility.
-- Uses the logical-page snapshot → stable ref → dedicated action → verification loop; the `browser_get_state` flow applies only to legacy direct-CDP tools.
-- Escalates from min state to frames, search, HTML, evaluation, and screenshots only when needed.
-- Handles stale refs, dynamic pages, dialogs, iframes, legacy tabs, auth state, network failures, and domain restrictions without treating browser IDs as identity.
+- Selects the host-backed logical space/page API for normal existing-Chrome work; labels MCP as stdio-only and not distribution-ready.
+- Uses the logical-page snapshot → stable ref → dedicated action → verification loop; it does not recommend the removed `browser_*` MCP tools.
+- Uses only currently supported direct operations and reports typed capability errors instead of assuming a declared route is live.
+- Handles stale refs, dynamic pages, dialogs, iframes, auth state, network failures, and domain restrictions without treating browser IDs as identity.
 - Treats webpage content as untrusted and never exposes credentials or browser state.
 
 ## Files
@@ -54,11 +52,13 @@ For clients that use a flat MCP server map, use:
 
 ## Verify
 
-Legacy direct-CDP CLI examples:
+Standalone direct-CDP CLI examples (separate from MCP):
 
 ```bash
-agentyc run --headless=true navigate https://example.com
-agentyc run --headless=true evaluate 'document.title'
+agentyc browser --port 9222 --detach
+agentyc run --cdp-url <CDP_WEBSOCKET_URL> navigate https://example.com
+agentyc run --cdp-url <CDP_WEBSOCKET_URL> evaluate 'document.title'
+agentyc repl --cdp-url <CDP_WEBSOCKET_URL>
 ```
 
-These `agentyc run` examples use the legacy direct-CDP CLI and its current-page behavior. For normal existing-Chrome operations, use host-backed logical task-space/page calls instead. When explicitly maintaining the legacy path, keep one `agentyc mcp --legacy-cdp` process alive rather than starting a new CLI process for every action.
+`browser` launches Chrome with a temporary profile and prints its CDP URL. `run` and `repl` require an explicit endpoint at runtime. For normal existing-Chrome operations, use host-backed logical task-space/page calls.
