@@ -42,8 +42,7 @@ Global direct options are `--state-dir PATH`, `--principal PRINCIPAL`, `--profil
 
 ### Supported operations vs. planned methods
 
-The CLI strictly dispatches mutations through `action execute --operation <OPERATION>`, where supported operations are:
-`navigate`, `click`, `input`, `evaluate`, `scroll`, `wait`, `screenshot`, `storage_write`, `cookie_write`, `upload`, `close`.
+The CLI strictly dispatches mutations through `action execute --operation <OPERATION>`. Currently available operations are `navigate`, `click`, `input`, `scroll`, `wait`, `screenshot`, and `close`. `evaluate`, `storage_write`, `cookie_write`, and `upload` fail locally with `permission_denied` because the direct CLI has no host-issued user-intent-ticket flow; uploads also require an enabled extension capability.
 
 Planned convenience subcommands (such as `agentyc wait url|network-idle`, `agentyc page navigate`, `agentyc page adopt`, `agentyc host start|stop`, or direct verb subcommands like `agentyc action click`) are not implemented in the CLI. Do not treat planned convenience methods as implemented commands.
 
