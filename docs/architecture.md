@@ -84,76 +84,53 @@ schema and recovery details are in [Configuration](configuration.md).
 
 The root `Cargo.toml` is the workspace source of truth. The current split is:
 
-| Crate | Responsibility |
-| --- | --- |
-| `agentyc-core` | Logical IDs, protocol envelopes, schemas, records, and state/action contracts. |
-| `agentyc-host` | Broker, durable ledger, leases/fences, local IPC, Native Messaging bridge, events, and host lifecycle. |
-| `agentyc` | CLI dispatch for host-backed logical commands plus explicit compatibility commands. |
-| `agentyc-mcp` | Host-backed logical MCP adapter and separate legacy direct-CDP `BrowserServer`. |
-| `agentyc-cdp` | Chrome DevTools Protocol client used by the legacy compatibility runtime. |
-| `agentyc-browser` | Chrome discovery, launch, profile, and session lifecycle for compatibility/test use. |
-| `agentyc-runtime` | Runtime wrapper for the explicit legacy browser path. |
-| `agentyc-dom` | DOM serialization, clickable-element detection, and HTML-to-markdown utilities. |
-| `agentyc-tools` | Deterministic extraction route selection used by legacy browser tools. |
-| `agentyc-tests` | Integration-test harness and browser test support. |
+| Crate             | Responsibility                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------ |
+| `agentyc-core`    | Logical IDs, protocol envelopes, schemas, records, and state/action contracts.                         |
+| `agentyc-host`    | Broker, durable ledger, leases/fences, local IPC, Native Messaging bridge, events, and host lifecycle. |
+| `agentyc`         | Host-backed logical CLI/MCP dispatch plus separate standalone browser/CDP CLI commands.                |
+| `agentyc-mcp`     | Host-backed logical MCP adapter.                                                                       |
+| `agentyc-cdp`     | Chrome DevTools Protocol client for standalone direct-CDP CLI utilities.                               |
+| `agentyc-browser` | Chrome discovery, launch, profile, and session lifecycle for standalone CLI/test use.                  |
+| `agentyc-runtime` | Runtime wrapper used by standalone direct-CDP CLI utilities.                                           |
+| `agentyc-dom`     | DOM serialization, clickable-element detection, and HTML-to-markdown utilities.                        |
+| `agentyc-tools`   | Deterministic extraction utilities for standalone direct-CDP CLI use.                                  |
+| `agentyc-tests`   | Integration-test harness and browser test support.                                                     |
 
 ## CLI Dispatch
 
 `crates/agentyc/src/main.rs` dispatches these paths:
 
-1. `agentyc` and `agentyc mcp` run the host-backed logical MCP service by
-   default. `--state-dir`, `AGENTYC_STATE_DIR`, and the local host socket
-   configure host access; no browser debugger URL is implied.
-2. `agentyc mcp --legacy-cdp` explicitly selects the legacy direct-CDP MCP
-   compatibility server. Its managed/test lifecycle is available only within
-   this explicit mode.
-3. `agentyc serve --cdp-url <url>` is legacy Streamable HTTP compatibility
-   mode and requires an explicit debugger endpoint.
-4. `agentyc space`, `page`, `snapshot`, `action`, `events`, and `host` are
-   direct logical host-backed CLI commands.
-5. `agentyc browser`, `run --cdp-url`, and `repl --cdp-url` are explicit
-   managed/test or direct-CDP compatibility commands; they are not defaults.
-6. `agentyc init` writes the bundled agent skills guide.
+1. `agentyc` and `agentyc mcp` run the host-backed logical MCP service over
+   stdio. No MCP HTTP route or direct-CDP MCP mode is shipped.
+2. `agentyc space`, `page`, `snapshot`, `action`, `events`, `host`, `wait`,
+   and `extension` are direct logical host-backed CLI commands.
+3. `agentyc browser`, `run --cdp-url`, and `repl --cdp-url` remain separate
+   standalone direct-CDP CLI utilities. They do not add MCP tools or transports.
+4. `agentyc init` writes the bundled agent skills guide.
 
 Tracing writes to stderr; stdout remains available for MCP framing or the
 structured JSON emitted by direct commands.
 
-## Legacy CDP/MCP Compatibility Path
+## MCP Surface and Release Boundary
 
-This is a separate compatibility path, not the canonical existing-Chrome
-task-space path. It retains the older active-browser/tab-oriented MCP server
-for clients that explicitly select it. The default path never falls back to
-this server or runtime.
+The MCP service is a host-backed logical adapter, not an independent owner of
+browser or task-space state. It is exposed over stdio only. The deterministic
+offline server lists 29 routes; the connected remote catalog declares 30, with
+12 routes returning typed `capability_unavailable` before forwarding. A route
+declaration is not proof of connected support. The real headed-Chrome MCP path
+has not yet been run, and MCP is not distribution-ready. See
+[MCP compatibility](mcp-compatibility.md) for route-level details and release
+blockers.
 
-`agentyc_mcp::BrowserServer` is the legacy direct-CDP server. It composes six
-tool routers for navigation/waits, state/HTML/screenshot/PDF/viewport,
-interaction, inspection/extraction, frames/storage, and tabs/cookies,
-emulation/session control. Its tool schemas are trimmed before advertising. The
-compatibility server connects to a supplied CDP endpoint or, only when
-`--legacy-cdp` is selected without one, may use its managed-test lifecycle.
-Legacy `serve` instead requires an explicit endpoint.
+## Standalone Direct-CDP CLI Utilities
 
-The legacy runtime uses `agentyc_cdp::CdpClient` over WebSocket or HTTP attach,
-enables Network/Runtime/Page domains, and attaches to a page target. Its
-`ServerState` keeps the CDP client, session/active-tab details, and any managed
-browser process for that compatibility session. `agentyc_browser` can locate
-and launch Chrome for explicit test/managed use; the `agentyc browser` command
-launches a temporary profile with remote debugging and prints its WebSocket
-URL. These facilities are not defaults and are not used by the host-backed
-logical adapter.
-
-Legacy CDP environment settings such as `AGENTYC_HEADLESS`,
-`AGENTYC_CDP_TIMEOUT_S`, proxy options, `AGENTYC_ALLOWED_DOMAINS`, and
-`PLAYWRIGHT_BROWSERS_PATH` apply to the legacy browser runtime where supported.
-Legacy attach reuses the supplied browser and does not tear it down at session
-end. In shared-CDP usage, separate MCP sessions can open separate tabs, but
-cookies and storage remain shared within the browser profile; this is not
-logical task-space isolation.
-
-The legacy extraction tools choose deterministic HTML routes (links, images,
-tables, lists, forms, or key/value content) and do not fall back to an LLM.
-Legacy structured errors and tool behavior remain compatibility concerns and
-must not be confused with host broker authority or logical-space guarantees.
+`agentyc browser` launches Chrome with a temporary profile and prints a CDP
+WebSocket URL. `agentyc run --cdp-url <url>` and `agentyc repl --cdp-url <url>`
+operate against an explicitly supplied endpoint. These standalone CLI commands
+are separate from MCP; they do not restore the removed direct-CDP `BrowserServer`,
+`browser_*` tools, `--legacy-cdp` mode, or `serve` HTTP route. The host-backed
+logical adapter does not fall back to these utilities.
 
 ## Public Logical State
 
@@ -161,8 +138,8 @@ Host-backed page snapshots and action results are scoped by `space_id` and
 `page_id`, with lease and generation checks. Refs are valid only for their
 logical page and snapshot/document context. The extension supplies bounded
 page observations and capability results; host policy decides whether those
-observations can support an operation. Deterministic legacy extraction remains
-available only through the compatibility server.
+observations can support an operation. The standalone direct-CDP CLI utilities
+are not part of the MCP contract.
 
 Neither this architecture description nor the presence of code/tests is proof
 of a live production deployment or of end-to-end behavior with a user's Chrome
