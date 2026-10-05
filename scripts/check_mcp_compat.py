@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a static, fail-closed Phase 8 MCP compatibility inventory.
+"""Build a static, fail-closed inventory of the shipped host-backed MCP surface.
 
 This checker inspects repository declarations only. It does not start MCP, a
 host, an extension, or Chrome, and cannot establish live-browser compatibility.
@@ -25,18 +25,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = "artifacts/p8-mcp-compatibility"
 MAX_INPUT_BYTES = 5 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
-DEFAULT_TOOL_COUNT = 61
-EXTENDED_TOOL_COUNT = 76
-EXTENDED_MARKER = "Observability tools (extended profile)"
-ADAPTER_FILES = {"adapter.rs", "compat.rs", "connection.rs"}
-RAW_ID_RE = re.compile(
-    r"\b(?:tab_id|target_id|debugger_id|cdp_url|websocket_url|"
-    r"tabId|targetId|debuggerId|cdpUrl|webSocketDebuggerUrl)\b"
-)
-CDP_BYPASS_RE = re.compile(
-    r"\b(?:agentyc_cdp|agentyc-cdp|CdpClient|BrowserRuntime|"
-    r"cdp_root|cdp_session)\b|\bcdp\s*\(|"
-    r"\b(?:Runtime\.evaluate|Target\.(?:getTargets|createTarget|closeTarget))\b"
+EXPECTED_OFFLINE_TOOLS = 29
+EXPECTED_REMOTE_TOOLS = 30
+FORBIDDEN_DEPENDENCIES = {"agentyc-cdp", "agentyc-browser", "agentyc-runtime"}
+FORBIDDEN_SOURCE = re.compile(
+    r"\bagentyc_cdp\b|\bCdpClient\b|\bBrowserRuntime\b|"
+    r"\bactive_page\b|\bclose_all\b|\bTarget\s*\.|"
+    r"\bRuntime\s*\.\s*evaluate\b|\b(?:tab_id|target_id|debugger_id|"
+    r"cdp_url|websocket_url|tabId|targetId|debuggerId|cdpUrl)\b"
 )
 
 
@@ -53,14 +49,6 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise CompatibilityError(f"evidence is unreadable: {path}") from exc
-
-
-def _source_digest(path: Path, root: Path) -> dict[str, str]:
-    data = path.read_bytes()
-    return {
-        "path": path.relative_to(root).as_posix(),
-        "sha256": hashlib.sha256(data).hexdigest(),
-    }
 
 
 def _strip_rust_comments(source: str) -> str:
@@ -111,7 +99,6 @@ def _strip_rust_comments(source: str) -> str:
         if char == '"':
             in_string = True
         elif char == "'" and nxt and (nxt.isalpha() or nxt == "_"):
-            # Rust lifetimes are not character literals.
             output.append(char)
             i += 1
             continue
@@ -122,49 +109,42 @@ def _strip_rust_comments(source: str) -> str:
     return "".join(output)
 
 
-def _without_test_modules(source: str) -> str:
-    """Exclude cfg(test) modules from production-only source audits."""
-    lines = source.splitlines(keepends=True)
-    kept: list[str] = []
-    i = 0
-    while i < len(lines):
-        if re.match(r"\s*#\[cfg\(test\)\]\s*$", lines[i]):
-            j = i + 1
-            while j < len(lines) and not re.search(r"\bmod\s+\w+\s*\{", lines[j]):
-                j += 1
-            if j < len(lines):
-                depth = 0
-                started = False
-                while j < len(lines):
-                    text = lines[j]
-                    depth += text.count("{") - text.count("}")
-                    started = started or "{" in text
-                    j += 1
-                    if started and depth <= 0:
-                        break
-                i = j
-                continue
-        kept.append(lines[i])
-        i += 1
-    return "".join(kept)
-
-
-def _tool_declarations(source: str) -> tuple[list[str], list[str]]:
-    """Return declared tool names and names declared after the extended marker."""
-    marker_at = source.find(EXTENDED_MARKER)
-    extended_source = source[marker_at:] if marker_at >= 0 else ""
-    pattern = re.compile(r"#\[rmcp::tool\b[\s\S]*?\basync\s+fn\s+(\w+)\s*\(")
-    all_names = pattern.findall(source)
-    extended_names = pattern.findall(extended_source)
-    return all_names, extended_names
+def _source_digest(path: Path, root: Path) -> dict[str, str]:
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
 
 
 def _add_check(checks: list[dict[str, Any]], check_id: str, passed: bool, detail: Any) -> None:
     checks.append({"id": check_id, "status": "pass" if passed else "fail", "detail": detail})
 
 
-def _utc_timestamp() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def _tool_declarations(source: str) -> list[str]:
+    pattern = re.compile(
+        r"#\[rmcp::tool\([\s\S]*?\bname\s*=\s*\"([^\"]+)\"[\s\S]*?\)\]\s*"
+        r"async\s+fn\s+(\w+)\s*\("
+    )
+    pairs = pattern.findall(source)
+    return [name for name, function in pairs if name == function]
+
+
+def _remote_tool_declarations(source: str) -> list[dict[str, Any]]:
+    start = source.find("const REMOTE_TOOL_SPECS")
+    if start < 0:
+        return []
+    end = source.find("\n];", start)
+    if end < 0:
+        return []
+    block = source[start:end]
+    pattern = re.compile(
+        r"RemoteToolSpec\s*\{\s*name:\s*\"([^\"]+)\"[\s\S]*?"
+        r"supported_by_local_protocol:\s*(true|false),\s*\}"
+    )
+    return [
+        {"name": name, "local_protocol": supported == "true"}
+        for name, supported in pattern.findall(block)
+    ]
 
 
 def _report_reference(root: Path, requested: str | Path) -> str:
@@ -184,15 +164,9 @@ def _add_common_artifact_envelope(
     root: Path,
     report_reference: str | Path,
 ) -> None:
-    """Attach the shared bounded envelope without recursively redacting IDs."""
-    timestamp = _utc_timestamp()
+    timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     nonce = secrets.token_hex(16)
-    command = [
-        "python3",
-        "scripts/check_mcp_compat.py",
-        "--report",
-        _report_reference(root, report_reference),
-    ]
+    command = ["python3", "scripts/check_mcp_compat.py", "--report", _report_reference(root, report_reference)]
     build_tuple = {
         "phase": 0,
         "artifact_kind": "mcp-compatibility",
@@ -210,19 +184,13 @@ def _add_common_artifact_envelope(
     }
     redaction_status = {
         "status": "applied",
-        "policy": "bounded-static-source-envelope; compatibility identifiers preserved",
+        "policy": "bounded-static-source-envelope; logical tool names preserved",
         "raw_browser_ids": False,
         "secrets": False,
         "absolute_paths": False,
         "page_bodies": False,
         "errors": False,
         "recursive_identifier_redaction": False,
-    }
-    provenance = {
-        "nonce": nonce,
-        "timestamp": timestamp,
-        "command": command,
-        "build_tuple": build_tuple,
     }
     common = {
         "schema_version": 1,
@@ -231,7 +199,7 @@ def _add_common_artifact_envelope(
         "timestamp": timestamp,
         "nonce": nonce,
         "command": command,
-        "provenance": provenance,
+        "provenance": {"nonce": nonce, "timestamp": timestamp, "command": command, "build_tuple": build_tuple},
         "redaction_status": redaction_status,
     }
     manifest.update(common)
@@ -246,18 +214,17 @@ def inspect_repository(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Inspect source evidence and return a versioned manifest and report."""
     root = root.resolve()
-    checks: list[dict[str, Any]] = []
     evidence_paths = {
         "package": root / "crates/agentyc-mcp/Cargo.toml",
-        "tools": root / "crates/agentyc-mcp/src/lib.rs",
-        "legacy_tools": root / "crates/agentyc-mcp/src/legacy.rs",
+        "library": root / "crates/agentyc-mcp/src/lib.rs",
+        "host_server": root / "crates/agentyc-mcp/src/host_server.rs",
+        "remote_server": root / "crates/agentyc-mcp/src/remote_host_server.rs",
+        "host_adapter": root / "crates/agentyc-mcp/src/host_adapter.rs",
         "compatibility_docs": root / "docs/mcp-compatibility.md",
         "phase_plan": root / "docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-8-mcp-compatibility.md",
-        "catalog": root / "tests/fixtures/mcp/tool_catalog.json",
-        "host_adapter": root / "crates/agentyc-mcp/src/host_adapter.rs",
-        "host_server": root / "crates/agentyc-mcp/src/host_server.rs",
-        "legacy_errors": root / "crates/agentyc-mcp/src/tools/mod.rs",
+        "protocol_test": root / "tests/mcp_protocol.rs",
     }
+    checks: list[dict[str, Any]] = []
     loaded: dict[str, str] = {}
     for key, path in evidence_paths.items():
         try:
@@ -271,229 +238,141 @@ def inspect_repository(
         {"present": sorted(loaded), "required": sorted(evidence_paths)},
     )
 
-    hashes = [
-        _source_digest(path, root)
-        for key, path in evidence_paths.items()
-        if key in loaded
-    ]
-    package_data: dict[str, Any] = {}
+    package: dict[str, Any] = {}
     try:
-        package_data = tomllib.loads(loaded["package"])
+        package = tomllib.loads(loaded["package"])
     except (KeyError, tomllib.TOMLDecodeError) as exc:
         _add_check(checks, "package.toml", False, f"missing or invalid package manifest: {exc}")
     else:
-        dependencies = package_data.get("dependencies")
-        forbidden = {"agentyc-cdp", "agentyc-browser", "agentyc-runtime"}
-        direct = sorted(forbidden.intersection(dependencies if isinstance(dependencies, dict) else {}))
+        dependencies = package.get("dependencies", {})
+        direct = sorted(FORBIDDEN_DEPENDENCIES.intersection(dependencies if isinstance(dependencies, dict) else {}))
+        features = package.get("features", {})
+        legacy_feature = isinstance(features, dict) and "legacy-cdp" in features
         _add_check(
             checks,
-            "architecture.no_direct_browser_dependencies",
-            isinstance(dependencies, dict) and not direct,
-            {"forbidden_production_dependencies": direct},
+            "architecture.host_only_dependencies",
+            isinstance(dependencies, dict) and not direct and not legacy_feature,
+            {"forbidden_production_dependencies": direct, "legacy_cdp_feature": legacy_feature},
         )
 
-    source_files = sorted((root / "crates/agentyc-mcp/src").rglob("*.rs"))
-    production_sources: list[tuple[Path, str]] = []
+    mcp_source_root = root / "crates/agentyc-mcp/src"
+    source_files = sorted(mcp_source_root.rglob("*.rs")) if mcp_source_root.is_dir() else []
+    legacy_paths = [
+        path.relative_to(root).as_posix()
+        for path in source_files
+        if path.name in {"legacy.rs", "state.rs"} or "tools" in path.relative_to(mcp_source_root).parts
+    ]
+    _add_check(checks, "architecture.legacy_modules_removed", not legacy_paths, {"legacy_paths": legacy_paths})
+
+    bypasses: list[dict[str, Any]] = []
     for path in source_files:
         try:
-            text = _read_text(path)
+            source = _strip_rust_comments(_read_text(path))
         except CompatibilityError as exc:
-            _add_check(checks, f"evidence.source.{path.name}", False, str(exc))
+            bypasses.append({"path": path.relative_to(root).as_posix(), "error": str(exc)})
             continue
-        if re.match(r"\s*#\[cfg\(test\)\]", text):
-            continue
-        production_sources.append((path, _without_test_modules(_strip_rust_comments(text))))
-    bypasses = []
-    raw_id_uses = []
-    for path, source in production_sources:
-        relative = path.relative_to(root).as_posix()
-        for match in CDP_BYPASS_RE.finditer(source):
-            line = source.count("\n", 0, match.start()) + 1
-            bypasses.append({"path": relative, "line": line, "evidence": match.group(0)})
-        for match in RAW_ID_RE.finditer(source):
-            line = source.count("\n", 0, match.start()) + 1
-            if path.name not in ADAPTER_FILES:
-                raw_id_uses.append({"path": relative, "line": line, "field": match.group(0)})
-    _add_check(
-        checks,
-        "architecture.no_direct_cdp_bypass",
-        bool(source_files) and not bypasses,
-        {"production_source_files": len(production_sources), "violations": bypasses},
-    )
-    _add_check(
-        checks,
-        "policy.raw_ids_adapter_only",
-        bool(source_files) and not raw_id_uses,
-        {"adapter_files": sorted(ADAPTER_FILES), "violations": raw_id_uses},
-    )
+        for match in FORBIDDEN_SOURCE.finditer(source):
+            bypasses.append({
+                "path": path.relative_to(root).as_posix(),
+                "line": source.count("\n", 0, match.start()) + 1,
+                "evidence": match.group(0),
+            })
+    _add_check(checks, "architecture.no_direct_browser_or_raw_id_authority", bool(source_files) and not bypasses, bypasses)
 
-    all_tools: list[str] = []
-    extended_tools: list[str] = []
-    catalog: dict[str, Any] = {}
-    declaration_source = "\n".join(
-        loaded[key] for key in ("tools", "legacy_tools") if key in loaded
-    )
-    if declaration_source:
-        all_tools, extended_tools = _tool_declarations(declaration_source)
-    try:
-        catalog = json.loads(loaded["catalog"])
-        catalog_tools = catalog.get("tools")
-        if not isinstance(catalog_tools, list) or any(not isinstance(item, dict) for item in catalog_tools):
-            raise ValueError("tools must be an array of objects")
-        catalog_names = [item.get("name") for item in catalog_tools]
-        if any(not isinstance(name, str) or not name for name in catalog_names):
-            raise ValueError("every catalog tool requires a non-empty name")
-        if len(set(catalog_names)) != len(catalog_names):
-            raise ValueError("catalog contains duplicate tool names")
-        statuses = {item.get("status") for item in catalog_tools}
-        if not statuses.issubset({"supported", "partial", "legacy-only", "unsupported"}):
-            raise ValueError("catalog contains an unknown tool status")
-    except (KeyError, ValueError, json.JSONDecodeError) as exc:
-        catalog_tools = []
-        _add_check(checks, "catalog.valid", False, str(exc))
-    else:
-        _add_check(checks, "catalog.valid", True, {"tool_count": len(catalog_tools)})
-
-    duplicates = sorted({name for name in all_tools if all_tools.count(name) > 1})
-    extended_set = set(extended_tools)
-    default_tools = [name for name in all_tools if name not in extended_set]
+    offline_tools = _tool_declarations(loaded.get("host_server", ""))
+    remote_tools = _remote_tool_declarations(loaded.get("remote_server", ""))
+    offline_duplicates = sorted({name for name in offline_tools if offline_tools.count(name) > 1})
+    remote_names = [item["name"] for item in remote_tools]
+    remote_duplicates = sorted({name for name in remote_names if remote_names.count(name) > 1})
+    all_host_names = offline_tools + remote_names
+    non_host_names = sorted({name for name in all_host_names if not name.startswith("host_")})
     _add_check(
         checks,
-        "profiles.exact_counts",
-        len(default_tools) == DEFAULT_TOOL_COUNT
-        and len(all_tools) == EXTENDED_TOOL_COUNT
-        and len(extended_tools) == EXTENDED_TOOL_COUNT - DEFAULT_TOOL_COUNT
-        and not duplicates,
+        "tools.host_only_inventory",
+        len(offline_tools) == EXPECTED_OFFLINE_TOOLS
+        and len(remote_tools) == EXPECTED_REMOTE_TOOLS
+        and not offline_duplicates
+        and not remote_duplicates
+        and not non_host_names,
         {
-            "default": len(default_tools),
-            "extended": len(all_tools),
-            "extended_only": len(extended_tools),
-            "duplicate_declarations": duplicates,
-            "expected": {"default": DEFAULT_TOOL_COUNT, "extended": EXTENDED_TOOL_COUNT},
+            "offline_count": len(offline_tools),
+            "remote_count": len(remote_tools),
+            "offline_duplicates": offline_duplicates,
+            "remote_duplicates": remote_duplicates,
+            "non_host_names": non_host_names,
+            "expected": {"offline": EXPECTED_OFFLINE_TOOLS, "remote": EXPECTED_REMOTE_TOOLS},
+            "offline_tools": offline_tools,
+            "remote_tools": remote_tools,
         },
     )
-    catalog_name_set = {item.get("name") for item in catalog_tools}
-    declared_name_set = set(all_tools)
+    unavailable = sorted(item["name"] for item in remote_tools if not item["local_protocol"])
     _add_check(
         checks,
-        "profiles.catalog_matches_declarations",
-        bool(catalog_tools) and catalog_name_set == declared_name_set,
-        {
-            "catalog_only": sorted(catalog_name_set - declared_name_set),
-            "declarations_only": sorted(declared_name_set - catalog_name_set),
-        },
-    )
-    docs_text = (loaded.get("compatibility_docs", "") + "\n" + loaded.get("phase_plan", "")).lower()
-    _add_check(
-        checks,
-        "profiles.documented_baseline",
-        "61" in docs_text and "76" in docs_text and "default" in docs_text and "extended" in docs_text,
-        {"sources": [
-            "docs/mcp-compatibility.md",
-            "docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-8-mcp-compatibility.md",
-        ]},
+        "tools.unsupported_routes_are_explicit",
+        len(unavailable) == 12 and all(name.startswith("host_") for name in unavailable),
+        {"capability_unavailable_count": len(unavailable), "tools": unavailable},
     )
 
-    adapter_text = loaded.get("host_adapter", "")
-    canonical_markers = [
+    protocol_text = loaded.get("protocol_test", "")
+    _add_check(
+        checks,
+        "protocol.test_covers_host_only_tools",
+        'assert_eq!(tools.len(), 29)' in protocol_text
+        and 'name.starts_with("host_")' in protocol_text
+        and 'name.starts_with("browser_")' in protocol_text,
+        {"test": "tests/mcp_protocol.rs", "expected_tools": EXPECTED_OFFLINE_TOOLS},
+    )
+    docs_text = loaded.get("compatibility_docs", "").lower()
+    plan_text = loaded.get("phase_plan", "").lower()
+    _add_check(
+        checks,
+        "docs.legacy_removal_and_live_gate_are_explicit",
+        "have been removed" in docs_text
+        and "not distribution-ready" in docs_text
+        and "removed" in plan_text
+        and "headed chrome" in plan_text,
+        {"docs": "docs/mcp-compatibility.md", "plan": "Phase 8"},
+    )
+
+    adapter = loaded.get("host_adapter", "")
+    required_error_markers = [
         "CallToolResult::structured_error",
         '"code"',
         '"retryable"',
-        '"guidance"',
         '"message"',
         '"action_id"',
         '"reconcile_token"',
         '"next_action"',
     ]
-    missing_metadata = [marker for marker in canonical_markers if marker not in adapter_text]
-    has_is_error_test = 'wire["isError"]' in loaded.get("host_server", "")
-    legacy_errors = loaded.get("legacy_errors", "")
-    legacy_text_error = "CallToolResult::error" in legacy_errors
-    substring_classification = bool(re.search(r"\bmsg\s*\.\s*contains\s*\(", legacy_errors))
+    missing_error_markers = [marker for marker in required_error_markers if marker not in adapter]
     _add_check(
         checks,
-        "errors.canonical_iserror_metadata",
-        not missing_metadata and has_is_error_test and not legacy_text_error and not substring_classification,
-        {
-            "missing_host_metadata": missing_metadata,
-            "host_isError_test_present": has_is_error_test,
-            "legacy_text_error_result": legacy_text_error,
-            "legacy_substring_classification": substring_classification,
-        },
+        "errors.structured_host_metadata",
+        not missing_error_markers,
+        {"missing_markers": missing_error_markers},
     )
 
-    catalog_by_name = {
-        item["name"]: {"category": item.get("category"), "status": item.get("status")}
-        for item in catalog_tools
-        if isinstance(item.get("name"), str)
-    }
-    manifest_tools = []
-    required_tool_evidence = (
-        "schema",
-        "output",
-        "side_effects",
-        "authority",
-        "deprecation",
-        "error_mapping",
-    )
-    for name in all_tools:
-        metadata = catalog_by_name.get(name)
-        manifest_tools.append({
-            "name": name,
-            "profiles": ["default", "extended"] if name not in extended_set else ["extended"],
-            "category": metadata.get("category") if metadata else None,
-            "status": metadata.get("status") if metadata else None,
-            "schema": None,
-            "output": None,
-            "side_effects": None,
-            "authority": None,
-            "deprecation": None,
-            "error_mapping": None,
-            "raw_id_policy": "adapter-only",
-        })
-    metadata_missing = [
-        {"tool": item["name"], "fields": list(required_tool_evidence)}
-        for item in manifest_tools
-    ]
-    _add_check(
-        checks,
-        "manifest.required_tool_evidence",
-        bool(manifest_tools) and not metadata_missing,
-        {
-            "required_fields": list(required_tool_evidence),
-            "missing_by_tool": metadata_missing,
-            "note": "Declarations and the capability catalog do not provide versioned schemas or full policy metadata.",
-        },
-    )
+    hashes = [_source_digest(path, root) for key, path in evidence_paths.items() if key in loaded]
     manifest = {
         "schema_version": 1,
-        "manifest_version": "1.0.0",
-        "kind": "static-mcp-tool-compatibility-inventory",
+        "manifest_version": "2.0.0",
+        "kind": "static-host-backed-mcp-inventory",
         "scope": "repository declarations only; not protocol execution or live-browser evidence",
-        "profile_counts": {"default": len(default_tools), "extended": len(all_tools)},
-        "profiles": {
-            "default": default_tools,
-            "extended": all_tools,
-        },
-        "tools": manifest_tools,
+        "profile_counts": {"offline": len(offline_tools), "remote": len(remote_names)},
+        "tools": {"offline": offline_tools, "remote": remote_tools},
         "evidence": hashes,
     }
-    passed = all(check["status"] == "pass" for check in checks)
+    passed = bool(checks) and all(check["status"] == "pass" for check in checks)
     report = {
         "schema_version": 1,
-        "report_version": "1.0.0",
-        "kind": "static-mcp-compatibility-check",
+        "report_version": "2.0.0",
+        "kind": "static-host-backed-mcp-check",
         "status": "pass" if passed else "fail",
         "checks": checks,
         "live_chrome": {"status": "not_run", "claim": False},
         "artifacts": {"manifest": "manifest.v1.json", "report": "report.v1.json"},
     }
-    _add_common_artifact_envelope(
-        manifest,
-        report,
-        root=root,
-        report_reference=report_reference,
-    )
+    _add_common_artifact_envelope(manifest, report, root=root, report_reference=report_reference)
     return manifest, report
 
 
@@ -504,10 +383,7 @@ def resolve_artifact_dir(root: Path, requested: str) -> Path:
     candidate = Path(requested).expanduser()
     if ".." in candidate.parts:
         raise CompatibilityError("report path must not contain parent traversal")
-    if candidate.is_absolute():
-        lexical_target = Path(os.path.abspath(candidate))
-    else:
-        lexical_target = Path(os.path.abspath(root / candidate))
+    lexical_target = Path(os.path.abspath(candidate if candidate.is_absolute() else root / candidate))
     try:
         lexical_parts = lexical_target.relative_to(root).parts
     except ValueError as exc:
@@ -522,14 +398,8 @@ def resolve_artifact_dir(root: Path, requested: str) -> Path:
         resolved.relative_to(artifact_root.resolve(strict=False))
     except (OSError, ValueError) as exc:
         raise CompatibilityError("report directory must remain inside repository artifacts/") from exc
-    try:
-        parts = resolved.relative_to(root).parts
-    except ValueError as exc:
-        raise CompatibilityError("report directory must remain inside repository artifacts/") from exc
-    if not resolved.is_relative_to(artifact_root):
+    if not resolved.is_relative_to(artifact_root) or (resolved.exists() and not resolved.is_dir()):
         raise CompatibilityError("report directory must remain inside repository artifacts/")
-    if resolved.exists() and not resolved.is_dir():
-        raise CompatibilityError("report path exists and is not a directory")
     return resolved
 
 
@@ -567,16 +437,13 @@ def main(argv: list[str] | None = None) -> int:
         if not root.is_dir():
             raise CompatibilityError("repository root is not a directory")
         artifact_dir = resolve_artifact_dir(root, args.report)
-        manifest, report = inspect_repository(
-            root,
-            artifact_dir.relative_to(root).as_posix(),
-        )
+        manifest, report = inspect_repository(root, artifact_dir.relative_to(root).as_posix())
         _atomic_write(artifact_dir / "manifest.v1.json", manifest)
         _atomic_write(artifact_dir / "report.v1.json", report)
     except (CompatibilityError, OSError) as exc:
         print(f"check_mcp_compat: FAIL: {exc}", file=sys.stderr)
         return 1
-    print(f"check_mcp_compat: {report['status'].upper()} (static MCP declarations; live Chrome not run)")
+    print(f"check_mcp_compat: {report['status'].upper()} (static host-backed MCP declarations; live Chrome not run)")
     if report["status"] != "pass":
         failed = [check["id"] for check in report["checks"] if check["status"] != "pass"]
         print("failed checks: " + ", ".join(failed), file=sys.stderr)
