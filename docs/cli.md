@@ -122,14 +122,16 @@ The current CLI opens and closes a broker for each invocation. A restart fences 
 
 The direct local CLI/SDK boundary is primary. MCP is compatibility-only and maps through the host adapter; it does not add a second semantic contract or become a live-browser claim. Live validation requires an enrolled Native Messaging host and extension on macOS connected to a running Chrome instance. Deterministic repository evidence validates broker, ledger, and protocol contracts offline; it does not assert that live Chrome or Web Store extension distribution is configured.
 
-## Compatibility paths
+## MCP compatibility boundary
 
-The existing compatibility commands remain explicit:
+`agentyc mcp` (or `agentyc` with no subcommand) runs the host-backed logical MCP service over stdio only. There is no `agentyc serve` MCP HTTP route, direct-CDP MCP mode, or `browser_*` MCP tool surface. The offline server lists 29 routes; the connected remote catalog declares 30, and 12 currently return typed `capability_unavailable` errors. Headed live Chrome validation has not yet run, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
 
-- `agentyc mcp --legacy-cdp [--cdp-url ...]`
-- `agentyc serve --cdp-url ...`
-- `agentyc browser`
-- `agentyc run --cdp-url ... ...`
-- `agentyc repl --cdp-url ...`
+## Standalone direct-CDP CLI utilities
 
-Those commands retain their legacy CDP/runtime behavior only when explicitly selected. The `serve`, `run`, and `repl` forms require an explicit endpoint; `mcp --legacy-cdp` may use its separately selected managed-test lifecycle. The host-backed `agentyc`/`agentyc mcp` path remains the default and never falls back to that lifecycle.
+These commands remain separate CLI utilities and do not change the MCP surface:
+
+- `agentyc browser [--port PORT] [--headless] [--detach]` launches Chrome with a temporary profile and prints its CDP WebSocket URL.
+- `agentyc run --cdp-url URL ...` runs one browser command against the supplied endpoint; the endpoint is required at runtime.
+- `agentyc repl --cdp-url URL` starts an interactive session against the supplied endpoint; the endpoint is required at runtime.
+
+The host-backed logical CLI/MCP path does not fall back to these utilities.
