@@ -15,13 +15,13 @@ Run the fake, extension, headed existing-Chrome, CLI/SDK, privacy, installation,
 
 ## Handoff in
 
-- **Inputs:** Phases 0–6 and their artifacts; Phase 0 budgets; host/extension install package; direct CLI/SDK.
-- **Must already be true:** no known cross-space/user-tab safety defect; all required fixtures and capability results exist; the legacy MCP stdio/HTTP baseline remains runnable and its behavior is frozen, but no new adapter migration is required for this phase.
+- **Inputs:** Phases 0–6 and their artifacts; Phase 0 budgets; host/extension install package; shipped host-backed CLI and Node SDK.
+- **Must already be true:** no known cross-space/user-tab safety defect; all required fixtures and capability results exist. Current MCP is host-backed stdio only: 29 offline routes, 30 declared remote routes with 12 typed unavailable; headed live Chrome has not run and MCP is not distribution-ready.
 - **Do not reopen:** existing Chrome is default; no automatic browser launch/download; host is authoritative; MCP is compatibility; shared-profile limits are documented.
 
 ## Confirmed facts
 
-- Existing release checks cover Rust formatting/build/tests and legacy MCP transport but not extension/native-host/profile coexistence. Direct launch must preserve that legacy baseline rather than silently routing MCP through an unfinished adapter.
+- Earlier release checks covered a legacy MCP transport that has since been removed. Current MCP is host-backed stdio only, and its offline/remote route declarations do not establish headed live-Chrome support. Direct-product validation remains separate from MCP release validation.
 - Chrome extension distribution, permissions, platform host registration, and MV3 restart behavior are launch surfaces.
 
 ## Working assumptions
@@ -62,7 +62,7 @@ Every release uses the test pyramid in `research/production-test-strategy.md`:
 
 1. Pure unit/property tests for contracts, state machines, framing, limits, redaction, error mapping, and delta/ref behavior.
 2. Deterministic component tests with a fake Chrome bridge, controlled clock, seeded scheduler, and replayable traces.
-3. Process integration tests for host IPC, Native Messaging, extension worker lifecycle, CLI/SDK, MCP transports, installers, and ledger migration.
+3. Process integration tests for host IPC, Native Messaging, extension worker lifecycle, shipped CLI/SDK, host-backed MCP stdio, installers, and ledger migration.
 4. Headed existing-Chrome tests on the supported Chrome/platform/policy matrix using disposable profiles and a local fixture server.
 5. Nightly/pre-release load, soak, chaos, fuzz, and installation lanes.
 
@@ -110,7 +110,7 @@ The release artifact records exact Chrome build, OS/architecture, display backen
 - Fixtures: `small-form`, `dense-admin-table`, `dynamic-feed`, `nested-frame`, delayed/redirecting navigation, cross-origin/OOPIF, dialogs, downloads/uploads, hostile-message, takeover, restart, and user-tab coexistence fixtures.
 - Runs: 10 warmups or warmup-until-stable, then at least 200 valid samples per blocking p95 cell and 1,000 per blocking p99 cell; every attempted sample is accounted for as success, timeout, error, invalid measurement, or infrastructure failure. Exclusions require a predeclared rule; timeout/error/missing/discarded samples count against the cell and fail it when the signed budget is exceeded. Report bootstrap 95% confidence intervals, raw samples, failures, queue/event distributions, and environment. Thirty samples are smoke-only.
 - Token metrics: transport bytes, UTF-8 bytes, serialized payload tokens, and deployed model-context tokens are separate; record tokenizer name/version/hash, wrapper/encoding, cache state, fixture/data hash, and whether metadata/truncation is included.
-- Timing decomposition: client send, IPC, host queue, bridge, Chrome command, browser scan, serialization/tokenization, and response delivery; compare legacy MCP one-shot, persistent MCP, local protocol, SDK sequential, SDK batch, full/min/delta, clean/dirty cache, and event-driven wait against polling.
+- Timing decomposition: client send, IPC, host queue, bridge, Chrome command, browser scan, serialization/tokenization, and response delivery; compare host-backed MCP stdio, local protocol, direct CLI invocation, SDK sequential/batch, full/min/delta, clean/dirty cache, and event-driven wait against polling.
 - Delta target: median ≤35% and p95 ≤60% of equivalent full snapshot only when actionable-control/ref coverage is equivalent; emit full/min when measured delta cost is higher.
 - Clean target: zero DOM/AX scan and no element payload when cache is clean.
 - Isolation metric: any cross-space mutation, stale-agent mutation after takeover, user/unmanaged close, authorization bypass, secret leak, or silent unknown success is a release blocker.
@@ -127,13 +127,13 @@ The release artifact records exact Chrome build, OS/architecture, display backen
   - **Owner:** Japneet Kalkat.
 
 - [ ] P7-T2 — Run full host/core/extension/CLI/SDK direct-product suites and enforce false-green prevention.
-  - **Files/surfaces:** core/host/runtime tests, `extension/tests`, `packages/agentyc-browser/test`, direct root integration targets, `crates/agentyc-tests/src/{lib.rs,runner.rs}`, `tests/test-manifest.yaml`.
+  - **Files/surfaces:** core/host tests, `extension/tests`, `packages/agentyc-browser/test`, direct root integration targets, `crates/agentyc-tests/src/{lib.rs,runner.rs}`, `tests/test-manifest.yaml`.
   - **Done when:** no direct-product compile/lint/test failures remain; every scenario step asserts semantic response status, scope, action receipt, postcondition, and cleanup; browser absence is a failure in required lanes; no ignored/skipped test satisfies coverage; child processes/state directories are cleaned.
   - **Validation:** `python3 scripts/check_test_manifest.py tests/test-manifest.yaml`; `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo test --workspace --locked`; `cargo build -p agentyc --locked`; `cargo test -p agentyc-tests --test mcp_protocol --locked`; Phase 0-selected extension/package test commands; archive redacted logs/traces under `artifacts/p7-test-gate/`.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P7-T3 — Run deterministic fake transport, host fault, and state-machine validation.
-  - **Files/surfaces:** `agentyc-core`, `agentyc-host`, `agentyc-runtime`, `agentyc-cdp` legacy adapter, `tests/harness/`, `tests/replay/`, test fixtures.
+  - **Files/surfaces:** `agentyc-core`, `agentyc-host`, extension/fake-bridge tests, `tests/harness/`, `tests/replay/`, and test fixtures. Any direct-CDP use is confined to independent test harnesses; removed Rust runtime crates are not dependencies.
   - **Done when:** controlled clock, seeded ordering, replayable ChromeBridge traces, lease fencing, epoch transitions, ledger recovery, action unknown/reconcile, event lag/resync, cancellation, host lock, and capability errors pass with byte-identical outcomes over 100 repeated runs.
   - **Validation:** `python3 scripts/run_replay_matrix.py --repetitions 100 --manifest tests/test-manifest.yaml --artifact-dir artifacts/p7-faults`; focused package tests plus fault-injection/property/replay suite; archive seed, trace, outcome, byte-comparison report, and redacted replay command under `artifacts/p7-faults/`. Any missing repetition or divergent outcome fails the lane.
   - **Owner:** Japneet Kalkat.
