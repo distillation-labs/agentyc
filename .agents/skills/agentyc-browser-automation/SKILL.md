@@ -29,11 +29,9 @@ Give the coding agent deterministic browser automation through Agentyc. The dire
 
 ## Supported direct operations vs. planned methods
 
-Direct mutations strictly execute through `action execute --operation <OPERATION>` (CLI) or `page.action(operation, payload)` (SDK).
-The supported operations are:
-`navigate`, `click`, `input`, `evaluate`, `scroll`, `wait`, `screenshot`, `storage_write`, `cookie_write`, `upload`, `close`.
+Direct mutations strictly execute through `action execute --operation <OPERATION>` (CLI) or `page.action(operation, payload)` (SDK). Currently available operations are `navigate`, `click`, `input`, `scroll`, `wait`, `screenshot`, and `close`. `evaluate`, `storage_write`, `cookie_write`, `upload`, and payloads marked with a sensitive boundary fail locally with `permission_denied` because the direct interfaces have no host-issued user-intent-ticket flow; uploads also require an enabled extension capability.
 
-Planned convenience methods (such as `page.goto()`, `page.click()`, `agentyc wait url`, or direct verb subcommands like `agentyc action click`) are not implemented in the direct interface. Always use the canonical action execution methods with supported operations.
+In the CLI, mutations use `agentyc action execute --operation <OPERATION>`; convenience subcommands such as `agentyc wait url` and `agentyc action click` are not implemented. The Node SDK provides `Page.goto()`, `Page.click()`, `Page.type()`, `Page.fill()`, `Page.scroll()`, and `Page.waitForURL()` helpers over available operations. `Page.evaluate()` is intentionally rejected until ticket issuance is supported. Do not infer CLI commands from SDK methods.
 
 ## Choose the right frontend
 
@@ -58,19 +56,36 @@ agentyc --state-dir /tmp/agentyc-state --offline --json space list
 agentyc --state-dir /tmp/agentyc-state --offline --json host status
 ```
 
-In Node SDK code:
+Offline Node SDK example (fake host):
 
 ```js
 import { connect, createLocalTransport } from "@agentyc/browser";
 
+const results = {
+  "space.create": { space: { space_id: "space_demo", label: "research" } },
+  "space.claim": { space_id: "space_demo", lease: { lease_epoch: 1 } },
+  "page.create": {
+    page: { page_id: "page_main", space_id: "space_demo", label: "main" },
+  },
+  "snapshot.read": { refs: { submit: "ref_button" }, snapshot_hash: "demo" },
+  "action.execute": { action_id: "action_demo", status: "succeeded" },
+};
+const transport = createLocalTransport(({ requests }) => ({
+  responses: requests.map(({ request_id, method }) => ({
+    request_id,
+    ok: true,
+    result: results[method] ?? {},
+  })),
+}));
 const client = await connect({ transport });
 const space = await client.createSpace("research", {
   acceptSharedProfileDisclosure: true,
 });
-const page = space.page("main");
-await page.create();
+await space.claim();
+const page = await space.newPage("main");
 const snapshot = await page.snapshot();
-const receipt = await page.action("click", { ref: "ref_button" });
+const receipt = await page.action("click", { ref: snapshot.refs.submit });
+await client.close();
 ```
 
 ## The superpower loop: read → ref → act → verify
