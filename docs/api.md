@@ -1,6 +1,6 @@
 # Public API Reference
 
-Agentyc's primary interface is the host-backed CLI and Node SDK. The optional MCP adapter exposes the same logical task-space authority over stdio; it does not own browser state.
+Agentyc's primary interface is the host-backed CLI and Node SDK. MCP is compatibility-only and exposes logical task-space operations over stdio; it does not own browser state.
 
 ## CLI
 
@@ -12,7 +12,7 @@ agentyc space create --label Research --accept-shared-profile-disclosure
 
 Existing-Chrome spaces share cookies, storage, history, permissions, and installed extensions. The host rejects creation without the explicit acknowledgement.
 
-`agentyc mcp` runs the host-backed MCP adapter over stdio. `agentyc` with no subcommand is equivalent. `--offline` selects the deterministic fake-host test seam; it is not a browser connection. The old direct-CDP MCP mode and the MCP Streamable HTTP `serve` command have been removed.
+Connect an MCP client over stdio with `agentyc mcp`; `agentyc` with no subcommand is equivalent. `--offline` selects the deterministic fake-host test seam; it is not a browser connection. The old direct-CDP MCP mode and the MCP Streamable HTTP `serve` command have been removed.
 
 ## MCP client configuration
 
