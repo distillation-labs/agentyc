@@ -317,15 +317,20 @@ export class NativeMessagingClient {
             this.handleIncoming(message, connectionGeneration, port),
           ),
           addListener(port?.onDisconnect, () => {
+            if (this.disconnecting) return;
             const runtimeError = this.chrome?.runtime?.lastError;
+            const wasConnected = this.connected;
             this.handleDisconnect(
               runtimeError ?? new Error("Native Messaging port disconnected"),
               {
-                immediateReconnect: true,
+                scheduleReconnect: !wasConnected,
                 connectionGeneration,
                 port,
               },
             );
+            if (wasConnected && this.autoReconnect && !this.stopped) {
+              void this.connect().catch(() => {});
+            }
           }),
         ];
 
@@ -946,12 +951,7 @@ export class NativeMessagingClient {
 
   handleDisconnect(
     reason,
-    {
-      scheduleReconnect = true,
-      immediateReconnect = false,
-      connectionGeneration,
-      port,
-    } = {},
+    { scheduleReconnect = true, connectionGeneration, port } = {},
   ) {
     if (
       (connectionGeneration !== undefined &&
@@ -970,7 +970,7 @@ export class NativeMessagingClient {
     this.state = "disconnected";
     if (wasLive) this.onUnknownActions([], reason);
     this.onStateChange(this.state, reason);
-    if (scheduleReconnect) this.scheduleReconnect(immediateReconnect);
+    if (scheduleReconnect) this.scheduleReconnect();
   }
 
   notifyUnknownMutations(reason) {
