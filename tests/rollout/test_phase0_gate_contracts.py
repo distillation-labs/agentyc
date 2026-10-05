@@ -595,6 +595,31 @@ class Phase0GateContractTests(unittest.TestCase):
                     checker = _checker.Checker(root)
                     self.assertNotEqual(_checker.validate_extension_gate(checker), "passed")
 
+    def test_phase_zero_envelopes_are_scoped_to_phase_zero_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            p0_directory = root / "artifacts" / "p0-test"
+            p5_directory = root / "artifacts" / "p5-test"
+            p0_directory.mkdir(parents=True)
+            p5_directory.mkdir(parents=True)
+            (p0_directory / "report.json").write_text("{}", encoding="utf-8")
+            (p5_directory / "report.json").write_text("{}", encoding="utf-8")
+
+            checker = _checker.Checker(root)
+            _checker.validate_artifact_envelope(checker)
+            self.assertEqual(
+                [issue.path for issue in checker.issues if issue.code == "artifact-envelope-missing"],
+                ["artifacts/p0-test/report.json"],
+            )
+
+            report = _envelope.envelope({"phase": 0, "status": "passed"}, kind="p0-test")
+            (p0_directory / "report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            checker = _checker.Checker(root)
+            _checker.validate_artifact_envelope(checker)
+            self.assertEqual(checker.issues, [])
+
     def test_real_p0_t2_artifact_is_accepted_only_when_observed(self) -> None:
         path = ROOT / "artifacts" / "p0-extension" / "report.json"
         self.assertTrue(path.is_file(), "the real P0-T2 artifact is required for this contract")
