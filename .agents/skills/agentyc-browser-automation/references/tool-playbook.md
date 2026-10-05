@@ -40,7 +40,7 @@ Supported operations:
 - `screenshot`: viewport capture
 - `storage_write`, `cookie_write`, `upload`, `close`
 
-Planned convenience helper methods (such as `page.goto()`, `page.click()`, `agentyc wait url`, or direct verb subcommands like `agentyc action click`) are not implemented in the direct interface. Always use the canonical action execution methods with supported operations.
+In the CLI, mutations use `agentyc action execute --operation <OPERATION>`; convenience subcommands such as `agentyc wait url` and `agentyc action click` are not implemented. The Node SDK does provide `Page.goto()`, `Page.click()`, and `Page.waitForURL()` helpers, which dispatch through the canonical host protocol. Do not infer CLI commands from SDK methods.
 
 ### Boundaries and execution limits
 
