@@ -20,7 +20,7 @@ Validate the current host-backed logical MCP adapter as a separate compatibility
 - The connected remote catalog declares 30 routes. Twelve fail closed with typed `capability_unavailable` before forwarding: `host_space_describe`, `host_lease_takeover_with_control_ticket`, `host_lease_control_ticket`, `host_lease_acknowledge_return_control`, `host_lease_acknowledge_fence`, `host_page_bind`, `host_page_mark_lost`, `host_snapshot_put`, `host_snapshot_mark_dirty`, `host_action_enqueue`, `host_action_dispatch`, and `host_event_publish`.
 - A route declaration is not proof of connected support. Headed live Chrome has not yet been run through MCP, including the local host socket, Native Messaging bridge, extension, and Chrome.
 - MCP is **not distribution-ready**. Offline contracts do not close the live or release gates.
-- The standalone `browser`, `run`, and `repl` commands remain separate direct-CDP CLI utilities. They are not MCP transports or tools and are not removed by this plan.
+- The standalone direct-CDP `browser`, `run`, and `repl` CLI commands have been removed. Independent test/installation harnesses may use CDP internally, but they are not user-facing commands; the extension's `chrome.debugger` backend remains.
 
 Source of truth: `docs/mcp-compatibility.md` and the host MCP implementation under `crates/agentyc-mcp/src/`.
 
@@ -40,7 +40,7 @@ Source of truth: `docs/mcp-compatibility.md` and the host MCP implementation und
 - MCP HTTP or Streamable HTTP transport.
 - Direct-CDP or temporary-browser MCP modes.
 - The deleted `BrowserServer` and `browser_*` MCP tool catalog.
-- Changing the standalone direct-CDP `browser`, `run`, or `repl` CLI utilities.
+- Adding standalone direct-CDP CLI commands. Internal test/installation harnesses may use CDP without creating a user-facing command; the extension's `chrome.debugger` backend remains.
 - Treating deterministic offline tests as live Chrome, distribution, or release evidence.
 
 ## Tasks
@@ -71,7 +71,7 @@ Source of truth: `docs/mcp-compatibility.md` and the host MCP implementation und
 
 - [ ] P8-T5 — Complete migration and support documentation.
   - **Files:** README, CLI/configuration/architecture docs, skills and plugin docs, Phase 8 plan and registry.
-  - **Done when:** documentation describes only host-backed logical MCP over stdio; the 29/30 route distinction and 12 unavailable routes are explicit where relevant; direct-CDP CLI utilities are clearly separate; no documentation recommends the removed MCP tools, flags, or HTTP route.
+  - **Done when:** documentation describes only host-backed logical MCP over stdio; the 29/30 route distinction and 12 unavailable routes are explicit where relevant; the CLI lists only shipped host-backed logical commands; no documentation recommends removed direct-CDP CLI or MCP paths, flags, or HTTP route.
   - **Validation:** documentation reference and stale-surface audit passes; release readiness remains explicitly false until P8-T1 through P8-T4 and the release decision are complete.
   - **Owner:** Japneet Kalkat.
 
@@ -84,7 +84,7 @@ Source of truth: `docs/mcp-compatibility.md` and the host MCP implementation und
 - [ ] Headed Chrome validation covers the real host, Native Messaging bridge, extension, and Chrome path.
 - [ ] No offline, declaration-only, source-inspection, or operator-acknowledgment evidence is treated as live support.
 - [ ] Required release artifacts and security/error gates pass before MCP is described as distribution-ready.
-- [ ] Standalone `browser`, `run`, and `repl` CLI utilities remain accurately documented as a separate interface.
+- [ ] No removed direct-CDP CLI path is presented as shipped; the Node SDK and extension `chrome.debugger` backend remain accurately documented.
 
 ## Handoff out
 
