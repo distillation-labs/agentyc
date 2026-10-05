@@ -104,6 +104,7 @@ export function sanitizeSpace(space = {}) {
 export function initialState() {
   return {
     connected: false,
+    spacesLoaded: false,
     spaces: [],
     notices: [],
     busy: false,
@@ -129,9 +130,12 @@ export function reduceState(state, message) {
     if (
       event.startsWith("native.disconnected") ||
       event.startsWith("native.rejected")
-    )
+    ) {
       next.connected = false;
+      next.spacesLoaded = false;
+    }
     if (event === "host.spaces" && Array.isArray(message.payload?.spaces)) {
+      next.spacesLoaded = true;
       next.spaces = message.payload.spaces.map(sanitizeSpace);
     }
     if (typeof message.payload?.space_id === "string") {
@@ -157,8 +161,10 @@ export function reduceState(state, message) {
   }
   if (message.type === "agentyc.panel.state") {
     next.connected = Boolean(message.connected);
-    if (Array.isArray(message.spaces))
+    if (Array.isArray(message.spaces)) {
+      next.spacesLoaded = true;
       next.spaces = message.spaces.map(sanitizeSpace);
+    }
   }
   return next;
 }
