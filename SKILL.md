@@ -37,7 +37,7 @@ In the CLI, mutations use `agentyc action execute --operation <OPERATION>`; conv
 
 - **Host-backed CLI and Node SDK (primary):** use logical task spaces and pages through the host-owned protocol for standard agent workflows.
 - **MCP (compatibility-only):** use only when an existing agent client strictly requires an MCP stdio adapter. Do not treat MCP as the canonical state owner.
-- **REPL / Run (legacy compatibility):** use `agentyc run` or `agentyc repl` only when explicitly maintaining legacy direct-CDP compatibility scripts.
+- Standalone direct-CDP `browser`, `run`, and `repl` CLI commands have been removed. CDP-based installation/test harnesses are not user-facing interfaces; the extension's `chrome.debugger` backend remains.
 
 ## Runnable tested example (offline test seam)
 
@@ -126,9 +126,9 @@ MCP exposes host-backed logical operations over stdio only. The offline server l
 }
 ```
 
-## Standalone direct-CDP CLI utilities (compatibility path; not MCP)
+## Removed standalone direct-CDP CLI paths
 
-The CLI still includes `agentyc browser [--port PORT] [--headless] [--detach]` to launch a temporary-profile Chrome, `agentyc run --cdp-url <endpoint> ...` for one command, and `agentyc repl --cdp-url <endpoint>` for an interactive session. These are separate CLI utilities; their existence does not add MCP tools or transports. `run` and `repl` require an explicit endpoint at runtime.
+The standalone `agentyc browser`, `agentyc run --cdp-url`, and `agentyc repl --cdp-url` commands are not shipped. Use the host-backed logical CLI subcommands listed in `docs/cli.md` or the Node SDK at `packages/agentyc-browser`. The SDK is distinct from the removed Rust `agentyc-browser` crate.
 
 ## References
 
