@@ -14,8 +14,7 @@ fn option(name: &str) -> Option<PathBuf> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_dir = option("--state-dir").ok_or("--state-dir is required")?;
-    let socket_path = option("--socket-path")
-        .unwrap_or_else(|| configured_socket_path(&state_dir));
+    let socket_path = option("--socket-path").unwrap_or_else(|| configured_socket_path(&state_dir));
     let broker = Broker::open(&state_dir, FakeBridge::new())?;
     let server = LocalHostServer::start(broker, &socket_path)?;
 
