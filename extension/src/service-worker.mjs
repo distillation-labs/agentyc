@@ -559,6 +559,9 @@ export class ServiceWorkerController {
     if (this.started) return this;
     if (this.startPromise) return this.startPromise;
     this.installRuntimeListener();
+    this.groups.start();
+    this.tabs.installListeners();
+    this.debugger.start();
     this.startPromise = (async () => {
       this.lifecycleToken += 1;
       await this.loadMetadata();
@@ -567,10 +570,8 @@ export class ServiceWorkerController {
       this.applyRuntimeIdentity();
       this.debugger.setIdentity(this.metadata);
       this.started = true;
-      this.groups.start();
       await this.tabs.start();
       await this.rehydrateManagedBindings();
-      this.debugger.start();
       await this.configureSidePanel();
       try {
         await this.native.connect();
