@@ -1,7 +1,9 @@
 # Source map — agentyc Browser Task Spaces
 
 **Research date:** 2026-10-01  
-**Decision scope:** task-space/group isolation, target identity, reliability, context/token efficiency, automation speed, MCP transport compatibility, and direct-launch readiness for the current agentyc workspace at commit `0c97698`.
+**Decision scope:** task-space/group isolation, target identity, reliability, context/token efficiency, automation speed, MCP transport compatibility, and direct-launch readiness for the agentyc workspace at commit `0c97698`.
+
+> Historical research snapshot from 2026-10-01. Its repository-state references and direct-CDP/CLI terminology describe that commit, not current shipped interfaces.
 
 ## Q-01 — How should groups isolate concurrent agents?
 
@@ -68,7 +70,7 @@
 - **Artifacts:** transport context boundary, stdio/HTTP semantics, compatibility tests, upgrade trigger.
 - **Status:** closed for this refactor: preserve the legacy `rmcp 1.7` behavior and current `2024-11-05` fixture; `2025-11-25` and `2026-07-28` are researched alternatives only, not supported or negotiated by this plan. Phase 8 must publish the accepted-version/feature matrix and reopen this decision only with a deliberate SDK upgrade and dual-era fixtures.
 
-## Q-06 — What trust boundary is required for HTTP and attached browsers?
+## Q-06 — Historical trust-boundary question for HTTP and attached direct-CDP browsers
 
 - **Why it matters:** A non-loopback MCP server or shared CDP endpoint can expose logged-in browser state and enable cross-agent mutation without authentication or ownership checks.
 - **Required source classes:** local CLI/server configuration; official MCP HTTP security guidance; official CDP target/context contract; comparable attached-browser ownership pattern.
@@ -77,7 +79,7 @@
   - local surface: `agentyc serve host default cdp-url attached browser ownership`
   - failure mode: `shared CDP endpoint unauthorized tab close cookie leakage`
 - **Artifacts that can change the decision:** host/auth policy, attached-mode matrix, ACL/cleanup tests.
-- **Status:** closed: loopback/no-auth is the local default; non-loopback requires bearer auth/origin policy; shared external CDP is inventory-only; exclusive attached mode is explicit.
+- **Status:** superseded by removal: the MCP HTTP route, attached direct-CDP MCP mode, and standalone direct-CDP CLI paths are not shipped. Current MCP is host-backed stdio only; the extension's internal `chrome.debugger` bridge remains. This historical auth analysis is not a current transport configuration.
 
 ## Source-class coverage and limits
 
