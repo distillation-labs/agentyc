@@ -111,11 +111,9 @@ Do not attach multiple agents to the same logical page or task space without exp
 
 Report the objective, the commands executed, the observed evidence (snapshot hash, element ref, event cursor, receipt status), and the result or blocker. A screenshot alone is not sufficient when deterministic browser evidence is available.
 
-## Legacy MCP Compatibility Adapter
+## MCP compatibility boundary
 
-This section documents the explicit legacy compatibility adapter, not the canonical existing-Chrome task-space product.
-
-### Legacy MCP Configuration
+MCP exposes host-backed logical operations over stdio only. The offline server lists 29 routes; the connected remote catalog declares 30, with 12 currently returning `capability_unavailable`. Headed live Chrome validation has not run, so MCP is not distribution-ready. Do not use or advertise the removed `browser_*` MCP tools, direct-CDP MCP mode, or HTTP `serve` route. See `docs/mcp-compatibility.md` for route-level details.
 
 ```json
 {
@@ -128,20 +126,9 @@ This section documents the explicit legacy compatibility adapter, not the canoni
 }
 ```
 
-Legacy compatibility commands:
+## Standalone direct-CDP CLI utilities (not MCP)
 
-- `agentyc mcp --legacy-cdp --cdp-url <endpoint>`: attaches directly to a legacy CDP endpoint.
-- `agentyc serve --host 127.0.0.1 --port 8765`: legacy Streamable HTTP adapter.
-- `agentyc run --cdp-url <endpoint> ...`: runs one-shot legacy direct-CDP command.
-- `agentyc repl --cdp-url <endpoint>`: runs interactive legacy direct-CDP REPL.
-
-### Legacy direct-CDP tools (compatibility only)
-
-- **Legacy inspection:** `browser_get_state(mode="min")`, `browser_search_page`, `browser_get_html`, `browser_extract_content`.
-- **Legacy controls:** `browser_click`, `browser_type`, `browser_fill_form`, `browser_select_option`, `browser_press_key`, `browser_upload_file`.
-- **Legacy waiting:** `browser_wait_for_element`, `browser_wait_for_url`, `browser_wait_for_request`, `browser_wait_for_response`, `browser_wait_for_network_idle`, `browser_wait_for_stable_dom`.
-- **Legacy frames & storage:** `browser_list_frames`, `browser_get_frame_html`, `browser_get_storage`, `browser_set_storage`, `browser_clear_storage`, cookies, `browser_save_state`, `browser_load_state`.
-- **Legacy tab management:** `browser_new_tab`, `browser_wait_for_tab`, `browser_list_tabs`, `browser_switch_tab`, `browser_close_tab`. Raw tab IDs are deprecated compatibility identifiers and not logical page identities.
+The CLI still includes `agentyc browser [--port PORT] [--headless] [--detach]` to launch a temporary-profile Chrome, `agentyc run --cdp-url <endpoint> ...` for one command, and `agentyc repl --cdp-url <endpoint>` for an interactive session. These are separate CLI utilities; their existence does not add MCP tools or transports. `run` and `repl` require an explicit endpoint at runtime.
 
 ## References
 
