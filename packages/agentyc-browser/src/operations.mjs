@@ -63,6 +63,24 @@ const requestEntries = [
     cli: { command: ["space", "reclaim"] },
   },
   {
+    key: "space.pause",
+    kind: "request",
+    wireMethods: ["space.pause"],
+    sideEffecting: true,
+    supported: true,
+    sdk: "TaskSpace.pause",
+    cli: { command: ["space", "pause"] },
+  },
+  {
+    key: "space.handoff",
+    kind: "request",
+    wireMethods: ["space.handoff"],
+    sideEffecting: true,
+    supported: true,
+    sdk: "TaskSpace.handoff",
+    cli: { command: ["space", "handoff"] },
+  },
+  {
     key: "space.return",
     kind: "request",
     wireMethods: ["space.return", "space.return_control"],
@@ -236,15 +254,31 @@ const actionEntries = [
   ["navigate", true],
   ["click", true],
   ["input", true],
-  ["evaluate", true],
+  [
+    "evaluate",
+    false,
+    "evaluate requires a host-issued user-intent ticket; the direct interfaces do not expose ticket issuance",
+  ],
   ["scroll", true],
   ["wait", true],
   ["screenshot", true],
-  ["storage_write", true],
-  ["cookie_write", true],
-  ["upload", true],
+  [
+    "storage_write",
+    false,
+    "storage writes require a host-issued user-intent ticket; the direct interfaces do not expose ticket issuance",
+  ],
+  [
+    "cookie_write",
+    false,
+    "cookie writes require a host-issued user-intent ticket; the direct interfaces do not expose ticket issuance",
+  ],
+  [
+    "upload",
+    false,
+    "uploads require a host-issued user-intent ticket and an enabled extension capability",
+  ],
   ["close", true],
-].map(([operation, supported]) => ({
+].map(([operation, supported, unsupportedReason]) => ({
   key: `action.${operation}`,
   kind: "action",
   operation,
@@ -253,6 +287,7 @@ const actionEntries = [
   supported,
   sdk: "Page.action",
   cli: { command: ["action", "execute"], option: "--operation" },
+  ...(unsupportedReason ? { unsupportedReason } : {}),
 }));
 
 function freezeEntry(entry) {
