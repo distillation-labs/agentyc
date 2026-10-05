@@ -180,6 +180,29 @@ export class TaskSpace {
     return result;
   }
 
+  async pause(options = {}) {
+    return this._controlTransition("space.pause", options);
+  }
+
+  async handoff(options = {}) {
+    return this._controlTransition("space.handoff", options);
+  }
+
+  async _controlTransition(method, options) {
+    const result = await this.client.request(
+      method,
+      {
+        space_id: this.id,
+        ttl: normalizeLeaseTtl(options.ttl),
+        now: normalizeNow(options.now),
+      },
+      transportOptions(options),
+    );
+    this.leaseEpoch = undefined;
+    this.record = result?.space ?? this.record;
+    return result;
+  }
+
   async finish(options = {}) {
     const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
     const result = await this.client.request(
