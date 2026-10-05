@@ -30,7 +30,7 @@ def _path_candidates(value: Any) -> list[str]:
 
 
 def _copy_contract_repo(destination: Path) -> None:
-    manifest = json.loads((ROOT / checker.MANIFEST_PATH).read_text(encoding="utf-8"))
+    manifest = checker.parse_manifest(ROOT / checker.MANIFEST_PATH)
     candidates = set(_path_candidates(manifest))
     candidates.update(
         {
@@ -59,6 +59,9 @@ def _copy_contract_repo(destination: Path) -> None:
         target = destination / path
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+
+    manifest_target = destination / checker.MANIFEST_PATH
+    manifest_target.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def _mutate_manifest(root: Path, mutate) -> None:
@@ -166,12 +169,17 @@ class Phase2ContractCheckerTests(unittest.TestCase):
         with self.assertRaises(checker.ContractError):
             checker.validate(root)
 
-    def test_wildcard_or_missing_identity_allowlist_fails(self) -> None:
+    def test_identity_allowlist_rejects_wildcards_and_removed_legacy_paths(self) -> None:
         root = self._repo()
         _mutate_manifest(
             root,
-            lambda value: value["identity"]["allowlist"][0].__setitem__(
-                "path", "crates/agentyc-mcp/src/*.rs"
+            lambda value: value["identity"].__setitem__(
+                "allowlist",
+                [{
+                    "path": "crates/agentyc-mcp/src/*.rs",
+                    "scope": "sanitized_fixture",
+                    "reason": "test wildcard rejection",
+                }],
             ),
         )
         with self.assertRaises(checker.ContractError):
@@ -180,7 +188,14 @@ class Phase2ContractCheckerTests(unittest.TestCase):
         root = self._repo()
         _mutate_manifest(
             root,
-            lambda value: value["identity"].__setitem__("allowlist", []),
+            lambda value: value["identity"].__setitem__(
+                "allowlist",
+                [{
+                    "path": "crates/agentyc-mcp/src/legacy.rs",
+                    "scope": "compatibility_only",
+                    "reason": "test removed legacy path rejection",
+                }],
+            ),
         )
         with self.assertRaises(checker.ContractError):
             checker.validate(root)
