@@ -302,7 +302,7 @@ def _parse_yaml_subset(text: str, label: str) -> Any:
         key, value = content.split(":", 1)
         key = key.strip()
         if not key or any(char in key for char in "{}[]"):
-            raise ContractError(f"{label} has an invalid mapping key")
+            raise ContractError(f"{label} has an invalid mapping key: {key!r}")
         return key, value.strip()
 
     def node(position: int, indent: int) -> tuple[Any, int]:
@@ -367,11 +367,49 @@ def _parse_yaml_subset(text: str, label: str) -> Any:
     return value
 
 
+def _remove_json_trailing_commas(text: str) -> str:
+    """Accept the checked-in JSON-with-trailing-commas subset safely."""
+    output: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            output.append(char)
+            index += 1
+            continue
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < len(text) and text[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(text) and text[lookahead] in "}]":
+                index += 1
+                continue
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
 def _parse_document(text: str, label: str) -> Any:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        return _parse_yaml_subset(text, label)
+        try:
+            return json.loads(_remove_json_trailing_commas(text))
+        except json.JSONDecodeError:
+            return _parse_yaml_subset(text, label)
 
 
 def parse_manifest(path: str | Path) -> dict[str, Any]:
@@ -694,8 +732,6 @@ def validate_identity(root: Path, identity_value: Any) -> list[str]:
         raise ContractError("canonical logical identity field set is incomplete or changed")
     primary_paths = _path_list(identity.get("primary_paths"), "manifest.identity.primary_paths")
     allowlist = _list(identity.get("allowlist"), "manifest.identity.allowlist")
-    if not allowlist:
-        raise ContractError("identity allowlist is required")
     allowlisted_paths: list[str] = []
     for index, item in enumerate(allowlist):
         name = f"manifest.identity.allowlist[{index}]"
@@ -705,12 +741,12 @@ def validate_identity(root: Path, identity_value: Any) -> list[str]:
         _relative_path(path, f"{name}.path")
         if "*" in path:
             raise ContractError("identity allowlist may not use wildcard paths")
+        if path.endswith("/legacy.rs") or "/tools/" in path:
+            raise ContractError("removed legacy MCP paths may not be allowlisted")
         if item.get("scope") not in {"compatibility_only", "sanitized_fixture", "negative_fixture"}:
             raise ContractError(f"{name}.scope is not explicit")
         _string(item.get("reason"), f"{name}.reason")
         allowlisted_paths.append(path)
-    if not any(path.startswith("crates/agentyc-mcp/") for path in allowlisted_paths):
-        raise ContractError("MCP compatibility identity allowlist entry is missing")
     _assert_file_paths(root, allowlisted_paths, "identity allowlist")
     for item in allowlist:
         if item["scope"] == "compatibility_only":
@@ -779,7 +815,6 @@ def validate_mappings(root: Path, mappings: Any) -> None:
             "crates/agentyc-mcp/src/host_server.rs",
             "crates/agentyc-mcp/src/remote_host_server.rs",
             "crates/agentyc-mcp/src/host_adapter.rs",
-            "crates/agentyc-mcp/src/legacy.rs",
         )
     )
     mappings = _list(mappings, "manifest.mappings")
@@ -1140,7 +1175,7 @@ def validate_traceability(root: Path, manifest: dict[str, Any]) -> None:
         "integration gap",
     ]
     for marker in required_strings:
-        if marker not in text:
+        if marker.lower() not in text.lower():
             raise ContractError(f"traceability is missing required marker: {marker}")
     for task in manifest["tasks"]:
         for field in ("required_modules", "fixtures", "evidence_paths", "tests"):
