@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
-description = "Host-backed browser task-space automation for coding agents via direct CLI and Node SDK; MCP is compatibility-only."
+description = "Host-backed browser task-space automation CLI for coding agents."
 keywords = ["browser", "automation", "task-space", "cli", "agent"]
 categories = ["web-programming", "development-tools", "command-line-utilities"]
 
@@ -27,9 +27,7 @@ required-features = ["test-support"]
 agentyc-core    = { workspace = true }
 agentyc-host    = { workspace = true }
 agentyc-mcp     = { workspace = true }
-agentyc-cdp     = { workspace = true }
-agentyc-browser = { workspace = true }
-agentyc-runtime = { workspace = true }
+
 tokio = { workspace = true }
 clap = { workspace = true }
 tracing = { workspace = true }
@@ -39,8 +37,8 @@ mimalloc = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
-reqwest = { workspace = true }
 
+[dev-dependencies]
 tempfile = { workspace = true }
 
 [profile.release]
