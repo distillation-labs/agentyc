@@ -128,7 +128,7 @@ MCP exposes host-backed logical operations over stdio only. The offline server l
 
 ## Removed standalone direct-CDP CLI paths
 
-The standalone `agentyc browser`, `agentyc run --cdp-url`, and `agentyc repl --cdp-url` commands are not shipped. Use the host-backed logical CLI subcommands listed in [Direct CLI](../../docs/cli.md) or the Node SDK at `packages/agentyc-browser`. The SDK is distinct from the removed Rust `agentyc-browser` crate.
+The standalone `agentyc browser`, `agentyc run --cdp-url`, and `agentyc repl --cdp-url` commands are not shipped. Use the host-backed logical CLI subcommands listed in `docs/cli.md` or the Node SDK at `packages/agentyc-browser`. The SDK is distinct from the removed Rust `agentyc-browser` crate.
 
 ## References
 
