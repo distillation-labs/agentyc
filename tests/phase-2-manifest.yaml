@@ -248,7 +248,7 @@
           [
             "packages/agentyc-browser/test/phase2.test.mjs::createSpace requires exact disclosure acknowledgement and sends canonical fields",
             "packages/agentyc-browser/test/phase2.test.mjs::waits carry logical scope, use the bounded default, and reject invalid timeouts",
-            "packages/agentyc-browser/test/phase2.test.mjs::claim, renew, and takeover apply the same default lease TTL",
+            "packages/agentyc-browser/test/phase2.test.mjs::claim, renew, takeover, and fence acknowledgement use lease defaults",
             "packages/agentyc-browser/test/phase2.test.mjs::reconciliation requires a lease epoch before dispatch",
             "packages/agentyc-browser/test/sdk.test.mjs::logical space and lazy page handles never expose browser identities",
             "packages/agentyc-browser/test/sdk.test.mjs::read requests reconnect once, while side-effect loss becomes unknown",
@@ -639,6 +639,27 @@
             "packages/agentyc-browser/src/operations.mjs",
             "crates/agentyc/src/commands/direct/spaces.rs",
             "crates/agentyc-mcp/src/host_server.rs",
+          ],
+      },
+      {
+        "key": "space.acknowledge_fence",
+        "wire": "space.acknowledge_fence",
+        "sdk": "TaskSpace.acknowledgeFence",
+        "cli": "space acknowledge-fence",
+        "mcp": "host_lease_acknowledge_fence",
+        "supported": true,
+        "status": "supported",
+        "gap_layers": [],
+        "reason": null,
+        "evidence_paths":
+          [
+            "packages/agentyc-browser/src/operations.mjs",
+            "packages/agentyc-browser/src/space.mjs",
+            "packages/agentyc-browser/test/phase2.test.mjs",
+            "crates/agentyc/src/commands/direct/spaces.rs",
+            "crates/agentyc-mcp/src/remote_host_server.rs",
+            "docs/cli.md",
+            "docs/mcp-compatibility.md",
           ],
       },
       {
