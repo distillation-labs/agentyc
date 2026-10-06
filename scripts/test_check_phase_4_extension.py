@@ -14,6 +14,7 @@ class Phase4CheckerTests(unittest.TestCase):
         self.assertEqual(result["status"], "active")
         self.assertFalse(result["release_eligible"])
         self.assertTrue(result["deterministic"])
+        self.assertEqual(result["live_existing_profile_mcp"], "partial")
 
     def test_manifest_and_artifact_are_bounded_and_non_live(self):
         manifest = checker.manifest(checker.ROOT)
