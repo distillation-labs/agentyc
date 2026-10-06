@@ -218,6 +218,41 @@ test("snapshot.read can use the read-only debugger fallback without exposing bro
   worker.stop();
 });
 
+test("snapshot.read fails closed on restricted URLs before content or debugger dispatch", async () => {
+  for (const [suffix, params] of [
+    ["default", {}],
+    ["debugger", { source: "debugger" }],
+  ]) {
+    const chrome = new FakeChrome({
+      tabs: [{ id: 1, url: "https://managed.test/" }],
+    });
+    const { worker } = await boot(chrome);
+    const spaceId = `space_restricted_${suffix}`;
+    const pageId = `page_restricted_${suffix}`;
+    const record = await managedPage(worker, spaceId, pageId);
+    const tab = chrome.tabsData.get(record.rawTabId);
+    record.url = "chrome://settings/";
+    tab.url = record.url;
+
+    const response = await worker.handleHostRequest({
+      kind: "request",
+      request_id: `req_restricted_snapshot_${suffix}`,
+      method: "snapshot.read",
+      space_id: spaceId,
+      page_id: pageId,
+      lease_epoch: 1,
+      params,
+    });
+
+    assert.equal(response.ok, false);
+    assert.equal(response.error.code, "capability_unavailable");
+    assert.equal(chrome.lastContentMessage, undefined);
+    assert.deepEqual(chrome.debuggerAttachCalls, []);
+    assert.deepEqual(chrome.debuggerCommands, []);
+    worker.stop();
+  }
+});
+
 test("action routing maps the Rust debugger wire, emits a logical receipt, and rejects non-action commands", async () => {
   const chrome = new FakeChrome({
     tabs: [{ id: 1, active: true, url: "https://user.test/" }],
