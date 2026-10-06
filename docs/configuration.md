@@ -99,9 +99,11 @@ initialization. A restart requires clients and the extension to reconnect.
 uses the local host socket in connected mode and the deterministic in-process
 fake host with `--offline`. It does not accept a CDP URL, launch a browser, or
 fall back to standalone CDP utilities. The offline catalog has 29 routes; the
-connected remote catalog declares 30, with 12 returning
-`capability_unavailable`. Headed live Chrome validation has not yet run, so MCP
-is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
+connected remote catalog declares 30, with 11 returning
+`capability_unavailable`. A limited existing-profile run verified MCP stdio
+and extension fence/rebind, but live snapshots, action reconciliation, and the
+full Phase 8 gate remain open, so MCP is not distribution-ready. See
+[MCP compatibility](mcp-compatibility.md).
 
 ## Removed legacy CLI paths
 
