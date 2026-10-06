@@ -10,7 +10,7 @@ The public workspace includes:
 - `crates/agentyc-mcp` — host-backed logical MCP adapter.
 - `crates/agentyc-host` — broker, durable ledger, local IPC, and Native Messaging bridge.
 - `crates/agentyc-core` — logical IDs, schemas, records, state, and action contracts.
-- `extension/` — Chrome MV3 extension and task-space UI.
+- `extension/` — minimal Chrome MV3 Native Messaging bridge for tab creation.
 - `packages/agentyc-browser/` — Node SDK for the host protocol.
 
 See [Architecture](./architecture.md) for how these fit together.
@@ -36,7 +36,7 @@ there is no model in the loop at all.
 - MCP is host-backed and logical only. It does not expose the removed `browser_*` tools or an HTTP transport.
 - The offline MCP server exposes 29 logical routes. The connected remote catalog declares 30 routes, 11 of which currently fail with `capability_unavailable`.
 - A limited existing-profile MCP run passed stdio, host/Native Messaging connection, and extension fence/rebind; snapshot/action reconciliation and the full Phase 8 gate remain open, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
-- The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI commands have been removed. CDP-based installation/test harnesses are not user-facing interfaces; the Node SDK at `packages/agentyc-browser` and extension `chrome.debugger` backend remain.
+- The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI commands have been removed. The host uses CDP internally for the product browser connection; the Node SDK at `packages/agentyc-browser` remains supported, and the extension is used only to create tabs.
 - No API key is required.
 
 ## Primary Use Cases
@@ -44,7 +44,7 @@ there is no model in the loop at all.
 - Direct CLI/SDK browser tooling for coding-agent workflows.
 - Host-backed MCP stdio compatibility for MCP-capable agents, subject to its current route and release limitations.
 - Deterministic task-space and logical-page operations through the local host.
-- Browser automation through an enrolled extension and Native Messaging host.
+- Browser automation through host-owned CDP; the extension and Native Messaging host are used only to create tabs.
 - Concurrent automation where leased logical pages are scoped to task spaces.
 
 ## MCP Boundary
