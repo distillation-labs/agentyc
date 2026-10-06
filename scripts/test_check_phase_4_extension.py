@@ -1,4 +1,6 @@
 import copy
+import json
+import re
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +10,26 @@ from scripts import check_phase_4_extension as checker
 
 
 class Phase4CheckerTests(unittest.TestCase):
+    def _current_architecture(self):
+        plan = checker.read(checker.ROOT, checker.PLAN)
+        match = re.search(
+            r"(?ms)^## Current acceptance criteria[ \t]*\n(.*?)(?=^## |\Z)",
+            plan,
+        )
+        self.assertIsNotNone(match)
+        current_plan = f"## Current acceptance criteria\n{match.group(1)}"
+        extension_manifest = json.loads(
+            checker.read(checker.ROOT, Path("extension/manifest.json"))
+        )
+        worker = checker.read(
+            checker.ROOT, Path("extension/src/tab-creation-worker.mjs")
+        )
+        native_messaging = checker.read(
+            checker.ROOT, Path("extension/src/native-messaging.mjs")
+        )
+        cdp = checker.read(checker.ROOT, Path("crates/agentyc-host/src/cdp.rs"))
+        return current_plan, extension_manifest, worker, native_messaging, cdp
+
     def test_active_phase4_manifest_passes_deterministic_gate(self):
         result = checker.check(checker.ROOT)
         self.assertEqual(result["phase"], 4)
@@ -24,6 +46,52 @@ class Phase4CheckerTests(unittest.TestCase):
         self.assertTrue(artifact["nonclaims"])
         self.assertTrue(manifest["source_hashes"])
         self.assertTrue(manifest["evidence_artifacts"])
+
+    def test_current_architecture_does_not_require_obsolete_extension_routes(self):
+        checker.validate_current_architecture(*self._current_architecture())
+        obsolete_sources = {
+            "extension/src/debugger-bridge.mjs",
+            "extension/src/frames.mjs",
+            "extension/src/service-worker.mjs",
+            "extension/src/sidepanel/app.mjs",
+            "extension/tests/reconnect-debugger.test.mjs",
+        }
+        self.assertTrue(obsolete_sources.isdisjoint(
+            {path.as_posix() for path in checker.PHASE4_SOURCE_PATHS}
+        ))
+
+    def test_current_create_only_and_loopback_violations_fail(self):
+        plan, extension_manifest, worker, native_messaging, cdp = (
+            self._current_architecture()
+        )
+        with self.subTest("additional tab inventory route"):
+            with self.assertRaisesRegex(checker.Phase4Error, "non-creation tabs route"):
+                checker.validate_current_architecture(
+                    plan,
+                    extension_manifest,
+                    worker + "\ntabs.query({});",
+                    native_messaging,
+                    cdp,
+                )
+        with self.subTest("debugger permission"):
+            bad_manifest = copy.deepcopy(extension_manifest)
+            bad_manifest["permissions"].append("debugger")
+            with self.assertRaisesRegex(checker.Phase4Error, "permissions exceed"):
+                checker.validate_current_architecture(
+                    plan, bad_manifest, worker, native_messaging, cdp
+                )
+        with self.subTest("non-loopback CDP endpoint"):
+            with self.assertRaisesRegex(checker.Phase4Error, "loopback invariant"):
+                checker.validate_current_architecture(
+                    plan,
+                    extension_manifest,
+                    worker,
+                    native_messaging,
+                    cdp.replace(
+                        '.strip_prefix("ws://127.0.0.1:")',
+                        '.strip_prefix("ws://192.0.2.1:")',
+                    ),
+                )
 
     def test_artifact_envelope_uses_report_phase(self):
         report = artifact_envelope.envelope(
