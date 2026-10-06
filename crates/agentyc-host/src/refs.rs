@@ -268,9 +268,10 @@ impl RefRegistry {
         &mut self,
         envelope: &SnapshotEnvelope,
         frame_id: FrameId,
+        element_key: agentyc_core::ElementKey,
         now: Timestamp,
     ) -> Result<ElementRef, CoreError> {
-        self.issue_ref(envelope, frame_id, now)
+        self.issue_ref(envelope, frame_id, element_key, now)
     }
 
     /// Alias for [`Self::issue`].
@@ -278,9 +279,10 @@ impl RefRegistry {
         &mut self,
         envelope: &SnapshotEnvelope,
         frame_id: FrameId,
+        element_key: agentyc_core::ElementKey,
         now: Timestamp,
     ) -> Result<ElementRef, CoreError> {
-        self.issue(envelope, frame_id, now)
+        self.issue(envelope, frame_id, element_key, now)
     }
 
     /// Alias for [`Self::issue`].
@@ -288,13 +290,14 @@ impl RefRegistry {
         &mut self,
         envelope: &SnapshotEnvelope,
         frame_id: FrameId,
+        element_key: agentyc_core::ElementKey,
         now: Timestamp,
     ) -> Result<ElementRef, CoreError> {
         envelope
             .validate()
             .map_err(|error| CoreError::invalid_argument(error.to_string()))?;
         let ref_id = self.allocate_ref_id()?;
-        self.issue_with_id(ref_id, envelope, frame_id, now)
+        self.issue_with_id(ref_id, envelope, frame_id, element_key, now)
     }
 
     /// Issue a ref with a caller-selected logical identity.
@@ -303,6 +306,7 @@ impl RefRegistry {
         ref_id: RefId,
         envelope: &SnapshotEnvelope,
         frame_id: FrameId,
+        element_key: agentyc_core::ElementKey,
         now: Timestamp,
     ) -> Result<ElementRef, CoreError> {
         envelope
@@ -313,7 +317,7 @@ impl RefRegistry {
                 "snapshot frame vector does not contain the requested frame",
             ));
         }
-        let element_ref = envelope.make_ref(ref_id, frame_id)?;
+        let element_ref = envelope.make_ref(ref_id, frame_id, element_key)?;
         self.register(element_ref.clone(), envelope.provenance(), now)?;
         if let Some(record) = self.active.get_mut(&element_ref.ref_id) {
             record.frame_version = envelope.frame_versions.get(&element_ref.frame_id).copied();
@@ -954,13 +958,37 @@ impl RefRegistry {
 mod tests {
     use super::*;
     use crate::snapshots::empty_snapshot;
-    use agentyc_core::{FrameVersion, PageId, SpaceId};
+    use agentyc_core::{
+        ElementKey, ElementKind, FrameVersion, PageId, SnapshotBody, SnapshotDocument,
+        SnapshotElement, SpaceId,
+    };
+
+    fn target_key() -> ElementKey {
+        ElementKey::from_suffix("target").expect("element key")
+    }
 
     fn fixture() -> (SnapshotEnvelope, FrameId) {
         let space = SpaceId::from_suffix("space").expect("space");
         let page = PageId::from_suffix("page").expect("page");
         let frame = FrameId::from_suffix("oopif").expect("frame");
         let mut snapshot = empty_snapshot(space, page);
+        let document = SnapshotDocument::new(
+            snapshot.snapshot_version,
+            vec![SnapshotElement {
+                key: target_key(),
+                parent: None,
+                kind: ElementKind::Element,
+                text: None,
+                attributes: BTreeMap::new(),
+                order: 0,
+            }],
+        )
+        .expect("snapshot document");
+        snapshot.snapshot_hash = document.snapshot_hash.clone();
+        snapshot.result_hash = document.snapshot_hash;
+        snapshot.delta_or_elements = SnapshotBody::Elements {
+            elements: document.elements,
+        };
         snapshot
             .frame_versions
             .insert(frame.clone(), FrameVersion::new(1));
@@ -972,7 +1000,7 @@ mod tests {
         let (snapshot, frame) = fixture();
         let mut registry = RefRegistry::with_limits(8, 8);
         let element_ref = registry
-            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .issue(&snapshot, frame.clone(), target_key(), Timestamp::new(1))
             .expect("issue");
         assert!(
             registry
@@ -1016,7 +1044,7 @@ mod tests {
         let (snapshot, frame) = fixture();
         let mut registry = RefRegistry::new(RefRegistryLimits::new(1, 1).with_default_ttl(Some(2)));
         let first = registry
-            .issue(&snapshot, frame.clone(), Timestamp::new(0))
+            .issue(&snapshot, frame.clone(), target_key(), Timestamp::new(0))
             .expect("first");
         registry.invalidate_ref(
             &first.ref_id,
@@ -1030,7 +1058,7 @@ mod tests {
                 .is_err()
         );
         let second = registry
-            .issue(&snapshot, frame, Timestamp::new(2))
+            .issue(&snapshot, frame, target_key(), Timestamp::new(2))
             .expect("second");
         assert!(
             registry
@@ -1050,7 +1078,7 @@ mod tests {
         let (snapshot, frame) = fixture();
         let mut registry = RefRegistry::with_limits(8, 8);
         let element_ref = registry
-            .issue(&snapshot, frame, Timestamp::new(1))
+            .issue(&snapshot, frame, target_key(), Timestamp::new(1))
             .expect("issue");
         let before = registry
             .last_validation(&element_ref.ref_id)
@@ -1081,7 +1109,7 @@ mod tests {
         let mut expiry_registry =
             RefRegistry::new(RefRegistryLimits::new(8, 8).with_default_ttl(Some(2)));
         let expiring = expiry_registry
-            .issue(&snapshot, frame.clone(), Timestamp::new(0))
+            .issue(&snapshot, frame.clone(), target_key(), Timestamp::new(0))
             .expect("issue");
         let expiry_error = expiry_registry
             .resolve(&expiring, &frame, &snapshot.provenance(), Timestamp::new(3))
@@ -1105,7 +1133,7 @@ mod tests {
         rerendered.result_hash = rerendered.snapshot_hash.clone();
         let mut rerender_registry = RefRegistry::with_limits(8, 8);
         let rerender_ref = rerender_registry
-            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .issue(&snapshot, frame.clone(), target_key(), Timestamp::new(1))
             .expect("issue");
         assert!(
             rerender_registry
@@ -1126,7 +1154,7 @@ mod tests {
 
         let mut navigation_registry = RefRegistry::with_limits(8, 8);
         let navigation_ref = navigation_registry
-            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .issue(&snapshot, frame.clone(), target_key(), Timestamp::new(1))
             .expect("issue");
         let mut navigated = snapshot.clone();
         navigated.navigation_generation = Generation::new(2);
@@ -1154,7 +1182,7 @@ mod tests {
         let (snapshot, frame) = fixture();
         let mut raw_registry = RefRegistry::with_limits(8, 8);
         let raw_ref = raw_registry
-            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .issue(&snapshot, frame.clone(), target_key(), Timestamp::new(1))
             .expect("issue");
         assert_eq!(
             raw_registry.invalidate_raw_evaluation(
@@ -1171,7 +1199,7 @@ mod tests {
 
         let mut frame_registry = RefRegistry::with_limits(8, 8);
         let frame_ref = frame_registry
-            .issue(&snapshot, frame, Timestamp::new(1))
+            .issue(&snapshot, frame, target_key(), Timestamp::new(1))
             .expect("issue");
         assert_eq!(
             frame_registry.invalidate_frame_replacement(
