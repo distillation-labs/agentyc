@@ -143,6 +143,29 @@ export class TaskSpace {
       transportOptions(options),
     );
     this.leaseEpoch = result?.lease_epoch ?? this.leaseEpoch;
+    if (this.record && result?.lifecycle !== undefined) {
+      this.record = { ...this.record, lifecycle: result.lifecycle };
+    }
+    return result;
+  }
+
+  async acknowledgeFence(options = {}) {
+    const leaseEpoch = requireLeaseEpoch(options.leaseEpoch ?? this.leaseEpoch);
+    const result = await this.client.request(
+      "space.acknowledge_fence",
+      {
+        space_id: this.id,
+        lease_epoch: leaseEpoch,
+        now: normalizeNow(options.now),
+        ttl: normalizeLeaseTtl(options.ttl),
+      },
+      transportOptions(options),
+    );
+    this.leaseEpoch =
+      result?.lease_epoch ?? result?.lease?.lease_epoch ?? this.leaseEpoch;
+    if (this.record && result?.lifecycle !== undefined) {
+      this.record = { ...this.record, lifecycle: result.lifecycle };
+    }
     return result;
   }
 
