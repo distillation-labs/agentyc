@@ -45,6 +45,8 @@ The current host-backed MCP contract groups operations into spaces, leases/contr
 
 The acknowledgement means the task space uses the existing shared Chrome profile; it is not a profile-isolation promise.
 
+`host_lease_acknowledge_fence` retries the current authority's pending takeover fence at the same lease epoch and renews its TTL. It still requires durable extension-fence acknowledgement and page-rebind proof; it cannot bypass either boundary.
+
 ## Result semantics
 
 Tool-operation failures are returned with MCP `isError=true` and structured error metadata (`code`, `retryable`, `guidance`, and `message`). Malformed requests, unknown methods/tools, invalid protocol state, and transport errors remain protocol/transport failures. A dispatched action with an uncertain outcome must be reconciled before retrying.
