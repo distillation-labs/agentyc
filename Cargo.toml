@@ -42,6 +42,7 @@ tempfile = "3"
 dirs = "5"
 async-trait = "0.1"
 tokio-stream = "0.1"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 md5 = "0.7"
 schemars = "1.0"
