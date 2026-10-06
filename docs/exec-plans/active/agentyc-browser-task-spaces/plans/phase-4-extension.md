@@ -38,7 +38,9 @@ Implement the browser-side half of the new product. The extension must work in t
 
 - **U4-1 — Decision:** target Chrome Web Store signing and updates. Production signing-key custody, Store listing/submission, and end-to-end update proof remain separate release work; the checked-in unpacked development identity is not a production distribution.
 - **U4-2 — Resolved:** snapshot reads on restricted URLs fail closed with `capability_unavailable` before content-bridge or debugger collection; no fallback is attempted.
-- **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focusing or closing the active unmanaged tab. Snapshot read returned `unknown_outcome` during debugger attachment; the prior navigation remains unknown and was not replayed. Side-panel, OOPIF, browser-restart, enterprise-policy, and production-distribution gates remain open.
+- **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focusing or closing the active unmanaged tab. Snapshot read returned `unknown_outcome`; the prior navigation remains unknown and was not replayed. The user performed a real side-panel gesture, but a read-only retry still returned `unknown_outcome`. Existing-profile snapshot/ref, OOPIF, browser-restart, and production-distribution gates remain open.
+- **Policy scope (2026-10-06):** managed-policy evidence is explicitly deferred by the user and is not a blocker for this Phase 4 scope.
+- **Disposable MCP/extension E2E (2026-10-06):** an isolated Chrome profile passed extension load, native-host connection, task-space/page creation, MCP snapshot read with a snapshot hash, and MCP close-action receipt with the page subsequently observed as `target_lost`. It produced no logical element refs and does not replace existing-profile snapshot/ref, OOPIF/restart, or store-release evidence; managed-policy evidence is deferred.
 
 ## Scope
 
