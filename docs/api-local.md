@@ -127,6 +127,8 @@ The SDK implements `page.goto()`, `page.click()`, `page.type()`, `page.fill()`, 
 
 Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` registers a local listener and performs one retained-event resume; the current local socket does not push a continuous event stream. For ongoing observation, use repeated `client.events(...)` reads or a bounded `waitFor(...)`. Callers must resync when the host reports a lagged or invalid cursor.
 
+Snapshot reads on restricted Chrome URLs fail closed with `capability_unavailable` before content-bridge or debugger collection; no fallback source is attempted.
+
 ## Batching
 
 Every request crosses the injected transport as a bounded batch. Callers can send several logical requests in one transport call:
