@@ -4,7 +4,7 @@
 
 The MCP package exposes only the host-backed logical task-space service. The legacy direct-CDP `BrowserServer`, its 61/76-tool profiles, the `mcp --legacy-cdp` mode, the `mcp --cdp-url` option, and the direct-CDP Streamable HTTP `serve` route have been removed. MCP runs over stdio through `agentyc mcp` (or `agentyc` with no subcommand); no MCP HTTP transport is currently shipped.
 
-The service is an adapter, not a state owner. In connected mode, `RemoteHostBrowserServer` forwards logical requests to the owner-only local host socket. The in-process `HostBrowserServer` is used by the deterministic offline seam and exposes 29 logical routes. The connected remote catalog declares 30 routes; 18 are supported by the current local protocol and the remaining routes fail closed with `capability_unavailable` before forwarding.
+The service is an adapter, not a state owner. In connected mode, `RemoteHostBrowserServer` forwards logical requests to the owner-only local host socket. The in-process `HostBrowserServer` is used by the deterministic offline seam and exposes 29 logical routes. The connected remote catalog declares 30 routes; 19 are supported by the current local protocol and the remaining 11 fail closed with `capability_unavailable` before forwarding.
 
 ## Identity, profile, and authorization
 
@@ -14,11 +14,13 @@ MCP operations use logical `space_id`, `page_id`, action, lease, and event ident
 
 MCP does not expose per-tab rename. Chrome's [`tabs.update`](https://developer.chrome.com/docs/extensions/reference/api/tabs#method-update) API has no title property; [`tabGroups.update`](https://developer.chrome.com/docs/extensions/reference/api/tabGroups#method-update) changes a visual group title, not an individual tab title. Page titles remain document-controlled.
 
+`host_lease_acknowledge_fence` is supported in connected mode. It retries only the current authority's pending takeover fence at its existing epoch, renews the lease TTL, and still requires durable extension-fence acknowledgement and page-rebind proof.
+
 ## Remote routes unavailable in the current local protocol
 
-The following tools are declared for the MCP contract but return a typed `capability_unavailable` result in connected mode: `host_space_describe`, `host_lease_takeover_with_control_ticket`, `host_lease_control_ticket`, `host_lease_acknowledge_return_control`, `host_lease_acknowledge_fence`, `host_page_bind`, `host_page_mark_lost`, `host_snapshot_put`, `host_snapshot_mark_dirty`, `host_action_enqueue`, `host_action_dispatch`, and `host_event_publish`.
+The following 11 tools are declared for the MCP contract but return a typed `capability_unavailable` result in connected mode: `host_space_describe`, `host_lease_takeover_with_control_ticket`, `host_lease_control_ticket`, `host_lease_acknowledge_return_control`, `host_page_bind`, `host_page_mark_lost`, `host_snapshot_put`, `host_snapshot_mark_dirty`, `host_action_enqueue`, `host_action_dispatch`, and `host_event_publish`.
 
-A declared route is not proof of live Chrome support. Live distribution evidence must exercise the stdio process, local host socket, Native Messaging bridge, extension, and headed Chrome. The static/offline tests do not establish that evidence. MCP is **not distribution-ready** until the unsupported-route decisions, live workflows, and Phase 8 release gates are closed.
+A limited existing-profile run on 2026-10-06 exercised MCP stdio, the owner-only host socket, Native Messaging, and an extension takeover/rebind; the managed page returned bound and an unrelated unmanaged tab remained active. The run did not complete the live workflow: `host_snapshot_read` returned `unknown_outcome` when debugger attachment could not be confirmed, and a prior navigation action remains unknown after reconciliation. No snapshot hash or logical ref was produced. The active unmanaged tab remained present with no observed focus theft; one unmanaged-tab close was counted without actor attribution. This is partial evidence, not release acceptance. Full snapshot/action workflows, side-panel/OOPIF/restart evidence, unsupported-route decisions, and Phase 8 release gates remain open, so MCP is **not distribution-ready**.
 
 ## Result and error boundary
 
