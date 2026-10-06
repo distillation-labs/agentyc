@@ -4,7 +4,7 @@ Agentyc's primary interface is the host-backed CLI and Node SDK. MCP is compatib
 
 ## CLI
 
-Create a task space only after disclosing that the existing Chrome profile is shared:
+Create a task space only after disclosing that spaces share state within the dedicated Chrome profile:
 
 ```bash
 agentyc space create --label Research --accept-shared-profile-disclosure
