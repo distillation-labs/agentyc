@@ -305,7 +305,7 @@
             "tests/mcp_protocol.rs",
             "docs/mcp-compatibility.md",
           ],
-        "notes": "These fixtures and measurements are historical Phase 2 evidence, not current MCP tool catalogs or support claims. Current MCP is host-backed logical stdio only; headed live Chrome and distribution readiness remain unverified.",
+        "notes": "These fixtures and measurements are historical Phase 2 evidence, not current MCP tool catalogs or support claims. Current MCP is host-backed logical stdio only; a later limited existing-profile run passed fence/rebind, but the full live workflows and distribution readiness remain unverified.",
       },
       {
         "id": "P2-T8",
@@ -1127,7 +1127,7 @@
       "No live Chrome, existing-profile, host/extension, MCP transport, or end-to-end browser integration is claimed.",
       "MCP remains compatibility-only; its current surface is host-backed logical stdio, not the historical direct-CDP MCP profiles.",
       "Current MCP offline catalog has 29 routes; the connected remote catalog declares 30, with 12 returning capability_unavailable.",
-      "Headed live Chrome has not yet been run through MCP; MCP is not distribution-ready and the Phase 8 release gate remains open.",
+      "A later limited existing-profile MCP run passed stdio and extension fence/rebind; full headed workflows and distribution readiness remain unverified, and the Phase 8 release gate remains open.",
       "Historical Phase 2 MCP mappings and profile fixtures do not establish current remote support or release readiness.",
       "Page close CLI parity and several direct/MCP mappings remain explicit integration gaps.",
       "Production distribution, OOPIF/session graphs, deployed tokenizers, rollback, and later-phase performance remain deferred.",
