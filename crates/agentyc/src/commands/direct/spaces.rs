@@ -30,6 +30,7 @@ pub(super) fn run(context: &DirectContext, command: SpaceCommand) -> DirectResul
         SpaceCommand::Claim(args) => claim(context, args),
         SpaceCommand::Renew(args) => renew(context, args),
         SpaceCommand::Takeover(args) => takeover(context, args),
+        SpaceCommand::AcknowledgeFence(args) => acknowledge_fence(context, args),
         SpaceCommand::Reclaim(args) => reclaim(context, args),
         SpaceCommand::Return(args) => return_control(context, args),
         SpaceCommand::Pause(args) => pause(context, args),
@@ -197,6 +198,44 @@ fn takeover(context: &DirectContext, args: LeaseArgs) -> DirectResult<Value> {
         "space.takeover",
         BTreeMap::from([
             ("space_id".to_owned(), space_id.to_string()),
+            ("now".to_owned(), now.get().to_string()),
+            ("ttl".to_owned(), args.ttl.to_string()),
+        ]),
+    )?;
+    Ok(json!({
+        "space_id": remote_string(&response, "space_id")?,
+        "lease_epoch": remote_field(&response, "lease_epoch")?,
+        "fence_acknowledged": remote_field(&response, "fence_acknowledged")?,
+        "lifecycle": remote_string(&response, "lifecycle")?,
+    }))
+}
+
+fn acknowledge_fence(context: &DirectContext, args: LeaseRenewArgs) -> DirectResult<Value> {
+    let space_id = parse_space(&args.space_id)?;
+    let now = timestamp(args.now);
+    if let Some((broker, authority)) = context.local() {
+        let result = broker
+            .acknowledge_fence_with_ttl(
+                &space_id,
+                authority,
+                lease_epoch(args.lease_epoch),
+                now,
+                args.ttl,
+            )
+            .map_err(host_error)?;
+        return Ok(json!({
+            "space_id": result.space_id,
+            "lease_epoch": result.lease_epoch,
+            "fence_acknowledged": result.fence_acknowledged,
+            "lifecycle": result.lifecycle,
+        }));
+    }
+
+    let response = context.request(
+        "space.acknowledge_fence",
+        BTreeMap::from([
+            ("space_id".to_owned(), space_id.to_string()),
+            ("lease_epoch".to_owned(), args.lease_epoch.to_string()),
             ("now".to_owned(), now.get().to_string()),
             ("ttl".to_owned(), args.ttl.to_string()),
         ]),
