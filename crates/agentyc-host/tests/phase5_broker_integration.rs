@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use agentyc_core::{
     ActionId, ActionOperation, ActionRequest, ActionStatus, ClientMetadata, ConnectionNonce,
-    ContentHash, ErrorCode, FrameId, FrameVersion, HelloEnvelope, IdempotencyKey, LeaseEpoch,
-    PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId, RequestId, SpaceId, Timestamp,
+    ContentHash, ElementKey, ElementKind, ErrorCode, FrameId, FrameVersion, HelloEnvelope,
+    IdempotencyKey, LeaseEpoch, PROTOCOL_VERSION, PageId, PrincipalId, ProfileBindingId, RequestId,
+    SnapshotBody, SnapshotDocument, SnapshotElement, SpaceId, Timestamp,
 };
 use agentyc_host::{
     ActionabilityEvidence, AuthorityTicket, Broker, FakeBridge, Ledger, ObservationScope,
@@ -146,6 +147,24 @@ fn production_ref_resolution_is_required_and_mutations_invalidate_the_ref() {
     );
     let frame_id = FrameId::from_suffix("main").expect("frame");
     let mut snapshot = empty_snapshot(space.space_id.clone(), page_id.clone());
+    let element_key = ElementKey::from_suffix("target").expect("element key");
+    let document = SnapshotDocument::new(
+        snapshot.snapshot_version,
+        vec![SnapshotElement {
+            key: element_key.clone(),
+            parent: None,
+            kind: ElementKind::Element,
+            text: None,
+            attributes: BTreeMap::new(),
+            order: 0,
+        }],
+    )
+    .expect("snapshot document");
+    snapshot.snapshot_hash = document.snapshot_hash.clone();
+    snapshot.result_hash = document.snapshot_hash;
+    snapshot.delta_or_elements = SnapshotBody::Elements {
+        elements: document.elements,
+    };
     snapshot
         .frame_versions
         .insert(frame_id.clone(), FrameVersion::new(1));
@@ -162,6 +181,7 @@ fn production_ref_resolution_is_required_and_mutations_invalidate_the_ref() {
             &space.space_id,
             &page_id,
             frame_id.clone(),
+            element_key,
             &authority,
             lease.lease.lease_epoch,
             Timestamp::new(2),
