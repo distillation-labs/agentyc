@@ -6,7 +6,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use agentyc_core::{
     ClientId, ClientMetadata, ConnectionNonce, HelloEnvelope, PROTOCOL_VERSION, PrincipalId,
-    ProfileBindingId,
 };
 use agentyc_host::{Broker, FakeBridge, LocalSocketClient, configured_socket_path};
 use anyhow::{Result, anyhow};
@@ -19,7 +18,7 @@ mod commands;
 use commands::direct::{
     ActionCommand as DirectActionCommand, DirectCommand, DirectCommandError, DirectOptions,
     EventsArgs, ExtensionCommand, HostCommand, PageCommand as DirectPageCommand, SnapshotArgs,
-    SpaceCommand, WaitArgs,
+    SpaceCommand, WaitArgs, resolve_profile_binding_id,
 };
 
 const SKILL_MD: &str = include_str!("../../../SKILL.md");
@@ -185,10 +184,25 @@ fn run_direct(command: DirectCommand, options: DirectOptions) -> Result<()> {
 
 async fn run_host_mcp(options: &DirectOptions) -> Result<()> {
     let state_dir = host_state_dir(options.state_dir.as_deref())?;
+    let hello = host_mcp_hello(options)?;
+
+    if options.offline {
+        let broker = Broker::open(&state_dir, FakeBridge::new())?;
+        agentyc_mcp::run_host_stdio(broker, hello).await
+    } else {
+        let socket_path = configured_socket_path(&state_dir);
+        let client = LocalSocketClient::connect(socket_path, hello)?;
+        agentyc_mcp::run_remote_host_stdio(client).await
+    }
+}
+
+fn host_mcp_hello(options: &DirectOptions) -> Result<HelloEnvelope> {
     let principal = host_principal(options.principal.as_deref())?;
+    let profile_binding_id =
+        resolve_profile_binding_id(options.profile_binding_id.as_deref(), options.offline)?;
     let connection_nonce = ConnectionNonce::from_suffix(format!("mcp-{}", Uuid::new_v4().simple()))
         .map_err(|error| anyhow!(error.to_string()))?;
-    let hello = HelloEnvelope {
+    Ok(HelloEnvelope {
         protocol: PROTOCOL_VERSION,
         supported_protocols: vec![PROTOCOL_VERSION],
         principal_id: principal,
@@ -200,24 +214,33 @@ async fn run_host_mcp(options: &DirectOptions) -> Result<()> {
             client_name: Some("agentyc-host-mcp".to_owned()),
             client_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             connection_nonce: Some(connection_nonce),
-            profile_binding_id: if options.offline {
-                Some(
-                    ProfileBindingId::from_suffix("cli-offline")
-                        .map_err(|error| anyhow!(error.to_string()))?,
-                )
-            } else {
-                None
-            },
+            profile_binding_id,
         }),
-    };
+    })
+}
 
-    if options.offline {
-        let broker = Broker::open(&state_dir, FakeBridge::new())?;
-        agentyc_mcp::run_host_stdio(broker, hello).await
-    } else {
-        let socket_path = configured_socket_path(&state_dir);
-        let client = LocalSocketClient::connect(socket_path, hello)?;
-        agentyc_mcp::run_remote_host_stdio(client).await
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_mcp_hello_carries_explicit_profile_binding() {
+        let hello = host_mcp_hello(&DirectOptions {
+            principal: Some("mcp-test".to_owned()),
+            profile_binding_id: Some("enrolled".to_owned()),
+            ..DirectOptions::default()
+        })
+        .expect("MCP hello");
+
+        assert_eq!(
+            hello
+                .client_metadata
+                .expect("client metadata")
+                .profile_binding_id
+                .expect("profile binding")
+                .as_str(),
+            "profile_enrolled"
+        );
     }
 }
 
