@@ -734,6 +734,11 @@ impl ProtocolServer {
                     .map_err(|error| {
                         agentyc_core::CoreError::invalid_argument(error.to_string())
                     })?;
+                let element_key = required(&request.params, "element_key")?
+                    .parse::<agentyc_core::ElementKey>()
+                    .map_err(|error| {
+                        agentyc_core::CoreError::invalid_argument(error.to_string())
+                    })?;
                 let lease_epoch =
                     agentyc_core::LeaseEpoch::new(required_u64(&request.params, "lease_epoch")?);
                 let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
@@ -741,6 +746,7 @@ impl ProtocolServer {
                     &space_id,
                     &page_id,
                     frame_id,
+                    element_key,
                     authority,
                     lease_epoch,
                     now,
