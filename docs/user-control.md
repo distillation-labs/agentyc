@@ -1,6 +1,6 @@
 # User control and task-space transitions
 
-The host broker owns task-space authority. The MV3 side panel is a user confirmation surface; it cannot grant authority from payload booleans or browser tab/group IDs.
+The host broker owns task-space authority. The extension has no task-space UI; users interact through Agentyc's supported CLI/MCP interfaces. Clicking the extension icon does nothing.
 
 ## Controls
 
@@ -13,13 +13,11 @@ The host broker owns task-space authority. The MV3 side panel is a user confirma
 | Finish    | `space.finish`                       | Close only individually proven agent-owned pages, then apply retention.                                                          |
 | Release   | `space.release`                      | Release only after cleanup proof and retention policy checks; never close a mixed/user group.                                    |
 
-Every sensitive control uses a host-issued, expiring, single-use intent ticket bound to the profile, logical space, action, lease epoch, and side-panel session. A stale, replayed, mis-scoped, or expired ticket fails closed.
+Every sensitive control that requires confirmation uses a host-issued, expiring, single-use intent ticket bound to the profile, logical space, action, and lease epoch. A stale, replayed, mis-scoped, or expired ticket fails closed.
 
-## Gesture boundary
+## Extension boundary
 
-`chrome.sidePanel.open()` is user-action gated by Chrome. Agents and Native Messaging requests must not open the panel or steal focus. The extension may configure `openPanelOnActionClick`; actual opening remains a toolbar, keyboard, context-menu, or extension-page gesture.
-
-The panel displays structured logical space/page labels and lifecycle state. It does not display raw tab IDs, target IDs, debugger session IDs, or group IDs as authority.
+The extension is a background-only tab-creation bridge. It has no popup, side panel, or user-facing controls and does not open UI, steal focus, navigate, observe, snapshot, or act on pages.
 
 ## Sensitive browser boundaries
 
