@@ -9,11 +9,11 @@ use std::{
 
 use agentyc_core::{
     ActionId, ActionOperation, ActionRequest, ActionStatus, BrokerEpoch, Capability, ClientId,
-    ClientMetadata, ConnectionNonce, ContentHash, CoreError, ErrorCode, EventKind, EventScope,
-    FrameId, FrameVersion, Generation, HelloEnvelope, IdempotencyKey, LeaseEpoch,
-    MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PROTOCOL_VERSION, PageId,
-    PrincipalId, ProfileBindingId, RequestId, ResumeResult, RetentionPolicy, SnapshotEnvelope,
-    SpaceId, Timestamp, UnknownReason,
+    ClientMetadata, ConnectionNonce, ContentHash, CoreError, ElementKey, ElementKind, ErrorCode,
+    EventKind, EventScope, FrameId, FrameVersion, Generation, HelloEnvelope, IdempotencyKey,
+    LeaseEpoch, MAX_ARTIFACT_CHUNK_BYTES, MAX_CONTROL_FRAME_PAYLOAD_BYTES, PROTOCOL_VERSION,
+    PageId, PrincipalId, ProfileBindingId, RequestId, ResumeResult, RetentionPolicy, SnapshotBody,
+    SnapshotDocument, SnapshotElement, SnapshotEnvelope, SpaceId, Timestamp, UnknownReason,
 };
 use agentyc_host::{
     AuthorityTicket, Bridge, BridgeDispatchResult, BridgeReconcileResult, Broker, EventQuery,
@@ -2242,16 +2242,39 @@ fn refs_require_the_requested_frame_in_the_snapshot_vector() {
     let frame = FrameId::from_suffix("missing-frame").expect("frame");
     let mut registry = RefRegistry::default();
     let mut snapshot = empty_snapshot(space, page);
+    let element_key = ElementKey::from_suffix("target").expect("element key");
+    let document = SnapshotDocument::new(
+        snapshot.snapshot_version,
+        vec![SnapshotElement {
+            key: element_key.clone(),
+            parent: None,
+            kind: ElementKind::Element,
+            text: None,
+            attributes: BTreeMap::new(),
+            order: 0,
+        }],
+    )
+    .expect("snapshot document");
+    snapshot.snapshot_hash = document.snapshot_hash.clone();
+    snapshot.result_hash = document.snapshot_hash;
+    snapshot.delta_or_elements = SnapshotBody::Elements {
+        elements: document.elements,
+    };
     assert!(
         registry
-            .issue(&snapshot, frame.clone(), Timestamp::new(1))
+            .issue(
+                &snapshot,
+                frame.clone(),
+                element_key.clone(),
+                Timestamp::new(1)
+            )
             .is_err()
     );
     snapshot
         .frame_versions
         .insert(frame.clone(), FrameVersion::new(1));
     registry
-        .issue(&snapshot, frame, Timestamp::new(1))
+        .issue(&snapshot, frame, element_key, Timestamp::new(1))
         .expect("frame in vector");
 }
 
