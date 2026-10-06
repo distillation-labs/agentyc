@@ -25,6 +25,15 @@ use crate::host_adapter::{HostAdapter, error_result};
 
 const DEFAULT_LEASE_TTL: u64 = 60_000;
 
+fn current_timestamp_millis() -> u64 {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+        .min(u128::from(u64::MAX));
+    millis as u64
+}
+
 /// Host-backed MCP service exposing only logical task-space operations.
 #[derive(Clone)]
 pub struct HostBrowserServer {
@@ -136,6 +145,17 @@ struct LeaseTakeoverParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LeaseFenceParams {
+    space_id: String,
+    lease_epoch: u64,
+    #[serde(default)]
+    now: Option<u64>,
+    #[serde(default)]
+    ttl: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct LeaseReturnControlParams {
     space_id: String,
     lease_epoch: u64,
 }
@@ -571,7 +591,7 @@ impl HostBrowserServer {
     )]
     async fn host_lease_acknowledge_return_control(
         &self,
-        p: rmcp::handler::server::wrapper::Parameters<LeaseFenceParams>,
+        p: rmcp::handler::server::wrapper::Parameters<LeaseReturnControlParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let space_id = match HostAdapter::logical_space_id(&p.0.space_id) {
             Ok(space_id) => space_id,
@@ -595,9 +615,12 @@ impl HostBrowserServer {
             Ok(space_id) => space_id,
             Err(error) => return Ok(error_result(error, None)),
         };
-        Ok(self
-            .adapter
-            .acknowledge_fence(&space_id, LeaseEpoch::new(p.0.lease_epoch)))
+        Ok(self.adapter.acknowledge_fence(
+            &space_id,
+            LeaseEpoch::new(p.0.lease_epoch),
+            Timestamp::new(p.0.now.unwrap_or_else(current_timestamp_millis)),
+            p.0.ttl.unwrap_or(DEFAULT_LEASE_TTL),
+        ))
     }
 
     /// Create a planned logical page inside a leased space.
