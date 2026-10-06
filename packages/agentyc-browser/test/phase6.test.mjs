@@ -580,7 +580,13 @@ test("snapshot, wait, and action fields reach the host as string parameters", as
     after: { broker_epoch: 4, sequence: 7 },
     timeoutMs: 500,
   });
-  await page.click({ elementRef: { ref_id: "ref_1" }, x: 1 }, { now: 11 });
+  await page.click(
+    {
+      elementRef: { ref_id: "ref_1", element_key: "element_target" },
+      x: 1,
+    },
+    { now: 11 },
+  );
 
   const [snapshot, wait, action] = fixture.requests();
   assert.equal(snapshot.method, "snapshot.read");
@@ -605,7 +611,10 @@ test("snapshot, wait, and action fields reach the host as string parameters", as
   assert.equal(action.params.operation, "click");
   const payload = JSON.parse(action.params.payload);
   assert.ok(Object.values(payload).every((value) => typeof value === "string"));
-  assert.deepEqual(JSON.parse(payload.element_ref), { ref_id: "ref_1" });
+  assert.deepEqual(JSON.parse(payload.element_ref), {
+    ref_id: "ref_1",
+    element_key: "element_target",
+  });
   assert.equal(payload.x, "1");
 });
 
@@ -702,6 +711,41 @@ async function pageFixture() {
   return { transport, page: space.page("page_helpers"), space };
 }
 
+test("page issues refs for exact snapshot element keys", async () => {
+  const { transport, page } = await pageFixture();
+  const elementRef = {
+    ref_id: "ref_1",
+    element_key: "element_submit",
+    space_id: "space_helpers",
+    page_id: "page_helpers",
+    frame_id: "frame_child",
+    snapshot_version: 1,
+    document_generation: 1,
+    navigation_generation: 1,
+    refs_epoch: 1,
+  };
+  transport.handler = (request) => ({
+    responses: request.requests.map((entry) => ({
+      request_id: entry.request_id,
+      ok: true,
+      result: { element_ref: elementRef },
+    })),
+  });
+
+  assert.deepEqual(
+    await page.issueRef("element_submit", { frameId: "frame_child", now: 11 }),
+    elementRef,
+  );
+  assert.deepEqual(transport.calls[0].requests[0].params, {
+    space_id: "space_helpers",
+    page_id: "page_helpers",
+    frame_id: "frame_child",
+    element_key: "element_submit",
+    lease_epoch: 2,
+    now: 11,
+  });
+});
+
 function lastParams(transport) {
   return transport.calls.at(-1).requests[0].params;
 }
@@ -725,25 +769,51 @@ test("page helpers map only to registered canonical action operations", () => {
 
 test("page helpers build canonical action.execute requests", async () => {
   const { transport, page } = await pageFixture();
+  const target = (selector) => ({
+    elementRef: {
+      ref_id: "ref_1",
+      element_key: "element_target",
+      space_id: "space_helpers",
+      page_id: "page_helpers",
+      frame_id: "frame_main",
+      snapshot_version: 1,
+      document_generation: 1,
+      navigation_generation: 1,
+      refs_epoch: 1,
+    },
+    selector,
+  });
   const cases = [
     [
       () => page.goto("https://example.test/"),
       "navigate",
       { url: "https://example.test/" },
     ],
-    [() => page.click("#go"), "click", { selector: "#go" }],
     [
-      () => page.click({ elementRef: { ref_id: "ref_1" }, x: 1, y: 2.5 }),
+      () => page.click(target("#go")),
       "click",
-      { element_ref: '{"ref_id":"ref_1"}', x: "1", y: "2.5" },
+      { element_ref: JSON.stringify(target("#go").elementRef), selector: "#go" },
     ],
     [
-      () => page.type("#name", "agent"),
-      "input",
-      { selector: "#name", text: "agent" },
+      () => page.click({ ...target(), x: 1, y: 2.5 }),
+      "click",
+      { element_ref: JSON.stringify(target().elementRef), x: "1", y: "2.5" },
     ],
-    [() => page.fill("#name", ""), "input", { selector: "#name", text: "" }],
-    [() => page.fill(null, "focused"), "input", { text: "focused" }],
+    [
+      () => page.type(target("#name"), "agent"),
+      "input",
+      { element_ref: JSON.stringify(target("#name").elementRef), selector: "#name", text: "agent" },
+    ],
+    [
+      () => page.fill(target("#name"), ""),
+      "input",
+      { element_ref: JSON.stringify(target("#name").elementRef), selector: "#name", text: "" },
+    ],
+    [
+      () => page.fill(target(), "focused"),
+      "input",
+      { element_ref: JSON.stringify(target().elementRef), text: "focused" },
+    ],
     [
       () => page.scroll({ deltaY: 400, x: 1, y: 2 }),
       "scroll",
@@ -799,8 +869,16 @@ test("page helpers reject invalid input before creating a page or dispatching", 
     () => lazy.goto("https://example.test/" + "a".repeat(5_000)),
     () => lazy.goto(42),
     () => lazy.click({ nested: { not: "typed" } }),
-    () => lazy.click({ x: Number.NaN }),
-    () => lazy.type("#a", 5),
+    () =>
+      lazy.click({
+        elementRef: { ref_id: "ref_1", element_key: "element_target" },
+        x: Number.NaN,
+      }),
+    () =>
+      lazy.type(
+        { elementRef: { ref_id: "ref_1", element_key: "element_target" } },
+        5,
+      ),
     () => lazy.fill("#a"),
 
     () => lazy.evaluate(""),
@@ -849,7 +927,14 @@ test("sensitive action helpers fail closed before resolving a lazy page", async 
   const operations = ["evaluate", "storage_write", "cookie_write", "upload"];
   const invokes = [
     () => page.evaluate("document.title"),
-    () => page.action("click", { sensitive_boundary: "payment" }),
+    () =>
+      page.action("click", {
+        element_ref: JSON.stringify({
+          ref_id: "ref_1",
+          element_key: "element_target",
+        }),
+        sensitive_boundary: "payment",
+      }),
     ...operations
       .slice(1)
       .map((operation) => () => page.action(operation, { value: "x" })),
@@ -894,7 +979,12 @@ test("page labels resolve existing records and do not create duplicates", async 
 
   const [snapshot] = await Promise.all([
     page.snapshot(),
-    page.click({ elementRef: { ref_id: "ref_existing" } }),
+    page.click({
+      elementRef: {
+        ref_id: "ref_existing",
+        element_key: "element_existing",
+      },
+    }),
   ]);
   assert.deepEqual(snapshot, { snapshot: { ok: true } });
   assert.equal(page.id, "page_existing");
