@@ -2,11 +2,11 @@
 
 ## Canonical Product Path
 
-The default product path uses the user's already-running, enrolled Chrome
-profile. Its public abstraction is a logical task space containing logical
-pages. It does not launch Chrome, discover or accept a CDP URL, or treat a
-Chrome tab as the task-space identity. `agentyc` and `agentyc mcp` use this
-host-backed path by default.
+The default product path uses a dedicated Chrome profile launched by the user
+with a loopback debugging endpoint. Its public abstraction is a logical task
+space containing logical pages. Agentyc does not launch Chrome, create or
+switch profiles, or accept a user-supplied CDP URL. `agentyc` and `agentyc
+mcp` use this host-backed path by default.
 
 ```text
 CLI / MCP client
@@ -15,17 +15,22 @@ CLI / MCP client
       v
 agentyc host broker
   |-- durable ledger, leases, fencing, scheduling, events, snapshots/refs
-  |-- local IPC and Chrome Native Messaging bridge
-      |
-      | Chrome-mediated Native Messaging
+  |-- host-owned CDP bridge -> loopback 127.0.0.1:9222
+  `-- Native Messaging request: tab.create only
+      |                       |
+      |                       v
+      |                MV3 extension worker
+      |                  `-- chrome.tabs.create only
       v
-MV3 extension service worker
-  |-- Chrome tabs, tab groups, debugger and side-panel APIs
-  |-- bounded observations and execution of host-authorized operations
-      |
-      v
-user-approved pages in existing Chrome
+user-launched dedicated Chrome profile
 ```
+
+The user starts Chrome with its loopback debugging endpoint enabled; Agentyc
+does not launch Chrome or inspect the user's everyday profile. The extension
+keeps the Native Messaging identity handshake and creates inactive bootstrap
+tabs only. The host owns navigation, snapshots, actions, waits, and page
+lifecycle through CDP. If Native Messaging disconnects, existing CDP-bound
+pages remain host-controlled; creating another tab waits for reconnection.
 
 The MCP service is an adapter over host operations, not an independent owner
 of task-space state. The default local MCP client connects to the owner-only
@@ -39,26 +44,24 @@ connection.
 - **Host:** owns logical identity, durable records, principal admission,
   leases/epochs, action receipts and ordering, policy, fencing, reconciliation,
   event watermarks, snapshot/ref provenance, and cleanup authorization.
-- **Extension:** owns calls to Chrome APIs and browser observations. It maps
-  logical `space_id`/`page_id` identities to ephemeral Chrome objects and
-  executes only host-authorized, fenced operations. It is not authoritative
-  for leases or durable action state.
+- **Extension:** owns only the Native Messaging handshake and host-requested
+  inactive tab creation. It does not enumerate, observe, group, navigate,
+  snapshot, or act on browser pages.
+- **Host CDP bridge:** owns browser discovery on loopback port 9222 and maps
+  logical `space_id`/`page_id` identities to private, in-memory CDP handles.
 - **Clients and MCP:** use logical task-space and page identities. MCP
   compatibility tools do not create a parallel state owner.
 
 `space_id` and `page_id` are public opaque identities. Chrome tab, window,
-group, debugger target/session, frame runtime, extension worker, and process IDs
-are private ephemeral implementation details or bounded reconciliation hints.
+debugger target/session, frame runtime, extension worker, and process IDs are
+private ephemeral implementation details or bounded reconciliation hints.
 They are not public handles, authorization, or proof that a logical page is
 unchanged. Chrome-generated IDs must not appear in primary client results.
 
-A Chrome profile is shared browser state, not an isolation boundary between
-spaces. Cookies, origin storage, history, permissions, installed extensions,
-and enterprise policy may be shared according to Chrome. Logical ownership
-does not isolate those resources. Tab groups are presentation only; their
-membership, title, color, or movement does not grant ownership or authorize
-cleanup. Existing/user tabs remain unmanaged unless explicitly claimed under
-the host's ownership rules.
+Spaces share browser state within the dedicated profile; logical spaces are
+not isolation boundaries from one another. The dedicated profile is separate
+from the user's everyday profile. Existing/user tabs remain unmanaged unless
+explicitly claimed under the host's ownership rules.
 
 ### Runtime and Recovery
 
@@ -67,13 +70,14 @@ origin/extension identity, enrolled profile binding, protocol version, nonce,
 epochs, and schema checks. Agent/MCP clients use a distinct owner-only local
 protocol and do not open Chrome Native Messaging or Chrome APIs directly.
 
-The host ledger is durable and authoritative. Active connection authority is
-process-local and is not persisted. On restart, the host advances its broker
-epoch, resets connection/event sequence context, marks interrupted operations
-for reconciliation, and requires clients/extension to reconnect. A dispatched
-mutation with an uncertain result is not blindly replayed. Browser-session or
-profile changes require reconciliation; ambiguous pages remain paused or
-unmanaged rather than being silently rebound or closed.
+The host ledger is durable and authoritative. Active connection authority and
+CDP target/session mappings are process-local. On restart, the host advances
+its broker epoch, resets connection/event sequence context, marks interrupted
+operations for reconciliation, and requires clients to reconnect. The
+extension is needed again only when a new tab must be created. A dispatched
+mutation with an uncertain result is not blindly replayed. Restart recovery
+of retained CDP page bindings is not yet proven; ambiguous pages remain
+unavailable rather than being silently rebound or closed.
 
 The state directory defaults to `${AGENTYC_STATE_DIR:-~/.agentyc/state}` and
 contains `ledger.json`, an exclusive `broker.lock` while the broker is open,
@@ -104,9 +108,9 @@ The root `Cargo.toml` is the workspace source of truth. The current split is:
 
 Standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI
 paths were removed. The Node SDK at `packages/agentyc-browser` remains; this is
-not the removed Rust `agentyc-browser` crate. The extension's `chrome.debugger`
-backend also remains. Internal CDP test or installation harnesses are not CLI
-interfaces.
+not the removed Rust `agentyc-browser` crate. The host uses CDP internally;
+the extension is only a tab-creation bridge. Internal CDP test or installation
+harnesses are not CLI interfaces.
 
 Tracing writes to stderr; stdout remains available for MCP framing or the
 structured JSON emitted by direct commands.
