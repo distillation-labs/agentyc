@@ -15,6 +15,13 @@ import {
   isAgentycError,
 } from "../src/index.mjs";
 
+const boundElementRefPayload = {
+  element_ref: JSON.stringify({
+    ref_id: "ref_submit",
+    element_key: "element_submit",
+  }),
+};
+
 class FakeTransport {
   constructor() {
     this.calls = [];
@@ -95,7 +102,12 @@ test("offline skill example completes a task-space read-act flow through the SDK
       page: { page_id: "page_main", space_id: "space_demo", label: "main" },
     },
     "snapshot.read": {
-      refs: { submit: "ref_button" },
+      refs: {
+        submit: {
+          ref_id: "ref_button",
+          element_key: "element_submit",
+        },
+      },
       snapshot_hash: "demo",
     },
     "action.execute": { action_id: "action_demo", status: "succeeded" },
@@ -118,7 +130,10 @@ test("offline skill example completes a task-space read-act flow through the SDK
   await space.claim();
   const page = await space.newPage("main");
   const snapshot = await page.snapshot();
-  const receipt = await page.action("click", { ref: snapshot.refs.submit });
+  const receipt = await page.action("click", {
+    ...boundElementRefPayload,
+    element_ref: JSON.stringify(snapshot.refs.submit),
+  });
   await client.close();
 
   assert.deepEqual(methods, [
@@ -210,7 +225,10 @@ test("raw and batched requests cannot bypass sensitive SDK action guards", async
     () =>
       client.request("action.execute", {
         operation: "click",
-        payload: { sensitive_boundary: "payment" },
+        payload: {
+          ...boundElementRefPayload,
+          sensitive_boundary: "payment",
+        },
       }),
 
     () =>
@@ -257,7 +275,7 @@ test("read requests reconnect once, while side-effect loss becomes unknown", asy
     () =>
       client.request(
         "action.execute",
-        { operation: "click" },
+        { operation: "click", payload: boundElementRefPayload },
         { mayHaveSideEffects: true },
       ),
     (error) =>
@@ -303,7 +321,7 @@ test("wire errors map to typed extension and reconciliation errors", async () =>
     () =>
       client.request(
         "action.execute",
-        { operation: "click" },
+        { operation: "click", payload: boundElementRefPayload },
         { mayHaveSideEffects: true },
       ),
     (error) =>
@@ -382,7 +400,11 @@ test("batch failures preserve successful results and logical failure identity", 
         { method: "space.list" },
         {
           method: "action.execute",
-          params: { action_id: "action_demo", operation: "click" },
+          params: {
+            action_id: "action_demo",
+            operation: "click",
+            payload: boundElementRefPayload,
+          },
         },
       ]),
     (error) => {
@@ -428,7 +450,9 @@ test("central side-effect classification never reconnects lifecycle or page muta
       () =>
         client.request(
           method,
-          method === "action.execute" ? { operation: "click" } : {},
+          method === "action.execute"
+            ? { operation: "click", payload: boundElementRefPayload }
+            : {},
         ),
       (error) => error instanceof UnknownOutcomeError,
       method,
@@ -446,6 +470,7 @@ test("unknown outcomes retain request and action identity", async () => {
       client.request("action.execute", {
         action_id: "action_lost",
         operation: "click",
+        payload: boundElementRefPayload,
       }),
     (error) => {
       assert.ok(error instanceof UnknownOutcomeError);
