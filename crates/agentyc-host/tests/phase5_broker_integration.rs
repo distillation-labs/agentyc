@@ -148,16 +148,27 @@ fn production_ref_resolution_is_required_and_mutations_invalidate_the_ref() {
     let frame_id = FrameId::from_suffix("main").expect("frame");
     let mut snapshot = empty_snapshot(space.space_id.clone(), page_id.clone());
     let element_key = ElementKey::from_suffix("target").expect("element key");
+    let decoy_key = ElementKey::from_suffix("decoy").expect("element key");
     let document = SnapshotDocument::new(
         snapshot.snapshot_version,
-        vec![SnapshotElement {
-            key: element_key.clone(),
-            parent: None,
-            kind: ElementKind::Element,
-            text: None,
-            attributes: BTreeMap::new(),
-            order: 0,
-        }],
+        vec![
+            SnapshotElement {
+                key: element_key.clone(),
+                parent: None,
+                kind: ElementKind::Element,
+                text: None,
+                attributes: BTreeMap::new(),
+                order: 0,
+            },
+            SnapshotElement {
+                key: decoy_key.clone(),
+                parent: None,
+                kind: ElementKind::Element,
+                text: None,
+                attributes: BTreeMap::new(),
+                order: 1,
+            },
+        ],
     )
     .expect("snapshot document");
     snapshot.snapshot_hash = document.snapshot_hash.clone();
@@ -214,6 +225,33 @@ fn production_ref_resolution_is_required_and_mutations_invalidate_the_ref() {
         ),
         ("frame_scope".to_owned(), frame_id.to_string()),
     ]);
+
+    let mut tampered_ref = element_ref.clone();
+    tampered_ref.element_key = decoy_key;
+    let mut tampered_payload = payload.clone();
+    tampered_payload.insert(
+        "element_ref".to_owned(),
+        serde_json::to_string(&tampered_ref).expect("tampered ref json"),
+    );
+    let tampered = action_request(
+        "tampered-ref",
+        space.space_id.clone(),
+        page_id.clone(),
+        lease.lease.lease_epoch,
+        tampered_payload,
+    );
+    let error = broker
+        .execute_action(tampered, &authority, Timestamp::new(3))
+        .expect_err("an issued ref cannot be retargeted to another snapshot element");
+    assert!(matches!(
+        error,
+        agentyc_host::HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::StaleRef,
+            ..
+        })
+    ));
+    assert_eq!(bridge.dispatch_count(), 0);
+
     let request = action_request(
         "valid-ref",
         space.space_id.clone(),
@@ -222,7 +260,7 @@ fn production_ref_resolution_is_required_and_mutations_invalidate_the_ref() {
         payload.clone(),
     );
     let result = broker
-        .execute_action(request, &authority, Timestamp::new(3))
+        .execute_action(request, &authority, Timestamp::new(4))
         .expect("proven action");
     assert_eq!(result.receipt.status, ActionStatus::Succeeded);
     assert_eq!(bridge.dispatch_count(), 1);
@@ -235,7 +273,7 @@ fn production_ref_resolution_is_required_and_mutations_invalidate_the_ref() {
         payload,
     );
     let error = broker
-        .execute_action(stale, &authority, Timestamp::new(4))
+        .execute_action(stale, &authority, Timestamp::new(5))
         .expect_err("mutation must invalidate the old ref");
     assert!(matches!(
         error,
