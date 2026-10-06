@@ -3979,6 +3979,14 @@ impl crate::cdp::TabCreationTransport for NativeMessagingBridge {
             ))
         }
     }
+
+    fn extension_epochs(&self) -> Option<ExtensionEpochs> {
+        Bridge::extension_epochs(self)
+    }
+
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        Bridge::bridge_status(self)
+    }
 }
 
 #[cfg(test)]
