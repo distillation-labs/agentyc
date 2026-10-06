@@ -8,11 +8,11 @@ The service is an adapter, not a state owner. In connected mode, `RemoteHostBrow
 
 ## Identity, profile, and authorization
 
-MCP operations use logical `space_id`, `page_id`, action, lease, and event identities. Chrome tab, target, debugger, session, and frame identifiers are not accepted as authority. Host authorization, lease fencing, cleanup ownership, extension capability checks, and action reconciliation remain canonical.
+MCP operations use logical `space_id`, `page_id`, action, lease, and event identities. Chrome tab, target, debugger, session, and frame identifiers are not accepted as authority. The host owns browser control through its loopback CDP connection; the extension is invoked only to create tabs.
 
-`host_space_create` requires `profile_scope="shared_existing_profile"`, `shared_state_notice="shared_profile_state"`, `isolation_claim=false`, and `profile_disclosure_acknowledged=true`. A task space is a logical scope, not a browser-profile isolation boundary; cookies, sessions, and storage are shared with the existing Chrome profile.
+`host_space_create` requires `profile_scope="shared_existing_profile"`, `shared_state_notice="shared_profile_state"`, `isolation_claim=false`, and `profile_disclosure_acknowledged=true`. Spaces are logical scopes, not isolation boundaries: cookies, sessions, and storage are shared within the dedicated profile, which is separate from the user's everyday profile.
 
-MCP does not expose per-tab rename. Chrome's [`tabs.update`](https://developer.chrome.com/docs/extensions/reference/api/tabs#method-update) API has no title property; [`tabGroups.update`](https://developer.chrome.com/docs/extensions/reference/api/tabGroups#method-update) changes a visual group title, not an individual tab title. Page titles remain document-controlled.
+MCP does not expose per-tab rename. Page titles remain document-controlled.
 
 `host_lease_acknowledge_fence` is supported in connected mode. It retries only the current authority's pending takeover fence at its existing epoch, renews the lease TTL, and still requires durable extension-fence acknowledgement and page-rebind proof.
 
@@ -20,9 +20,9 @@ MCP does not expose per-tab rename. Chrome's [`tabs.update`](https://developer.c
 
 The following 11 tools are declared for the MCP contract but return a typed `capability_unavailable` result in connected mode: `host_space_describe`, `host_lease_takeover_with_control_ticket`, `host_lease_control_ticket`, `host_lease_acknowledge_return_control`, `host_page_bind`, `host_page_mark_lost`, `host_snapshot_put`, `host_snapshot_mark_dirty`, `host_action_enqueue`, `host_action_dispatch`, and `host_event_publish`.
 
-A limited existing-profile run on 2026-10-06 exercised MCP stdio, the owner-only host socket, Native Messaging, and an extension takeover/rebind; the managed page returned bound and an unrelated unmanaged tab remained active. The run did not complete the live workflow: `host_snapshot_read` returned `unknown_outcome` when debugger attachment could not be confirmed, and a prior navigation action remains unknown after reconciliation. No snapshot hash or logical ref was produced. The active unmanaged tab remained present with no observed focus theft; one unmanaged-tab close was counted without actor attribution.
+Historical run under the earlier extension-owned architecture (2026-10-06): MCP stdio, the owner-only host socket, Native Messaging, and an extension takeover/rebind were exercised; the managed page returned bound and an unrelated unmanaged tab remained active. The run did not complete the live workflow: `host_snapshot_read` returned `unknown_outcome` when debugger attachment could not be confirmed, and a prior navigation action remains unknown after reconciliation. No snapshot hash or logical ref was produced. The active unmanaged tab remained present with no observed focus theft; one unmanaged-tab close was counted without actor attribution. This is not live evidence for the current host-owned CDP design.
 
-A separate disposable-profile MCP/extension E2E passed extension load, Native Messaging, logical page creation, `host_snapshot_read` with a snapshot hash, and `host_action_execute` close with the page subsequently observed as `target_lost`. It produced no logical element refs and does not replace existing-profile or element-ref validation. These runs are partial evidence, not release acceptance: the existing-profile snapshot/ref workflow, side-panel/OOPIF/restart evidence, unsupported-route decisions, and Phase 8 release gates remain open, so MCP is **not distribution-ready**.
+A separate disposable-profile MCP/extension E2E passed extension load, Native Messaging, logical page creation, `host_snapshot_read` with a snapshot hash, and `host_action_execute` close with the page subsequently observed as `target_lost`. It produced no logical element refs and does not replace existing-profile or element-ref validation. These runs are historical partial evidence, not release acceptance: the existing-profile snapshot/ref workflow, host user-control/OOPIF/restart evidence, unsupported-route decisions, and Phase 8 release gates remain open, so MCP is **not distribution-ready**.
 
 ## Result and error boundary
 
