@@ -7,13 +7,13 @@ Agentyc MCP exposes logical task-space operations over stdio. It delegates owner
 Available operations cover:
 
 - **Spaces:** list, create with required shared-profile acknowledgement, finish, and release.
-- **Leases and control:** acquire, renew, and the supported control/fencing operations.
+- **Leases and control:** acquire and renew leases, take over spaces, and retry a pending takeover fence without allocating another epoch.
 - **Pages:** create and list logical pages, with supported close and managed-page operations.
 - **Snapshots:** read host-owned snapshot state.
 - **Actions:** execute, inspect, and reconcile host-authorized actions.
 - **Events:** read cursors and resume scoped event streams.
 
-The connected remote adapter advertises 30 routes. Twelve routes are not implemented by the current local protocol and return typed `capability_unavailable` errors; see [MCP compatibility](mcp-compatibility.md). The deterministic offline server exposes the in-process host contract and does not connect to Chrome.
+The connected remote adapter advertises 30 routes. Nineteen are implemented by the current local protocol; the remaining 11 return typed `capability_unavailable` errors. The deterministic offline server exposes the in-process host contract and does not connect to Chrome. See [MCP compatibility](mcp-compatibility.md).
 
 Task spaces do not isolate browser profiles. Cookies, sessions, and storage are shared with the enrolled existing Chrome profile. Creation requires explicit acknowledgement. Chrome does not provide an API for renaming an individual tab; page titles are document-controlled, while tab-group titles are visual group labels only.
 
