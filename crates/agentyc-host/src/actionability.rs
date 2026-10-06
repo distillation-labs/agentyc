@@ -675,13 +675,34 @@ pub fn verify_postcondition(
 mod tests {
     use super::*;
     use crate::snapshots::empty_snapshot;
-    use agentyc_core::{FrameId, PageId, SpaceId};
+    use agentyc_core::{
+        ElementKey, ElementKind, FrameId, PageId, SnapshotBody, SnapshotDocument, SnapshotElement,
+        SpaceId,
+    };
 
     fn fixture() -> (ElementRef, SnapshotProvenance, FrameId) {
         let space = SpaceId::from_suffix("space").expect("space");
         let page = PageId::from_suffix("page").expect("page");
         let frame = FrameId::from_suffix("child").expect("frame");
         let mut snapshot = empty_snapshot(space, page);
+        let element_key = ElementKey::from_suffix("target").expect("element key");
+        let document = SnapshotDocument::new(
+            snapshot.snapshot_version,
+            vec![SnapshotElement {
+                key: element_key.clone(),
+                parent: None,
+                kind: ElementKind::Element,
+                text: None,
+                attributes: BTreeMap::new(),
+                order: 0,
+            }],
+        )
+        .expect("snapshot document");
+        snapshot.snapshot_hash = document.snapshot_hash.clone();
+        snapshot.result_hash = document.snapshot_hash;
+        snapshot.delta_or_elements = SnapshotBody::Elements {
+            elements: document.elements,
+        };
         snapshot
             .frame_versions
             .insert(frame.clone(), agentyc_core::FrameVersion::new(1));
@@ -690,6 +711,7 @@ mod tests {
             .make_ref(
                 agentyc_core::RefId::from_suffix("element").expect("ref"),
                 frame.clone(),
+                element_key,
             )
             .expect("ref");
         (element_ref, provenance, frame)
