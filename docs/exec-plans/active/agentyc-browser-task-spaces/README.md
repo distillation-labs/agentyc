@@ -108,10 +108,10 @@ Every bullet below is a target or requirement for planned work, not a statement 
 ### Compatibility
 
 - The host-backed logical MCP adapter runs over stdio only; no MCP HTTP transport is shipped.
-- The offline server exposes 29 routes; the connected remote catalog declares 30, with 12 currently returning `capability_unavailable`.
+- The offline server exposes 29 routes; the connected remote catalog declares 30, with 11 currently returning `capability_unavailable`.
 - The removed direct-CDP MCP `BrowserServer`, `browser_*` tools, legacy MCP mode, and `serve` HTTP route are not current compatibility surfaces.
 - The standalone direct-CDP `browser`, `run`, and `repl` CLI commands have been removed. The Node SDK remains at `packages/agentyc-browser`, and the extension continues to use `chrome.debugger`; internal CDP test/installation harnesses are not user interfaces.
-- Headed live Chrome has not yet been run through MCP; MCP is not distribution-ready until Phase 8's live and release gates pass.
+- A limited existing-profile MCP run passed stdio, host/Native Messaging connection, and extension fence/rebind; snapshot/action reconciliation and Phase 8's live/release gates remain open, so MCP is not distribution-ready.
 
 ## Canonical space, page, and Chrome tab-group semantics
 
