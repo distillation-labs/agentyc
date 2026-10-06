@@ -2,7 +2,7 @@
 
 **Status:** Phase 1 normative architecture artifact  
 **Authority:** `docs/exec-plans/active/agentyc-browser-task-spaces/plans/phase-1-architecture.md` and the active D-09–D-18 decision closure  
-**Evidence status:** This document freezes design rules. It does not claim that the host, extension, or live Chrome path has been implemented or proven.
+**Evidence status:** This document records the current design boundary. It does not claim that the host, extension, or live Chrome path has been implemented or proven.
 
 This document uses **MUST**, **MUST NOT**, **SHOULD**, and **MAY** as normative terms. The host broker is the authority below every client. Chrome is an execution system; it is not the product ledger.
 
@@ -10,13 +10,13 @@ This document uses **MUST**, **MUST NOT**, **SHOULD**, and **MAY** as normative 
 
 1. `space` is the only logical task-space object. `space_id` is its canonical field and public handle. `page` is a durable logical child of a space.
 2. The host broker owns identity, leases, epochs, policy, ordering, persistence, reconciliation, event watermarks, snapshot/ref provenance, and cleanup authorization.
-3. The MV3 extension owns Chrome API calls and browser observations. It MUST NOT own authoritative leases, action state, profile authentication, or cleanup policy.
+3. The host owns browser control through its loopback CDP connection. The MV3 extension is used only to create tabs on host request; it MUST NOT navigate, observe, snapshot, act on pages, or provide task-space UI.
 4. CLI/SDK clients use the persistent local host protocol. MCP remains a compatibility adapter over that protocol and never becomes a second state owner.
-5. Chrome tab IDs, debugger target/session IDs, frame runtime IDs, extension worker IDs, and tab-group IDs are ephemeral reconciliation hints. They MUST NOT appear in primary output, authorize an action, or replace a logical handle.
-6. A Chrome tab group is visual presentation only. Group title, color, membership, collapsed state, and movement MUST NOT authorize, identify, isolate, adopt, or clean up a space. A mixed user/agent group is never a cleanup unit.
-7. The existing-Chrome product path MUST NOT download, launch, switch to, or silently create a browser/profile. It has no automatic browser launch. An explicit managed test lane and an explicit operator-supplied legacy debugger endpoint are separate non-default modes.
+5. Chrome tab IDs, CDP target/session IDs, frame IDs, extension worker IDs, and process IDs are ephemeral reconciliation hints. They MUST NOT appear in primary output, authorize an action, or replace a logical handle.
+6. Chrome tab grouping and extension UI are not part of the product control surface.
+7. The product path MUST NOT download, launch, or silently create a browser/profile. The user launches a dedicated Chrome profile with a loopback debugging endpoint; the host connects to it. The host MUST reject non-loopback endpoints.
 8. A profile instance selector chooses an enrolled binding; it is not authentication. Mismatch, copied profile, reinstall, storage reset, or extension identity change enters `rebind_required` and fences prior authority.
-9. User takeover is a host transition with a durable fence acknowledgement. It increments the lease epoch, stops old-epoch issuance, and rejects stale commands at extension execution time. Missing acknowledgement fails closed.
+9. User takeover is a host transition with a durable fence acknowledgement. It increments the lease epoch, stops old-epoch issuance, and rejects stale commands before host-side CDP execution. Missing acknowledgement fails closed.
 10. A dispatched mutation whose result is lost is `unknown`. Click, input, navigation, upload, storage, cookie, evaluate, and close operations MUST NOT be blindly replayed.
 
 ## 2. Component and trust flow
@@ -28,18 +28,17 @@ CLI / Node SDK / legacy MCP adapter
           v
 agentyc-host HostServer (one broker per enrolled profile binding)
   |-- host lock, OS-peer admission, ledger, leases, scheduler
-  |-- snapshot/ref cache, event/wait router, reconciliation
-  |-- ChromeBridge and NativeMessagingBridge
+  |-- CDP client, snapshot/ref cache, event/wait router, reconciliation
+  |-- NativeMessagingBridge (tab creation only)
           |
           | Chrome-mediated Native Messaging; exact origin and extension ID
           v
-MV3 extension service worker + side panel
-  |-- chrome.debugger (allowlisted domains and target-scoped events)
-  |-- chrome.tabs / chrome.tabGroups / chrome.sidePanel
-  |-- narrowly scoped content-script/page bridge
+MV3 extension service worker (no popup or side panel)
+  |-- chrome.tabs.create only, on an authenticated host request
           |
           v
-user-approved existing Chrome pages
+user-launched dedicated Chrome profile
+  ^-- host connects directly to its loopback CDP endpoint
 ```
 
 The local client boundary and the Chrome Native Messaging boundary are different protocols and MUST have separate framing, limits, handshake fields, and failure handling. See [`docs/security/host-protocol.md`](security/host-protocol.md) and [`docs/security/extension-permissions.md`](security/extension-permissions.md).
@@ -50,7 +49,7 @@ The selected macOS-first topology is **one broker owner plus Native Messaging sh
 
 1. The first Chrome-launched `agentyc-native-host` acquires the profile-scoped ledger lock before reading Native Messaging bytes, owns the broker, local IPC socket, endpoint metadata, and `native-forward.sock`, then accepts the extension handshake.
 2. A later Chrome-launched shim validates Chrome's exact transport origin, observes the existing ledger owner, and forwards its raw Native Messaging stream to the owner's private Unix forwarding socket. It never opens a second ledger, starts a second broker, or authenticates a profile from extension JSON.
-3. The owner admits a forwarded stream only after the same-OS-user peer check and a fresh Native Messaging/core handshake. `BridgeRouter` swaps the live extension adapter while the broker, logical records, scheduler, leases, and ledger remain unchanged; pending mutations are not replayed.
+3. The owner admits a forwarded stream only after the same-OS-user peer check and a fresh Native Messaging/core handshake. The extension bridge is used only for tab creation; browser operations remain on the host's CDP connection and pending mutations are not replayed.
 4. Endpoint metadata is atomically published as owner-readable `broker.endpoint.json` and is fenced by broker epoch/process ownership. Stale metadata is replaceable; symlinks, active endpoint replacement, wrong peer credentials, malformed metadata, and incompatible epochs fail closed.
 5. The owner retains local clients and logical records across an extension disconnect for a bounded recovery window; it marks the bridge degraded and accepts a fresh forwarded handshake without granting authority until admission completes. Chrome/host process lifetime and actual profile reconnect remain live Phase 4 evidence, not a deterministic test claim.
 
@@ -60,14 +59,14 @@ This closes U3-1 for the supported macOS topology. Windows named-pipe registrati
 
 | Concern                              | Canonical owner                                   | Extension role                                        | CLI/SDK role              | MCP role                          |
 | ------------------------------------ | ------------------------------------------------- | ----------------------------------------------------- | ------------------------- | --------------------------------- |
-| space/page identity and records      | host ledger and core contracts                    | report live hints                                     | send logical handles      | map legacy fields                 |
-| leases, epochs, fences               | host broker                                       | enforce bridge admission and execution fence          | present receipts          | map connections to principals     |
-| Chrome tabs, targets, frames, groups | extension adapter                                 | create, attach, observe, group, and report            | never call Chrome APIs    | never call Chrome APIs            |
-| snapshots, refs, events              | host runtime/core                                 | supply DOM/AX/events and capability results           | consume bounded envelopes | serialize compatibility responses |
-| user control                         | host transition authority plus side-panel tickets | render and confirm; never self-authorize              | request and observe       | return typed errors               |
-| persistence and recovery             | host ledger/journal                               | profile/connection metadata and bounded UI state only | reconnect                 | no independent copy               |
-| cleanup                              | host authorization plus extension execution       | remove only proven claimed pages                      | request scoped release    | scope legacy close                |
-| policy and evaluate                  | host policy                                       | execute an approved capability                        | request with capability   | reject unsafe bypass              |
+| space/page identity and records      | host ledger and core contracts                    | profile/worker identity metadata only                  | send logical handles      | map legacy fields                 |
+| leases, epochs, fences               | host broker                                       | no page-action or fence execution                      | present receipts          | map connections to principals     |
+| Chrome tabs, targets, frames         | host CDP client                                    | create tabs only, on host request                     | never call Chrome APIs    | never call Chrome APIs            |
+| snapshots, refs, events              | host runtime/core                                 | no page observation or action                         | consume bounded envelopes | serialize compatibility responses |
+| user control                         | host transition authority                         | no user-facing UI                                      | request and observe       | request supported host operations |
+| persistence and recovery             | host ledger/journal                               | profile/connection metadata only                      | reconnect                 | no independent copy               |
+| cleanup                              | host authorization plus host CDP                  | no page cleanup                                        | request scoped release    | scope legacy close                |
+| policy and evaluate                  | host policy and CDP execution                     | no page operation                                      | request with capability   | reject unsafe bypass              |
 
 ## 3. Canonical records and identity
 
@@ -80,7 +79,7 @@ A `SpaceRecord` MUST contain:
 - `space_id`, stable and opaque, generated by the host;
 - user-facing `label`, lifecycle, owner class, principal, lease and lease epoch;
 - enrolled `profile_instance_id` binding state;
-- durable page references and an optional `visual_group_hint`;
+- durable logical page references;
 - capability/policy summary, warnings, retention, and last event watermark;
 - broker, connection, browser-session, and worker epoch observations where relevant.
 
@@ -96,7 +95,7 @@ A `PageRecord` MUST contain:
 - last-known URL/title metadata as untrusted data, never as an ownership proof;
 - close/rebind/adoption status and the provenance required for snapshots and refs.
 
-A Chrome tab, target, debugger session, frame, URL, title, focus state, visual group, or user click cannot prove that a page is the same logical page after a browser-session change. Ambiguous matches remain unmanaged until explicit confirmation and a fresh lease.
+A Chrome tab, target, debugger session, frame, URL, title, or focus state cannot prove that a page is the same logical page after a browser-session change. Ambiguous matches remain unmanaged until explicit confirmation and a fresh lease.
 
 ### Other durable identities
 
@@ -111,23 +110,20 @@ The four runtime epochs are distinct:
 | `browser_session_epoch` | the real Chrome/profile session changes     | target/session/frame/document bindings require reconciliation         |
 | `worker_instance_epoch` | an MV3 service worker starts                | worker metadata is rehydrated; browser-session authority is preserved |
 
-## 4. Existing-profile guarantee
+## 4. Dedicated-profile guarantee
 
-The default product mode is `extension_existing_chrome`. It provides logical space/page ownership in the user's profile, not storage isolation.
+The default product mode uses a dedicated, user-launched Chrome profile. It separates Agentyc work from the user's everyday profile, but logical spaces within the dedicated profile are not separate storage boundaries.
 
 | Data or behavior                                                | Guarantee                                                                                                      |
 | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| cookies, local/session storage, history, bookmarks, permissions | shared according to Chrome and the origin/profile; never a space secret boundary                               |
-| installed extensions and enterprise policy                      | shared inputs; capability denial is reported, not bypassed                                                     |
+| cookies, local/session storage, history, bookmarks               | shared within the dedicated profile; never a space secret boundary                                             |
+| installed extensions and enterprise policy                      | shared within the dedicated profile or Chrome installation; capability denial is reported, not bypassed       |
 | downloads and filesystem                                        | explicit capability, path policy, and user intent required                                                     |
 | pre-existing/user tabs                                          | unmanaged by default; no auto-adoption or global close                                                         |
 | agent-created pages                                             | claimed by a space after host commit and extension confirmation                                                |
-| Chrome tab groups                                               | visual mapping only; scoped to one Chrome window and may be absent, renamed, regrouped, or changed by the user |
 | incognito                                                       | not enrolled by default; return a typed unsupported/binding error rather than silently sharing authority       |
 
-The extension, host, and client MUST disclose shared profile state before a space is created. The external `space.create` contract requires `profile_scope: "shared_existing_profile"`, `shared_state_notice: "shared_profile_state"`, `isolation_claim: false`, and an explicit `profile_disclosure_acknowledged: true`; missing or mismatched disclosure is rejected before the ledger commit. A future isolated-profile mode is a separate product decision and is not implied by this architecture.
-
-Chrome tab groups cannot span windows. The adapter therefore treats one group per space as a best-effort presentation within a single window; moving a page or group across windows, regrouping, renaming, collapsing, or deleting it creates visual drift only and never changes logical ownership. A space with pages in multiple windows may have no single visual group.
+The host and client MUST disclose that spaces share state within the dedicated profile before a space is created. The `space.create` contract requires explicit disclosure acknowledgement; missing or mismatched disclosure is rejected before the ledger commit. The everyday Chrome profile is not used or copied.
 
 The pinned manifest key identifies the trusted unpacked-development build only. Ordinary macOS users require a Chrome Web Store-signed extension; self-hosted distribution on macOS is an enterprise-managed path. A stable unpacked ID is not production distribution evidence.
 
@@ -179,7 +175,7 @@ running -> unknown
 unknown -> reconciled(succeeded | failed | requires_confirmation)
 ```
 
-Every mutation checks principal, `space_id`, `page_id`, lease epoch, policy, capability, and generation at enqueue, dequeue, and immediately before extension dispatch. A lost post-dispatch response is `unknown`; no raw browser command is replayed.
+Every mutation checks principal, `space_id`, `page_id`, lease epoch, policy, capability, and generation at enqueue, dequeue, and immediately before host-side CDP dispatch. A lost post-dispatch response is `unknown`; no raw browser command is replayed.
 
 ### Connection lifecycle
 
@@ -204,8 +200,7 @@ Each transition has one initiating authority, one durable record, an explicit gu
 | disconnect after dispatch | host reconciles                                | dispatch may have reached extension             | action becomes `unknown`; no replay               | `unknown_outcome`; user sees reconciliation required                   |
 | extension/worker restart  | host reconnects; extension rehydrates          | new connection/worker epoch                     | host remains authoritative                        | reads resume after proof; mutations wait for handshake                 |
 | browser restart           | host observes new browser epoch                | old bindings invalid                            | pages become lost/unknown                         | reconciliation required; no auto-rebind                                |
-| user takeover             | side-panel intent ticket; host owns transition | fresh single-use ticket and current lease       | increment lease epoch; fence queues and extension | stale agent gets `user_control_required`; user sees paused/owned state |
-| extension fence barrier   | host dispatches; extension enforces            | fence ID, broker/connection/lease epochs        | lower epochs rejected; acknowledgement recorded   | missing ack leaves `fence_pending`; no new mutation                    |
+| user takeover             | user requests through supported host interface | current lease and required host confirmation    | increment lease epoch; fence host command queues  | stale agent gets `user_control_required`; user sees paused/owned state |
 | page close                | client/user requests; host authorizes          | ownership proof, live generation, intent ticket | close only proven claimed page                    | unmanaged/user page preserved; failure is typed                        |
 | rebind-required           | host binding reconciliation                    | explicit user confirmation and fresh proof      | prior binding fenced; state retained              | remains paused until confirmation                                      |
 | broker restart            | host lock owner; host rehydrates               | ledger checksum/schema compatible               | new broker epoch; in-flight actions unknown       | incompatible ledger quarantined; no guessed repair                     |
@@ -238,7 +233,7 @@ Recovery rules:
 
 The extension capability policy is normative in [`docs/security/extension-permissions.md`](security/extension-permissions.md). The host protocol and local trust boundary are normative in [`docs/security/host-protocol.md`](security/host-protocol.md).
 
-The host MUST return typed unsupported, permission, restricted-page, incognito, policy, stale-generation, user-control, and unknown-outcome results. It MUST NOT fall back from an extension failure to a copied debugger endpoint, a managed browser, or an automatic browser launch.
+The host MUST return typed unsupported, permission, restricted-page, incognito, policy, stale-generation, user-control, and unknown-outcome results. It MUST reject non-loopback CDP endpoints and MUST NOT launch a browser or switch profiles automatically.
 
 Page content, labels, URLs, network bodies, cookies, screenshots, and page messages are untrusted data. They are never instructions, principals, authentication, ownership proof, or policy. Arbitrary evaluation, cookies, storage writes, downloads, uploads, and destructive actions require explicit capability, lease, policy, and where specified a single-use user-intent ticket.
 
