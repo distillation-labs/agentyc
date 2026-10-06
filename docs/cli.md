@@ -18,6 +18,7 @@ The supported direct command tree is:
 - `space claim --space-id SPACE_ID [--ttl MS] [--now MS]`
 - `space renew --space-id SPACE_ID --lease-epoch EPOCH [--ttl MS] [--now MS]`
 - `space takeover --space-id SPACE_ID [--ttl MS] [--now MS]`
+- `space acknowledge-fence --space-id SPACE_ID --lease-epoch EPOCH [--ttl MS] [--now MS]`
 - `space reclaim --space-id SPACE_ID [--control-ticket JSON] [--ttl MS] [--now MS]`
 - `space return --space-id SPACE_ID --lease-epoch EPOCH [--now MS]`
 - `space pause --space-id SPACE_ID [--ttl MS] [--now MS]`
@@ -124,7 +125,7 @@ The direct local CLI/SDK boundary is primary. MCP is compatibility-only and maps
 
 ## MCP compatibility boundary
 
-`agentyc mcp` (or `agentyc` with no subcommand) runs the host-backed logical MCP service over stdio only. There is no `agentyc serve` MCP HTTP route, direct-CDP MCP mode, or `browser_*` MCP tool surface. The offline server lists 29 routes; the connected remote catalog declares 30, and 12 currently return typed `capability_unavailable` errors. Headed live Chrome validation has not yet run, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
+`agentyc mcp` (or `agentyc` with no subcommand) runs the host-backed logical MCP service over stdio only. There is no `agentyc serve` MCP HTTP route, direct-CDP MCP mode, or `browser_*` MCP tool surface. The offline server lists 29 routes; the connected remote catalog declares 30, with 11 currently returning typed `capability_unavailable` errors. A limited existing-profile run verified MCP stdio and extension fence/rebind, but snapshot/action reconciliation and the full Phase 8 gate remain open, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
 
 ## Removed legacy CLI paths
 
