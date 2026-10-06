@@ -3,12 +3,14 @@ import {
   type ActionReceipt,
   type BrowserClient,
   type LogicalActionId,
+  type LogicalPageId,
   type LogicalSpaceId,
   PAGE_HELPER_OPERATIONS,
 } from "@agentyc/browser";
 
 declare const client: BrowserClient;
 declare const spaceId: LogicalSpaceId;
+declare const pageId: LogicalPageId;
 declare const actionId: LogicalActionId;
 
 const space = client.taskSpace(spaceId);
@@ -40,15 +42,38 @@ void client.reconnect();
 void receipt;
 void results;
 
+const targetRef = {
+  ref_id: "ref_1",
+  element_key: "element_submit",
+  space_id: spaceId,
+  page_id: pageId,
+  frame_id: "frame_main",
+  snapshot_version: 1,
+  document_generation: 1,
+  navigation_generation: 1,
+  refs_epoch: 1,
+};
 void page.goto("https://example.test/", { deadlineMs: 1_000 });
-void page.click("#submit");
-void page.click({ elementRef: { ref_id: "ref_1" }, x: 1, y: 2 });
-void page.type("#name", "agent");
-void page.fill(null, "agent", { idempotencyKey: "idem-1" });
-void page.press("Enter", { target: "#name", requestId: "req_press" });
+void page.issueRef("element_submit", { frameId: "frame_main" });
+void page.click({ elementRef: targetRef, selector: "#submit" });
+void page.click({ elementRef: targetRef, x: 1, y: 2 });
+void page.type({ elementRef: targetRef, selector: "#name" }, "agent");
+void page.fill({ elementRef: targetRef, selector: "#name" }, "agent", {
+  idempotencyKey: "idem-1",
+});
+void page.press("Enter", {
+  target: { elementRef: targetRef, selector: "#name" },
+  requestId: "req_press",
+});
 void page.scroll({ deltaY: 400 });
-void page.select("#choice", "b");
-void page.upload("#file", { name: "report.txt" });
+void page.select(
+  { elementRef: targetRef, selector: "#choice" },
+  "b",
+);
+void page.upload(
+  { elementRef: targetRef, selector: "#file" },
+  { name: "report.txt" },
+);
 void page.evaluate("document.title");
 void page.waitForURL(
   { prefix: "https://example.test/" },
