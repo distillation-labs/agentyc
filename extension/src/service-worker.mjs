@@ -6,6 +6,7 @@ import {
   errorResult,
   isFenceMethod,
   isMutationMethod,
+  isRestrictedUrl,
   publicError,
 } from "./protocol.mjs";
 import { NativeMessagingClient } from "./native-messaging.mjs";
@@ -2906,6 +2907,11 @@ export class ServiceWorkerController {
       throw new ProtocolError(
         "capability_unavailable",
         "snapshot source is not allowlisted",
+      );
+    if (isRestrictedUrl(current.url))
+      throw new ProtocolError(
+        "capability_unavailable",
+        "snapshots are unavailable for restricted URLs",
       );
     let logical;
     if (source !== "debugger") {
