@@ -1,11 +1,13 @@
 # Configuration
 
 The default `agentyc` and `agentyc mcp` path is host-backed and operates on
-logical task spaces in the user's already-running, enrolled Chrome profile.
-It does not launch Chrome, discover a browser, or require a CDP URL. The host
-owns durable task state and leases; the extension owns Chrome API access.
-Spaces share their Chrome profile state and are not storage-isolation
-boundaries.
+logical task spaces in a dedicated Chrome profile launched by the user. The
+host connects to that profile's loopback DevTools Protocol endpoint (port
+`9222` by default) and owns browser control and durable task state. The
+extension is used only to create tabs through Native Messaging; it has no
+task-space UI and does not navigate, observe, snapshot, or act on pages.
+Spaces share state within the dedicated profile; do not copy state from the
+user's everyday profile.
 
 ## Default Host-Backed Path
 
@@ -18,9 +20,10 @@ agentyc --state-dir ~/.agentyc/state space list
 `agentyc` with no subcommand and `agentyc mcp` connect to the local host via
 the owner-only local socket and serve the logical host-backed MCP adapter over
 stdio. Host state is owned by the installed Native Messaging host, not by each
-MCP client process. When the host/extension bridge is unavailable, operations
-that need Chrome return a typed unavailable/capability error; the client does
-not fall back to CDP or launch a browser.
+MCP client process. Creating a browser tab requires the extension's Native
+Messaging bridge; later browser operations use the host's loopback CDP
+connection. Missing bridges or endpoints return typed errors; the client does
+not launch a browser or use an alternate browser-control path.
 
 | Option / variable                             | Default                 | Description                                                                                                        |
 | --------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -31,10 +34,10 @@ not fall back to CDP or launch a browser.
 | `--offline`                                   | off                     | Use the deterministic fake-host seam for local tests/contracts; it does not connect to Chrome.                     |
 | `--json`                                      | off                     | Emit compact direct-command JSON instead of pretty-printed JSON.                                                   |
 
-The extension must already be installed/enrolled and connected for Chrome-backed
-operations. The product path uses the current Chrome profile. Cookies,
-origin storage, history, permissions, installed extensions, and enterprise
-policy may be shared across spaces; logical spaces do not isolate them.
+The user must start the dedicated Chrome profile with its loopback debugging
+endpoint enabled. The extension must be installed and connected only when a
+new tab must be created. Spaces share cookies, origin storage, history, and
+other state within that dedicated profile; they do not isolate one another.
 
 ## Host State Directory and Ledger
 
@@ -109,9 +112,9 @@ full Phase 8 gate remain open, so MCP is not distribution-ready. See
 
 The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url`
 commands are removed and are not configurable or available as user-facing CLI
-interfaces. Internal test or installation harnesses may use CDP without
-creating a shipped CLI surface. The Node SDK at `packages/agentyc-browser` and
-the extension's `chrome.debugger` backend remain separate supported components.
+interfaces. The host uses CDP internally for the product browser connection.
+The Node SDK at `packages/agentyc-browser` remains supported; the extension
+does not use `chrome.debugger`.
 
 ## Logging
 
