@@ -1,9 +1,10 @@
 //! Replaceable logical bridge boundary.
 //!
-//! No method in this module accepts or returns a Chrome target, tab, session,
-//! debugger, or process identifier. The production Native Messaging adapter
-//! keeps those values private to the extension and exposes only logical records;
-//! [`NullBridge`] and [`FakeBridge`] remain deterministic test/offline seams.
+//! No public bridge contract accepts or returns a Chrome target, tab, session,
+//! debugger, or process identifier. The production CDP bridge keeps browser
+//! handles private to the host; its tab-creation transport does not disclose a
+//! Chrome tab ID. [`NullBridge`] and [`FakeBridge`] remain deterministic
+//! test/offline seams.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -21,11 +22,11 @@ use crate::{actions::ArtifactHandle, snapshots::empty_snapshot};
 /// A bounded, logical observation returned by a browser bridge.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObservationSnapshot {
-    /// Logical page records, including active unmanaged user tabs.
+    /// Logical page records observed by the host browser bridge.
     pub pages: Vec<Value>,
-    /// Logical visual-group hints scoped by logical space.
+    /// Legacy visual-group hints; current product flow does not use groups.
     pub groups: Vec<Value>,
-    /// Bounded measured coexistence counters, when the extension supplied them.
+    /// Bounded measured coexistence counters, when available.
     pub safety: Option<Value>,
     /// Whether the extension observed a post-restart recovery proof.
     pub recovery_observed: bool,
