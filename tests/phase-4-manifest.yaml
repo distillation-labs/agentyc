@@ -10,10 +10,10 @@
     "phase": 4,
     "artifact_kind": "phase-4-extension-review",
     "producer": "scripts/check_phase_4_extension.py",
-    "producer_sha256": "2e4f5056c8f9d21bcb2528006886a97443846ad83f0a3ff96e0a8acdf3b79eb7"
+    "producer_sha256": "f9288c34bb9901c4cde434293e4211aab41735b6ba1f4c78dc958b6615d3cc1f"
   },
-  "timestamp": "2026-10-06T00:23:02Z",
-  "nonce": "phase4-live-mcp-partial-20261006",
+  "timestamp": "2026-10-06T00:55:49Z",
+  "nonce": "phase4-mcp-e2e-20261006-005549",
   "redaction_status": {
     "status": "applied",
     "policy": "phase-4-evidence-redacted-only",
@@ -37,7 +37,7 @@
     "extension/tests/fake-chrome.mjs": "17ee86bac2a24933f0976b7365b313b67eb297940a99f1b022b001d2c76dd8ed",
     "extension/tests/reconnect-debugger.test.mjs": "71c8127a5bd6e9c47160b804117aaf88a68acac1c690e4dda55ae7071ea23f57",
     "extension/tests/tabs-registry-security.test.mjs": "a70999277a7f42518f199f032f76e542ab95687ae7a5ed5047e84049b5c1a8a4",
-    "scripts/run_phase4_live_probe.py": "4486af840bd4ab21dbbf2f4b131aabc73cdd1784ad424390fab0606dd2aa2c8f"
+    "scripts/run_phase4_live_probe.py": "f076eaecfe11f37400fd06b59473f77e7bcd8caef48141800629accccee8992b"
   },
   "evidence_artifacts": [
     {
@@ -47,6 +47,10 @@
     {
       "name": "phase4-live-disposable",
       "path": "artifacts/p4-live-disposable/report.json"
+    },
+    {
+      "name": "phase4-live-mcp-e2e",
+      "path": "artifacts/p4-live-mcp-e2e/report.json"
     },
     {
       "name": "phase4-existing-chrome-mcp-e2e",
@@ -62,10 +66,10 @@
       "phase": 4,
       "artifact_kind": "phase-4-extension-review",
       "producer": "scripts/check_phase_4_extension.py",
-      "producer_sha256": "2e4f5056c8f9d21bcb2528006886a97443846ad83f0a3ff96e0a8acdf3b79eb7"
+      "producer_sha256": "f9288c34bb9901c4cde434293e4211aab41735b6ba1f4c78dc958b6615d3cc1f"
     },
-    "timestamp": "2026-10-06T00:23:02Z",
-    "nonce": "phase4-live-mcp-partial-20261006",
+    "timestamp": "2026-10-06T00:55:49Z",
+    "nonce": "phase4-mcp-e2e-20261006-005549",
     "source_hashes": {
       "crates/agentyc-host/src/broker.rs": "2d1c57e757927c16259cd26e8a53d732200480ebad593070fc10aba0b91e2335",
       "crates/agentyc-host/src/chrome_bridge.rs": "1914bb19bd8e120a46e961cc4aaba763b7128a17ef1341d690f66c773001ac69",
@@ -80,7 +84,7 @@
       "extension/tests/fake-chrome.mjs": "17ee86bac2a24933f0976b7365b313b67eb297940a99f1b022b001d2c76dd8ed",
       "extension/tests/reconnect-debugger.test.mjs": "71c8127a5bd6e9c47160b804117aaf88a68acac1c690e4dda55ae7071ea23f57",
       "extension/tests/tabs-registry-security.test.mjs": "a70999277a7f42518f199f032f76e542ab95687ae7a5ed5047e84049b5c1a8a4",
-      "scripts/run_phase4_live_probe.py": "4486af840bd4ab21dbbf2f4b131aabc73cdd1784ad424390fab0606dd2aa2c8f"
+      "scripts/run_phase4_live_probe.py": "f076eaecfe11f37400fd06b59473f77e7bcd8caef48141800629accccee8992b"
     },
     "evidence_artifacts": [
       {
@@ -90,6 +94,10 @@
       {
         "name": "phase4-live-disposable",
         "path": "artifacts/p4-live-disposable/report.json"
+      },
+      {
+        "name": "phase4-live-mcp-e2e",
+        "path": "artifacts/p4-live-mcp-e2e/report.json"
       },
       {
         "name": "phase4-existing-chrome-mcp-e2e",
@@ -110,7 +118,7 @@
     "npm ci --prefix extension",
     "npm test --prefix extension",
     "npm run check --prefix extension",
-    "python3 scripts/run_phase4_live_probe.py --chrome-binary <installed-Chrome>"
+    "python3 scripts/run_phase4_live_probe.py --chrome-binary <installed-Chrome> --exercise-mcp-e2e --artifact-dir artifacts/p4-live-mcp-e2e"
   ],
   "nonclaims": [
     "full headed existing-profile Chrome workflows (snapshots, side panel, OOPIF, and browser restart)",
