@@ -1521,7 +1521,9 @@ impl Broker {
     /// Increment the lease epoch, fence old work, and transfer ownership.
     ///
     /// A bridge outage is represented as a durable `FencePending` result rather
-    /// than as permission to proceed. The caller may retry with
+    /// than as permission to proceed. The current lease owner may also use this
+    /// path after lease expiry or broker recovery fences the lease to establish
+    /// proof for older-action reconciliation. The caller may retry with
     /// [`Broker::acknowledge_fence`].
     pub fn takeover(
         &self,
@@ -1562,9 +1564,10 @@ impl Broker {
                 let current_lease = space.lease.as_ref().ok_or_else(|| {
                     CoreError::new(ErrorCode::SpaceForbidden, "space has no current authority")
                 })?;
+                let recover_orphaned_fence = space.lifecycle == SpaceLifecycle::Orphaned
+                    && current_lease.state == LeaseState::Fenced;
                 if current_lease.principal_id != *authority.principal_id()
-                    || current_lease.state != LeaseState::Active
-                    || current_lease.expires_at.get() <= now.get()
+                    || (current_lease.state != LeaseState::Active && !recover_orphaned_fence)
                 {
                     return Err(CoreError::new(
                         ErrorCode::PermissionDenied,
@@ -2007,38 +2010,93 @@ impl Broker {
         authority: &AuthorityTicket,
         lease_epoch: LeaseEpoch,
     ) -> Result<TakeoverResult, HostError> {
+        self.acknowledge_fence_inner(space_id, authority, lease_epoch, None)
+    }
+
+    /// Retry a pending takeover fence and renew its lease before dispatch.
+    pub fn acknowledge_fence_with_ttl(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        now: Timestamp,
+        ttl: u64,
+    ) -> Result<TakeoverResult, HostError> {
+        let (expires_at, renew_by) = lease_times(now, ttl)?;
+        self.acknowledge_fence_inner(
+            space_id,
+            authority,
+            lease_epoch,
+            Some((expires_at, renew_by)),
+        )
+    }
+
+    fn acknowledge_fence_inner(
+        &self,
+        space_id: &SpaceId,
+        authority: &AuthorityTicket,
+        lease_epoch: LeaseEpoch,
+        renewal: Option<(Timestamp, Timestamp)>,
+    ) -> Result<TakeoverResult, HostError> {
         let (return_pending, fence_token, old_epoch) = self.with_inner(|inner| {
             require_capability(&*inner.bridge, Capability::Action)?;
-            authorize_ticket(inner.ledger.state(), authority)?;
-            let state = inner.ledger.state();
-            let space = state.spaces.get(space_id).ok_or_else(|| {
-                CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
-            })?;
-            let pending = state.pending_fences.get(space_id).ok_or_else(|| {
-                CoreError::new(
-                    ErrorCode::PermissionDenied,
-                    "pending fence request is missing",
-                )
-            })?;
-            if pending.fence_epoch != lease_epoch
-                || pending.principal_id != *authority.principal_id()
-                || !space.lease.as_ref().is_some_and(|lease| {
-                    lease.principal_id == *authority.principal_id()
-                        && lease.lease_epoch == lease_epoch
-                        && space.lifecycle == SpaceLifecycle::FencePending
-                })
-            {
-                return Err(CoreError::new(
-                    ErrorCode::PermissionDenied,
-                    "fence acknowledgement is not owned by this authority",
-                )
-                .into());
-            }
-            Ok((
-                pending.purpose == FencePurpose::ReturnControl,
-                pending.request_token.clone(),
-                pending.old_epoch,
-            ))
+            inner.ledger.update(|state| {
+                authorize_ticket(state, authority)?;
+                let pending = state.pending_fences.get(space_id).cloned().ok_or_else(|| {
+                    CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "pending fence request is missing",
+                    )
+                })?;
+                let valid_claim = state.spaces.get(space_id).is_some_and(|space| {
+                    space.lifecycle == SpaceLifecycle::FencePending
+                        && space.lease.as_ref().is_some_and(|lease| {
+                            lease.principal_id == *authority.principal_id()
+                                && lease.lease_epoch == lease_epoch
+                        })
+                });
+                if pending.fence_epoch != lease_epoch
+                    || pending.principal_id != *authority.principal_id()
+                    || !valid_claim
+                {
+                    return Err(CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "fence acknowledgement is not owned by this authority",
+                    )
+                    .into());
+                }
+                let return_pending = pending.purpose == FencePurpose::ReturnControl;
+                if return_pending && renewal.is_some() {
+                    return Err(CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "user-control fence cannot renew an agent lease",
+                    )
+                    .into());
+                }
+                if let Some((expires_at, renew_by)) = renewal {
+                    let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
+                        CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
+                    })?;
+                    let lease = descriptor.lease.as_mut().ok_or_else(|| {
+                        CoreError::new(ErrorCode::SpaceForbidden, "space has no current lease")
+                    })?;
+                    lease.expires_at = expires_at;
+                    lease.renew_by = renew_by;
+                    lease.state = LeaseState::Active;
+                    append_event(
+                        state,
+                        EventScope::space(space_id.clone()),
+                        EventKind::LeaseChanged,
+                        payload([
+                            ("lease_epoch", lease_epoch.get().to_string()),
+                            ("state", "fence_pending".to_owned()),
+                        ]),
+                        None,
+                        false,
+                    )?;
+                }
+                Ok((return_pending, pending.request_token, pending.old_epoch))
+            })
         })?;
         let bridge = self.bridge()?;
         let fence = bridge.fence_with_token(
@@ -2138,19 +2196,40 @@ impl Broker {
                 })
                 .collect::<Vec<_>>())
         })?;
+        if pages.is_empty() {
+            return Ok(());
+        }
         let bridge = self.bridge()?;
         let Some(extension_epochs) = bridge.extension_epochs() else {
             return Ok(());
         };
-        let profile_binding_id = authority
+        let profile_instance_id = bridge
+            .bridge_status()
+            .and_then(|status| status.profile_instance_id)
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::ProfileNotFound,
+                    "extension profile identity is unavailable for retained page rebind",
+                )
+            })?;
+        if authority
             .profile_binding_id()
-            .map(|value| value.as_str().to_owned());
-        for (page_id, target_generation, navigation_generation, document_generation, url, title) in
-            pages
+            .is_some_and(|profile_binding_id| profile_binding_id.as_str() != profile_instance_id)
+        {
+            return Err(CoreError::new(
+                ErrorCode::ProfileNotFound,
+                "authority profile binding does not match the extension page profile",
+            )
+            .into());
+        }
+        for (
+            proof_index,
+            (page_id, target_generation, navigation_generation, document_generation, url, title),
+        ) in pages.into_iter().enumerate()
         {
             let mut proof = json!({
                 "issued_by_host": true,
-                "proof_id": format!("proof-rebind-{}-{}", page_id, lease_epoch.get()),
+                "proof_id": format!("proof-rebind-{}-{proof_index}", lease_epoch.get()),
                 "kind": "rebind",
                 "purpose": "rebind",
                 "space_id": space_id.to_string(),
@@ -2169,9 +2248,10 @@ impl Broker {
                 if let Some(title) = &title {
                     object.insert("title".to_owned(), json!(title));
                 }
-                if let Some(profile_binding_id) = &profile_binding_id {
-                    object.insert("profile_instance_id".to_owned(), json!(profile_binding_id));
-                }
+                object.insert(
+                    "profile_instance_id".to_owned(),
+                    json!(profile_instance_id.as_str()),
+                );
                 object.insert(
                     "browser_session_epoch".to_owned(),
                     json!(extension_epochs.browser_session_epoch),
@@ -2734,7 +2814,8 @@ impl Broker {
     /// can be admitted while bridge cleanup is in flight. Only pages with a
     /// current managed binding are sent to [`Bridge::close_page`]. A bridge error
     /// is treated as an unknown cleanup outcome and leaves the space fenced in
-    /// `Draining` rather than retrying the close implicitly.
+    /// `Draining` rather than retrying the close implicitly. Unresolved actions
+    /// must be reconciled before this transition.
     pub fn finish_space(
         &self,
         space_id: &SpaceId,
@@ -2761,6 +2842,13 @@ impl Broker {
                     now,
                     allow_draining,
                 )?;
+                if space_has_unresolved_actions(state, space_id) {
+                    return Err(CoreError::new(
+                        ErrorCode::ReconciliationRequired,
+                        "space has unresolved actions; reconcile them before finishing",
+                    )
+                    .into());
+                }
                 let (cleanup, retention) = {
                     let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
                         CoreError::new(ErrorCode::SpaceNotFound, "logical space not found")
@@ -2984,8 +3072,8 @@ impl Broker {
     /// Remove released spaces owned by the current principal after cleanup is proven.
     ///
     /// Pruning is explicitly bounded and ownership-scoped. Only pages whose
-    /// broker-owned close is durable may be removed; target-lost, unknown,
-    /// unmanaged, and user-owned records remain addressable for recovery.
+    /// broker-owned close is durable may be removed; unresolved actions,
+    /// target-lost, unknown, unmanaged, and user-owned records remain addressable.
     pub fn prune_released_spaces(
         &self,
         authority: &AuthorityTicket,
@@ -3010,6 +3098,7 @@ impl Broker {
                                     && page.ownership == PageOwnership::Broker
                                     && page.binding == PageBindingState::Closed
                             })
+                            && !space_has_unresolved_actions(state, &space.space_id)
                     })
                     .map(|space| space.space_id.clone())
                     .collect();
@@ -3017,6 +3106,19 @@ impl Broker {
                 candidates.truncate(max_count);
                 let mut pruned = 0;
                 for space_id in candidates {
+                    let action_ids = state
+                        .actions
+                        .iter()
+                        .filter(|(_, action)| action.space_id == space_id)
+                        .map(|(action_id, _)| action_id.clone())
+                        .collect::<Vec<_>>();
+                    for action_id in action_ids {
+                        if let Some(action) = state.actions.remove(&action_id) {
+                            state.action_requests.remove(&action_id);
+                            state.idempotency.remove(&action.idempotency_key);
+                        }
+                    }
+                    state.action_queues.remove(&space_id);
                     state.spaces.remove(&space_id);
                     state.profile_bindings.remove(&space_id);
                     state.snapshots.remove(&space_id);
@@ -5037,6 +5139,17 @@ fn authorize_release_claim(
         .into());
     }
     Ok(())
+}
+
+fn space_has_unresolved_actions(state: &LedgerState, space_id: &SpaceId) -> bool {
+    state.actions.values().any(|action| {
+        &action.space_id == space_id
+            && (action.status == ActionStatus::Queued
+                || action.status == ActionStatus::Running
+                || action.status == ActionStatus::Unknown
+                || action.reconciliation_state
+                    == agentyc_core::ReconciliationState::RequiresConfirmation)
+    })
 }
 
 fn authorize_reconciliation_authority(
