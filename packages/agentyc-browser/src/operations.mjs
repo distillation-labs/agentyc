@@ -198,6 +198,14 @@ const requestEntries = [
     cli: { command: ["snapshot"] },
   },
   {
+    key: "refs.issue",
+    kind: "request",
+    wireMethods: ["refs.issue"],
+    sideEffecting: true,
+    supported: true,
+    sdk: "Page.issueRef",
+  },
+  {
     key: "events.read",
     kind: "request",
     wireMethods: ["events.read", "events.resume"],
