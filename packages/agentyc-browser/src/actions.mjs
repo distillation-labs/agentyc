@@ -89,10 +89,36 @@ function payloadRequiresIntent(payload) {
   });
 }
 
+function requireElementKeyRef(payload) {
+  const encoded = payload?.element_ref ?? payload?.ref;
+  let elementRef = encoded;
+  if (typeof encoded === "string") {
+    try {
+      elementRef = JSON.parse(encoded);
+    } catch {
+      throw invalidArgument("element_ref must be a target-bound element ref");
+    }
+  }
+  if (
+    !elementRef ||
+    typeof elementRef !== "object" ||
+    Array.isArray(elementRef) ||
+    typeof elementRef.element_key !== "string" ||
+    elementRef.element_key.length === 0
+  ) {
+    throw invalidArgument(
+      "click and input actions require an element_ref bound to a snapshot element_key",
+    );
+  }
+}
+
 export function assertSupportedAction(operation, payload = undefined) {
   const definition = operationForAction(operation);
   if (!definition) throw actionArgumentError(operation);
   if (!definition.supported) throw actionCapabilityError(operation, definition);
+  if (operation === "click" || operation === "input") {
+    requireElementKeyRef(payload);
+  }
   if (payloadRequiresIntent(payload)) {
     throw actionCapabilityError(
       operation,
