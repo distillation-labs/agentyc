@@ -114,7 +114,7 @@ pub struct ControlTicketRecord {
 impl Default for LedgerLimits {
     fn default() -> Self {
         Self {
-            max_spaces: 64,
+            max_spaces: 67,
             max_pages_per_space: 128,
             max_actions: 4_096,
             max_queued_actions_per_space: 256,
@@ -1546,6 +1546,11 @@ impl LockIdentity {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn default_space_limit_reserves_two_slots_for_parallel_taskspaces() {
+        assert_eq!(LedgerLimits::default().max_spaces, 67);
+    }
 
     #[test]
     fn lock_is_exclusive_and_released_by_owner() {
