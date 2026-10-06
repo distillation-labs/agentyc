@@ -46,6 +46,7 @@ pub use bridge::{
     FenceResult, NullBridge,
 };
 pub use broker::{Broker, Connection, HostDegradedReason, HostLifecycle, canonical_action_hash};
+pub use cdp::{CdpBridge, DEFAULT_CDP_PORT, TabCreationTransportRouter};
 pub use context::{
     ContextBody, ContextBuilder, ContextCacheKey, ContextFocus, ContextMetadata, ContextMode,
     ContextOptions, ContextOutput, ContextRepresentation, ContextRequest, ContextRequestMode,
