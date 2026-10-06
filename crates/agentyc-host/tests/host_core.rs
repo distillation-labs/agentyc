@@ -449,6 +449,25 @@ fn unknown_outcomes_require_reconciliation_and_never_blind_replay() {
             )
             .is_err()
     );
+    assert!(matches!(
+        broker.finish_space(
+            &space.space_id,
+            &owner_authority,
+            lease.lease.lease_epoch,
+            Timestamp::new(3),
+        ),
+        Err(HostError::Core(agentyc_core::CoreError {
+            code: ErrorCode::ReconciliationRequired,
+            ..
+        }))
+    ));
+    assert_eq!(
+        broker
+            .list_spaces(&owner_authority)
+            .expect("space remains active")[0]
+            .lifecycle,
+        agentyc_core::SpaceLifecycle::AgentOwned
+    );
 
     bridge.push_reconcile_result(BridgeReconcileResult::Succeeded);
     let reconciled = broker
@@ -463,6 +482,18 @@ fn unknown_outcomes_require_reconciliation_and_never_blind_replay() {
     assert_eq!(reconciled.status, ActionStatus::Succeeded);
     assert_eq!(bridge.dispatch_count(), 1);
     assert_eq!(bridge.reconcile_count(), 1);
+    assert_eq!(
+        broker
+            .finish_space(
+                &space.space_id,
+                &owner_authority,
+                lease.lease.lease_epoch,
+                Timestamp::new(5),
+            )
+            .expect("finish after reconciliation")
+            .lifecycle,
+        agentyc_core::SpaceLifecycle::Finished
+    );
 }
 
 #[test]
@@ -1559,12 +1590,37 @@ fn pruning_is_bounded_owner_scoped_and_requires_closed_pages() {
     let lease = broker
         .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
         .expect("lease");
+    let page = managed_page(&broker, &space.space_id, &owner, lease.lease.lease_epoch);
+    let action = broker
+        .execute_action(
+            action_request(
+                "prune-action",
+                space.space_id.clone(),
+                Some(page.clone()),
+                lease.lease.lease_epoch,
+                ActionOperation::Navigate,
+            ),
+            &owner,
+            Timestamp::new(2),
+        )
+        .expect("successful action")
+        .receipt;
+    assert_eq!(action.status, ActionStatus::Succeeded);
+    broker
+        .close_page(
+            &space.space_id,
+            &page,
+            &owner,
+            lease.lease.lease_epoch,
+            Timestamp::new(3),
+        )
+        .expect("closed page");
     broker
         .finish_space(
             &space.space_id,
             &owner,
             lease.lease.lease_epoch,
-            Timestamp::new(1),
+            Timestamp::new(4),
         )
         .expect("finish");
     broker
@@ -1572,7 +1628,7 @@ fn pruning_is_bounded_owner_scoped_and_requires_closed_pages() {
             &space.space_id,
             &owner,
             lease.lease.lease_epoch,
-            Timestamp::new(2),
+            Timestamp::new(5),
         )
         .expect("release");
 
@@ -2017,6 +2073,131 @@ fn older_epoch_reconciliation_requires_current_owner_and_takeover_proof() {
         .expect("current owner reconciliation")
         .receipt;
     assert_eq!(reconciled.status, ActionStatus::Succeeded);
+}
+
+#[test]
+fn orphaned_fenced_lease_can_reconcile_unknown_action_after_takeover() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    bridge.push_dispatch_result(BridgeDispatchResult::Unknown {
+        reason: UnknownReason::LostResponse,
+    });
+    let original_broker = make_broker(directory.path(), bridge.clone());
+    let original_owner = authority(&original_broker, "orphan-reconcile");
+    let space = original_broker
+        .create_space(&original_owner, "orphan-reconcile")
+        .expect("space");
+    let lease = original_broker
+        .acquire_lease(&space.space_id, &original_owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let unknown = original_broker
+        .execute_action(
+            action_request(
+                "orphan-reconcile-action",
+                space.space_id.clone(),
+                None,
+                lease.lease.lease_epoch,
+                ActionOperation::Wait,
+            ),
+            &original_owner,
+            Timestamp::new(1),
+        )
+        .expect("unknown action")
+        .receipt;
+    assert_eq!(unknown.status, ActionStatus::Unknown);
+    drop(original_broker);
+
+    let recovered_broker = make_broker(directory.path(), bridge.clone());
+    let owner = authority(&recovered_broker, "orphan-reconcile");
+    let recovered_space = recovered_broker
+        .describe_space(&owner, &space.space_id)
+        .expect("orphaned space");
+    assert_eq!(
+        recovered_space.lifecycle,
+        agentyc_core::SpaceLifecycle::Orphaned
+    );
+    assert_eq!(
+        recovered_space.lease.as_ref().map(|lease| lease.state),
+        Some(agentyc_core::LeaseState::Fenced)
+    );
+
+    bridge.push_reconcile_result(BridgeReconcileResult::Succeeded);
+    let takeover = recovered_broker
+        .takeover(&space.space_id, &owner, Timestamp::new(2), 100)
+        .expect("orphaned fence takeover");
+    assert!(takeover.fence_acknowledged);
+    let reconciled = recovered_broker
+        .reconcile_action(
+            &unknown.action_id,
+            &owner,
+            takeover.lease_epoch,
+            Timestamp::new(3),
+        )
+        .expect("reconcile after takeover")
+        .receipt;
+    assert_eq!(reconciled.status, ActionStatus::Succeeded);
+    assert_eq!(bridge.dispatch_count(), 1);
+    assert_eq!(bridge.reconcile_count(), 1);
+}
+
+#[test]
+fn expired_lease_takeover_proves_unknown_action_reconciliation() {
+    let directory = tempdir().expect("tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    bridge.push_dispatch_result(BridgeDispatchResult::Unknown {
+        reason: UnknownReason::LostResponse,
+    });
+    let broker = make_broker(directory.path(), bridge.clone());
+    let owner = authority(&broker, "expired-proof-owner");
+    let space = broker.create_space(&owner, "expired-proof").expect("space");
+    let lease = broker
+        .acquire_lease(&space.space_id, &owner, Timestamp::new(0), 100)
+        .expect("lease");
+    let unknown = broker
+        .execute_action(
+            action_request(
+                "expired-proof-action",
+                space.space_id.clone(),
+                None,
+                lease.lease.lease_epoch,
+                ActionOperation::Wait,
+            ),
+            &owner,
+            Timestamp::new(2),
+        )
+        .expect("unknown action")
+        .receipt;
+    assert_eq!(unknown.status, ActionStatus::Unknown);
+
+    let takeover = broker
+        .takeover(&space.space_id, &owner, Timestamp::new(101), 100)
+        .expect("expired lease takeover");
+    assert!(takeover.fence_acknowledged);
+    assert_eq!(takeover.lease_epoch, LeaseEpoch::new(2));
+    let reconciled = broker
+        .reconcile_action(
+            &unknown.action_id,
+            &owner,
+            takeover.lease_epoch,
+            Timestamp::new(102),
+        )
+        .expect("reconciliation after fence")
+        .receipt;
+    assert_eq!(reconciled.status, ActionStatus::Succeeded);
+    assert_eq!(bridge.dispatch_count(), 1);
+    assert_eq!(bridge.reconcile_count(), 1);
+    assert_eq!(
+        broker
+            .finish_space(
+                &space.space_id,
+                &owner,
+                takeover.lease_epoch,
+                Timestamp::new(103),
+            )
+            .expect("finish after reconciliation")
+            .lifecycle,
+        agentyc_core::SpaceLifecycle::Finished
+    );
 }
 
 #[test]
