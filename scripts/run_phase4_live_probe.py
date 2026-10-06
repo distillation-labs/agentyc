@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import shutil
 import signal
 import socket
@@ -19,7 +20,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from artifact_envelope import envelope as add_envelope
@@ -39,6 +42,23 @@ EXTENSION = ROOT / "extension"
 HOST_BINARY = ROOT / "target" / "debug" / "agentyc-native-host"
 MAX_WAIT_SECONDS = 20.0
 CLI_BINARY = ROOT / "target" / "debug" / "agentyc"
+
+
+class _Phase4FixtureHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        body = (
+            b"<!doctype html><html><head><title>Agentyc Phase 4</title></head>"
+            b"<body><main><h1>Extension E2E fixture</h1>"
+            b"<button type='button'>Verify snapshot</button></main></body></html>"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
 
 
 def free_port() -> int:
@@ -92,7 +112,262 @@ def run_cli(state_dir: Path, arguments: list[str]) -> tuple[int, dict[str, Any] 
     return completed.returncode, value if isinstance(value, dict) else None, diagnostic
 
 
-def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, Any]:
+def _mcp_snapshot_read(
+    state_dir: Path,
+    profile_binding: str,
+    space_id: str,
+    page_id: str,
+    lease_epoch: int,
+) -> dict[str, Any]:
+    environment = os.environ.copy()
+    environment["AGENTYC_STATE_DIR"] = str(state_dir)
+    try:
+        endpoint = json.loads((state_dir / "broker.endpoint.json").read_text(encoding="utf-8"))
+        local_socket = endpoint.get("local_socket")
+        if isinstance(local_socket, str) and local_socket:
+            environment["AGENTYC_HOST_SOCKET"] = local_socket
+    except (OSError, json.JSONDecodeError):
+        pass
+    process = subprocess.Popen(
+        [
+            str(CLI_BINARY),
+            "--state-dir",
+            str(state_dir),
+            "--principal",
+            "phase4-live",
+            "--profile-binding-id",
+            profile_binding,
+            "mcp",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=environment,
+        text=True,
+    )
+    request_id = 0
+
+    def send(message: dict[str, Any]) -> None:
+        if process.stdin is None:
+            raise RuntimeError("MCP stdin is unavailable")
+        process.stdin.write(json.dumps(message) + "\n")
+        process.stdin.flush()
+
+    def request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        nonlocal request_id
+        request_id += 1
+        current_id = request_id
+        send({"jsonrpc": "2.0", "id": current_id, "method": method, "params": params})
+        if process.stdout is None:
+            raise RuntimeError("MCP stdout is unavailable")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
+            if not ready:
+                break
+            line = process.stdout.readline()
+            if not line:
+                break
+            response = json.loads(line)
+            if response.get("id") == current_id:
+                return response
+        raise RuntimeError(f"MCP {method} did not return a response")
+
+    try:
+        initialized = request(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "phase4-live-probe", "version": "1"},
+            },
+        )
+        if not isinstance(initialized.get("result"), dict):
+            return {"status": "failed", "outcome_code": "mcp_initialize_failed"}
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        page_list = request(
+            "tools/call",
+            {"name": "host_page_list", "arguments": {"space_id": space_id}},
+        ).get("result", {})
+        page_content = page_list.get("structuredContent", {}).get("result", {})
+        pages = page_content.get("pages", []) if isinstance(page_content, dict) else []
+        page = next(
+            (item for item in pages if isinstance(item, dict) and item.get("page_id") == page_id),
+            None,
+        )
+        page_binding = page.get("binding") if isinstance(page, dict) else None
+        if page_binding != "bound":
+            return {
+                "status": "partial",
+                "page_binding": page_binding or "not_found",
+                "snapshot_hash": None,
+                "logical_ref_count": 0,
+            }
+        response = request(
+            "tools/call",
+            {
+                "name": "host_snapshot_read",
+                "arguments": {
+                    "space_id": space_id,
+                    "page_id": page_id,
+                    "lease_epoch": lease_epoch,
+                },
+            },
+        ).get("result", {})
+        content = response.get("structuredContent", {})
+        error = content.get("error", {}) if isinstance(content, dict) else {}
+        result = content.get("result", {}) if isinstance(content, dict) else {}
+
+        def find_field(value: Any, field: str) -> Any:
+            if isinstance(value, dict):
+                if field in value:
+                    return value[field]
+                for child in value.values():
+                    found = find_field(child, field)
+                    if found is not None:
+                        return found
+            elif isinstance(value, list):
+                for child in value:
+                    found = find_field(child, field)
+                    if found is not None:
+                        return found
+            return None
+
+        snapshot_hash = find_field(result, "snapshot_hash")
+        refs = find_field(result, "refs")
+        ref_count = len(refs) if isinstance(refs, (dict, list)) else 0
+        successful = (
+            response.get("isError") is not True
+            and content.get("ok") is True
+            and isinstance(snapshot_hash, str)
+            and snapshot_hash
+        )
+        if not successful:
+            return {
+                "status": "partial",
+                "page_binding": "bound",
+                "snapshot_hash": snapshot_hash if isinstance(snapshot_hash, str) else None,
+                "logical_ref_count": ref_count,
+                "outcome_code": error.get("code") if isinstance(error, dict) else None,
+                "action_status": None,
+                "page_unbound_after_action": False,
+            }
+
+        action_id = "action_phase4_mcp_close"
+        action_request = {
+            "name": "host_action_execute",
+            "arguments": {
+                "request_id": "req_phase4_mcp_close",
+                "action_id": action_id,
+                "idempotency_key": "idem_phase4_mcp_close",
+                "space_id": space_id,
+                "page_id": page_id,
+                "lease_epoch": lease_epoch,
+                "operation": "close",
+            },
+        }
+        action_transport_unknown = False
+        try:
+            action_response = request("tools/call", action_request).get("result", {})
+        except RuntimeError:
+            action_response = {}
+            action_transport_unknown = True
+        action_content = action_response.get("structuredContent", {})
+        action_receipt = find_field(action_content, "receipt")
+        action_status = (
+            action_receipt.get("status")
+            if isinstance(action_receipt, dict)
+            else None
+        )
+        action_error = action_content.get("error", {}) if isinstance(action_content, dict) else {}
+        action_unknown = (
+            action_transport_unknown
+            or action_status == "unknown"
+            or (
+                isinstance(action_error, dict)
+                and action_error.get("code") == "unknown_outcome"
+            )
+        )
+        if action_unknown:
+            reconciled = request(
+                "tools/call",
+                {
+                    "name": "host_action_reconcile",
+                    "arguments": {
+                        "action_id": action_id,
+                        "lease_epoch": lease_epoch,
+                    },
+                },
+            ).get("result", {})
+            reconciled_receipt = find_field(
+                reconciled.get("structuredContent", {}),
+                "receipt",
+            )
+            if isinstance(reconciled_receipt, dict):
+                action_status = reconciled_receipt.get("status", action_status)
+
+        page_unbound_after_action = False
+        page_binding_after = None
+        page_lifecycle_after = None
+        for attempt in range(10):
+            after_response = request(
+                "tools/call",
+                {"name": "host_page_list", "arguments": {"space_id": space_id}},
+            ).get("result", {})
+            after_content = after_response.get("structuredContent", {}).get("result", {})
+            after_pages = after_content.get("pages", []) if isinstance(after_content, dict) else []
+            after_page = next(
+                (
+                    item
+                    for item in after_pages
+                    if isinstance(item, dict) and item.get("page_id") == page_id
+                ),
+                None,
+            )
+            page_binding_after = (
+                after_page.get("binding") if isinstance(after_page, dict) else None
+            )
+            page_lifecycle_after = (
+                after_page.get("lifecycle") if isinstance(after_page, dict) else None
+            )
+            page_unbound_after_action = (
+                after_page is None
+                or page_binding_after in ("closed", "lost")
+                or page_lifecycle_after in ("closed", "lost")
+            )
+            if page_unbound_after_action or attempt == 9:
+                break
+            time.sleep(0.2)
+        successful = (
+            action_response.get("isError") is not True
+            and action_status == "succeeded"
+            and page_unbound_after_action
+        )
+        return {
+            "status": "passed" if successful else "partial",
+            "page_binding": "bound",
+            "snapshot_hash": snapshot_hash if isinstance(snapshot_hash, str) else None,
+            "logical_ref_count": ref_count,
+            "outcome_code": error.get("code") if isinstance(error, dict) else None,
+            "action_status": action_status,
+            "page_binding_after": page_binding_after,
+            "page_lifecycle_after": page_lifecycle_after,
+            "page_unbound_after_action": page_unbound_after_action,
+        }
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+
+
+def run_probe(
+    chrome_path: str | None,
+    exercise_cli: bool = False,
+    exercise_mcp_e2e: bool = False,
+) -> dict[str, Any]:
     if not HOST_BINARY.is_file() or not os.access(HOST_BINARY, os.X_OK):
         raise RuntimeError("build target/debug/agentyc-native-host before running this probe")
     manifest = json.loads((EXTENSION / "manifest.json").read_text(encoding="utf-8"))
@@ -104,6 +379,17 @@ def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, 
         raise RuntimeError("Google Chrome was not found")
 
     profile = Path(tempfile.mkdtemp(prefix="agentyc-phase4-profile-"))
+    fixture_server = ThreadingHTTPServer(("127.0.0.1", 0), _Phase4FixtureHandler) if exercise_mcp_e2e else None
+    fixture_thread = None
+    if fixture_server is not None:
+        fixture_thread = Thread(target=fixture_server.serve_forever, daemon=True)
+        fixture_thread.start()
+    fixture_url = (
+        f"http://127.0.0.1:{fixture_server.server_port}/"
+        if fixture_server is not None
+        else "data:text/html,<title>agentyc-phase4</title>"
+    )
+    exercise_cli = exercise_cli or exercise_mcp_e2e
     extension_copy = profile / "extension"
     state_dir = profile / "state"
     native_dir = profile / "NativeMessagingHosts"
@@ -126,7 +412,7 @@ def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, 
         profile,
         port,
         extension_dir=None,
-        fixture_url="data:text/html,<title>agentyc-phase4</title>",
+        fixture_url=fixture_url,
         operator_assisted=False,
     )
     stderr_path = profile / "chrome.stderr.log"
@@ -166,6 +452,7 @@ def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, 
             cli_lease = None
             cli_page = None
             cli_errors = []
+            mcp_e2e = None
             if exercise_cli and worker_seen and endpoint_seen:
                 code, status, error = run_cli(state_dir, ["host", "status"])
                 cli_status = code == 0 and status is not None
@@ -215,13 +502,27 @@ def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, 
                                     "--label",
                                     "phase4-page",
                                     "--url",
-                                    "https://example.test/",
+                                    fixture_url if exercise_mcp_e2e else "https://example.test/",
                                 ],
                             )
                             page_result = page.get("result", page) if page else None
                             cli_page = code == 0 and isinstance(page_result, dict)
                             if code != 0 or page is None:
                                 cli_errors.append(f"page.create-managed:{error[:256]}")
+                            page_id = page_result.get("page_id") if isinstance(page_result, dict) else None
+                            if (
+                                exercise_mcp_e2e
+                                and cli_page
+                                and isinstance(page_id, str)
+                                and isinstance(lease_epoch, int)
+                            ):
+                                mcp_e2e = _mcp_snapshot_read(
+                                    state_dir,
+                                    profile_binding,
+                                    space_id,
+                                    page_id,
+                                    lease_epoch,
+                                )
             host_debug_tail = ""
             try:
                 host_debug_tail = (profile / "host-debug.log").read_text(errors="replace")[-4096:]
@@ -245,6 +546,10 @@ def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, 
                     not exercise_cli
                     or (cli_status and cli_space and cli_lease and cli_page)
                 )
+                and (
+                    not exercise_mcp_e2e
+                    or (isinstance(mcp_e2e, dict) and mcp_e2e.get("status") == "passed")
+                )
                 else "failed",
                 "extension_load": load_evidence,
                 "service_worker_seen": worker_seen,
@@ -258,6 +563,7 @@ def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, 
                 "cli_space_claim": cli_lease,
                 "cli_page_create_managed": cli_page,
                 "cli_errors": cli_errors,
+                "mcp_e2e": mcp_e2e,
                 "chrome_stderr_tail": stderr_tail,
                 "host_debug_tail": host_debug_tail,
                 "nonclaims": [
@@ -277,12 +583,18 @@ def run_probe(chrome_path: str | None, exercise_cli: bool = False) -> dict[str, 
         except Exception:
             pass
         shutil.rmtree(profile, ignore_errors=True)
+        if fixture_server is not None:
+            fixture_server.shutdown()
+            fixture_server.server_close()
+        if fixture_thread is not None:
+            fixture_thread.join(timeout=2)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--chrome-binary")
     parser.add_argument("--exercise-cli", action="store_true")
+    parser.add_argument("--exercise-mcp-e2e", action="store_true")
     parser.add_argument(
         "--artifact-dir",
         type=Path,
@@ -290,7 +602,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        report = run_probe(args.chrome_binary, args.exercise_cli)
+        report = run_probe(args.chrome_binary, args.exercise_cli, args.exercise_mcp_e2e)
     except Exception as error:  # bounded CLI diagnostic; no secret or page data is printed
         report = {
             "schema_version": 1,
