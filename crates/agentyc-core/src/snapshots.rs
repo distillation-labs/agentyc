@@ -1512,6 +1512,26 @@ mod tests {
             .validate_against(&envelope.provenance())
             .expect("matching provenance");
 
+        let missing_key = ElementKey::from_suffix("missing").expect("element key");
+        let error = envelope
+            .make_ref(
+                RefId::from_suffix("missing").expect("ref"),
+                FrameId::from_suffix("main").expect("frame"),
+                missing_key,
+            )
+            .expect_err("an element key outside the snapshot cannot issue a ref");
+        assert_eq!(error.code, ErrorCode::StaleRef);
+
+        let mut missing_element_key = serde_json::to_value(&reference).expect("ref json");
+        missing_element_key
+            .as_object_mut()
+            .expect("ref object")
+            .remove("element_key");
+        assert!(
+            serde_json::from_value::<ElementRef>(missing_element_key).is_err(),
+            "an element ref without an element key must be rejected"
+        );
+
         let mut malformed = envelope.clone();
         malformed.omitted = vec!["x".repeat(MAX_SNAPSHOT_OMITTED_FIELD_BYTES + 1)];
         let error = malformed
