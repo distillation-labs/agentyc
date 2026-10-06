@@ -586,11 +586,20 @@ impl HostAdapter {
     }
 
     /// Acknowledge a pending host fence.
-    pub fn acknowledge_fence(&self, space_id: &SpaceId, lease_epoch: LeaseEpoch) -> CallToolResult {
-        takeover_result(
-            self.broker
-                .acknowledge_fence(space_id, self.authority(), lease_epoch),
-        )
+    pub fn acknowledge_fence(
+        &self,
+        space_id: &SpaceId,
+        lease_epoch: LeaseEpoch,
+        now: Timestamp,
+        ttl: u64,
+    ) -> CallToolResult {
+        takeover_result(self.broker.acknowledge_fence_with_ttl(
+            space_id,
+            self.authority(),
+            lease_epoch,
+            now,
+            ttl,
+        ))
     }
 
     fn remember_control_ticket(&self, ticket: &ControlTicket) -> Result<(), CoreError> {
