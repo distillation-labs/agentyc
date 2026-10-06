@@ -64,9 +64,24 @@ fn takeover_fence_pending_blocks_old_epoch_until_acknowledged() {
     ));
     bridge.set_fence_acknowledged(true);
     let ready = broker
-        .acknowledge_fence(&space.space_id, &owner, takeover.lease_epoch)
+        .acknowledge_fence_with_ttl(
+            &space.space_id,
+            &owner,
+            takeover.lease_epoch,
+            Timestamp::new(102),
+            1_000,
+        )
         .expect("fence ack");
     assert_eq!(ready.lifecycle, agentyc_core::SpaceLifecycle::AgentOwned);
+    assert_eq!(
+        broker
+            .describe_space(&owner, &space.space_id)
+            .expect("renewed lease")
+            .lease
+            .expect("lease")
+            .expires_at,
+        Timestamp::new(1_102)
+    );
 }
 
 #[test]
