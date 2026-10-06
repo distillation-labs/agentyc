@@ -53,7 +53,7 @@ A scenario is not successful because a process exits cleanly. It must assert sem
 The current MCP contract and release suite must test:
 
 - Stdio initialize/initialized/shutdown lifecycle, notifications, malformed JSON/JSON-RPC, invalid params, unknown methods/tools, duplicate IDs, out-of-order responses, EOF, deadlines, and cancellation.
-- The host-backed inventory: 29 offline routes and 30 connected-catalog routes, each named `host_*`; the 12 unavailable routes must return typed `capability_unavailable` before forwarding.
+- The host-backed inventory: 29 offline routes and 30 connected-catalog routes, each named `host_*`; the 11 unavailable routes must return typed `capability_unavailable` before forwarding.
 - The actual input schemas, logical identity scope, disclosure requirements, structured results, and error mapping for the shipped host-backed routes. Do not use archived default/extended manifests as current tool evidence.
 - Canonical error mapping: tool execution errors preserve `CallToolResult.isError=true`; protocol/transport errors remain protocol/transport errors. Errors include stable codes and reconciliation guidance without secrets or raw browser IDs.
 - Multiple connections sharing one broker, out-of-order responses, per-space mutation ordering, event isolation, duplicate idempotency keys, lease expiry, takeover fences, cancellation, disconnect/reconnect, and replay gaps.
