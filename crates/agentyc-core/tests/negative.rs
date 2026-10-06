@@ -191,6 +191,7 @@ fn stale_lease_and_ref_are_rejected_before_side_effects() {
     };
     let stale = agentyc_core::ElementRef {
         ref_id: agentyc_core::RefId::from_suffix("ref").expect("ref"),
+        element_key: agentyc_core::ElementKey::from_suffix("root").expect("element key"),
         space_id: provenance.space_id.clone(),
         page_id: provenance.page_id.clone(),
         frame_id: agentyc_core::FrameId::from_suffix("main").expect("frame"),
