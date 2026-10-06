@@ -6,7 +6,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use agentyc_core::{
@@ -521,6 +521,29 @@ impl ProtocolServer {
                 let now = Timestamp::new(parse_u64(&request.params, "now")?.unwrap_or(0));
                 let ttl = required_u64(&request.params, "ttl")?;
                 let takeover = self.broker.takeover(&space_id, authority, now, ttl)?;
+                put_json(&mut result, "space_id", &takeover.space_id)?;
+                put_json(&mut result, "lease_epoch", &takeover.lease_epoch)?;
+                put_json(
+                    &mut result,
+                    "fence_acknowledged",
+                    &takeover.fence_acknowledged,
+                )?;
+                put_json(&mut result, "lifecycle", &takeover.lifecycle)?;
+            }
+            "space.acknowledge_fence" => {
+                let space_id = parse_space(required(&request.params, "space_id")?)?;
+                let lease_epoch = LeaseEpoch::new(required_u64(&request.params, "lease_epoch")?);
+                let now = Timestamp::new(
+                    parse_u64(&request.params, "now")?.unwrap_or_else(current_timestamp_millis),
+                );
+                let ttl = parse_u64(&request.params, "ttl")?.unwrap_or(60_000);
+                let takeover = self.broker.acknowledge_fence_with_ttl(
+                    &space_id,
+                    authority,
+                    lease_epoch,
+                    now,
+                    ttl,
+                )?;
                 put_json(&mut result, "space_id", &takeover.space_id)?;
                 put_json(&mut result, "lease_epoch", &takeover.lease_epoch)?;
                 put_json(
@@ -2712,6 +2735,15 @@ fn context_request_from_params(
     Ok(request)
 }
 
+fn current_timestamp_millis() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+        .min(u128::from(u64::MAX));
+    millis as u64
+}
+
 fn parse_u64(params: &BTreeMap<String, String>, key: &str) -> Result<Option<u64>, HostError> {
     params
         .get(key)
@@ -3506,14 +3538,17 @@ mod tests {
     #[test]
     fn direct_methods_dispatch_bounded_json_results() {
         let directory = tempdir().expect("tempdir");
-        let bridge = FakeBridge::new();
+        let bridge = Arc::new(FakeBridge::new());
         bridge.set_bridge_status(BridgeStatus {
             profile_instance_id: Some("profile_live".to_owned()),
             extension_version: Some("2.0.0".to_owned()),
             worker_instance_epoch: Some(4),
             browser_session_epoch: Some(5),
         });
-        let broker = Broker::open(directory.path(), bridge).expect("broker");
+        let broker = Broker::with_shared_bridge(
+            crate::ledger::Ledger::open(directory.path()).expect("ledger"),
+            bridge.clone(),
+        );
         let mut server = ProtocolServer::new(broker);
         let hello = Envelope::Hello(HelloEnvelope {
             protocol: PROTOCOL_VERSION,
@@ -3657,6 +3692,7 @@ mod tests {
         assert_eq!(json_field(&status, "browser_session_epoch"), 5);
         assert_eq!(json_field(&status, "connection_epoch"), 1);
 
+        bridge.set_fence_acknowledged(false);
         let takeover = request(
             "space.takeover",
             BTreeMap::from([
@@ -3668,7 +3704,22 @@ mod tests {
         let takeover_epoch = json_field(&takeover, "lease_epoch")
             .as_u64()
             .expect("takeover epoch");
-        assert_eq!(json_field(&takeover, "fence_acknowledged"), true);
+        assert_eq!(json_field(&takeover, "fence_acknowledged"), false);
+        assert_eq!(json_field(&takeover, "lifecycle"), "fence_pending");
+
+        bridge.set_fence_acknowledged(true);
+        let acknowledged = request(
+            "space.acknowledge_fence",
+            BTreeMap::from([
+                ("space_id".to_owned(), space_id.clone()),
+                ("lease_epoch".to_owned(), takeover_epoch.to_string()),
+                ("now".to_owned(), "10".to_owned()),
+                ("ttl".to_owned(), "1000".to_owned()),
+            ]),
+        );
+        assert_eq!(json_field(&acknowledged, "fence_acknowledged"), true);
+        assert_eq!(json_field(&acknowledged, "lifecycle"), "agent_owned");
+        assert_eq!(json_field(&acknowledged, "lease_epoch"), takeover_epoch);
 
         let finished = request(
             "space.finish",
