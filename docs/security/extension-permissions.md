@@ -1,8 +1,10 @@
 # Extension permissions and capability policy
 
-**Status:** Phase 1 normative security artifact  
+**Status:** Historical Phase 1 artifact; superseded for the current product
 **Owner:** host policy and extension adapter owners  
 **Scope:** MV3 existing-Chrome mode; the managed test extension is a separate fixture and does not widen product authority.
+
+> **Superseded for the current product:** This Phase 1 permission model describes an earlier extension-owned debugger, content-script, and side-panel design. The current extension is a background-only Native Messaging tab-creation bridge; it does not request `debugger`, `tabs`, `tabGroups`, or `sidePanel` permissions, host permissions, or content scripts. It calls `chrome.tabs.create` only. Do not use the historical permission matrix below as current install guidance.
 
 The extension is a browser adapter, not an authority store. Chrome permission grants are necessary but never sufficient for a mutation: the host must admit the enrolled profile binding, principal, space/page, lease epoch, capability, policy, generation, and user-intent ticket where required. A successful Chrome API call does not authenticate the caller.
 
