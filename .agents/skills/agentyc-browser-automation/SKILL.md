@@ -36,7 +36,7 @@ In the CLI, mutations use `agentyc action execute --operation <OPERATION>`; conv
 ## Choose the right frontend
 
 - **Host-backed CLI and Node SDK (primary):** use logical task spaces and pages through the host-owned protocol for standard agent workflows.
-- **MCP (compatibility-only):** use only when an existing agent client strictly requires an MCP stdio adapter. It exposes logical host routes only; 29 routes are listed by the offline server, the remote catalog declares 30 with 12 returning `capability_unavailable`, and headed live Chrome validation has not run. Do not treat MCP as distribution-ready or as the canonical state owner.
+- **MCP (compatibility-only):** use only when an existing agent client strictly requires an MCP stdio adapter. It exposes logical host routes only; 29 routes are listed by the offline server and the remote catalog declares 30 (19 supported, 11 returning `capability_unavailable`). A limited existing-profile run passed stdio, host/Native Messaging connection, and extension fence/rebind; snapshot/action reconciliation and the full release workflows remain incomplete. Do not treat MCP as distribution-ready or as the canonical state owner.
 - Standalone direct-CDP `browser`, `run`, and `repl` CLI commands have been removed. CDP-based installation/test harnesses are not user-facing interfaces; the extension's `chrome.debugger` backend remains.
 
 ## Runnable tested example (offline test seam)
@@ -113,7 +113,7 @@ Report the objective, the commands executed, the observed evidence (snapshot has
 
 ## MCP compatibility boundary
 
-MCP exposes host-backed logical operations over stdio only. The offline server lists 29 routes; the connected remote catalog declares 30, with 12 currently returning `capability_unavailable`. Headed live Chrome validation has not run, so MCP is not distribution-ready. Do not use or advertise the removed `browser_*` MCP tools, direct-CDP MCP mode, or HTTP `serve` route. See `docs/mcp-compatibility.md` for route-level details.
+MCP exposes host-backed logical operations over stdio only. The offline server lists 29 routes; the connected remote catalog declares 30, with 19 supported and 11 currently returning `capability_unavailable`. A limited existing-profile run passed fence/rebind, but snapshot/action reconciliation and the full release workflows remain incomplete, so MCP is not distribution-ready. `host_lease_acknowledge_fence` retries a pending takeover fence without allocating a new epoch. Do not use or advertise the removed `browser_*` MCP tools, direct-CDP MCP mode, or HTTP `serve` route. See `docs/mcp-compatibility.md` for route-level details.
 
 ```json
 {
