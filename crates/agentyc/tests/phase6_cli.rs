@@ -41,6 +41,24 @@ fn help_exposes_only_host_backed_commands_and_mcp_options() {
             "removed MCP option remains: {removed}"
         );
     }
+
+    let space_help = Command::new(binary)
+        .args(["space", "--help"])
+        .output()
+        .expect("space help");
+    assert!(space_help.status.success());
+    let space_help = String::from_utf8(space_help.stdout).expect("space help UTF-8");
+    assert!(space_help.contains("acknowledge-fence"));
+
+    let acknowledge_help = Command::new(binary)
+        .args(["space", "acknowledge-fence", "--help"])
+        .output()
+        .expect("fence acknowledgement help");
+    assert!(acknowledge_help.status.success());
+    let acknowledge_help = String::from_utf8(acknowledge_help.stdout).expect("fence help UTF-8");
+    assert!(acknowledge_help.contains("--space-id"));
+    assert!(acknowledge_help.contains("--lease-epoch"));
+    assert!(acknowledge_help.contains("--ttl"));
 }
 
 #[test]
