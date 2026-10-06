@@ -2,7 +2,7 @@
 
 **Status:** Phase 1 normative security artifact  
 **Authority:** `agentyc-host` broker and the transport-neutral core contract  
-**Scope:** local CLI/SDK clients, the host broker, and the Chrome Native Messaging bridge.
+**Scope:** local CLI/SDK clients, the host broker, the host CDP connection, and the extension's tab-creation Native Messaging bridge.
 
 The host broker is the sole mutation authority for an enrolled profile binding. The local client protocol is not MCP, and Native Messaging is not the agent-facing API. A transport connection, session label, profile selector, Chrome API success, or client-supplied principal never grants authority by itself.
 
@@ -10,16 +10,16 @@ The host broker is the sole mutation authority for an enrolled profile binding. 
 
 ```text
 agent client -- local OS IPC --> host broker -- Native Messaging --> extension
-                                      |                              |
-                                      |                              +-- Chrome APIs
-                                      +-- ledger, leases, policy       +-- existing Chrome
+                                      |                               `-- chrome.tabs.create only
+                                      `-- loopback CDP --> dedicated Chrome profile
 ```
 
 | Boundary              | Trusted input                                            | Untrusted input                                                                    | Required admission                                                                                                                                   |
 | --------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | local client to host  | owner-only state directory/socket and a live host lock   | all bytes, claimed principal, labels, profile selectors, methods, and params       | private path permissions, bounded framing, protocol/version/schema/nonce/sequence checks; principal is a same-user logical label, not authentication |
 | Chrome to native host | caller origin supplied by Chrome transport metadata      | JSON fields that claim an origin, extension identity, profile, lease, or authority | exact registered origin, exact extension identity, binding state, handshake, nonce/sequence, epochs, capability                                      |
-| extension to Chrome   | validated host command and current extension lease fence | page content, page messages, URLs, titles, tab groups, browser IDs                 | extension-side schema, nonce, generation, capability, and lease checks at execution                                                                  |
+| extension to Chrome   | validated host `tab.create` request                       | every other browser operation and all page data                                       | strict bootstrap URL validation; create one inactive tab only                                                                                       |
+| host to Chrome        | host CDP connection restricted to loopback                | page content, URLs, titles, DOM, and CDP results                                      | logical ownership, lease, policy, generation, method allowlist, and bounded CDP transport                                                            |
 | host to ledger        | host-owned state and atomic writer                       | symlink/path replacement, partial or incompatible records                          | restrictive directory, exclusive lock, checksum/schema validation, atomic replacement                                                                |
 
 The product treats OS peer identity as the owner-only path/ACL boundary and trusts installed extension and host processes running as the same OS user for the local boundary. It does **not** claim protection from malware or a hostile process running as that same OS user. A direct execution of the native host binary cannot be cryptographically distinguished from a Chrome-launched native host under that threat model; it still cannot bypass local OS admission, exact protocol checks, leases, epochs, or policy.
@@ -33,7 +33,7 @@ Remote TCP is disabled by default and is not a fallback when local IPC or Native
 - One broker owns one enrolled profile binding and one local endpoint. The lock is acquired before serving and held for the broker lifetime. A second process exits with a typed `host_already_running` result; it never steals a lock based only on a stale PID or timestamp.
 - The broker allocates `broker_epoch` and connection identity. A client-provided principal is not authentication: the `principal_id` is a bounded same-user logical label used for space visibility. Profile selectors are binding metadata and require the separate enrollment/rebind gate before production mutation authority.
 - A host restart creates a new `broker_epoch`. In-flight post-dispatch actions become `unknown` until reconciliation; raw commands are not replayed.
-- The host has no authority to launch/download Chrome or switch profiles; there is no automatic browser launch. Extension connection failure returns a typed unavailable result and leaves pages retained.
+- The user starts a dedicated Chrome profile with a loopback debugging endpoint. The host does not launch/download Chrome or switch profiles. Extension connection failure blocks tab creation only; existing CDP-bound pages remain host-controlled.
 
 ## 3. Framing and bounded allocation
 
@@ -76,7 +76,7 @@ Every accepted envelope is one of `hello`, `hello_ok`, `request`, `response`, `e
 - `broker_epoch`, `connection_epoch`, lease epoch, sequence, and event watermark;
 - capability, generation, result/error, retry classification, and warnings.
 
-A client cannot send a browser target/session/tab identifier as a public routing field. Any browser-generated value used internally by the extension is an opaque, redacted reconciliation hint and is never accepted as an authorization proof.
+A client cannot send a browser target/session/tab identifier as a public routing field. Browser-generated identifiers remain private host-side CDP handles and are never accepted as authorization proof; the extension does not receive or return them.
 
 ### Local client handshake
 
@@ -97,20 +97,22 @@ The Chrome-supplied caller origin is transport metadata. It is read from the Nat
 - `broker_epoch`, `connection_epoch`, `browser_session_epoch`, and `worker_instance_epoch` declarations plus capability;
 - bounded message/chunk/artifact counters.
 
-A presented `profile_instance_id` only selects a binding. A mismatch, copied profile, reinstall, storage reset, or extension identity change enters `rebind_required`, fences the previous authority, and requires explicit side-panel/installer confirmation. No payload boolean can clear that state.
+A presented `profile_instance_id` only selects a binding. A mismatch, copied profile, reinstall, storage reset, or extension identity change enters `rebind_required` and fences the previous authority. Rebinding requires an explicit host-mediated confirmation; no payload boolean can clear that state.
+
+The current extension advertises no page-control capabilities. Its only supported host request is `tab.create`, with one validated bootstrap URL; it creates the tab inactive and returns a success receipt without a Chrome tab ID. Unsupported requests fail closed.
 
 Sequence numbers start at one for each direction of a new connection epoch. Reconnect always creates a new connection epoch and nonce; a sequence from a prior connection cannot be replayed in the new one. Duplicate sequence/request identities are idempotent only when the stored request hash and connection/lease context match.
 
 ## 5. Requests, actions, cancellation, and events
 
-A request is transport work; an action is a durable broker mutation. The host matches responses by `request_id`, permits out-of-order responses, and records `action_id`/`idempotency_key` for mutations. Every mutation is checked at enqueue, dequeue, and immediately before extension dispatch.
+A request is transport work; an action is a durable broker mutation. The host matches responses by `request_id`, permits out-of-order responses, and records `action_id`/`idempotency_key` for mutations. Every mutation is checked at enqueue, dequeue, and immediately before host-side CDP dispatch.
 
 - A deadline is required or bounded by the host. A client cannot extend it beyond the policy ceiling by retrying.
 - Cancellation before dispatch removes or rejects queued work. Cancellation after dispatch stops waiting but does not claim that the browser side effect did not happen; the action becomes `unknown` until reconciled.
 - A `cancel` message is scoped to the connection, principal, request/action, and current lease epoch. Stale cancellation cannot cancel a replacement action.
 - Events are broker-sequenced, scope-filtered by `space_id`/`page_id`, and resumed from an event watermark. A lagged or invalid watermark returns `event_lagged` and a bounded resync path.
-- A worker restart, Native Messaging EOF, host crash, browser restart, or debugger detach creates an explicit reconnect/reconciliation path. The host never replays clicks, inputs, navigation, uploads, storage writes, cookie operations, evaluation, or close operations.
-- User takeover increments the lease epoch, fences old queues, sends an extension fence barrier, and waits for a durable acknowledgement. Lower-epoch commands are rejected at extension execution time. Missing acknowledgement leaves the space paused in `fence_pending`.
+- A worker restart or Native Messaging EOF makes tab creation unavailable; it does not interrupt the host's CDP control of existing pages. Host crash, browser restart, or CDP disconnect creates a host reconciliation path. The host never replays clicks, inputs, navigation, uploads, storage writes, cookie operations, evaluation, or close operations.
+- User takeover increments the lease epoch and fences host-side queues before further CDP dispatch. It does not depend on extension UI or an extension browser-action acknowledgement.
 
 ## 6. Artifact transfer
 
