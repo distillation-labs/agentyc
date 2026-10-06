@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     thread,
     time::{Duration, Instant},
 };
@@ -20,11 +20,15 @@ use agentyc_core::{
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, client::IntoClientRequest};
 
-use crate::bridge::{
-    Bridge, BridgeDispatchResult, BridgeReconcileResult, FenceResult, ObservationSnapshot,
+use crate::{
+    actionability::ActionabilityInput,
+    bridge::{
+        Bridge, BridgeDispatchResult, BridgeReconcileResult, BridgeStatus, ExtensionEpochs,
+        FenceResult, ObservationSnapshot,
+    },
 };
 
-const DEFAULT_CDP_PORT: u16 = 9222;
+pub const DEFAULT_CDP_PORT: u16 = 9222;
 const CDP_TARGET_DISCOVERY_INTERVAL: Duration = Duration::from_millis(25);
 const CDP_TARGET_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const CDP_MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
@@ -39,6 +43,71 @@ const MAX_CDP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 /// supplied bootstrap URL without returning a browser identifier.
 pub(crate) trait TabCreationTransport: Send + Sync {
     fn create_tab(&self, bootstrap_url: &str) -> Result<(), CoreError>;
+
+    fn extension_epochs(&self) -> Option<ExtensionEpochs> {
+        None
+    }
+
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        None
+    }
+}
+
+#[derive(Default)]
+pub struct TabCreationTransportRouter {
+    current: RwLock<Option<Arc<dyn TabCreationTransport>>>,
+}
+
+impl TabCreationTransportRouter {
+    fn install(&self, transport: Arc<dyn TabCreationTransport>) -> Result<(), CoreError> {
+        *self.current.write().map_err(|_| {
+            CoreError::new(
+                ErrorCode::NativeHostUnavailable,
+                "tab creation transport router is poisoned",
+            )
+        })? = Some(transport);
+        Ok(())
+    }
+
+    pub fn install_native_messaging_bridge(
+        &self,
+        bridge: crate::native_messaging::NativeMessagingBridge,
+    ) -> Result<(), CoreError> {
+        self.install(Arc::new(bridge))
+    }
+
+    fn current(&self) -> Result<Arc<dyn TabCreationTransport>, CoreError> {
+        self.current
+            .read()
+            .map_err(|_| {
+                CoreError::new(
+                    ErrorCode::NativeHostUnavailable,
+                    "tab creation transport router is poisoned",
+                )
+            })?
+            .clone()
+            .ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::ExtensionNotConnected,
+                    "extension tab creation transport is unavailable",
+                )
+            })
+    }
+}
+
+impl TabCreationTransport for TabCreationTransportRouter {
+    fn create_tab(&self, bootstrap_url: &str) -> Result<(), CoreError> {
+        validate_bootstrap_url(bootstrap_url)?;
+        self.current()?.create_tab(bootstrap_url)
+    }
+
+    fn extension_epochs(&self) -> Option<ExtensionEpochs> {
+        self.current.read().ok()?.as_ref()?.extension_epochs()
+    }
+
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        self.current.read().ok()?.as_ref()?.bridge_status()
+    }
 }
 
 fn bootstrap_url(page_id: &PageId, lease_epoch: LeaseEpoch) -> String {
@@ -126,10 +195,11 @@ fn map_websocket_error(error: tungstenite::Error) -> CdpWireError {
 struct CdpClient {
     wire: Box<dyn CdpWire>,
     next_id: u64,
+    usable: bool,
 }
 
 /// Composition of host CDP control with the extension's tab-create-only seam.
-pub(crate) struct CdpBridge {
+pub struct CdpBridge {
     state: Mutex<CdpBridgeState>,
     tab_creation: Arc<dyn TabCreationTransport>,
 }
@@ -154,8 +224,8 @@ struct ManagedPage {
 }
 
 impl CdpBridge {
-    pub(crate) fn connect_local(
-        tab_creation: Arc<dyn TabCreationTransport>,
+    pub fn connect_local(
+        tab_creation: Arc<TabCreationTransportRouter>,
         port: u16,
         timeout: Duration,
     ) -> Result<Self, CoreError> {
@@ -168,6 +238,7 @@ impl CdpBridge {
         })
     }
 
+    #[cfg(test)]
     fn with_client(client: CdpClient, tab_creation: Arc<dyn TabCreationTransport>) -> Self {
         Self {
             state: Mutex::new(CdpBridgeState {
@@ -178,6 +249,7 @@ impl CdpBridge {
         }
     }
 
+    #[cfg(test)]
     fn create_tab_and_find_target(
         &self,
         page_id: &PageId,
@@ -204,6 +276,14 @@ impl CdpBridge {
                 "host CDP bridge state is poisoned",
             )
         })
+    }
+
+    fn invalidate_pages_if_client_unusable(&self) -> Result<(), CoreError> {
+        let mut state = self.lock_state()?;
+        if !state.client.is_usable() {
+            state.pages.clear();
+        }
+        Ok(())
     }
 
     fn navigate_page(
@@ -258,11 +338,177 @@ impl CdpBridge {
         updated.document_generation = document_generation;
         Ok(())
     }
+
+    fn dispatch_element_action(
+        &self,
+        request: &ActionRequest<std::collections::BTreeMap<String, String>>,
+    ) -> Result<(), CoreError> {
+        let page_id = request
+            .page_id
+            .as_ref()
+            .ok_or_else(|| CoreError::new(ErrorCode::PageNotFound, "page is required"))?;
+        let input = ActionabilityInput::from_payload(&request.payload)?.ok_or_else(|| {
+            CoreError::invalid_argument("element action requires a complete issued ref")
+        })?;
+        let element_ref = input.element_ref;
+        let mut state = self.lock_state()?;
+        let key = (request.space_id.clone(), page_id.clone());
+        let page = state.pages.get(&key).cloned().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::PageNotFound,
+                "managed browser page was not found",
+            )
+        })?;
+        if page.lease_epoch != request.lease_epoch {
+            return Err(CoreError::stale_lease(
+                page.lease_epoch.get(),
+                request.lease_epoch.get(),
+            ));
+        }
+        if element_ref.space_id != request.space_id
+            || element_ref.page_id != *page_id
+            || element_ref.frame_id != input.frame_id
+            || element_ref.frame_id
+                != FrameId::from_suffix("main")
+                    .map_err(|_| CoreError::invalid_argument("main frame identity is invalid"))?
+            || element_ref.snapshot_version.get() != page.snapshot_version
+            || element_ref.navigation_generation.get() != page.navigation_generation
+            || element_ref.document_generation.get() != page.document_generation
+            || element_ref.refs_epoch.get() != page.snapshot_version
+        {
+            return Err(CoreError::stale_ref(
+                "element ref no longer matches the managed page snapshot",
+            ));
+        }
+        let backend_node_id = page
+            .backend_nodes
+            .get(&element_ref.element_key)
+            .copied()
+            .ok_or_else(|| CoreError::stale_ref("element key is not bound to a live DOM node"))?;
+
+        state.client.command(
+            "DOM.getDocument",
+            json!({"depth": 1}),
+            Some(&page.session_id),
+        )?;
+        let described = state.client.command(
+            "DOM.describeNode",
+            json!({"backendNodeId": backend_node_id, "depth": 0}),
+            Some(&page.session_id),
+        )?;
+        let node = described.get("node").ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ProtocolMismatch,
+                "Chrome DevTools node is missing",
+            )
+        })?;
+        validate_live_node(node, backend_node_id)?;
+
+        match request.operation {
+            ActionOperation::Click => {
+                reject_disabled_node(node)?;
+                let target_node_id =
+                    node.get("nodeId").and_then(Value::as_i64).ok_or_else(|| {
+                        CoreError::new(
+                            ErrorCode::ProtocolMismatch,
+                            "Chrome DevTools node identity is missing",
+                        )
+                    })?;
+                let model = state.client.command(
+                    "DOM.getBoxModel",
+                    json!({"backendNodeId": backend_node_id}),
+                    Some(&page.session_id),
+                )?;
+                let (x, y) = box_center(&model)?;
+                let hit = state.client.command(
+                    "DOM.getNodeForLocation",
+                    json!({"x": x, "y": y}),
+                    Some(&page.session_id),
+                )?;
+                let hit_backend_node_id = hit
+                    .get("backendNodeId")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| {
+                        CoreError::new(
+                            ErrorCode::ProtocolMismatch,
+                            "Chrome DevTools hit-test identity is missing",
+                        )
+                    })?;
+                if !state.client.is_node_within(
+                    &page.session_id,
+                    hit_backend_node_id,
+                    backend_node_id,
+                    target_node_id,
+                )? {
+                    return Err(CoreError::new(
+                        ErrorCode::PermissionDenied,
+                        "the live hit target is outside the referenced element",
+                    ));
+                }
+                state.client.command(
+                    "Input.dispatchMouseEvent",
+                    json!({
+                        "type": "mousePressed",
+                        "x": x,
+                        "y": y,
+                        "button": "left",
+                        "buttons": 1,
+                        "clickCount": 1
+                    }),
+                    Some(&page.session_id),
+                )?;
+                state.client.command(
+                    "Input.dispatchMouseEvent",
+                    json!({
+                        "type": "mouseReleased",
+                        "x": x,
+                        "y": y,
+                        "button": "left",
+                        "buttons": 0,
+                        "clickCount": 1
+                    }),
+                    Some(&page.session_id),
+                )?;
+                Ok(())
+            }
+            ActionOperation::Input => {
+                reject_disabled_node(node)?;
+                validate_editable_node(node)?;
+                let text = request
+                    .payload
+                    .get("text")
+                    .ok_or_else(|| CoreError::invalid_argument("input action requires text"))?;
+                state.client.command(
+                    "DOM.focus",
+                    json!({"backendNodeId": backend_node_id}),
+                    Some(&page.session_id),
+                )?;
+                state.client.command(
+                    "Input.insertText",
+                    json!({"text": text}),
+                    Some(&page.session_id),
+                )?;
+                Ok(())
+            }
+            _ => Err(CoreError::new(
+                ErrorCode::CapabilityUnavailable,
+                "element action is unavailable for this operation",
+            )),
+        }
+    }
 }
 
 impl Bridge for CdpBridge {
     fn capabilities(&self) -> Vec<Capability> {
         vec![Capability::Snapshot, Capability::Action]
+    }
+
+    fn extension_epochs(&self) -> Option<ExtensionEpochs> {
+        self.tab_creation.extension_epochs()
+    }
+
+    fn bridge_status(&self) -> Option<BridgeStatus> {
+        self.tab_creation.bridge_status()
     }
 
     fn dispatch(
@@ -271,6 +517,9 @@ impl Bridge for CdpBridge {
     ) -> Result<BridgeDispatchResult, CoreError> {
         let result = match request.operation {
             ActionOperation::Navigate => self.navigate_page(request),
+            ActionOperation::Click | ActionOperation::Input => {
+                self.dispatch_element_action(request)
+            }
             ActionOperation::Close => request
                 .page_id
                 .as_ref()
@@ -282,6 +531,10 @@ impl Bridge for CdpBridge {
                 ErrorCode::CapabilityUnavailable,
                 "the host CDP bridge does not support this action yet",
             )),
+        };
+        let result = match self.invalidate_pages_if_client_unusable() {
+            Ok(()) => result,
+            Err(error) => Err(error),
         };
         Ok(match result {
             Ok(()) => BridgeDispatchResult::Succeeded,
@@ -365,7 +618,11 @@ impl Bridge for CdpBridge {
             "DOMSnapshot.captureSnapshot",
             json!({"computedStyles": []}),
             Some(&page.session_id),
-        )?;
+        );
+        if !state.client.is_usable() {
+            state.pages.clear();
+        }
+        let result = result?;
         let (elements, backend_nodes, truncated) = parse_dom_snapshot(&result)?;
         let snapshot_version = page.snapshot_version.checked_add(1).ok_or_else(|| {
             CoreError::new(ErrorCode::TargetReplaced, "page snapshot version exhausted")
@@ -539,14 +796,21 @@ impl CdpClient {
         Ok(Self {
             wire: Box::new(WebSocketWire { socket }),
             next_id: 1,
+            usable: true,
         })
     }
 
+    #[cfg(test)]
     fn with_wire(wire: impl CdpWire + 'static) -> Self {
         Self {
             wire: Box::new(wire),
             next_id: 1,
+            usable: true,
         }
+    }
+
+    fn is_usable(&self) -> bool {
+        self.usable
     }
 
     fn create_tab_and_find_target(
@@ -661,6 +925,9 @@ impl CdpClient {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<Value, CoreError> {
+        if !self.usable {
+            return Err(cdp_error(CdpWireError::Unavailable));
+        }
         let id = self.next_id;
         self.next_id = id.checked_add(1).ok_or_else(|| {
             CoreError::new(ErrorCode::ProtocolMismatch, "CDP command IDs exhausted")
@@ -673,9 +940,18 @@ impl CdpClient {
         if let Some(session_id) = session_id {
             command["sessionId"] = Value::String(session_id.to_owned());
         }
-        self.wire.send(&command).map_err(cdp_error)?;
+        if self.wire.send(&command).is_err() {
+            self.usable = false;
+            return Err(unknown_cdp_command_outcome());
+        }
         loop {
-            let response = self.wire.receive().map_err(cdp_error)?;
+            let response = match self.wire.receive() {
+                Ok(response) => response,
+                Err(_) => {
+                    self.usable = false;
+                    return Err(unknown_cdp_command_outcome());
+                }
+            };
             match response.get("id").and_then(Value::as_u64) {
                 Some(response_id) if response_id == id => {
                     if response.get("error").is_some() {
@@ -688,13 +964,63 @@ impl CdpClient {
                 }
                 None if response.get("method").and_then(Value::as_str).is_some() => {}
                 _ => {
-                    return Err(CoreError::new(
-                        ErrorCode::ProtocolMismatch,
-                        "Chrome DevTools returned an uncorrelated response",
-                    ));
+                    self.usable = false;
+                    return Err(unknown_cdp_command_outcome());
                 }
             }
         }
+    }
+
+    fn is_node_within(
+        &mut self,
+        session_id: &str,
+        hit_backend_node_id: i64,
+        target_backend_node_id: i64,
+        target_node_id: i64,
+    ) -> Result<bool, CoreError> {
+        if hit_backend_node_id == target_backend_node_id {
+            return Ok(true);
+        }
+
+        let described = self.command(
+            "DOM.describeNode",
+            json!({"backendNodeId": hit_backend_node_id, "depth": 0}),
+            Some(session_id),
+        )?;
+        let mut node = described.get("node").cloned().ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ProtocolMismatch,
+                "Chrome DevTools hit node is missing",
+            )
+        })?;
+
+        for _ in 0..CDP_MAX_SNAPSHOT_ELEMENTS {
+            if node.get("nodeId").and_then(Value::as_i64) == Some(target_node_id)
+                || node.get("backendNodeId").and_then(Value::as_i64) == Some(target_backend_node_id)
+            {
+                return Ok(true);
+            }
+            let Some(parent_id) = node.get("parentId").and_then(Value::as_i64) else {
+                return Ok(false);
+            };
+            if parent_id == target_node_id {
+                return Ok(true);
+            }
+            let parent = self.command(
+                "DOM.describeNode",
+                json!({"nodeId": parent_id, "depth": 0}),
+                Some(session_id),
+            )?;
+            node = parent.get("node").cloned().ok_or_else(|| {
+                CoreError::new(
+                    ErrorCode::ProtocolMismatch,
+                    "Chrome DevTools parent node is missing",
+                )
+            })?;
+        }
+        Err(CoreError::stale_ref(
+            "live hit-target ancestry exceeds the host verification limit",
+        ))
     }
 }
 
@@ -712,6 +1038,13 @@ fn cdp_error(error: CdpWireError) -> CoreError {
             "Chrome DevTools protocol is invalid",
         ),
     }
+}
+
+fn unknown_cdp_command_outcome() -> CoreError {
+    CoreError::new(
+        ErrorCode::UnknownOutcome,
+        "Chrome DevTools command outcome is unknown",
+    )
 }
 
 fn browser_websocket_url(port: u16, timeout: Duration) -> Result<String, CoreError> {
@@ -879,6 +1212,142 @@ fn unknown_tab_creation() -> CoreError {
         ErrorCode::UnknownOutcome,
         "extension created a tab but the host could not identify its browser target",
     )
+}
+
+fn validate_live_node(node: &Value, expected_backend_node_id: i64) -> Result<(), CoreError> {
+    if node.get("backendNodeId").and_then(Value::as_i64) != Some(expected_backend_node_id)
+        || node.get("nodeId").and_then(Value::as_i64).is_none()
+        || node.get("nodeType").and_then(Value::as_u64) != Some(1)
+    {
+        return Err(CoreError::stale_ref(
+            "referenced backend node is no longer the same live element",
+        ));
+    }
+    Ok(())
+}
+
+fn node_attribute<'a>(node: &'a Value, name: &str) -> Option<&'a str> {
+    let attributes = node.get("attributes")?.as_array()?;
+    attributes.chunks_exact(2).find_map(|pair| {
+        (pair.first()?.as_str()? == name)
+            .then(|| pair.get(1)?.as_str())
+            .flatten()
+    })
+}
+
+fn reject_disabled_node(node: &Value) -> Result<(), CoreError> {
+    if node_attribute(node, "disabled").is_some()
+        || node_attribute(node, "inert").is_some()
+        || node_attribute(node, "aria-disabled").is_some_and(|value| value == "true")
+    {
+        return Err(CoreError::new(
+            ErrorCode::PermissionDenied,
+            "the referenced element is currently disabled",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_editable_node(node: &Value) -> Result<(), CoreError> {
+    if node_attribute(node, "readonly").is_some()
+        || node_attribute(node, "aria-readonly").is_some_and(|value| value == "true")
+    {
+        return Err(CoreError::new(
+            ErrorCode::PermissionDenied,
+            "the referenced element is currently read-only",
+        ));
+    }
+    let tag = node
+        .get("localName")
+        .and_then(Value::as_str)
+        .or_else(|| node.get("nodeName").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let editable = match tag.as_str() {
+        "textarea" => true,
+        "input" => matches!(
+            node_attribute(node, "type")
+                .unwrap_or("text")
+                .to_ascii_lowercase()
+                .as_str(),
+            "text" | "search" | "email" | "url" | "tel" | "number"
+        ),
+        _ => matches!(
+            node_attribute(node, "contenteditable")
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("" | "true" | "plaintext-only")
+        ),
+    };
+    if !editable {
+        return Err(CoreError::new(
+            ErrorCode::PermissionDenied,
+            "the referenced element is not an editable control",
+        ));
+    }
+    Ok(())
+}
+
+fn box_center(model: &Value) -> Result<(i32, i32), CoreError> {
+    let quad = model
+        .get("model")
+        .and_then(|model| model.get("content"))
+        .and_then(Value::as_array)
+        .filter(|quad| quad.len() == 8)
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::TargetReplaced,
+                "referenced element has no current content box",
+            )
+        })?;
+    let coordinates = quad
+        .iter()
+        .map(Value::as_f64)
+        .collect::<Option<Vec<_>>>()
+        .filter(|coordinates| coordinates.iter().all(|coordinate| coordinate.is_finite()))
+        .ok_or_else(|| {
+            CoreError::new(
+                ErrorCode::ProtocolMismatch,
+                "Chrome DevTools content box is invalid",
+            )
+        })?;
+    let xs = [
+        coordinates[0],
+        coordinates[2],
+        coordinates[4],
+        coordinates[6],
+    ];
+    let ys = [
+        coordinates[1],
+        coordinates[3],
+        coordinates[5],
+        coordinates[7],
+    ];
+    let (min_x, max_x) = xs
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+            (min.min(*value), max.max(*value))
+        });
+    let (min_y, max_y) = ys
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+            (min.min(*value), max.max(*value))
+        });
+    if min_x < 0.0 || min_y < 0.0 || max_x <= min_x || max_y <= min_y {
+        return Err(CoreError::new(
+            ErrorCode::TargetReplaced,
+            "referenced element is outside the live viewport",
+        ));
+    }
+    let center_x = (xs.iter().sum::<f64>() / 4.0).round();
+    let center_y = (ys.iter().sum::<f64>() / 4.0).round();
+    if center_x > f64::from(i32::MAX) || center_y > f64::from(i32::MAX) {
+        return Err(CoreError::new(
+            ErrorCode::TargetReplaced,
+            "referenced element is outside the live viewport",
+        ));
+    }
+    Ok((center_x as i32, center_y as i32))
 }
 
 fn parse_dom_snapshot(
@@ -1141,8 +1610,10 @@ mod tests {
     };
 
     use agentyc_core::{ActionId, ContentHash, IdempotencyKey, RequestId};
+    use agentyc_core::{ElementRef, SnapshotProvenance, SnapshotVersion};
 
     use super::*;
+    use crate::actionability::ActionabilityEvidence;
     use agentyc_core::{LeaseEpoch, PageId};
 
     #[derive(Default)]
@@ -1178,6 +1649,138 @@ mod tests {
                 .push(bootstrap_url.to_owned());
             Ok(())
         }
+    }
+
+    #[test]
+    fn tab_creation_transport_router_replaces_only_the_create_transport() {
+        let router = TabCreationTransportRouter::default();
+        let first = Arc::new(FakeTabCreator::default());
+        let second = Arc::new(FakeTabCreator::default());
+        let bootstrap = "about:blank#agentyc-tab=page_router-1";
+
+        assert_eq!(
+            router
+                .create_tab(bootstrap)
+                .expect_err("router starts disconnected")
+                .code,
+            ErrorCode::ExtensionNotConnected
+        );
+        router
+            .install(first.clone())
+            .expect("install first transport");
+        router.create_tab(bootstrap).expect("first transport call");
+        router.install(second.clone()).expect("replace transport");
+        router.create_tab(bootstrap).expect("replacement call");
+
+        assert_eq!(
+            first.bootstrap_urls.lock().expect("first calls").as_slice(),
+            &[bootstrap.to_owned()]
+        );
+        assert_eq!(
+            second
+                .bootstrap_urls
+                .lock()
+                .expect("second calls")
+                .as_slice(),
+            &[bootstrap.to_owned()]
+        );
+    }
+
+    fn element_action_fixture(
+        operation: ActionOperation,
+        responses: Vec<Value>,
+    ) -> (
+        CdpBridge,
+        Arc<Mutex<Vec<Value>>>,
+        ActionRequest<BTreeMap<String, String>>,
+    ) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let wire = FakeWire {
+            sent: Arc::clone(&sent),
+            incoming: responses.into(),
+        };
+        let space_id = SpaceId::from_suffix("action-space").expect("space");
+        let page_id = PageId::from_suffix("action-page").expect("page");
+        let frame_id = FrameId::from_suffix("main").expect("frame");
+        let lease_epoch = LeaseEpoch::new(3);
+        let element_key = ElementKey::from_suffix("target").expect("element key");
+        let snapshot_hash = ContentHash::from_bytes(b"action snapshot");
+        let provenance = SnapshotProvenance {
+            space_id: space_id.clone(),
+            page_id: page_id.clone(),
+            snapshot_version: SnapshotVersion::new(1),
+            snapshot_hash: snapshot_hash.clone(),
+            document_generation: Generation::new(1),
+            navigation_generation: Generation::new(1),
+            refs_epoch: RefEpoch::new(1),
+            coherent: true,
+            coverage: SnapshotCoverage::Complete,
+        };
+        let element_ref = ElementRef {
+            ref_id: agentyc_core::RefId::from_suffix("action-ref").expect("ref"),
+            element_key: element_key.clone(),
+            space_id: space_id.clone(),
+            page_id: page_id.clone(),
+            frame_id: frame_id.clone(),
+            snapshot_version: SnapshotVersion::new(1),
+            document_generation: Generation::new(1),
+            navigation_generation: Generation::new(1),
+            refs_epoch: RefEpoch::new(1),
+        };
+        let evidence = ActionabilityEvidence::proven_interactive().with_generations(
+            Some(Generation::new(1)),
+            Generation::new(1),
+            Generation::new(1),
+            Some(snapshot_hash),
+        );
+        let payload = BTreeMap::from([
+            (
+                "element_ref".to_owned(),
+                serde_json::to_string(&element_ref).expect("element ref"),
+            ),
+            (
+                "provenance".to_owned(),
+                serde_json::to_string(&provenance).expect("provenance"),
+            ),
+            (
+                "actionability_evidence".to_owned(),
+                serde_json::to_string(&evidence).expect("evidence"),
+            ),
+            ("frame_scope".to_owned(), frame_id.to_string()),
+            ("selector".to_owned(), "#must-not-be-used".to_owned()),
+        ]);
+        let bridge = CdpBridge::with_client(
+            CdpClient::with_wire(wire),
+            Arc::new(FakeTabCreator::default()),
+        );
+        bridge.state.lock().expect("bridge state").pages.insert(
+            (space_id.clone(), page_id.clone()),
+            ManagedPage {
+                target_id: "opaque-target".to_owned(),
+                session_id: "opaque-session".to_owned(),
+                lease_epoch,
+                target_generation: 1,
+                navigation_generation: 1,
+                document_generation: 1,
+                url: Some("https://example.test/".to_owned()),
+                title: Some("Example".to_owned()),
+                snapshot_version: 1,
+                backend_nodes: BTreeMap::from([(element_key, 101)]),
+            },
+        );
+        let request = ActionRequest {
+            request_id: RequestId::from_suffix("action-request").expect("request"),
+            action_id: ActionId::from_suffix("action-id").expect("action"),
+            idempotency_key: IdempotencyKey::from_suffix("action-key").expect("key"),
+            request_hash: ContentHash::from_bytes(b"action"),
+            space_id,
+            page_id: Some(page_id),
+            lease_epoch,
+            operation,
+            payload,
+            postcondition: None,
+        };
+        (bridge, sent, request)
     }
 
     #[test]
@@ -1564,5 +2167,238 @@ mod tests {
 
         assert_eq!(error.code, ErrorCode::CapabilityUnavailable);
         assert!(!error.message.contains("sensitive browser diagnostic"));
+    }
+
+    #[test]
+    fn lost_cdp_connection_makes_mutation_unknown_and_invalidates_page_sessions() {
+        let (bridge, sent, mut request) =
+            element_action_fixture(ActionOperation::Navigate, Vec::new());
+        request
+            .payload
+            .insert("url".to_owned(), "https://example.test/next".to_owned());
+
+        assert_eq!(
+            bridge.dispatch(&request).expect("dispatch"),
+            BridgeDispatchResult::Unknown {
+                reason: UnknownReason::BridgeLost
+            }
+        );
+        assert_eq!(
+            sent.lock().expect("CDP commands").as_slice(),
+            [json!({
+                "id": 1,
+                "method": "Page.navigate",
+                "params": {"url": "https://example.test/next"},
+                "sessionId": "opaque-session"
+            })]
+        );
+        assert!(
+            bridge.observe().expect("observation").pages.is_empty(),
+            "a lost connection invalidates cached target/session bindings"
+        );
+
+        assert!(matches!(
+            bridge.dispatch(&request).expect("retry dispatch"),
+            BridgeDispatchResult::Failed {
+                code: ErrorCode::PageNotFound,
+                ..
+            }
+        ));
+        assert_eq!(
+            sent.lock().expect("CDP commands").len(),
+            1,
+            "the original mutation is not sent again after transport loss"
+        );
+
+        let reconnected_sent = Arc::new(Mutex::new(Vec::new()));
+        let reconnected = CdpBridge::with_client(
+            CdpClient::with_wire(FakeWire {
+                sent: Arc::clone(&reconnected_sent),
+                ..FakeWire::default()
+            }),
+            Arc::new(FakeTabCreator::default()),
+        );
+        assert!(matches!(
+            reconnected
+                .dispatch(&request)
+                .expect("reconnected dispatch"),
+            BridgeDispatchResult::Failed {
+                code: ErrorCode::PageNotFound,
+                ..
+            }
+        ));
+        assert!(
+            reconnected_sent
+                .lock()
+                .expect("reconnected commands")
+                .is_empty(),
+            "a fresh connection does not restore or reuse the old session binding"
+        );
+    }
+
+    #[test]
+    fn subframe_actions_are_deferred_without_host_frame_attribution() {
+        let (bridge, sent, mut request) =
+            element_action_fixture(ActionOperation::Click, Vec::new());
+        let child_frame = FrameId::from_suffix("child").expect("child frame");
+        let mut element_ref: ElementRef = serde_json::from_str(
+            request
+                .payload
+                .get("element_ref")
+                .expect("element ref payload"),
+        )
+        .expect("element ref");
+        element_ref.frame_id = child_frame.clone();
+        request.payload.insert(
+            "element_ref".to_owned(),
+            serde_json::to_string(&element_ref).expect("serialize element ref"),
+        );
+        request
+            .payload
+            .insert("frame_scope".to_owned(), child_frame.to_string());
+
+        assert!(matches!(
+            bridge.dispatch(&request).expect("dispatch"),
+            BridgeDispatchResult::Failed {
+                code: ErrorCode::StaleRef,
+                ..
+            }
+        ));
+        assert!(
+            sent.lock().expect("CDP commands").is_empty(),
+            "subframe/OOPIF actions are unsupported until host frame attribution exists"
+        );
+    }
+
+    #[test]
+    fn click_dispatch_uses_live_ref_geometry_and_verifies_the_hit_ancestry() {
+        let (bridge, sent, request) = element_action_fixture(
+            ActionOperation::Click,
+            vec![
+                json!({"id": 1, "result": {"root": {"nodeId": 1}}}),
+                json!({"id": 2, "result": {"node": {
+                    "nodeId": 11,
+                    "backendNodeId": 101,
+                    "nodeType": 1,
+                    "nodeName": "BUTTON",
+                    "localName": "button",
+                    "attributes": []
+                }}}),
+                json!({"id": 3, "result": {"model": {
+                    "content": [10, 10, 30, 10, 30, 30, 10, 30]
+                }}}),
+                json!({"id": 4, "result": {
+                    "backendNodeId": 102,
+                    "nodeId": 22,
+                    "frameId": "opaque-frame"
+                }}),
+                json!({"id": 5, "result": {"node": {
+                    "nodeId": 22,
+                    "backendNodeId": 102,
+                    "nodeType": 1,
+                    "nodeName": "SPAN",
+                    "parentId": 11
+                }}}),
+                json!({"id": 6, "result": {}}),
+                json!({"id": 7, "result": {}}),
+            ],
+        );
+
+        assert_eq!(
+            bridge.dispatch(&request).expect("dispatch"),
+            BridgeDispatchResult::Succeeded
+        );
+        let commands = sent.lock().expect("CDP commands");
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command["method"].as_str().expect("method"))
+                .collect::<Vec<_>>(),
+            [
+                "DOM.getDocument",
+                "DOM.describeNode",
+                "DOM.getBoxModel",
+                "DOM.getNodeForLocation",
+                "DOM.describeNode",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent",
+            ]
+        );
+        assert_eq!(commands[2]["params"]["backendNodeId"], 101);
+        assert_eq!(commands[3]["params"], json!({"x": 20, "y": 20}));
+        assert_eq!(commands[5]["params"]["type"], "mousePressed");
+        assert_eq!(commands[6]["params"]["type"], "mouseReleased");
+        assert!(
+            !commands
+                .iter()
+                .any(|command| command.to_string().contains("#must-not-be-used"))
+        );
+    }
+
+    #[test]
+    fn input_dispatch_uses_only_the_ref_bound_editable_control() {
+        let (bridge, sent, mut request) = element_action_fixture(
+            ActionOperation::Input,
+            vec![
+                json!({"id": 1, "result": {"root": {"nodeId": 1}}}),
+                json!({"id": 2, "result": {"node": {
+                    "nodeId": 11,
+                    "backendNodeId": 101,
+                    "nodeType": 1,
+                    "nodeName": "INPUT",
+                    "localName": "input",
+                    "attributes": ["type", "text"]
+                }}}),
+                json!({"id": 3, "result": {}}),
+                json!({"id": 4, "result": {}}),
+            ],
+        );
+        request
+            .payload
+            .insert("text".to_owned(), "typed text".to_owned());
+
+        assert_eq!(
+            bridge.dispatch(&request).expect("dispatch"),
+            BridgeDispatchResult::Succeeded
+        );
+        let commands = sent.lock().expect("CDP commands");
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command["method"].as_str().expect("method"))
+                .collect::<Vec<_>>(),
+            [
+                "DOM.getDocument",
+                "DOM.describeNode",
+                "DOM.focus",
+                "Input.insertText",
+            ]
+        );
+        assert_eq!(commands[2]["params"]["backendNodeId"], 101);
+        assert_eq!(commands[3]["params"]["text"], "typed text");
+        assert!(
+            !commands
+                .iter()
+                .any(|command| command.to_string().contains("#must-not-be-used"))
+        );
+    }
+
+    #[test]
+    fn missing_or_stale_element_refs_fail_before_any_cdp_action() {
+        let (bridge, sent, mut request) =
+            element_action_fixture(ActionOperation::Click, Vec::new());
+        request.payload.remove("element_ref");
+        request.payload.remove("provenance");
+        request.payload.remove("actionability_evidence");
+        request.payload.remove("frame_scope");
+
+        assert!(matches!(
+            bridge.dispatch(&request).expect("dispatch result"),
+            BridgeDispatchResult::Failed {
+                code: ErrorCode::InvalidArgument,
+                ..
+            }
+        ));
+        assert!(sent.lock().expect("CDP commands").is_empty());
     }
 }
