@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HOST_NAME = "com.agentyc.host"
 PRODUCTION_EXTENSION_DIR = ROOT / "extension"
-EXPECTED_EXTENSION_NAME = "agentyc Existing Chrome"
+EXPECTED_EXTENSION_NAME = "Agentyc"
 MANIFEST_MODE = 0o644
 EXTENSION_ID_LENGTH = 32
 EXTENSION_ID_ALPHABET = "abcdefghijklmnop"
