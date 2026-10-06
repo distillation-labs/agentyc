@@ -21,11 +21,12 @@
 Key architectural boundaries:
 
 - **Logical task spaces and pages:** The primary object model uses logical identifiers (`space_id`, `page_id`) and durable labels. Raw browser target IDs, session IDs, and tab IDs are never public identity and are not exposed.
-- **Explicit shared-profile disclosure:** Automation operates inside the user's existing Chrome profile (sharing cookies, sessions, and storage), not an isolated sandbox. Creating a task space strictly requires explicit acknowledgement (`--accept-shared-profile-disclosure` in the CLI or `acceptSharedProfileDisclosure: true` in the SDK).
-- **No implicit Chrome launch or download:** The host-backed product connects to an existing Chrome browser with the enrolled Agentyc MV3 extension and Native Messaging host; it does not launch or download Chrome automatically.
+- **Dedicated Chrome profile:** Agentyc uses a dedicated profile launched by the user with a loopback DevTools Protocol endpoint. Spaces share that profile's cookies, sessions, and storage; Agentyc does not copy data from the user's everyday profile.
+- **Host-owned browser control:** The host controls pages over loopback CDP. The extension is used only to create tabs through Native Messaging; it has no popup or side panel, and clicking its icon does nothing.
+- **No implicit Chrome launch or download:** The host connects only to the user-launched profile and never launches Chrome or creates/switches profiles.
 - **Deterministic fake-host seam:** For testing and CI without a live browser, `--offline` (or `AGENTYC_FAKE_HOST=1`) executes host broker operations deterministically in-process.
 - **Current CLI per-invocation model:** Direct CLI commands run per invocation against the host ledger. In offline mode, each process invocation starts a fresh broker instance, which fences active leases from previous runs. A long-lived host transport is the continuity mechanism for the SDK.
-- **Live validation limits:** Live browser control requires an enrolled Chrome extension and Native Messaging host. When the extension is absent, commands return typed errors (`extension_not_connected` or `capability_unavailable`) rather than falling back to an unverified runtime.
+- **Live validation limits:** Live browser control requires the dedicated Chrome profile's loopback CDP endpoint. Creating tabs also requires the enrolled extension and Native Messaging host; when either required connection is unavailable, Agentyc returns a typed error instead of using another browser-control path.
 
 Cold start: **~5ms**. Binary: **~8MB**. Idle RSS: **~3MB**.
 
@@ -90,7 +91,7 @@ Point your agent at that file. It teaches the read→ref→act→verify loop, su
 
 ### Optional host-backed MCP adapter (stdio only)
 
-The direct host-backed CLI/SDK is the primary interface. MCP exposes logical host operations over stdio only; it does not expose the removed `browser_*` tool surface or an HTTP transport. The deterministic offline server lists 29 routes. The connected remote catalog declares 30, with 19 supported by the owner-host protocol and 11 returning typed `capability_unavailable` results. `host_lease_acknowledge_fence` retries a pending takeover fence at the same epoch with lease renewal. A limited existing-profile run verified MCP stdio, host/Native Messaging connection, and extension fence/rebind; snapshot/action reconciliation and the full Phase 8 release workflows remain incomplete, so MCP is **not distribution-ready**. See [MCP compatibility](docs/mcp-compatibility.md).
+The direct host-backed CLI/SDK is the primary interface. MCP exposes logical host operations over stdio only; it does not expose the removed `browser_*` tool surface or an HTTP transport. The deterministic offline server lists 29 routes. The connected remote catalog declares 30, with 19 supported by the owner-host protocol and 11 returning typed `capability_unavailable` results. `host_lease_acknowledge_fence` retries a pending takeover fence at the same epoch with lease renewal. Historical existing-profile testing exercised MCP stdio, Native Messaging, and extension fence/rebind under the previous architecture; snapshot/action reconciliation and the full Phase 8 release workflows remain incomplete, so MCP is **not distribution-ready**. See [MCP compatibility](docs/mcp-compatibility.md).
 
 ```json
 {
@@ -152,7 +153,7 @@ The host/core contracts, MV3 extension package, Native Messaging host, direct CL
 
 The CLI exposes the host-backed logical commands listed in [Direct CLI](docs/cli.md), plus `agentyc mcp` and `agentyc init`. Standalone direct-CDP `browser`, `run`, and `repl` commands have been removed; CDP-based installation or test harnesses are not user-facing CLI interfaces.
 
-The Node SDK remains in `packages/agentyc-browser`; it is distinct from the removed Rust `agentyc-browser` crate. The extension's `chrome.debugger` backend also remains and is not a standalone CLI.
+The Node SDK remains in `packages/agentyc-browser`; it is distinct from the removed Rust `agentyc-browser` crate. The extension is a create-tab bridge only; browser control stays in the host.
 
 ---
 
