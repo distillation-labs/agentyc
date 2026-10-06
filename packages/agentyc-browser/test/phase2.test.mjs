@@ -176,6 +176,10 @@ test("actions validate the registry and carry now, idempotency, request identity
   const transport = new FakeTransport();
   const client = await connect({ transport });
   transport.handler = (request) => responseFor(request, { receipt: {} });
+  const elementRef = JSON.stringify({
+    ref_id: "ref_submit",
+    element_key: "element_submit",
+  });
 
   await client.submitAction({
     request_id: "req_action_phase2",
@@ -185,7 +189,7 @@ test("actions validate the registry and carry now, idempotency, request identity
     page_id: "page_action",
     lease_epoch: 4,
     operation: "click",
-    payload: { selector: "#submit" },
+    payload: { element_ref: elementRef, selector: "#submit" },
     now: 123,
     deadlineMs: 456,
   });
@@ -201,7 +205,7 @@ test("actions validate the registry and carry now, idempotency, request identity
     page_id: "page_action",
     lease_epoch: 4,
     operation: "click",
-    payload: { selector: "#submit" },
+    payload: { element_ref: elementRef, selector: "#submit" },
     now: 123,
   });
 
@@ -228,6 +232,12 @@ test("wait cancellation is cancelled while dispatched mutation cancellation is u
     space_id: "space_cancel",
     lease_epoch: 1,
     operation: "click",
+    payload: {
+      element_ref: JSON.stringify({
+        ref_id: "ref_cancel",
+        element_key: "element_cancel",
+      }),
+    },
     signal: actionController.signal,
   });
   actionController.abort(new Error("stop mutation"));
@@ -270,7 +280,8 @@ test("operation registry exposes every core action and explicit unsupported mapp
   }
   assert.ok(
     OPERATION_REGISTRY.filter((entry) => entry.supported).every(
-      (entry) => entry.sdk && entry.cli?.command?.length,
+      (entry) =>
+        entry.sdk && (entry.cli?.command?.length || entry.sdk === "Page.issueRef"),
     ),
   );
 });
