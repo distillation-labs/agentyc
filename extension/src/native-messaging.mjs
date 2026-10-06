@@ -187,6 +187,17 @@ export class NativeMessagingClient {
     onMessage = () => {},
     onStateChange = () => {},
     onUnknownActions = () => {},
+    requestedCapabilities = [
+      "debugger_allowlist",
+      "logical_tabs",
+      "visual_groups",
+      "frame_events",
+      "snapshot",
+      "evaluate",
+      "reconcile",
+      "side_panel",
+      "artifact_transfer",
+    ],
   } = {}) {
     this.chrome = chromeApiOrGlobal(chromeApi);
     this.hostName = hostName;
@@ -220,17 +231,7 @@ export class NativeMessagingClient {
     this.removePortListeners = [];
     this.connectionGeneration = 0;
     this.connectPromise = null;
-    this.requestedCapabilities = [
-      "debugger_allowlist",
-      "logical_tabs",
-      "visual_groups",
-      "frame_events",
-      "snapshot",
-      "evaluate",
-      "reconcile",
-      "side_panel",
-      "artifact_transfer",
-    ];
+    this.requestedCapabilities = [...requestedCapabilities];
     this.negotiatedCapabilities = [];
     this.limits = defaultNativeLimits();
     this.profileState = profileInstanceId ? "bound" : "unbound";
