@@ -812,7 +812,7 @@ fn principal_id(explicit: Option<&str>) -> DirectResult<PrincipalId> {
     }
 }
 
-fn resolve_profile_binding_id(
+pub(crate) fn resolve_profile_binding_id(
     explicit: Option<&str>,
     offline: bool,
 ) -> DirectResult<Option<ProfileBindingId>> {
