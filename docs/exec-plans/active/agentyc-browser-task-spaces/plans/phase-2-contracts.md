@@ -15,7 +15,7 @@ Define the contracts before implementing the broker or extension. The local prot
 
 ## Current MCP boundary
 
-The direct-CDP MCP server, its 61/76-tool profiles, and HTTP transport were removed after this plan was completed. The old MCP profiles and HTTP fixtures below are archived Phase 2 evidence only; they are not current routes, support claims, or release requirements. Current MCP is host-backed logical stdio only; its offline server lists 29 routes, its connected catalog declares 30 (12 return `capability_unavailable`), and headed live Chrome validation remains open. See [`docs/mcp-compatibility.md`](../../../../mcp-compatibility.md).
+The direct-CDP MCP server, its 61/76-tool profiles, and HTTP transport were removed after this plan was completed. The old MCP profiles and HTTP fixtures below are archived Phase 2 evidence only; they are not current routes, support claims, or release requirements. Current MCP is host-backed logical stdio only; its offline server lists 29 routes, its connected catalog declares 30 (11 return `capability_unavailable`), and only a limited existing-profile fence/rebind run has passed; full live validation remains open. See [`docs/mcp-compatibility.md`](../../../../mcp-compatibility.md).
 
 ## Handoff in
 
