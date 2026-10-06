@@ -34,10 +34,11 @@ Implement the browser-side half of the new product. The extension must work in t
 - `chrome.storage.local/session` stores only profile instance/reconnect/UI metadata; host owns leases/ledger/action status.
 - Agent-created tabs use an approved target window and `chrome.tabs.create({active:false})`; the extension verifies non-focus behavior. Agent commands never activate/highlight/focus a tab or open the side panel; side-panel opening requires an explicit user action.
 
-## Unresolved questions
+## Decisions and remaining work
 
-- **U4-1:** exact Web Store/managed packaging and update channel; owner: Japneet Kalkat; carry to Phase 8 if not needed for direct launch.
-- **U4-2:** whether a content-script fallback is required for any debugger-restricted domain; owner: Japneet Kalkat; resolve from capability matrix.
+- **U4-1 — Decision:** target Chrome Web Store signing and updates. Production signing-key custody, Store listing/submission, and end-to-end update proof remain separate release work; the checked-in unpacked development identity is not a production distribution.
+- **U4-2 — Resolved:** snapshot reads on restricted URLs fail closed with `capability_unavailable` before content-bridge or debugger collection; no fallback is attempted.
+- **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focusing or closing the active unmanaged tab. Snapshot read returned `unknown_outcome` during debugger attachment; the prior navigation remains unknown and was not replayed. Side-panel, OOPIF, browser-restart, enterprise-policy, and production-distribution gates remain open.
 
 ## Scope
 
