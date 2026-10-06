@@ -465,6 +465,7 @@ export class TaskSpace {
   claim(options?: LeaseOptions): Promise<unknown>;
   renew(options?: LeaseOptions): Promise<unknown>;
   takeover(options?: LeaseOptions): Promise<unknown>;
+  acknowledgeFence(options?: LeaseOptions): Promise<unknown>;
   reclaim(options: ReclaimOptions): Promise<unknown>;
   returnControl(options?: LeaseOptions): Promise<unknown>;
   pause(options: ControlTransitionOptions): Promise<unknown>;
