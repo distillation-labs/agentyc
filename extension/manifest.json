@@ -12,31 +12,12 @@
   "incognito": "not_allowed",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0yfOY5sYBzBsK2hIKwzo9XRJz6mEPZJmI+roVSIBrVVtaxnPDEzEWmLNy3HK0gYu9HIv+r0baZCt/pEenH4i/49KCPlAdXhjkv6fP3Hd5QAVrJxbTzJMQTjk8Yk6v0TBEcsH4FRAGv4GEMdx+qJUW277H16VKqpGbGUHsKZzwJEPTdC6/RwWFS3tRZ6pu+ShkUByEvB5+LApXPGj+YEN9ErOaFT8+SedzPHT+2pMWc/IsVeq3/Jdrr1vN/YJ9AnzT/udfK/toMBFn4fbJ9zmkImflQzajly3hlS4ybdUSXJJLhUzIsKfxGuAe8pa7KCiyPdP/W361Q6uPaWofGI15wIDAQAB",
   "permissions": [
-    "debugger",
     "nativeMessaging",
-    "storage",
-    "tabs",
-    "tabGroups",
-    "sidePanel"
-  ],
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["src/content-bridge.js"],
-      "run_at": "document_start",
-      "world": "ISOLATED",
-      "all_frames": false
-    }
+    "storage"
   ],
   "background": {
-    "service_worker": "src/service-worker.mjs",
+    "service_worker": "src/tab-creation-worker.mjs",
     "type": "module"
-  },
-  "action": {
-    "default_title": "Open Agentyc task spaces"
-  },
-  "side_panel": {
-    "default_path": "src/sidepanel/index.html"
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
