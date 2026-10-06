@@ -5,7 +5,7 @@
 - **Operational owner:** Japneet Kalkat
 - **Primary outcome:** Coding agents can create and resume ego-lite-like task spaces in the user's already-installed Chrome, work on durable labeled pages concurrently, receive compact actionable context, and stop safely when the user takes control.
 - **Status:** Phase 0, Phase 1, Phase 2, and Phase 3 complete; Phase 4 active
-- **Active phase:** Phase 4 — Chrome extension and task-space UI
+- **Active phase:** Phase 4 — host-owned CDP and minimal tab-creation extension
 - **Phase authority:** `plans/PLAN_INDEX.md` is the canonical phase registry; exactly one phase may be `active`, and a phase cannot start until its predecessor exit gate is complete
 
 ## Decision brief
@@ -16,32 +16,28 @@
 Agent CLI / persistent Node SDK
   -> agentyc-host local protocol
   -> host broker, ledger, leases, scheduler, snapshots, events
-  -> Native Messaging bridge
-  -> Chrome MV3 extension in the user's existing Chrome
-       -> chrome.debugger CDP transport
-       -> chrome.tabs / chrome.tabGroups
-       -> content-script/page bridge
-       -> Chrome side panel for task-space control
-  -> existing Chrome pages
+  -> host-owned CDP connection to a user-launched dedicated Chrome profile
+  -> Native Messaging bridge, used by the MV3 extension only to create tabs
+  -> dedicated Chrome pages
 
 Host-backed logical MCP stdio
   -> MCP adapter
   -> same agentyc-host broker
 ```
 
-The default path does **not** download a browser, launch a second browser, require a copied CDP URL, or expose MCP as the primary agent interface. The standalone direct-CDP CLI and Rust runtime crates described in the early plan were removed. The Node SDK at `packages/agentyc-browser` and extension `chrome.debugger` backend remain; CDP used inside independent installation/test harnesses is not a user-facing interface.
+The user launches a dedicated Chrome profile with a loopback debugging endpoint; Agentyc does not launch Chrome, create or switch profiles, or copy state from the everyday profile. The host owns CDP navigation, observation, snapshots, actions, and lifecycle. The extension only creates tabs and has no popup, side panel, content script, or debugger permission. The standalone direct-CDP CLI and Rust runtime crates described in the early plan were removed; the host's internal CDP connection is not a user-facing CLI.
 
 **Why this wins now:**
 
-1. Chrome 136+ restricts remote-debugging switches against the default profile (S-018), so a CDP-only sidecar is not a reliable existing-Chrome product path.
-2. Chrome provides a debugger extension transport with target-scoped events and flat related-target sessions from Chrome 125, plus Native Messaging for a local host bridge (S-019–S-020).
-3. Chrome tabs/tab groups and a side panel provide the visible task-space workflow; logical `space_id`/`page_id` handles remain the security and durability boundary (S-023). `space` is the user-facing and canonical domain term; `group_id` is not a second logical object and is reserved for deprecated compatibility aliases/internal visual-group hints.
+1. The user explicitly chooses a dedicated Chrome profile, keeping Agentyc separate from the everyday profile.
+2. The host uses a loopback-only CDP connection; the extension is retained only for Chrome's tab-creation API through Native Messaging.
+3. The user-facing interface is Agentyc MCP/CLI/SDK, not extension UI; logical `space_id`/`page_id` handles remain the security and durability boundary.
 4. A persistent local protocol and SDK remove per-command runtime startup and let multiple agent processes share one authoritative broker.
 5. The retained lease, ledger, snapshot, event, actionability, and unknown-outcome mechanisms transfer the useful ego-lite patterns without copying its proprietary browser host or arbitrary execution model.
 
-**Accepted trade-offs:** Extension installation and sensitive permissions are required; ordinary Chrome task spaces share profile cookies/storage/extensions/history/permissions; the native host, installer, side panel, and local protocol add product surfaces; MCP remains a separate compatibility contract with its own pending release gates.
+**Accepted trade-offs:** The user must launch a dedicated Chrome profile with a loopback debugging endpoint, and the create-tab bridge requires the extension and Native Messaging host. Spaces share state within that profile; MCP remains a separate compatibility contract with its own pending release gates.
 
-**Top risks:** debugger/enterprise policy restrictions, profile-sharing surprises, Native Messaging origin or payload bugs, MV3 worker restarts, stale tab/document/ref routing, user takeover races, extension distribution, and false token/performance claims.
+**Top risks:** loopback CDP availability, profile setup confusion, Native Messaging origin or payload bugs, MV3 worker restarts during tab creation, stale target/document/ref routing, user takeover races, extension distribution, and false token/performance claims.
 
 **Stop rationale:** The repository and cloned ego-lite harness were audited; official Chrome remote-debugging, debugger, Native Messaging, service-worker, content-script, scripting, tabs, tab-groups, storage, side-panel, distribution, and browser-target CDP Extensions sources were retrieved; independent architecture reviews converged on the same host/extension/CLI direction. The automated P0-T2 probe has now passed against installed Chrome 154 using `Extensions.loadUnpacked`/`getExtensions`/`uninstall` with a disposable profile; the remaining uncertainty is explicitly gated in Phase 0 rather than hidden.
 
@@ -49,7 +45,9 @@ See `research/decision-supersession.md` for the old-plan mapping and `research/d
 
 ## Evidence status
 
-This document is an execution plan and evidence registry. The current Phase 0 checker is green and the headed disposable Chrome/Native-Messaging probe is source-bound; Phase 1 is complete with deterministic architecture, security, permission, recovery, fence, profile-disclosure, and threshold gates. Phase 2 is complete with frozen core/local/Native Messaging/CLI/SDK/MCP contracts, golden/negative fixtures, identity audits, and deterministic validation. Phase 3 is complete with a single-broker Native Messaging topology, durable host lifecycle/ledger, peer-checked local IPC, scheduler integration, fencing, reconciliation, and deterministic evidence. Phase 4 is now active for the MV3 extension and task-space UI. Production distribution, OOPIF/session-graph support, selected-page retention, and deployed-tokenizer performance remain explicitly deferred to later phases.
+This document is an execution plan and evidence registry. The current Phase 0 checker is green and the headed disposable Chrome/Native-Messaging probe is source-bound; Phase 1 is complete with deterministic architecture, security, permission, recovery, fence, profile-disclosure, and threshold gates. Phase 2 is complete with frozen core/local/Native Messaging/CLI/SDK/MCP contracts, golden/negative fixtures, identity audits, and deterministic validation. Phase 3 is complete with a single-broker Native Messaging topology, durable host lifecycle/ledger, peer-checked local IPC, scheduler integration, fencing, reconciliation, and deterministic evidence. Phase 4 is active for host-owned loopback CDP and the create-tab-only extension. Production distribution, OOPIF/session-graph support, selected-page retention, and deployed-tokenizer performance remain explicitly deferred to later phases.
+
+> **Evidence boundary after redesign:** Live artifacts and extension tests recorded below predate the host-owned CDP/create-tab-only redesign. They remain historical evidence for the earlier runtime and do not prove the redesigned live Chrome path. The current redesign has deterministic test coverage; its live Chrome, OOPIF, restart, and distribution gates remain open.
 
 **Proven by repository/source inspection:**
 
@@ -70,7 +68,7 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 
 **Explicit residuals, not hidden blockers:** OOPIF/flat debugger session graph, full reference-equivalent refs/actionability/waits/dialog/file chooser, selected-page retention, ordinary-user Web Store/managed distribution, Linux/Windows registration, deployed-model tokenizer/human responsiveness baselines remain owned by later phases. They are not claimed by the Phase 0 gate.
 
-**Current phase decision:** Phase 0's bounded checker, Phase 1's architecture gate, Phase 2's deterministic contract exit gate, and Phase 3's host-core exit gate pass. Phase 4 is active for the MV3 extension and task-space UI. Live existing-profile permission, distribution, OOPIF, deployed-tokenizer, and human-responsiveness evidence remains explicitly owned by later phases. See the [Phase 3 Chrome audit](research/phase-3-chrome-docs-audit.md), [Chrome audit](../../../../research/phase-0-chrome-docs-audit.md), [ego-lite audit](../../../../research/ego-lite-pattern-audit.md), and [host-backed probe audit](../../../../research/phase-0-host-backed-probe.md) for exact scope and residuals.
+**Current phase decision:** Phase 0's bounded checker, Phase 1's architecture gate, Phase 2's deterministic contract exit gate, and Phase 3's host-core exit gate pass. Phase 4 is active for host-owned CDP and the create-tab-only extension. Live dedicated-profile Chrome, distribution, OOPIF, restart, deployed-tokenizer, and human-responsiveness evidence remains open. See the [Phase 3 Chrome audit](research/phase-3-chrome-docs-audit.md), [Chrome audit](../../../../research/phase-0-chrome-docs-audit.md), [ego-lite audit](../../../../research/ego-lite-pattern-audit.md), and [host-backed probe audit](../../../../research/phase-0-host-backed-probe.md) for exact scope and residuals.
 
 ## Planned capability target — not yet proven
 
@@ -81,17 +79,16 @@ Every bullet below is a target or requirement for planned work, not a statement 
 - Persistent local CLI with machine-readable JSON output and a thin typed Node SDK over the same protocol.
 - Task-space creation, list, resume, claim, renew, handoff, accept, pause, stop, take over, return control, finish, retain, release, and recovery.
 - Durable labeled pages inside each space; no process-global active tab.
-- Pages created by the agent are placed in a corresponding Chrome tab group when the API is available; because Chrome groups are window-scoped, this is best-effort presentation and may drift when pages move across windows.
+- Agent-created pages are logical pages managed by the host; no Chrome tab groups are used.
 - Explicit adoption of a user tab only after ownership proof and user confirmation; no implicit adoption.
 - Structured space/page records only; no `[id] name`, raw Chrome tab IDs, raw CDP target/session IDs, or numeric tab-group IDs in primary output.
 
 ### Existing Chrome integration
 
-- MV3 extension installed into the user's normal Chrome profile. The pinned unpacked identity is a trusted development build; ordinary macOS distribution requires a Web Store-signed extension or enterprise management.
+- MV3 extension installed into the user-launched dedicated Chrome profile for tab creation only. The pinned unpacked identity is a trusted development build; ordinary macOS distribution requires a Web Store-signed extension or enterprise management.
 - Native Messaging bridge with exact extension-origin allowlisting and platform registration.
-- `chrome.debugger` transport for supported CDP domains, related targets, frames, network, runtime, DOM, accessibility, input, screenshots, dialogs, and lifecycle events where the capability matrix proves support.
-- `chrome.tabs`, `chrome.tabGroups`, and `chrome.sidePanel` integration for pages, visual grouping, and user control.
-- Content-script/page bridge only for narrowly scoped DOM/ARIA/event operations; page messages and page text are untrusted.
+- Host-owned loopback CDP transport for browser control and page operations.
+- `chrome.tabs.create` only, requested over the Native Messaging bridge; the extension has no popup, side panel, content script, or debugger permission.
 - Extension/host reconnect and Chrome/worker restart recovery without replaying side effects.
 
 ### Reliability and context
@@ -200,12 +197,12 @@ The direct CLI/SDK path and the host-backed MCP adapter have separate validation
 
 ## Naming, identity, and trust rules
 
-- `space_id` is the only canonical logical task-space identifier. User-facing commands, SDK types, host records, extension UI, and new protocol examples use `space`; they never use `group_id` as a competing object.
+- `space_id` is the only canonical logical task-space identifier. User-facing commands, SDK types, host records, and new protocol examples use `space`; there is no extension UI and `group_id` is not a competing object.
 - `group_id` may appear only as a deprecated MCP compatibility input/output alias or as an explicitly named Chrome visual-group hint. It is never a Chrome tab-group ID, an authorization proof, or a storage-isolation boundary.
 - `tabId`, `targetId`, debugger `sessionId`, extension tab-group IDs, URLs/titles, focus, and user clicks inside a page are internal/untrusted hints. Primary outputs never expose them.
-- `profile_instance_id` selects an enrolled profile binding but is not authentication. Binding states are `unbound`, `bound`, `rebind_required`, and `revoked`; mismatch, copied profile, reinstall, storage reset, or extension identity change requires explicit side-panel/installer confirmation before mutation authority returns.
+- `profile_instance_id` selects an enrolled profile binding but is not authentication. Binding states are `unbound`, `bound`, `rebind_required`, and `revoked`; mismatch, copied profile, reinstall, storage reset, or extension identity change requires explicit host-mediated confirmation before mutation authority returns.
 - The trusted local boundary is the installed extension plus same-OS-user host processes. The product does not claim protection from malware running as the same OS user.
-- User authority is distinct from agent authority. Adoption, takeover, return, release, upload, cookie/storage access, evaluate, login/payment, and destructive actions require a single-use expiring user-intent ticket bound to the profile binding, space/page, generation, action hash, lease epoch, and side-panel connection.
+- User authority is distinct from agent authority. Adoption, takeover, return, release, upload, cookie/storage access, evaluate, login/payment, and destructive actions require a single-use expiring user-intent ticket bound to the profile binding, space/page, generation, action hash, and lease epoch.
 
 ## Component/version matrix
 
@@ -223,7 +220,7 @@ The launch tuple is versioned and published before launch: Chrome milestone/plat
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `crates/agentyc-core/`      | transport-neutral IDs, records, states, errors, envelopes, snapshots, refs, receipts, events                     | Chrome APIs, MCP, process lifecycle                      |
 | `crates/agentyc-host/`      | broker, local IPC, Native Messaging bridge, ledger, leases, scheduler, Chrome adapter, reconciliation, redaction | UI rendering, MCP-specific schemas, arbitrary page code  |
-| `extension/`                | MV3 manifest, service worker, debugger/tabs/frame bridge, side panel, browser events                             | authoritative leases, secrets, raw agent policy          |
+| `extension/`                | MV3 manifest and Native Messaging worker for host-requested tab creation only                                  | browser control, UI, page observation, leases, raw agent policy |
 | `crates/agentyc/`           | shipped host-backed logical CLI, MCP stdio entry point, and skill initialization                                 | direct MCP state ownership                               |
 | `crates/agentyc-mcp/`       | host-backed logical MCP adapter over the host client                                                             | direct CDP, active-page authority, canonical space state |
 | `crates/agentyc-tests/`     | integration and test harnesses; any internal CDP use remains test-only                                           | user-facing CLI or product browser runtime               |
@@ -234,7 +231,7 @@ New/touched implementation files stay at or below 400 lines where practical; ext
 ### Server/extension/client boundary
 
 - **Host-owned:** identity, leases, ownership, space/page state, policy, action ordering, snapshot/ref cache, event sequencing, redaction, persistence, reconciliation, and cleanup authorization.
-- **Extension-owned:** Chrome API calls, debugger attachment, tab/window/group inventory, frame/session event capture, content-script lifecycle, side-panel rendering, and browser-specific capability reporting.
+- **Extension-owned:** the minimum Chrome tab-creation call requested by the host; no page control, observation, inventory, grouping, content scripts, or user interface.
 - **Agent-owned:** labels, task intent, requested URLs/actions, snapshot budgets, explicit confirmation choices, and follow-up decisions after typed outcomes.
 - **User-owned:** Chrome profile, unmanaged tabs, takeover/return control, permission approval, login/payment/destructive confirmation, and final page retention.
 - **MCP adapter-owned:** logical host-route schemas and stdio request/result mapping only.
@@ -243,9 +240,9 @@ New/touched implementation files stay at or below 400 lines where practical; ext
 
 | Mode                        | Default? | Guarantee                                                                                             | Allowed behavior                                                                   |
 | --------------------------- | -------: | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `extension_existing_chrome` |      yes | Logical task-space ownership in the user's profile; shared cookies/storage/profile state is disclosed | Agent-created/claimed pages, explicit user-approved adoption, scoped actions       |
+| `dedicated_profile`         |      yes | Dedicated user-launched profile with loopback CDP; spaces share state within that profile              | Host-owned page control; extension-mediated tab creation                         |
 | `extension_read_only`       | fallback | Extension connected but mutation permission/policy unavailable                                        | Inventory and supported reads; mutations return typed capability/permission errors |
-| `legacy_cdp_explicit`       |       no | Explicit operator-provided CDP endpoint; guarantees depend on endpoint                                | Compatibility/test only; no silent browser launch or profile assumption            |
+| `legacy_cdp_explicit`       |       no | Explicit operator-provided endpoint; guarantees depend on endpoint                                     | Test-only; no silent browser launch or profile assumption                          |
 | `legacy_managed_test`       |       no | Temporary profile/context isolation for deterministic tests                                           | CI/manual test lane only; never automatic product fallback                         |
 
 No mode may globally close or kill a browser it did not prove ownership of.
@@ -295,7 +292,7 @@ artifact.screenshot/pdf/html
 - [Phase 1 — architecture and invariants](plans/phase-1-architecture.md)
 - [Phase 2 — core/local protocol contracts](plans/phase-2-contracts.md)
 - [Phase 3 — host broker and ledger](plans/phase-3-core-implementation.md)
-- [Phase 4 — Chrome extension and task-space UI](plans/phase-4-extension.md)
+- [Phase 4 — host-owned CDP and minimal tab-creation extension](plans/phase-4-extension.md)
 - [Phase 5 — context and automation](plans/phase-5-context-and-automation.md)
 - [Phase 6 — direct CLI and SDK](plans/phase-6-direct-cli-sdk.md)
 - [Phase 7 — hardening, validation, and launch](plans/phase-7-hardening.md)
