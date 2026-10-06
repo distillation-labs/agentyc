@@ -102,13 +102,13 @@ await space.returnControl();
 
 ### Explicit shared-profile disclosure
 
-Task spaces share the user's existing browser profile state. Calling `client.createSpace(label, options)` requires `{ acceptSharedProfileDisclosure: true }`. Omission throws an `AgentycError` with code `permission_denied`.
+Task spaces share state within the dedicated Chrome profile, which is separate from the user's everyday profile. Calling `client.createSpace(label, options)` requires `{ acceptSharedProfileDisclosure: true }`. Omission throws an `AgentycError` with code `permission_denied`.
 
 `TaskSpace.page(label)` creates a lazy handle that resolves an existing page by label on first use; labels must identify exactly one page within the space. Use `TaskSpace.page(pageId)` to address a known logical ID. `TaskSpace.newPage(label)` sends a logical page-create request immediately. Page creation, snapshots, close, and actions require a claimed lease; the SDK rejects missing lease epochs before dispatch. Lease epochs are retained after claim/renew/takeover and cleared after return, finish, release, pause, or handoff.
 
 `client.taskSpace(spaceId)` returns a synchronous handle for an existing logical ID. `client.taskSpace(label, { acceptSharedProfileDisclosure: true })` is the async create-by-label form and returns a `TaskSpace`; it does not claim a lease automatically. A call without the disclosure option is rejected rather than creating a space implicitly.
 
-The SDK exposes host-backed `finish(options?)`, `release(options?)`, `pause({ ttl?, now? })`, and `handoff({ ttl?, now? })` transitions. Pause and handoff use the host fencing methods and clear the cached lease epoch only after success; the SDK never simulates lifecycle changes locally. Side-panel controls remain a separate host path and require their own host-issued tickets.
+The SDK exposes host-backed `finish(options?)`, `release(options?)`, `pause({ ttl?, now? })`, and `handoff({ ttl?, now? })` transitions. Pause and handoff use the host fencing methods and clear the cached lease epoch only after success; the SDK never simulates lifecycle changes locally. The extension has no user-control UI.
 
 ## Snapshots, actions, waits, and events
 
@@ -127,7 +127,7 @@ The SDK implements `page.goto()`, `page.click()`, `page.type()`, `page.fill()`, 
 
 Snapshots and actions are requested through logical `space_id`/`page_id` values. Unknown action outcomes must be reconciled; the SDK does not replay raw browser commands. Event cursors are broker-epoch scoped. `client.subscribeEvents(listener, { afterEpoch, afterSequence })` registers a local listener and performs one retained-event resume; the current local socket does not push a continuous event stream. For ongoing observation, use repeated `client.events(...)` reads or a bounded `waitFor(...)`. Callers must resync when the host reports a lagged or invalid cursor.
 
-Snapshot reads on restricted Chrome URLs fail closed with `capability_unavailable` before content-bridge or debugger collection; no fallback source is attempted.
+Snapshot reads on restricted Chrome URLs fail closed with `capability_unavailable` before host-side CDP collection; no fallback source is attempted.
 
 ## Batching
 
