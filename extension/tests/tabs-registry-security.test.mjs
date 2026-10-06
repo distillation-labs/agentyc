@@ -403,27 +403,16 @@ test("tabs.onReplaced keeps distinct added and removed tab identities", async ()
   assert.equal(events.includes("page.replaced"), true);
 });
 
-test("production manifest keeps only isolated content bridge and no broad host/scripting permissions", async () => {
+test("production manifest exposes only the tab-creation Native Messaging worker", async () => {
   const manifest = JSON.parse(
     await readFile(new URL("../manifest.json", import.meta.url), "utf8"),
   );
-  assert.equal(Array.isArray(manifest.permissions), true);
-  assert.equal(manifest.permissions.includes("scripting"), false);
+  assert.deepEqual(manifest.permissions, ["nativeMessaging", "storage"]);
   assert.equal(Array.isArray(manifest.host_permissions), false);
-  assert.equal(manifest.content_scripts.length, 1);
+  assert.equal(manifest.content_scripts, undefined);
+  assert.equal(manifest.side_panel, undefined);
   assert.equal(
-    manifest.content_scripts.some((entry) => entry.world === "MAIN"),
-    false,
+    manifest.background.service_worker,
+    "src/tab-creation-worker.mjs",
   );
-  assert.equal(
-    manifest.content_scripts.some(
-      (entry) =>
-        entry.js.includes("src/content-bridge.js") &&
-        entry.world !== "MAIN" &&
-        entry.matches.includes("http://*/*") &&
-        entry.matches.includes("https://*/*"),
-    ),
-    true,
-  );
-  await readFile(new URL("../src/content-bridge.js", import.meta.url), "utf8");
 });
