@@ -86,6 +86,8 @@ pub enum SpaceCommand {
     Renew(LeaseRenewArgs),
     /// Explicitly fence and take over a logical space.
     Takeover(LeaseArgs),
+    /// Retry a pending takeover fence and renew its lease.
+    AcknowledgeFence(LeaseRenewArgs),
     /// Reclaim a user-owned space with its one-time control ticket.
     Reclaim(SpaceReclaimArgs),
     /// Return the current lease to explicit user control.
