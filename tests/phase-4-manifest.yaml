@@ -10,10 +10,10 @@
     "phase": 4,
     "artifact_kind": "phase-4-extension-review",
     "producer": "scripts/check_phase_4_extension.py",
-    "producer_sha256": "0269c370609d567990613b803f569576a1908ba79d6fb22afbc82bad3de16abd"
+    "producer_sha256": "2e4f5056c8f9d21bcb2528006886a97443846ad83f0a3ff96e0a8acdf3b79eb7"
   },
-  "timestamp": "2026-10-04T15:14:10Z",
-  "nonce": "phase4-deterministic-evidence-v1",
+  "timestamp": "2026-10-06T00:23:02Z",
+  "nonce": "phase4-live-mcp-partial-20261006",
   "redaction_status": {
     "status": "applied",
     "policy": "phase-4-evidence-redacted-only",
@@ -24,18 +24,19 @@
     "errors": false
   },
   "source_hashes": {
+    "crates/agentyc-host/src/broker.rs": "2d1c57e757927c16259cd26e8a53d732200480ebad593070fc10aba0b91e2335",
     "crates/agentyc-host/src/chrome_bridge.rs": "1914bb19bd8e120a46e961cc4aaba763b7128a17ef1341d690f66c773001ac69",
-    "docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-4-chrome-docs-audit.md": "299f8474bb8883fd7319799ef4efe1fbff8b6e20f2feae4cd75e554d1d9a1665",
+    "docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-4-chrome-docs-audit.md": "f906b04d687b95b6af8171c66c4fb04348653d57e9503700d50da47fe517d5ff",
     "docs/security/logging.md": "fa88022858c30dac1f15c95d740ae1095b6d7e7c9c0db326012cc40520a87df7",
     "docs/user-control.md": "70eee00944d3742328540f0aac470417c3c5c5334db7de27857bb1e830f563d8",
     "extension/package-lock.json": "3cc364895f0d8bcbfbe2fb96df45b77a8f79daa0343e3cac785768a7f542e15f",
-    "extension/src/debugger-bridge.mjs": "f0509af382cff39fb69a8c567074d09c0740b28b8cf4d39d50b3079a25c16c57",
-    "extension/src/frames.mjs": "5f3f3456162dc47123664e0f0a78532a1d9e35250473cd40a61a708358e1787b",
-    "extension/src/service-worker.mjs": "c4695c1570ece6d2ea1a56fbd90fea2e02e78d58dfb87ecbb9bfa45e0a2c041d",
-    "extension/tests/content-bridge-phase4.test.mjs": "58a9251baecd8877eff25231878aa25b8695e45e958100c2145201c7303b0c29",
+    "extension/src/debugger-bridge.mjs": "2dbe43d05d861d24c9b4d0ae4cb9736093e47e92c938cc37151203e298fd830c",
+    "extension/src/frames.mjs": "5b9de3087bcc5ce342c339a4bccf5396cc09d6b8b20c24b3ea80fa4f2af1203e",
+    "extension/src/service-worker.mjs": "d57d9b0c121ff348eb67c486590967e05d1e3dcb2f377cd310d8b2ee2d2501a0",
+    "extension/tests/content-bridge-phase4.test.mjs": "9be053d877a8d88a1b22751eb680cef3823b178b01ab59a7fc80b2895cb90a1f",
     "extension/tests/fake-chrome.mjs": "17ee86bac2a24933f0976b7365b313b67eb297940a99f1b022b001d2c76dd8ed",
-    "extension/tests/reconnect-debugger.test.mjs": "9f8e26bca32d6eea5c7d2030016e384edcf05199b3cc8808bc9d0eb8f5ddc354",
-    "extension/tests/tabs-registry-security.test.mjs": "754fb99e5841b17c664dc2f4c230ff08b8971eb820fc40ddb905eae1bcd52ffc",
+    "extension/tests/reconnect-debugger.test.mjs": "71c8127a5bd6e9c47160b804117aaf88a68acac1c690e4dda55ae7071ea23f57",
+    "extension/tests/tabs-registry-security.test.mjs": "a70999277a7f42518f199f032f76e542ab95687ae7a5ed5047e84049b5c1a8a4",
     "scripts/run_phase4_live_probe.py": "4486af840bd4ab21dbbf2f4b131aabc73cdd1784ad424390fab0606dd2aa2c8f"
   },
   "evidence_artifacts": [
@@ -46,6 +47,10 @@
     {
       "name": "phase4-live-disposable",
       "path": "artifacts/p4-live-disposable/report.json"
+    },
+    {
+      "name": "phase4-existing-chrome-mcp-e2e",
+      "path": "artifacts/p4-existing-chrome-mcp-e2e.json"
     }
   ],
   "provenance": {
@@ -57,23 +62,24 @@
       "phase": 4,
       "artifact_kind": "phase-4-extension-review",
       "producer": "scripts/check_phase_4_extension.py",
-      "producer_sha256": "0269c370609d567990613b803f569576a1908ba79d6fb22afbc82bad3de16abd"
+      "producer_sha256": "2e4f5056c8f9d21bcb2528006886a97443846ad83f0a3ff96e0a8acdf3b79eb7"
     },
-    "timestamp": "2026-10-04T15:14:10Z",
-    "nonce": "phase4-deterministic-evidence-v1",
+    "timestamp": "2026-10-06T00:23:02Z",
+    "nonce": "phase4-live-mcp-partial-20261006",
     "source_hashes": {
+      "crates/agentyc-host/src/broker.rs": "2d1c57e757927c16259cd26e8a53d732200480ebad593070fc10aba0b91e2335",
       "crates/agentyc-host/src/chrome_bridge.rs": "1914bb19bd8e120a46e961cc4aaba763b7128a17ef1341d690f66c773001ac69",
-      "docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-4-chrome-docs-audit.md": "299f8474bb8883fd7319799ef4efe1fbff8b6e20f2feae4cd75e554d1d9a1665",
+      "docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-4-chrome-docs-audit.md": "f906b04d687b95b6af8171c66c4fb04348653d57e9503700d50da47fe517d5ff",
       "docs/security/logging.md": "fa88022858c30dac1f15c95d740ae1095b6d7e7c9c0db326012cc40520a87df7",
       "docs/user-control.md": "70eee00944d3742328540f0aac470417c3c5c5334db7de27857bb1e830f563d8",
       "extension/package-lock.json": "3cc364895f0d8bcbfbe2fb96df45b77a8f79daa0343e3cac785768a7f542e15f",
-      "extension/src/debugger-bridge.mjs": "f0509af382cff39fb69a8c567074d09c0740b28b8cf4d39d50b3079a25c16c57",
-      "extension/src/frames.mjs": "5f3f3456162dc47123664e0f0a78532a1d9e35250473cd40a61a708358e1787b",
-      "extension/src/service-worker.mjs": "c4695c1570ece6d2ea1a56fbd90fea2e02e78d58dfb87ecbb9bfa45e0a2c041d",
-      "extension/tests/content-bridge-phase4.test.mjs": "58a9251baecd8877eff25231878aa25b8695e45e958100c2145201c7303b0c29",
+      "extension/src/debugger-bridge.mjs": "2dbe43d05d861d24c9b4d0ae4cb9736093e47e92c938cc37151203e298fd830c",
+      "extension/src/frames.mjs": "5b9de3087bcc5ce342c339a4bccf5396cc09d6b8b20c24b3ea80fa4f2af1203e",
+      "extension/src/service-worker.mjs": "d57d9b0c121ff348eb67c486590967e05d1e3dcb2f377cd310d8b2ee2d2501a0",
+      "extension/tests/content-bridge-phase4.test.mjs": "9be053d877a8d88a1b22751eb680cef3823b178b01ab59a7fc80b2895cb90a1f",
       "extension/tests/fake-chrome.mjs": "17ee86bac2a24933f0976b7365b313b67eb297940a99f1b022b001d2c76dd8ed",
-      "extension/tests/reconnect-debugger.test.mjs": "9f8e26bca32d6eea5c7d2030016e384edcf05199b3cc8808bc9d0eb8f5ddc354",
-      "extension/tests/tabs-registry-security.test.mjs": "754fb99e5841b17c664dc2f4c230ff08b8971eb820fc40ddb905eae1bcd52ffc",
+      "extension/tests/reconnect-debugger.test.mjs": "71c8127a5bd6e9c47160b804117aaf88a68acac1c690e4dda55ae7071ea23f57",
+      "extension/tests/tabs-registry-security.test.mjs": "a70999277a7f42518f199f032f76e542ab95687ae7a5ed5047e84049b5c1a8a4",
       "scripts/run_phase4_live_probe.py": "4486af840bd4ab21dbbf2f4b131aabc73cdd1784ad424390fab0606dd2aa2c8f"
     },
     "evidence_artifacts": [
@@ -84,6 +90,10 @@
       {
         "name": "phase4-live-disposable",
         "path": "artifacts/p4-live-disposable/report.json"
+      },
+      {
+        "name": "phase4-existing-chrome-mcp-e2e",
+        "path": "artifacts/p4-existing-chrome-mcp-e2e.json"
       }
     ],
     "redaction_status": {
@@ -103,7 +113,7 @@
     "python3 scripts/run_phase4_live_probe.py --chrome-binary <installed-Chrome>"
   ],
   "nonclaims": [
-    "headed existing-profile Chrome",
+    "full headed existing-profile Chrome workflows (snapshots, side panel, OOPIF, and browser restart)",
     "production installation/distribution",
     "enterprise policy and rollback",
     "release eligibility"
