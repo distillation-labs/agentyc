@@ -2,6 +2,8 @@
 
 Status: `pending` until the Phase 4 real-Chrome gate and the Phase 5 production-path benchmark pass.
 
+> **Architecture note:** This traceability table reflects the earlier extension-owned debugger/event design. The current product boundary makes the host the CDP owner and retains the extension only for tab creation. Extension debugger/content/UI entries below are historical implementation references, not evidence or current architecture requirements.
+
 This document maps each Phase 5 task to the current implementation, deterministic validation, and remaining evidence. It deliberately separates code/tests from release evidence.
 
 | Task  | Current implementation                                                                                                                                                                | Deterministic validation                                                         | Remaining gate                                                                                                                                                                                               |
