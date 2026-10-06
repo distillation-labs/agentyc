@@ -43,13 +43,13 @@ Global direct options are `--state-dir PATH`, `--principal PRINCIPAL`, `--profil
 
 ### Supported operations vs. planned methods
 
-The CLI strictly dispatches mutations through `action execute --operation <OPERATION>`. Currently available operations are `navigate`, `click`, `input`, `scroll`, `wait`, `screenshot`, and `close`. `evaluate`, `storage_write`, `cookie_write`, and `upload` fail locally with `permission_denied` because the direct CLI has no host-issued user-intent-ticket flow; uploads also require an enabled extension capability.
+The CLI strictly dispatches mutations through `action execute --operation <OPERATION>`. Currently available operations are `navigate`, `click`, `input`, `scroll`, `wait`, `screenshot`, and `close`. `evaluate`, `storage_write`, `cookie_write`, and `upload` fail locally with `permission_denied` because the direct CLI has no host-issued user-intent-ticket flow; upload remains unavailable until a host capability is implemented.
 
 Planned convenience subcommands (such as `agentyc wait url|network-idle`, `agentyc page navigate`, `agentyc page adopt`, `agentyc host start|stop`, or direct verb subcommands like `agentyc action click`) are not implemented in the CLI. Do not treat planned convenience methods as implemented commands.
 
 ### Explicit shared-profile disclosure
 
-Task spaces operate in the user's shared existing Chrome profile (sharing cookies, sessions, and storage), not an isolated container. Creating a space strictly requires explicit acknowledgement with the `--accept-shared-profile-disclosure` flag. Omission returns `permission_denied` with exit code `4`.
+Task spaces share state within the dedicated Chrome profile (including cookies, sessions, and storage); the profile is separate from the user's everyday profile. Creating a space strictly requires explicit acknowledgement with the `--accept-shared-profile-disclosure` flag. Omission returns `permission_denied` with exit code `4`.
 
 ### Runnable tested example (offline test seam)
 
@@ -107,7 +107,7 @@ Direct command failures retain the JSON error record and use stable exit codes: 
 
 ## Browser and extension behavior
 
-The direct path does **not** launch Chrome, download Chrome, discover a browser debugging endpoint, or accept a copied debugging URL. A real extension bridge is required for bridge capabilities such as lease acquisition, managed page creation, snapshots, and actions in live mode. Until that bridge is connected, the CLI returns `capability_unavailable` or `extension_not_connected`; it does not fall back to the legacy runtime.
+The direct path does **not** launch Chrome, download Chrome, or accept a copied debugging URL. The user starts the dedicated profile with a loopback debugging endpoint; the host owns the CDP connection for navigation, snapshots, and actions. The extension bridge is required only to create tabs. Missing endpoints or bridges return typed errors; Agentyc does not fall back to another browser-control path.
 
 `--offline` is an explicit deterministic fake-host seam for tests and local contract development. It is not a browser connection and does not grant access to a user's profile.
 
@@ -121,12 +121,12 @@ The current CLI opens and closes a broker for each invocation. A restart fences 
 
 ## Phase evidence and live validation limits
 
-The direct local CLI/SDK boundary is primary. MCP is compatibility-only and maps through the host adapter; it does not add a second semantic contract or become a live-browser claim. Live validation requires an enrolled Native Messaging host and extension on macOS connected to a running Chrome instance. Deterministic repository evidence validates broker, ledger, and protocol contracts offline; it does not assert that live Chrome or Web Store extension distribution is configured.
+The direct local CLI/SDK boundary is primary. MCP is compatibility-only and maps through the host adapter; it does not add a second semantic contract or become a live-browser claim. Live validation requires the user-launched dedicated Chrome profile's loopback CDP endpoint; the Native Messaging host and extension are needed only when creating tabs. Deterministic repository evidence validates broker, ledger, and protocol contracts offline; it does not assert that live Chrome or Web Store extension distribution is configured.
 
 ## MCP compatibility boundary
 
-`agentyc mcp` (or `agentyc` with no subcommand) runs the host-backed logical MCP service over stdio only. There is no `agentyc serve` MCP HTTP route, direct-CDP MCP mode, or `browser_*` MCP tool surface. The offline server lists 29 routes; the connected remote catalog declares 30, with 11 currently returning typed `capability_unavailable` errors. A limited existing-profile run verified MCP stdio and extension fence/rebind, but snapshot/action reconciliation and the full Phase 8 gate remain open, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
+`agentyc mcp` (or `agentyc` with no subcommand) runs the host-backed logical MCP service over stdio only. There is no `agentyc serve` MCP HTTP route, direct-CDP MCP mode, or `browser_*` MCP tool surface. The offline server lists 29 routes; the connected remote catalog declares 30, with 11 currently returning typed `capability_unavailable` errors. Historical testing under the previous extension architecture verified MCP stdio and extension fence/rebind; snapshot/action reconciliation and the full Phase 8 gate remain open, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
 
 ## Removed legacy CLI paths
 
-The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` commands are not part of the shipped CLI command tree above. The shipped CLI uses host-backed logical subcommands; internal installation and test harnesses that use CDP do not provide a user-facing CLI. This does not remove the Node SDK at `packages/agentyc-browser` or the extension's `chrome.debugger` backend.
+The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` commands are not part of the shipped CLI command tree above. The shipped CLI uses host-backed logical subcommands; the host's internal CDP connection is not a user-facing CLI. This does not remove the Node SDK at `packages/agentyc-browser`; the extension does not use `chrome.debugger`.
