@@ -10,6 +10,7 @@ pub mod actionability;
 pub mod actions;
 pub mod bridge;
 pub mod broker;
+mod cdp;
 pub mod chrome_bridge;
 pub mod context;
 pub mod dialogs;
