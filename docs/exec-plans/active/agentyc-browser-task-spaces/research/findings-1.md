@@ -144,4 +144,4 @@ The canonical agent object is a task space, not an active tab. A persistent CLI/
 
 ### Release blockers for the new target
 
-Those original blockers describe the target architecture review, not a completed release attestation. Current MCP additionally remains blocked on disposition of 12 unavailable connected routes, headed live-Chrome workflows through the host/extension path, and its independent Phase 8 release gate.
+Those original blockers describe the target architecture review, not a completed release attestation. Current MCP additionally remains blocked on disposition of 11 unavailable connected routes, headed live-Chrome workflows through the host/extension path, and its independent Phase 8 release gate.
