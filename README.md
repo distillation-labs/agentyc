@@ -90,7 +90,7 @@ Point your agent at that file. It teaches the read→ref→act→verify loop, su
 
 ### Optional host-backed MCP adapter (stdio only)
 
-The direct host-backed CLI/SDK is the primary interface. MCP exposes logical host operations over stdio only; it does not expose the removed `browser_*` tool surface or an HTTP transport. The deterministic offline server lists 29 routes. The connected remote catalog declares 30, of which 12 return typed `capability_unavailable` results. Live headed-Chrome validation has not run, so MCP is **not distribution-ready**. See [MCP compatibility](docs/mcp-compatibility.md).
+The direct host-backed CLI/SDK is the primary interface. MCP exposes logical host operations over stdio only; it does not expose the removed `browser_*` tool surface or an HTTP transport. The deterministic offline server lists 29 routes. The connected remote catalog declares 30, with 19 supported by the owner-host protocol and 11 returning typed `capability_unavailable` results. `host_lease_acknowledge_fence` retries a pending takeover fence at the same epoch with lease renewal. A limited existing-profile run verified MCP stdio, host/Native Messaging connection, and extension fence/rebind; snapshot/action reconciliation and the full Phase 8 release workflows remain incomplete, so MCP is **not distribution-ready**. See [MCP compatibility](docs/mcp-compatibility.md).
 
 ```json
 {
