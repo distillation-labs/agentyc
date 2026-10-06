@@ -108,7 +108,7 @@ test("waits carry logical scope, use the bounded default, and reject invalid tim
   assert.equal(transport.calls.length, 1);
 });
 
-test("claim, renew, and takeover apply the same default lease TTL", async () => {
+test("claim, renew, takeover, and fence acknowledgement use lease defaults", async () => {
   const transport = new FakeTransport();
   const client = await connect({ transport });
   transport.handler = (request) => {
@@ -116,6 +116,8 @@ test("claim, renew, and takeover apply the same default lease TTL", async () => 
     return responseFor(request, {
       lease: { lease_epoch: method === "space.renew" ? 2 : 1 },
       lease_epoch: 3,
+      fence_acknowledged: true,
+      lifecycle: "agent_owned",
     });
   };
   const space = client.taskSpace("space_lease");
@@ -123,15 +125,27 @@ test("claim, renew, and takeover apply the same default lease TTL", async () => 
   await space.claim();
   await space.renew();
   await space.takeover();
+  await space.acknowledgeFence();
   assert.deepEqual(
     transport.calls.map((call) => call.requests[0].params.ttl),
-    [DEFAULT_LEASE_TTL_MS, DEFAULT_LEASE_TTL_MS, DEFAULT_LEASE_TTL_MS],
+    [
+      DEFAULT_LEASE_TTL_MS,
+      DEFAULT_LEASE_TTL_MS,
+      DEFAULT_LEASE_TTL_MS,
+      DEFAULT_LEASE_TTL_MS,
+    ],
   );
   assert.ok(
     transport.calls.every((call) =>
       Number.isSafeInteger(call.requests[0].params.now),
     ),
   );
+  assert.equal(space.leaseEpoch, 3);
+  assert.equal(
+    transport.calls[3].requests[0].method,
+    "space.acknowledge_fence",
+  );
+  assert.equal(transport.calls[3].requests[0].params.lease_epoch, 3);
 });
 
 test("reconciliation requires a lease epoch before dispatch", async () => {
