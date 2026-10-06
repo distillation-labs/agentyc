@@ -4,9 +4,9 @@ This repository has a **macOS-first test-only preflight**, not a production inst
 
 The direct CLI and SDK is the primary interface; MCP is compatibility-only. Key product and security boundaries:
 
-- **Explicit shared-profile disclosure:** Existing-Chrome task spaces operate inside the user's existing Chrome profile, sharing cookies, sessions, and storage. Isolation is not claimed; callers must provide `--accept-shared-profile-disclosure` (CLI) or `acceptSharedProfileDisclosure: true` (SDK).
-- **No implicit Chrome launch or download:** Neither the preflight, the drill, the Native Messaging installer, nor the direct CLI/SDK will ever download Chrome or launch Chrome automatically. Live automation connects to an already-running Chrome profile with the enrolled Agentyc MV3 extension and host.
-- **Current per-invocation CLI and live validation limits:** The CLI currently runs per invocation. Live browser validation requires a running Chrome with the enrolled extension and Native Messaging host on macOS; commands fail with `extension_not_connected` or `native_host_unavailable` when absent. Offline mode (`--offline`) provides a deterministic fake-host seam for testing and CI. Planned convenience methods are not implemented as direct commands.
+- **Explicit profile disclosure:** Task spaces share state within the user's dedicated Chrome profile, including cookies, sessions, and storage. The dedicated profile is separate from the user's everyday profile; callers must provide `--accept-shared-profile-disclosure` (CLI) or `acceptSharedProfileDisclosure: true` (SDK).
+- **No implicit Chrome launch or profile creation:** Neither the preflight, the drill, the Native Messaging installer, nor the direct CLI/SDK launches Chrome or creates/switches profiles. The user starts the dedicated profile with its loopback debugging endpoint; the extension and Native Messaging host are required only to create tabs.
+- **Current per-invocation CLI and live validation limits:** The CLI currently runs per invocation. Live browser validation requires the dedicated Chrome profile's loopback CDP endpoint on macOS; tab creation also requires the extension and Native Messaging host. Offline mode (`--offline`) provides a deterministic fake-host seam for testing and CI. Planned convenience methods are not implemented as direct commands.
 
 ## Safe default
 
@@ -250,6 +250,6 @@ require a real headed macOS run with a disposable profile, explicit user
 approval, redacted logs, and evidence that unrelated tabs and the user's Chrome
 process were unchanged.
 
-## Side-panel user action boundary
+## Extension action behavior
 
-The Side Panel API is user-action gated. `chrome.sidePanel.open()` may only be called in response to a toolbar action, keyboard shortcut, context-menu action, or an extension-page/content-script gesture. The host, CLI, SDK, and Native Messaging request path must never open the panel or activate a tab. See [`docs/user-control.md`](user-control.md).
+The extension has no popup, side panel, or toolbar action. Clicking its icon does nothing; users operate Agentyc through the CLI, SDK, or MCP. The extension runs in the background and is invoked through Native Messaging only when Agentyc needs to create a tab. See [`docs/user-control.md`](user-control.md).
