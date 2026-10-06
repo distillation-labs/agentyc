@@ -268,6 +268,9 @@ export interface PageOptions extends RequestOptions {
   leaseEpoch?: number;
   now?: number;
 }
+export interface IssueRefOptions extends PageOptions {
+  frameId?: string;
+}
 export interface LeaseOptions extends RequestOptions {
   ttl?: number;
   now?: number;
@@ -320,7 +323,17 @@ export interface SubmitActionRequest {
 export type ActionPayload = Record<string, string>;
 export type ActionFieldValue = string | number | boolean;
 /** Element reference object returned by a snapshot; sent as a JSON-encoded field. */
-export type ElementRefObject = Record<string, unknown>;
+export interface ElementRefObject extends Record<string, unknown> {
+  ref_id: string;
+  element_key: string;
+  space_id: LogicalSpaceId;
+  page_id: LogicalPageId;
+  frame_id: string;
+  snapshot_version: number;
+  document_generation: number;
+  navigation_generation: number;
+  refs_epoch: number;
+}
 export interface ActionTargetFields {
   selector?: string;
   elementRef?: ElementRefObject | string;
@@ -332,8 +345,10 @@ export interface ActionTargetFields {
   provenance?: ElementRefObject | string;
   [field: string]: ActionFieldValue | ElementRefObject | undefined;
 }
-/** A string is a selector; an object is forwarded field by field. */
-export type ActionTarget = string | ActionTargetFields;
+/** Element actions require a ref issued for one snapshot element key. */
+export interface ActionTarget extends ActionTargetFields {
+  elementRef: ElementRefObject;
+}
 export type ScrollDelta = ActionTargetFields & {
   x?: ActionFieldValue;
   y?: ActionFieldValue;
@@ -381,6 +396,7 @@ export class Page {
   create(options?: PageOptions): Promise<this>;
   resolve(options?: RequestOptions): Promise<this>;
   snapshot(options?: SnapshotOptions): Promise<unknown>;
+  issueRef(elementKey: string, options?: IssueRefOptions): Promise<ElementRefObject>;
   action(
     operation: ActionOperation,
     payload?: ActionPayload,
@@ -388,16 +404,16 @@ export class Page {
   ): Promise<ActionReceipt | unknown>;
   goto(url: string, options?: ActionOptions): Promise<ActionReceipt | unknown>;
   click(
-    target?: ActionTarget,
+    target: ActionTarget,
     options?: ActionOptions,
   ): Promise<ActionReceipt | unknown>;
   type(
-    target: ActionTarget | null | undefined,
+    target: ActionTarget,
     text: string,
     options?: ActionOptions,
   ): Promise<ActionReceipt | unknown>;
   fill(
-    target: ActionTarget | null | undefined,
+    target: ActionTarget,
     text: string,
     options?: ActionOptions,
   ): Promise<ActionReceipt | unknown>;
