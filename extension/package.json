@@ -7,7 +7,7 @@
   "scripts": {
     "test": "node --test tests",
     "lint:manifest": "node --input-type=module -e \"import fs from 'node:fs'; JSON.parse(fs.readFileSync('manifest.json', 'utf8'));\"",
-    "check": "npm run lint:manifest && node --check src/protocol.mjs && node --check src/native-messaging.mjs && node --check src/debugger-bridge.mjs && node --check src/tabs-registry.mjs && node --check src/groups.mjs && node --check src/frames.mjs && node --check src/content-script.mjs && node --check src/page-bridge.mjs && node --check src/service-worker.mjs && node --check src/scoped-events.mjs"
+    "check": "npm run lint:manifest && node --check src/protocol.mjs && node --check src/native-messaging.mjs && node --check src/tab-creation-worker.mjs"
   },
   "engines": {
     "node": ">=20"
