@@ -66,7 +66,7 @@ suites:
         prompt: >
           Is Agentyc MCP ready for distribution? The static tool inventory passes.
         success_criteria:
-          - States that headed live Chrome validation has not run.
+          - Distinguishes the limited existing-profile connection/fence/rebind run from incomplete snapshot/action and full release workflows.
           - Does not claim distribution readiness from static inventory or offline tests.
       - id: func-07
         prompt: >
