@@ -406,6 +406,7 @@ test("central side-effect classification never reconnects lifecycle or page muta
     "space.claim",
     "space.renew",
     "space.takeover",
+    "space.acknowledge_fence",
     "space.pause",
     "space.handoff",
     "space.return",
