@@ -2444,12 +2444,10 @@ impl Broker {
         })
     }
 
-    /// Create, claim, and visually present one inactive managed page.
+    /// Create and claim one inactive managed page.
     ///
-    /// The browser bridge receives only a host-issued logical proof. The
-    /// returned browser inventory is validated before the durable page is
-    /// marked managed, and group presentation remains best effort because a
-    /// Chrome tab group is visual state rather than authority.
+    /// The extension creates only the requested tab; the host attaches through
+    /// CDP and validates the target before marking the logical page managed.
     #[allow(clippy::too_many_arguments)]
     pub fn create_managed_page(
         &self,
@@ -2489,9 +2487,9 @@ impl Broker {
             .create_page(space_id, &planned.page_id, lease_epoch, url, title, proof)
             .map_err(HostError::Bridge)?;
         // Page creation can return before Chrome emits the final navigation
-        // update. Refresh the extension-backed logical record so the durable
-        // ledger adopts the current navigation/document generations rather than
-        // racing the first load and producing a false target-replaced result.
+        // update. Refresh the host-side CDP record so the durable ledger adopts
+        // current navigation/document generations instead of racing the first
+        // load and producing a false target-replaced result.
         let record = bridge
             .observe()
             .map_err(HostError::Bridge)?
