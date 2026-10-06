@@ -282,16 +282,36 @@ def check(root: Path = ROOT) -> dict[str, Any]:
         require(live_mcp.get("release_eligible") is False, "live MCP evidence cannot claim release eligibility")
         observations = live_mcp.get("observations")
         require(isinstance(observations, dict), "existing-profile MCP observations are missing")
+        provenance = live_mcp.get("provenance")
+        require(isinstance(provenance, dict), "existing-profile MCP provenance is missing")
         require(
-            observations.get("takeover_rebind", {}).get("status") == "passed",
+            provenance.get("timestamp") == live_mcp.get("timestamp"),
+            "existing-profile MCP provenance timestamp mismatch",
+        )
+        require(
+            provenance.get("nonce") == live_mcp.get("nonce"),
+            "existing-profile MCP provenance nonce mismatch",
+        )
+        takeover = observations.get("takeover_rebind")
+        require(isinstance(takeover, dict), "existing-profile takeover/rebind evidence is missing")
+        require(
+            takeover.get("status") == "passed"
+            and takeover.get("page_binding") == "bound"
+            and takeover.get("agent_page_active") is False,
             "existing-profile MCP takeover/rebind evidence is missing",
         )
+        reconciliation = observations.get("unknown_action_reconciliation")
+        require(isinstance(reconciliation, dict), "existing-profile reconciliation evidence is missing")
         require(
-            observations.get("unknown_action_reconciliation", {}).get("status") == "unknown",
+            reconciliation.get("status") == "unknown"
+            and reconciliation.get("action_replayed") is False,
             "existing-profile unknown-action outcome must remain explicit",
         )
+        snapshot_read = observations.get("snapshot_read")
+        require(isinstance(snapshot_read, dict), "existing-profile snapshot evidence is missing")
         require(
-            observations.get("snapshot_read", {}).get("error_code") == "unknown_outcome",
+            snapshot_read.get("error_code") == "unknown_outcome"
+            and snapshot_read.get("snapshot_hash") is None,
             "existing-profile snapshot outcome must remain explicit",
         )
         expected_live_artifact = {
