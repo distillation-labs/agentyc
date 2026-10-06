@@ -342,6 +342,7 @@ test("acknowledged lease fences can rebind one retained inactive page", async ()
         2,
         "rebind",
         {
+          proof_id: "proof-rebind-2-0",
           rebind: true,
           target_generation: 2,
           profile_instance_id: worker.metadata.profileInstanceId,
