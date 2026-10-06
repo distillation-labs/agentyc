@@ -11,9 +11,9 @@ use std::{
 
 use agentyc_core::{
     ActionId, ActionOperation, ActionReceipt, ActionRequest, ActionStatus, BrokerEpoch, Capability,
-    CompletionSource, CoreError, ErrorCode, EventCursor, EventId, EventKind, EventRecord,
-    EventScope, EventSequence, FrameId, Generation, GenerationWatermark, HelloEnvelope,
-    HelloOkEnvelope, HostMetadata, Lease, LeaseEpoch, NextAction, PROTOCOL_VERSION,
+    CompletionSource, CoreError, ElementKey, ErrorCode, EventCursor, EventId, EventKind,
+    EventRecord, EventScope, EventSequence, FrameId, Generation, GenerationWatermark,
+    HelloEnvelope, HelloOkEnvelope, HostMetadata, Lease, LeaseEpoch, NextAction, PROTOCOL_VERSION,
     PageBindingState, PageDescriptor, PageId, PageLifecycle, PageOwnership, PrincipalId,
     ProfileBindingId, ProfileBindingState, ProfileDisclosure, ReconcileToken, ReconciliationState,
     ResumeResult, RetentionPolicy, SnapshotEnvelope, SpaceDescriptor, SpaceId, SpaceLifecycle,
@@ -4253,6 +4253,7 @@ impl Broker {
         space_id: &SpaceId,
         page_id: &PageId,
         frame_id: FrameId,
+        element_key: ElementKey,
         authority: &AuthorityTicket,
         lease_epoch: LeaseEpoch,
         now: Timestamp,
@@ -4290,7 +4291,7 @@ impl Broker {
             })?;
             inner
                 .ref_registry
-                .issue(&envelope, frame_id, now)
+                .issue(&envelope, frame_id, element_key, now)
                 .map_err(Into::into)
         })
     }
