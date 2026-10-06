@@ -54,6 +54,15 @@ const requestEntries = [
     cli: { command: ["space", "takeover"] },
   },
   {
+    key: "space.acknowledge_fence",
+    kind: "request",
+    wireMethods: ["space.acknowledge_fence"],
+    sideEffecting: true,
+    supported: true,
+    sdk: "TaskSpace.acknowledgeFence",
+    cli: { command: ["space", "acknowledge-fence"] },
+  },
+  {
     key: "space.takeover_with_control_ticket",
     kind: "request",
     wireMethods: ["space.takeover_with_control_ticket"],
