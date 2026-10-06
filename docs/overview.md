@@ -34,8 +34,8 @@ there is no model in the loop at all.
 - The `agentyc` command starts the host-backed logical MCP service; direct CLI commands are selected with subcommands such as `space`, `page`, `snapshot`, `action`, and `host`.
 - Select `agentyc mcp` explicitly when an MCP client needs the stdio adapter.
 - MCP is host-backed and logical only. It does not expose the removed `browser_*` tools or an HTTP transport.
-- The offline MCP server exposes 29 logical routes. The connected remote catalog declares 30 routes, 12 of which currently fail with `capability_unavailable`.
-- Headed live Chrome has not yet been run through the MCP path; MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
+- The offline MCP server exposes 29 logical routes. The connected remote catalog declares 30 routes, 11 of which currently fail with `capability_unavailable`.
+- A limited existing-profile MCP run passed stdio, host/Native Messaging connection, and extension fence/rebind; snapshot/action reconciliation and the full Phase 8 gate remain open, so MCP is not distribution-ready. See [MCP compatibility](mcp-compatibility.md).
 - The standalone direct-CDP `browser`, `run --cdp-url`, and `repl --cdp-url` CLI commands have been removed. CDP-based installation/test harnesses are not user-facing interfaces; the Node SDK at `packages/agentyc-browser` and extension `chrome.debugger` backend remain.
 - No API key is required.
 
@@ -49,7 +49,7 @@ there is no model in the loop at all.
 
 ## MCP Boundary
 
-MCP is an adapter over logical host operations, not a separate browser-state owner. It runs over stdio through `agentyc mcp` (or `agentyc` with no subcommand). The deterministic offline server exposes 29 routes; the connected remote catalog declares 30, with 12 returning typed `capability_unavailable` results before forwarding. A declaration is not proof of connected support. Live headed-Chrome MCP validation has not run, and distribution readiness remains blocked on route decisions, live workflows, and Phase 8 release gates.
+MCP is an adapter over logical host operations, not a separate browser-state owner. It runs over stdio through `agentyc mcp` (or `agentyc` with no subcommand). The deterministic offline server exposes 29 routes; the connected remote catalog declares 30, with 11 returning typed `capability_unavailable` results before forwarding. A declaration is not proof of connected support. A limited existing-profile run passed connection and fence/rebind, but snapshot/action reconciliation and the full live workflows remain incomplete; distribution readiness remains blocked on route decisions and Phase 8 release gates.
 
 The direct-CDP `browser`, `run`, and `repl` commands are standalone CLI utilities. They are not MCP modes and do not restore the deleted direct-CDP MCP server, `browser_*` MCP tools, or an MCP HTTP route.
 
