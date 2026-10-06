@@ -216,6 +216,7 @@ fn snapshot_refs_and_action_receipts_fail_closed_across_state_boundaries() {
         .make_ref(
             agentyc_core::RefId::from_suffix("one").expect("ref"),
             FrameId::from_suffix("main").expect("frame"),
+            agentyc_core::ElementKey::from_suffix("root").expect("element key"),
         )
         .expect("validated snapshot ref");
     reference
