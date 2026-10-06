@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check the deterministic Phase 4 MV3 extension slice.
+"""Check the deterministic Phase 4 MV3 extension slice and bounded live evidence.
 
-The active gate accepts deterministic implementation evidence while explicitly
-refusing to claim headed existing-profile Chrome or production distribution.
+The active gate records a limited existing-profile MCP run without treating it
+as complete headed-browser acceptance or production distribution evidence.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ MANIFEST = Path("tests/phase-4-manifest.yaml")
 ARTIFACT = Path("artifacts/p4-extension-review.md")
 AUDIT = Path("docs/exec-plans/active/agentyc-browser-task-spaces/research/phase-4-chrome-docs-audit.md")
 LIVE_ARTIFACT = Path("artifacts/p4-live-disposable/report.json")
+LIVE_EXISTING_PROFILE_MCP_ARTIFACT = Path("artifacts/p4-existing-chrome-mcp-e2e.json")
 MAX_BYTES = 4 * 1024 * 1024
 MAX_PROVENANCE_AGE_SECONDS = 7 * 24 * 60 * 60
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -31,6 +32,7 @@ PHASE4_SOURCE_PATHS = (
     Path("extension/package-lock.json"),
     Path("docs/user-control.md"),
     Path("docs/security/logging.md"),
+    Path("crates/agentyc-host/src/broker.rs"),
     Path("crates/agentyc-host/src/chrome_bridge.rs"),
     Path("extension/tests/reconnect-debugger.test.mjs"),
     Path("extension/tests/content-bridge-phase4.test.mjs"),
@@ -259,6 +261,48 @@ def check(root: Path = ROOT) -> dict[str, Any]:
     evidence = artifact(root)
     audit = read(root, AUDIT)
     live_text = read(root, LIVE_ARTIFACT) if (root / LIVE_ARTIFACT).is_file() else None
+    live_mcp_text = (
+        read(root, LIVE_EXISTING_PROFILE_MCP_ARTIFACT)
+        if (root / LIVE_EXISTING_PROFILE_MCP_ARTIFACT).is_file()
+        else None
+    )
+    live_mcp = None
+    if live_mcp_text is not None:
+        try:
+            live_mcp = json.loads(live_mcp_text)
+        except json.JSONDecodeError as exc:
+            raise Phase4Error("existing-profile MCP evidence is invalid JSON") from exc
+        _validate_json_evidence_envelope(live_mcp, label="existing-profile MCP evidence")
+        require(live_mcp.get("phase") == 4, "existing-profile MCP evidence phase is invalid")
+        require(live_mcp.get("status") == "partial", "existing-profile MCP evidence status is invalid")
+        require(
+            live_mcp.get("evidence_mode") == "headed_existing_profile",
+            "existing-profile MCP evidence mode is invalid",
+        )
+        require(live_mcp.get("release_eligible") is False, "live MCP evidence cannot claim release eligibility")
+        observations = live_mcp.get("observations")
+        require(isinstance(observations, dict), "existing-profile MCP observations are missing")
+        require(
+            observations.get("takeover_rebind", {}).get("status") == "passed",
+            "existing-profile MCP takeover/rebind evidence is missing",
+        )
+        require(
+            observations.get("unknown_action_reconciliation", {}).get("status") == "unknown",
+            "existing-profile unknown-action outcome must remain explicit",
+        )
+        require(
+            observations.get("snapshot_read", {}).get("error_code") == "unknown_outcome",
+            "existing-profile snapshot outcome must remain explicit",
+        )
+        expected_live_artifact = {
+            "name": "phase4-existing-chrome-mcp-e2e",
+            "path": LIVE_EXISTING_PROFILE_MCP_ARTIFACT.as_posix(),
+        }
+        for record, label in ((values, "manifest"), (evidence, "artifact")):
+            require(
+                expected_live_artifact in record.get("evidence_artifacts", []),
+                f"{label} does not name the existing-profile MCP evidence",
+            )
     require(values.get("schema_version") == 1 and values.get("phase") == 4, "manifest identity is invalid")
     require(values.get("status") in {"active", "complete"}, "manifest status is invalid")
     require(values.get("release_eligible") is False, "Phase 4 cannot claim release eligibility")
@@ -271,11 +315,57 @@ def check(root: Path = ROOT) -> dict[str, Any]:
     require(artifact_mode == manifest_mode, "manifest/artifact evidence mode mismatch")
     if values["status"] == "active":
         require(manifest_mode == "deterministic", "active Phase 4 evidence mode is invalid")
+    expected_source_hashes = phase4_source_hashes(root)
+    expected_build_tuple = {
+        "phase": 4,
+        "artifact_kind": "phase-4-extension-review",
+        "producer": "scripts/check_phase_4_extension.py",
+        "producer_sha256": _sha256(root, Path("scripts/check_phase_4_extension.py")),
+    }
+    for record, label in ((values, "manifest"), (evidence, "artifact")):
+        source_hashes = _validate_source_hashes(
+            root, record.get("source_hashes"), label=f"Phase 4 {label}"
+        )
+        require(
+            source_hashes == expected_source_hashes,
+            f"Phase 4 {label} source hashes are not current",
+        )
+        provenance = record.get("provenance")
+        require(isinstance(provenance, dict), f"Phase 4 {label} provenance is missing")
+        require(
+            provenance.get("source_hashes") == source_hashes,
+            f"Phase 4 {label} provenance source hashes mismatch",
+        )
+        require(
+            record.get("build_tuple") == expected_build_tuple,
+            f"Phase 4 {label} build tuple is stale",
+        )
+        require(
+            provenance.get("build_tuple") == expected_build_tuple,
+            f"Phase 4 {label} provenance build tuple is stale",
+        )
+        require(
+            provenance.get("timestamp") == record.get("timestamp"),
+            f"Phase 4 {label} provenance timestamp mismatch",
+        )
+        require(
+            provenance.get("nonce") == record.get("nonce"),
+            f"Phase 4 {label} provenance nonce mismatch",
+        )
+        require(
+            provenance.get("evidence_artifacts") == record.get("evidence_artifacts"),
+            f"Phase 4 {label} provenance artifact list mismatch",
+        )
+    require(
+        values.get("evidence_artifacts") == evidence.get("evidence_artifacts"),
+        "Phase 4 manifest/artifact evidence lists mismatch",
+    )
 
     for path in (
         Path("extension/package-lock.json"),
         Path("docs/user-control.md"),
         Path("docs/security/logging.md"),
+        Path("crates/agentyc-host/src/broker.rs"),
         Path("crates/agentyc-host/src/chrome_bridge.rs"),
         Path("extension/tests/reconnect-debugger.test.mjs"),
         Path("extension/tests/content-bridge-phase4.test.mjs"),
@@ -324,6 +414,7 @@ def check(root: Path = ROOT) -> dict[str, Any]:
         "release_eligible": False,
         "tasks": len(TASK_IDS),
         "live_disposable": live_text is not None,
+        "live_existing_profile_mcp": live_mcp.get("status") if live_mcp else "not_run",
     }
 
 
