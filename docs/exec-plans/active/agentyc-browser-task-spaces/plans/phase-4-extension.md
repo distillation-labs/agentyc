@@ -1,13 +1,27 @@
 ---
 phase: 4
-name: Chrome extension, Native Messaging bridge, and task-space UI
+name: Host-owned CDP and minimal tab-creation extension
 status: active
 owner: Japneet Kalkat
-primary_outcome: A production-shaped MV3 extension connects the host broker to existing Chrome tabs, maps agent pages to visual tab groups, routes debugger/content events, and exposes safe task-space user control.
+primary_outcome: The host owns browser control through loopback CDP; the MV3 extension is a minimal Native Messaging worker used only to create tabs, with no task-space UI.
 depends_on: phase-3
 ---
 
-# Phase 4 — Chrome extension and task-space UI
+# Phase 4 — Host-owned CDP and minimal tab-creation extension
+
+> **User-directed scope reset:** The earlier side-panel, tab-group, content-script, and extension-debugger design below is superseded. The extension is used only to create tabs; all page navigation, snapshots, actions, waits, and lifecycle operations belong to the host. The user launches the dedicated Chrome profile. There is no extension popup or side panel, and clicking the extension icon does nothing. Do not treat the historical UI/debugger tasks below as current acceptance criteria.
+
+## Current acceptance criteria
+
+- The host connects only to the user-launched profile's loopback CDP endpoint and owns navigation, snapshots, actions, waits, and lifecycle operations.
+- The extension authenticates to the host through Native Messaging and performs only the requested tab-creation operation.
+- The extension manifest exposes no popup, side panel, content scripts, debugger permission, or tab-inventory capability; clicking the extension icon has no effect.
+- Deterministic tests prove that no extension route can perform browser control beyond creating a tab, and that CDP endpoints outside loopback are rejected.
+- Dedicated-profile Chrome E2E and store-distribution/update proof remain release gates. Host/browser restart recovery and cross-origin frame behavior are release gates only when those capabilities are claimed; deterministic tests do not substitute for any required live evidence.
+
+## Superseded historical design and checklists
+
+The sections below preserve the original extension-debugger, tab-group, content-script, and side-panel proposal for historical context. They are not current requirements and do not override the acceptance criteria above or the current exit gates at the end of this plan. In particular, do not implement or validate a side panel, extension debugger, extension-owned OOPIF handling, or tab inventory for this redesign.
 
 ## Objective
 
@@ -34,13 +48,13 @@ Implement the browser-side half of the new product. The extension must work in t
 - `chrome.storage.local/session` stores only profile instance/reconnect/UI metadata; host owns leases/ledger/action status.
 - Agent-created tabs use an approved target window and `chrome.tabs.create({active:false})`; the extension verifies non-focus behavior. Agent commands never activate/highlight/focus a tab or open the side panel; side-panel opening requires an explicit user action.
 
-## Decisions and remaining work
+## Current decisions and live evidence
 
 - **U4-1 — Decision:** target Chrome Web Store signing and updates. Production signing-key custody, Store listing/submission, and end-to-end update proof remain separate release work; the checked-in unpacked development identity is not a production distribution.
-- **U4-2 — Resolved:** snapshot reads on restricted URLs fail closed with `capability_unavailable` before content-bridge or debugger collection; no fallback is attempted.
-- **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focusing or closing the active unmanaged tab. Snapshot read returned `unknown_outcome`; the prior navigation remains unknown and was not replayed. The user performed a real side-panel gesture, but a read-only retry still returned `unknown_outcome`. Existing-profile snapshot/ref, OOPIF, browser-restart, and production-distribution gates remain open.
+- **U4-2 — Superseded:** the earlier extension bridge failed closed on restricted URLs before content-bridge or debugger collection. That result does not establish restricted-target behavior for the host-CDP implementation.
+- **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focus theft. A navigation remained `unknown_outcome` and was not replayed; snapshot reads remained blocked with `unknown_outcome` and produced no logical refs. The run also recorded one unmanaged-tab close with an unattributed actor, so tab-cleanup safety is unresolved. This partial run does not satisfy the current-profile E2E, recovery, or distribution gates.
 - **Policy scope (2026-10-06):** managed-policy evidence is explicitly deferred by the user and is not a blocker for this Phase 4 scope.
-- **Disposable MCP/extension E2E (2026-10-06):** an isolated Chrome profile passed extension load, native-host connection, task-space/page creation, MCP snapshot read with a snapshot hash, and MCP close-action receipt with the page subsequently observed as `target_lost`. It produced no logical element refs and does not replace existing-profile snapshot/ref, OOPIF/restart, or store-release evidence; managed-policy evidence is deferred.
+- **Disposable MCP/extension E2E (2026-10-06):** an isolated Chrome profile passed extension load, native-host connection, task-space/page creation, MCP snapshot read with a snapshot hash, and MCP close-action receipt with the page subsequently observed as `target_lost`. It produced no logical element refs and does not establish dedicated-profile snapshot/ref or tab-safety proof, conditional host/browser restart or cross-origin-frame behavior, or store-distribution evidence; managed-policy evidence is deferred.
 
 ## Scope
 
@@ -168,6 +182,23 @@ extension/
 - **Next phase:** Phase 5 connects the host runtime to compact snapshots, refs, waits, actionability, and typed automation outcomes.
 - **Residuals:** exact unsupported capability fallbacks are carried into the runtime matrix; no fallback may broaden permissions silently.
 
-## Exit gate
+## Current Phase 4 exit gates
 
-Advance only when the extension connects to a real existing Chrome, two spaces/pages coexist safely, the side panel can take over/return control, worker/host/browser restart behavior is explicit, and extension tests show no unauthorized tab mutation or raw identity leakage.
+Phase 4 remains active and release-ineligible until the release evidence gate passes. Do not use completion of deterministic implementation work as a claim of live validation or production readiness.
+
+### Redesigned implementation gate
+
+- Host browser-control operations use only the user's loopback CDP endpoint; the extension performs only the requested tab-creation operation.
+- The extension has no popup, side panel, content scripts, debugger permission, or tab-inventory/browser-control route; clicking its icon has no effect.
+- Deterministic tests and the Phase 4 evidence checker enforce these boundaries and reject non-loopback CDP endpoints.
+- Documentation and evidence artifacts reflect the redesigned architecture and distinguish verified outcomes from nonclaims.
+
+### Release evidence gate (open)
+
+- Run current-build end-to-end validation in the user's dedicated Chrome profile, including a snapshot with logical refs and safe page lifecycle behavior.
+- Resolve the existing-profile `unknown_outcome` snapshot/navigation results and the unattributed unmanaged-tab close; preserve no-replay and no-unowned-close guarantees.
+- Record host/Chrome restart-recovery and cross-origin frame/OOPIF behavior only where those behaviors are part of the host-owned CDP design; deterministic tests do not replace required live evidence.
+- Provide real Chrome Web Store listing, signing, and update/distribution evidence.
+- Managed-policy evidence remains deferred and is not a blocker for this scope.
+
+The historical side-panel, extension-debugger, and extension-worker/browser restart checklist above is not an exit criterion for the redesigned extension.
