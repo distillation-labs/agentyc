@@ -9,7 +9,7 @@ This registry connects each Phase 2 task and quality check to deterministic repo
 - The machine-readable manifest is `tests/phase-2-manifest.yaml`.
 - The review artifact is `artifacts/p2-contracts-review.md`.
 - The Phase 2 MCP fixture index is `tests/fixtures/mcp/index.v1.json`; its profile and HTTP fixtures are retained as historical contract inputs, not current shipped MCP capabilities.
-- Current MCP behavior is defined by [MCP compatibility](mcp-compatibility.md): host-backed logical stdio only; 29 offline routes, 30 declared connected routes with 12 `capability_unavailable`; headed live Chrome has not run, and MCP is not distribution-ready.
+- Current MCP behavior is defined by [MCP compatibility](mcp-compatibility.md): host-backed logical stdio only; 29 offline routes, 30 declared connected routes with 11 `capability_unavailable`; a limited existing-profile run passed connection and fence/rebind, while snapshot/action reconciliation and release acceptance remain open.
 - The rmcp 1.7 protocol-version record in the historical fixtures is not a claim of MCP HTTP transport or release readiness.
 
 ## Task traceability
@@ -82,7 +82,7 @@ Retained Phase 2 fixtures: `tests/fixtures/mcp/index.v1.json`, `tests/fixtures/m
 
 Current offline protocol tests: `tests/mcp_protocol.rs::tool_list_contains_only_host_backed_logical_operations`, `tests/mcp_protocol.rs::space_creation_denies_missing_shared_profile_acknowledgement`, and `tests/mcp_protocol.rs::create_space_lease_and_logical_page_over_stdio`.
 
-Current behavior and blockers: offline lists 29 logical routes; the connected remote catalog declares 30 and 12 return `capability_unavailable`. Headed live Chrome has not run through the host socket, Native Messaging bridge, extension, and Chrome; MCP is not distribution-ready.
+Current behavior and blockers: offline lists 29 logical routes; the connected remote catalog declares 30 and 11 return `capability_unavailable`. A limited live run passed MCP stdio, host socket, Native Messaging, and extension fence/rebind. It did not produce a snapshot/ref, and the unknown navigation remains unreconciled; MCP is not distribution-ready.
 
 ### P2-T8 — primary-output identity audit
 
@@ -130,7 +130,7 @@ The Phase 2 record maps direct CLI `page close` to the `page.close` wire method.
 - `tests/fixtures/mcp/transcripts/tool-error.v1.jsonl`
 - `tests/fixtures/mcp/transcripts/http-session.v1.jsonl`
 
-The default and extended profile fixtures are retained as historical Phase 2 records only; they are not current tool catalogs and do not describe shipped MCP capabilities. The schemas and transcripts are sanitized contract inputs, not current release evidence. Current MCP runs over stdio only, has 12 unavailable routes in its connected catalog, has not been run through headed live Chrome, and is not distribution-ready.
+The default and extended profile fixtures are retained as historical Phase 2 records only; they are not current tool catalogs and do not describe shipped MCP capabilities. The schemas and transcripts are sanitized contract inputs, not current release evidence. Current MCP runs over stdio only and has 11 unavailable routes in its connected catalog. A limited existing-profile smoke passed fence/rebind, but full live workflows and release gates remain open; MCP is not distribution-ready.
 
 ## Error and identity boundaries
 
