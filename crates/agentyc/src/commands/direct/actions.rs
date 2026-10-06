@@ -387,7 +387,7 @@ mod tests {
     fn typed_actionability_payload_fields_accept_json_objects() {
         let payload = parse_payload(Some(
             r#"{
-                "element_ref":{"ref_id":"ref_element","space_id":"space_test","page_id":"page_test","frame_id":"frame_main","snapshot_version":1,"document_generation":1,"navigation_generation":1,"refs_epoch":1},
+                "element_ref":{"ref_id":"ref_element","element_key":"element_target","space_id":"space_test","page_id":"page_test","frame_id":"frame_main","snapshot_version":1,"document_generation":1,"navigation_generation":1,"refs_epoch":1},
                 "provenance":{"space_id":"space_test","page_id":"page_test","snapshot_version":1,"snapshot_hash":"sha256:0000000000000000000000000000000000000000000000000000000000000000","document_generation":1,"navigation_generation":1,"refs_epoch":1,"coherent":true,"coverage":"complete"},
                 "actionability_evidence":{"connected":true,"visible":true,"disabled":false,"readonly":false,"covered":false,"overlay_present":false,"hit_target":true,"moving":false,"offscreen":false,"user_control":false,"target_generation":1,"navigation_generation":1,"document_generation":1}
             }"#,
