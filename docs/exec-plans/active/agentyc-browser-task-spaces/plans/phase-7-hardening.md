@@ -16,7 +16,7 @@ Run the fake, extension, headed existing-Chrome, CLI/SDK, privacy, installation,
 ## Handoff in
 
 - **Inputs:** Phases 0–6 and their artifacts; Phase 0 budgets; host/extension install package; shipped host-backed CLI and Node SDK.
-- **Must already be true:** no known cross-space/user-tab safety defect; all required fixtures and capability results exist. Current MCP is host-backed stdio only: 29 offline routes, 30 declared remote routes with 12 typed unavailable; headed live Chrome has not run and MCP is not distribution-ready.
+- **Must already be true:** no known cross-space/user-tab safety defect; all required fixtures and capability results exist. Current MCP is host-backed stdio only: 29 offline routes, 30 declared remote routes with 11 typed unavailable; a limited existing-profile connection/fence/rebind run has passed, but the full live gate remains open and MCP is not distribution-ready.
 - **Do not reopen:** existing Chrome is default; no automatic browser launch/download; host is authoritative; MCP is compatibility; shared-profile limits are documented.
 
 ## Confirmed facts
