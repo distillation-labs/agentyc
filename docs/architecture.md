@@ -116,9 +116,11 @@ structured JSON emitted by direct commands.
 The MCP service is a host-backed logical adapter, not an independent owner of
 browser or task-space state. It is exposed over stdio only. The deterministic
 offline server lists 29 routes; the connected remote catalog declares 30, with
-12 routes returning typed `capability_unavailable` before forwarding. A route
-declaration is not proof of connected support. The real headed-Chrome MCP path
-has not yet been run, and MCP is not distribution-ready. See
+11 routes returning typed `capability_unavailable` before forwarding. A route
+declaration is not proof of connected support. A limited existing-profile MCP
+run passed stdio and extension fence/rebind, but snapshot/action reconciliation
+and the full live workflows remain incomplete, so MCP is not
+distribution-ready. See
 [MCP compatibility](mcp-compatibility.md) for route-level details and release
 blockers.
 
