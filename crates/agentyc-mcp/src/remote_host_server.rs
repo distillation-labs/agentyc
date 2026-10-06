@@ -136,6 +136,32 @@ const LEASE_FENCE_FIELDS: &[FieldSpec] = &[
         required: true,
     },
 ];
+const LEASE_FENCE_ACK_FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        name: "space_id",
+        kind: "string",
+        description: "Validated logical space identity (space_*), never a browser or tab id.",
+        required: true,
+    },
+    FieldSpec {
+        name: "lease_epoch",
+        kind: "integer",
+        description: "Pending takeover fence epoch to acknowledge.",
+        required: true,
+    },
+    FieldSpec {
+        name: "now",
+        kind: "integer",
+        description: "Optional host timestamp in milliseconds.",
+        required: false,
+    },
+    FieldSpec {
+        name: "ttl",
+        kind: "integer",
+        description: "Optional renewed lease duration in milliseconds; defaults to 60000.",
+        required: false,
+    },
+];
 const LEASE_RENEW_FIELDS: &[FieldSpec] = &[
     FieldSpec {
         name: "space_id",
@@ -545,9 +571,9 @@ const REMOTE_TOOL_SPECS: &[RemoteToolSpec] = &[
     RemoteToolSpec {
         name: "host_lease_acknowledge_fence",
         method: "space.acknowledge_fence",
-        description: "Acknowledge a pending logical takeover fence. Fields: space_id and lease_epoch (required logical fields).",
-        fields: LEASE_FENCE_FIELDS,
-        supported_by_local_protocol: false,
+        description: "Retry a pending logical takeover fence with an optional lease renewal. Fields: space_id and lease_epoch are required; now and ttl are optional.",
+        fields: LEASE_FENCE_ACK_FIELDS,
+        supported_by_local_protocol: true,
     },
     RemoteToolSpec {
         name: "host_page_create",
