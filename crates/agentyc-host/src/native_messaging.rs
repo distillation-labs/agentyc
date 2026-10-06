@@ -3964,6 +3964,23 @@ fn current_millis() -> u64 {
         })
 }
 
+impl crate::cdp::TabCreationTransport for NativeMessagingBridge {
+    fn create_tab(&self, bootstrap_url: &str) -> Result<(), CoreError> {
+        crate::cdp::validate_bootstrap_url(bootstrap_url)?;
+        let mut params = Map::new();
+        params.insert("bootstrap_url".to_owned(), json!(bootstrap_url));
+        let result = self.request_value("tab.create", params, None)?;
+        if result == json!({ "created": true }) {
+            Ok(())
+        } else {
+            Err(CoreError::new(
+                ErrorCode::ProtocolMismatch,
+                "extension tab creation response is invalid",
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
