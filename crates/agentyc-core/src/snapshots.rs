@@ -292,6 +292,8 @@ impl SnapshotProvenance {
 pub struct ElementRef {
     /// Opaque ref identity.
     pub ref_id: RefId,
+    /// Exact logical element key within the issuing snapshot.
+    pub element_key: ElementKey,
     /// Owning space.
     pub space_id: SpaceId,
     /// Owning page.
@@ -834,15 +836,31 @@ impl SnapshotEnvelope {
     }
 
     /// Build one ref only after the entire envelope and its provenance validate.
-    pub fn make_ref(&self, ref_id: RefId, frame_id: FrameId) -> Result<ElementRef, CoreError> {
+    pub fn make_ref(
+        &self,
+        ref_id: RefId,
+        frame_id: FrameId,
+        element_key: ElementKey,
+    ) -> Result<ElementRef, CoreError> {
         self.validate().map_err(|error| error.core_error())?;
         if !self.can_issue_refs() {
             return Err(CoreError::stale_ref(
                 "refs require a complete coherent non-truncated snapshot",
             ));
         }
+        let SnapshotBody::Elements { elements } = &self.delta_or_elements else {
+            return Err(CoreError::stale_ref(
+                "element refs require a full snapshot body",
+            ));
+        };
+        if !elements.iter().any(|element| element.key == element_key) {
+            return Err(CoreError::stale_ref(
+                "element key is not present in the issuing snapshot",
+            ));
+        }
         Ok(ElementRef {
             ref_id,
+            element_key,
             space_id: self.space_id.clone(),
             page_id: self.page_id.clone(),
             frame_id,
@@ -1422,6 +1440,7 @@ mod tests {
         };
         let reference = ElementRef {
             ref_id: RefId::from_suffix("one").expect("ref"),
+            element_key: ElementKey::from_suffix("target").expect("element key"),
             space_id: space,
             page_id: page,
             frame_id: FrameId::from_suffix("main").expect("frame"),
@@ -1486,6 +1505,7 @@ mod tests {
             .make_ref(
                 RefId::from_suffix("one").expect("ref"),
                 FrameId::from_suffix("main").expect("frame"),
+                ElementKey::from_suffix("one").expect("element key"),
             )
             .expect("validated ref");
         reference
@@ -1498,6 +1518,7 @@ mod tests {
             .make_ref(
                 RefId::from_suffix("bad").expect("ref"),
                 FrameId::from_suffix("main").expect("frame"),
+                ElementKey::from_suffix("one").expect("element key"),
             )
             .expect_err("malformed envelope cannot issue refs");
         assert_eq!(error.code, ErrorCode::MessageTooLarge);
