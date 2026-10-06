@@ -265,6 +265,96 @@ async fn host_server_returns_structured_unsupported_capability_error() {
 }
 
 #[tokio::test]
+async fn remote_mcp_retries_pending_takeover_fence_and_renews_lease() {
+    let directory = Builder::new()
+        .prefix("a8f-")
+        .tempdir_in("/tmp")
+        .expect("short tempdir");
+    let bridge = Arc::new(FakeBridge::new());
+    bridge.set_fence_acknowledged(false);
+    let broker = broker(&directory, bridge.clone());
+    let socket_path = directory.path().join("phase8-fence.sock");
+    let host = LocalHostServer::start(broker, &socket_path).expect("local host");
+    let client = LocalSocketClient::connect(&socket_path, hello("remote-fence", "remote-fence"))
+        .expect("local client");
+    let server = RemoteHostBrowserServer::new(client);
+
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let server_task = tokio::spawn(async move {
+        let running = server
+            .serve(server_io)
+            .await
+            .expect("remote server transport");
+        let _ = running.waiting().await;
+    });
+    let mut client = WireClient::connect(client_io).await;
+    let created = client
+        .call("host_space_create", create_space_arguments("fence-retry"))
+        .await;
+    let space_id = successful_result(&created)["space_id"]
+        .as_str()
+        .expect("space id")
+        .to_owned();
+    let claimed = client
+        .call(
+            "host_lease_acquire",
+            json!({"space_id": space_id, "now": 1, "ttl": 100}),
+        )
+        .await;
+    let lease_epoch = successful_result(&claimed)["lease"]["lease_epoch"]
+        .as_u64()
+        .expect("lease epoch");
+
+    let pending = client
+        .call(
+            "host_lease_takeover",
+            json!({"space_id": space_id, "now": 2, "ttl": 1}),
+        )
+        .await;
+    assert_eq!(successful_result(&pending)["fence_acknowledged"], false);
+    assert_eq!(successful_result(&pending)["lifecycle"], "fence_pending");
+
+    bridge.set_fence_acknowledged(true);
+    let acknowledged = client
+        .call(
+            "host_lease_acknowledge_fence",
+            json!({
+                "space_id": space_id,
+                "lease_epoch": lease_epoch + 1,
+                "now": 10,
+                "ttl": 1_000
+            }),
+        )
+        .await;
+    assert_eq!(successful_result(&acknowledged)["fence_acknowledged"], true);
+    assert_eq!(
+        successful_result(&acknowledged)["lease_epoch"],
+        lease_epoch + 1
+    );
+    assert_eq!(successful_result(&acknowledged)["lifecycle"], "agent_owned");
+
+    let renewed = client
+        .call(
+            "host_lease_renew",
+            json!({
+                "space_id": space_id,
+                "lease_epoch": lease_epoch + 1,
+                "now": 11,
+                "ttl": 1_000
+            }),
+        )
+        .await;
+    assert_eq!(renewed["result"]["isError"], false, "{renewed}");
+
+    drop(client);
+    timeout(Duration::from_secs(2), server_task)
+        .await
+        .expect("server stops")
+        .expect("server task");
+    drop(host);
+}
+
+#[tokio::test]
 async fn remote_tool_requests_enforce_request_bounds_and_unsupported_methods() {
     let directory = Builder::new()
         .prefix("a8-")
