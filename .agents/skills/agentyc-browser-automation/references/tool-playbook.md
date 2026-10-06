@@ -86,7 +86,7 @@ try {
 
 ## MCP compatibility boundary
 
-Agentyc MCP exposes host-backed logical operations over stdio only. Do not route work to the removed `browser_*` tool names. The offline server lists 29 routes; the connected remote catalog declares 30, with 12 returning `capability_unavailable`. Headed live Chrome validation has not run, so MCP is not distribution-ready. Use [MCP compatibility](../../../../docs/mcp-compatibility.md) for current route details and blockers.
+Agentyc MCP exposes host-backed logical operations over stdio only. Do not route work to the removed `browser_*` tool names. The offline server lists 29 routes; the connected remote catalog declares 30, with 19 supported and 11 returning `capability_unavailable`. A limited existing-profile run passed stdio and extension fence/rebind, but snapshot/action reconciliation and full release workflows remain incomplete, so MCP is not distribution-ready. `host_lease_acknowledge_fence` retries a pending takeover fence without allocating a new epoch. Use [MCP compatibility](../../../../docs/mcp-compatibility.md) for current route details and blockers.
 
 ## Removed standalone direct-CDP CLI paths
 
