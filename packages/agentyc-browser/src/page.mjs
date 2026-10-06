@@ -279,6 +279,36 @@ export class Page {
     );
   }
 
+  async issueRef(elementKey, options = {}) {
+    requireString(elementKey, "elementKey");
+    const leaseEpoch = requireLeaseEpoch(
+      options.leaseEpoch ?? this.space.leaseEpoch,
+    );
+    const frameId = requireString(options.frameId ?? "frame_main", "frameId");
+    await this.resolve(options);
+    const result = await this.space.client.request(
+      "refs.issue",
+      {
+        space_id: this.space.id,
+        page_id: this._id,
+        frame_id: frameId,
+        element_key: elementKey,
+        lease_epoch: leaseEpoch,
+        now: normalizeNow(options.now),
+      },
+      transportOptions(options),
+    );
+    if (typeof result?.element_ref?.element_key !== "string") {
+      throw new AgentycError({
+        code: "invalid_json",
+        message: "refs.issue response omitted a target-bound element ref",
+        retryable: false,
+        guidance: "none",
+      });
+    }
+    return result.element_ref;
+  }
+
   async action(operation, payload = {}, options = {}) {
     assertSupportedAction(operation, payload);
     const leaseEpoch = requireLeaseEpoch(
