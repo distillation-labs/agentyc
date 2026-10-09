@@ -38,7 +38,7 @@ test("production manifest declares the Chrome identity and minimal worker", asyn
 });
 
 test("production permissions match the reviewed MV3 capability boundary", () => {
-  assert.deepEqual(manifest.permissions, ["nativeMessaging", "storage"]);
+  assert.deepEqual(manifest.permissions, ["nativeMessaging", "storage", "tabGroups"]);
   assert.equal(manifest.host_permissions, undefined);
   assert.equal(manifest.optional_host_permissions, undefined);
   assert.equal(manifest.optional_permissions, undefined);
