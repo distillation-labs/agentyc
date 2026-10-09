@@ -166,6 +166,12 @@ pub struct LedgerState {
     /// Profile bound to the most recently admitted connection.
     #[serde(skip)]
     pub(crate) connection_profile_binding_id: Option<ProfileBindingId>,
+    /// Live connection that currently owns each active lease.
+    ///
+    /// This is process-local session authority. It is intentionally skipped
+    /// during serialization so a broker restart cannot reuse stale ownership.
+    #[serde(skip, default)]
+    pub(crate) lease_holders: BTreeMap<SpaceId, ConnectionEpoch>,
     /// Host-assigned logical identity counters.
     pub next_space_number: u64,
     /// Host-assigned logical identity counter for pages.
@@ -228,6 +234,7 @@ impl LedgerState {
             connection_principal_id: None,
             connection_nonce: None,
             connection_profile_binding_id: None,
+            lease_holders: BTreeMap::new(),
             next_space_number: 0,
             next_page_number: 0,
             event_sequence: EventSequence::new(0),
