@@ -407,7 +407,7 @@ test("production manifest exposes only the tab-creation Native Messaging worker"
   const manifest = JSON.parse(
     await readFile(new URL("../manifest.json", import.meta.url), "utf8"),
   );
-  assert.deepEqual(manifest.permissions, ["nativeMessaging", "storage"]);
+  assert.deepEqual(manifest.permissions, ["nativeMessaging", "storage", "tabGroups"]);
   assert.equal(Array.isArray(manifest.host_permissions), false);
   assert.equal(manifest.content_scripts, undefined);
   assert.equal(manifest.side_panel, undefined);
