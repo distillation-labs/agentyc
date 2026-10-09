@@ -3980,6 +3980,16 @@ impl crate::cdp::TabCreationTransport for NativeMessagingBridge {
         }
     }
 
+    fn present_group(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        Bridge::present_group(self, space_id, page_id, lease_epoch, title)
+    }
+
     fn extension_epochs(&self) -> Option<ExtensionEpochs> {
         Bridge::extension_epochs(self)
     }
