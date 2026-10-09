@@ -185,8 +185,10 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         not isinstance(permission, str) for permission in permissions
     ):
         raise PermissionError("extension manifest permissions must be a string list")
-    if permissions.count("debugger") != 1:
-        raise PermissionError("debugger must appear exactly once in required permissions")
+    if set(permissions) != {"nativeMessaging", "storage", "tabGroups"}:
+        raise PermissionError("permissions must be exactly nativeMessaging, storage, and tabGroups")
+    if "debugger" in permissions:
+        raise PermissionError("debugger is not part of the shipped extension boundary")
     for key in ("optional_permissions", "host_permissions", "optional_host_permissions"):
         if key in manifest:
             raise PermissionError(f"extension manifest must not declare {key}")
@@ -204,11 +206,11 @@ def validate_document(text: str) -> None:
         raise PermissionError("missing permission-policy markers: " + ", ".join(missing))
 
     if not re.search(
-        r"^\s*\|\s*`debugger`\s*\|\s*\*{2}required;\s*never\s+optional\*{2}",
+        r"^\s*\|\s*`tabGroups`\s*\|\s*\*{2}required;\s*never\s+optional\*{2}",
         text,
         re.IGNORECASE | re.MULTILINE,
     ):
-        raise PermissionError("debugger is not frozen as a required, never-optional permission")
+        raise PermissionError("tabGroups is not frozen as a required, never-optional permission")
     if "debugger" not in lowered or "optional permission" not in lowered:
         raise PermissionError("required/optional permission distinction is missing")
     if "wildcard host grant" not in lowered or "no broad hidden host grant" not in lowered:
