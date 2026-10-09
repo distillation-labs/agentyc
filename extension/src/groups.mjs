@@ -63,11 +63,43 @@ export class GroupsRegistry {
     if (typeof hintSalt === "string") this.hintSalt = hintSalt;
   }
 
+  restoreSpace({ spaceId, rawGroupId, rawTabIds = [], title = "agentyc" } = {}) {
+    assertLogicalScope({ spaceId });
+    if (!Number.isInteger(rawGroupId) || rawGroupId < 0) return false;
+    if (!Array.isArray(rawTabIds) || rawTabIds.some((id) => !Number.isInteger(id)))
+      return false;
+    const hint = {
+      spaceId,
+      rawGroupId,
+      title: boundedTitle(title, "agentyc"),
+      color: undefined,
+      collapsed: false,
+      memberTabIds: new Set(rawTabIds),
+      claimedTabIds: new Set(rawTabIds),
+      drift: false,
+      present: true,
+    };
+    this.bySpace.set(spaceId, hint);
+    this.byRawGroup.set(rawGroupId, hint);
+    return true;
+  }
+
+  clear() {
+    this.bySpace.clear();
+    this.byRawGroup.clear();
+  }
+
   /**
    * Associate a managed tab with the visual group for a space. The raw tab id
    * is an internal call boundary and never appears in the returned record.
    */
-  async presentSpace({ spaceId, tabId, rawTabId, title = "agentyc" } = {}) {
+  async presentSpace({
+    spaceId,
+    tabId,
+    rawTabId,
+    title = "agentyc",
+    required = false,
+  } = {}) {
     assertLogicalScope({ spaceId });
     const internalTabId = rawTabId ?? tabId;
     if (!Number.isInteger(internalTabId)) {
@@ -94,7 +126,14 @@ export class GroupsRegistry {
 
     hint.memberTabIds.add(internalTabId);
     hint.claimedTabIds.add(internalTabId);
-    if (this.chrome?.tabs?.group) {
+    if (typeof this.chrome?.tabs?.group !== "function") {
+      if (required) {
+        throw new ProtocolError(
+          "capability_unavailable",
+          "Chrome tab grouping is unavailable",
+        );
+      }
+    } else {
       try {
         if (hint.rawGroupId === undefined) {
           hint.rawGroupId = await callChrome(
@@ -122,6 +161,7 @@ export class GroupsRegistry {
           code: "group_unavailable",
           message: error instanceof Error ? error.message : String(error),
         });
+        if (required) throw error;
       }
     }
     // Chrome may emit the tab update synchronously while grouping. Restore
@@ -138,9 +178,15 @@ export class GroupsRegistry {
             title: hint.title,
           },
         );
-      } catch {
+      } catch (error) {
         hint.drift = true;
+        if (required) throw error;
       }
+    } else if (required) {
+      throw new ProtocolError(
+        "capability_unavailable",
+        "Chrome tab-group updates are unavailable",
+      );
     }
     this.emitChanged(hint, "present");
     return this.publicHint(hint);
