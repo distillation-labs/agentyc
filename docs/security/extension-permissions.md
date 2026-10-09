@@ -1,16 +1,16 @@
 # Extension permissions and capability policy
 
-**Status:** Historical Phase 1 artifact; superseded for the current product
+**Status:** Current Phase 4 permission boundary; the debugger/content-script/side-panel sections below are historical reference
 **Owner:** host policy and extension adapter owners  
 **Scope:** MV3 existing-Chrome mode; the managed test extension is a separate fixture and does not widen product authority.
 
-> **Superseded for the current product:** This Phase 1 permission model describes an earlier extension-owned debugger, content-script, and side-panel design. The current extension is a background-only Native Messaging tab-creation bridge; it does not request `debugger`, `tabs`, `tabGroups`, or `sidePanel` permissions, host permissions, or content scripts. It calls `chrome.tabs.create` only. Do not use the historical permission matrix below as current install guidance.
+> **Current product boundary:** The extension is a background-only Native Messaging bridge. It creates inactive host-requested tabs and presents those managed tabs in required per-space visual groups. It does not request `debugger`, `tabs`, `sidePanel`, host permissions, or content scripts. Group IDs are internal presentation hints and never authorize, isolate, adopt, or clean up pages. If grouping fails, the host returns a typed error and retains the managed page.
 
 The extension is a browser adapter, not an authority store. Chrome permission grants are necessary but never sufficient for a mutation: the host must admit the enrolled profile binding, principal, space/page, lease epoch, capability, policy, generation, and user-intent ticket where required. A successful Chrome API call does not authenticate the caller.
 
 ### Direct manifest check
 
-The permission checker parses `extension/manifest.json` directly; it does not infer permissions from this document. It requires Manifest V3, a string-list `permissions` field with exactly one required `debugger` entry, and `incognito: "not_allowed"`. It rejects `optional_permissions`, `host_permissions`, `optional_host_permissions`, and `scripting`, and recursively rejects every `world: "MAIN"` declaration. The current manifest therefore has no optional, host, scripting, or MAIN-world capability.
+The permission checker parses `extension/manifest.json` directly; it does not infer permissions from this document. It requires Manifest V3, the exact required permission set `nativeMessaging`, `storage`, and `tabGroups`, and `incognito: "not_allowed"`. It rejects `debugger`, `optional_permissions`, `host_permissions`, `optional_host_permissions`, and `scripting`, and recursively rejects every `world: "MAIN"` declaration.
 
 ## 1. Manifest and host-access policy
 
@@ -18,21 +18,18 @@ The permission checker parses `extension/manifest.json` directly; it does not in
 
 | Permission/API    | Install-time status              | Allowed purpose                                                                                                         | Denial behavior                                                                                   |
 | ----------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `debugger`        | **required; never optional**     | allowlisted CDP domains for target-scoped attach, events, snapshots, waits, and approved actions                        | extension reports `permission_denied`/`capability_unavailable`; host grants no mutation authority |
 | `nativeMessaging` | required                         | connect the extension context to the registered local native host                                                       | `native_host_unavailable`; no direct client or browser fallback                                   |
-| `tabs`            | required                         | inspect bounded tab metadata, create agent pages, observe replacement/removal, and act on host-authorized page bindings | typed capability error; no user-tab adoption or cleanup                                           |
-| `tabGroups`       | required for visual presentation | create/update a presentation mapping for an agent space                                                                 | space remains valid without a group; never affects authorization                                  |
+| `tabGroups`       | **required; never optional**     | create/update the required visual presentation mapping for a managed space                                            | typed `capability_unavailable`; managed page is retained for explicit recovery                    |
 
 | `storage` | required | persist profile/connection metadata, installation state, and bounded UI preferences | host re-enrollment or read-only UI; authoritative state stays in host |
-| `sidePanel` | required for user-control UI | render pause, takeover, return, finish, retain, release, and confirmation controls | agent remains host-controlled; user operation returns a typed UI-unavailable result |
 
 ### Chrome disclosures
 
-Chrome documents user-visible warnings for `debugger` (page debugger access and website data), `nativeMessaging` (communication with cooperating native applications), `tabs` (browsing history), and `tabGroups` (view and manage tab groups). The broad `http://*/*` and `https://*/*` static content-script match patterns can also trigger host-access disclosure. These warnings are expected, disclosed during enrollment, and are not treated as proof of host authorization.
+Chrome documents user-visible warnings for `nativeMessaging` (communication with cooperating native applications) and `tabGroups` (view and manage tab groups). These warnings are expected, disclosed during enrollment, and are not treated as proof of host authorization.
 
-`debugger` MUST be declared in the required permission set. It MUST NOT be placed in an optional permission list, modeled as a live grant that silently widens authority, or bypassed through a copied debugger endpoint.
+`tabGroups` MUST be declared in the required permission set. It MUST NOT be placed in an optional permission list or treated as an authority boundary. `debugger` is forbidden in the shipped extension; the host's loopback CDP connection owns browser control.
 
-The product manifest intentionally omits both `host_permissions` and `scripting`: the bridge is a statically declared, isolated-world content script, and the current product does not use programmatic script injection. Its explicit `http://*/*` and `https://*/*` content-script match patterns still cause Chrome's documented host-access warning; that warning is disclosed to the user and is not replaced with a hidden or silent grant. Narrower origin enrollment remains a follow-up capability decision.
+The product manifest intentionally omits `host_permissions`, `tabs`, and `scripting`: the bridge does not inspect or control arbitrary existing tabs. It uses `tabs.create` and `tabs.group` only for the host-created tab, and `tabGroups.update` only for the required visual title. Narrower origin enrollment remains a follow-up capability decision.
 
 ### Optional permissions and host access
 
