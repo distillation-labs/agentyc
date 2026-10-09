@@ -63,7 +63,7 @@ fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let cdp_bridge = CdpBridge::connect_local(
         Arc::clone(&tab_creation),
-        DEFAULT_CDP_PORT,
+        configured_cdp_port()?,
         Duration::from_secs(2),
     )
     .map_err(|error| error.to_string())?;
@@ -216,6 +216,22 @@ fn state_directory() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join(".agentyc").join("state"))
 }
 
+fn configured_cdp_port() -> Result<u16, String> {
+    match env::var("AGENTYC_CDP_PORT") {
+        Ok(value) => configured_cdp_port_value(Some(&value)),
+        Err(env::VarError::NotPresent) => Ok(DEFAULT_CDP_PORT),
+        Err(env::VarError::NotUnicode(_)) => Err("AGENTYC_CDP_PORT must be valid UTF-8".to_owned()),
+    }
+}
+
+fn configured_cdp_port_value(value: Option<&str>) -> Result<u16, String> {
+    value
+        .map(str::parse::<u16>)
+        .transpose()
+        .map_err(|_| "AGENTYC_CDP_PORT must be a valid TCP port".to_owned())?
+        .map_or(Ok(DEFAULT_CDP_PORT), Ok)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +255,17 @@ mod tests {
             "--unexpected".to_owned(),
         ];
         assert!(parse_native_messaging_arguments(&arguments).is_err());
+    }
+
+    #[test]
+    fn cdp_port_defaults_and_accepts_a_test_override() {
+        assert_eq!(
+            configured_cdp_port_value(None).expect("default port"),
+            DEFAULT_CDP_PORT
+        );
+        assert_eq!(
+            configured_cdp_port_value(Some("9333")).expect("override port"),
+            9333
+        );
     }
 }
