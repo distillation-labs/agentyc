@@ -1057,13 +1057,33 @@ impl Broker {
         let bridge = self.bridge()?;
         let observation = bridge.observe().map_err(HostError::Bridge)?;
         let observation = sanitize_observation_snapshot(observation)?;
-        self.reconcile_bridge_pages(&observation)?;
-        let pages = observation
+        let scoped_observation = ObservationSnapshot {
+            pages: observation
+                .pages
+                .iter()
+                .filter(|record| page_is_visible_in_inventory(record, space_id))
+                .cloned()
+                .collect(),
+            groups: observation
+                .groups
+                .iter()
+                .filter(|group| {
+                    group.get("space_id").and_then(Value::as_str) == Some(space_id.as_str())
+                })
+                .cloned()
+                .collect(),
+            safety: observation.safety.clone(),
+            recovery_observed: observation.recovery_observed,
+        };
+        self.reconcile_bridge_pages(&scoped_observation)?;
+        let safety = scoped_observation.safety.clone();
+        let recovery_observed = scoped_observation.recovery_observed;
+        let pages = scoped_observation
             .pages
             .into_iter()
             .filter(|record| page_is_visible_in_inventory(record, space_id))
             .collect();
-        let groups = observation
+        let groups = scoped_observation
             .groups
             .into_iter()
             .filter(|group| {
@@ -1073,8 +1093,8 @@ impl Broker {
         Ok(ObservationSnapshot {
             pages,
             groups,
-            safety: observation.safety,
-            recovery_observed: observation.recovery_observed,
+            safety,
+            recovery_observed,
         })
     }
 
@@ -1125,6 +1145,7 @@ impl Broker {
                     && current.expires_at.get() > now.get()
                 {
                     if current.principal_id == *authority.principal_id() {
+                        authorize_lease_holder(state, space_id, authority)?;
                         return Ok(LeaseGrant {
                             space_id: space_id.clone(),
                             lease: current.clone(),
@@ -1188,6 +1209,9 @@ impl Broker {
                 descriptor.lease = Some(lease.clone());
                 descriptor.owner = authority.principal_id().clone();
                 descriptor.lifecycle = SpaceLifecycle::AgentOwned;
+                state
+                    .lease_holders
+                    .insert(space_id.clone(), authority.connection_epoch());
                 append_event(
                     state,
                     EventScope::space(space_id.clone()),
@@ -1430,6 +1454,7 @@ impl Broker {
                     )
                     .into());
                 }
+                authorize_lease_holder(state, space_id, authority)?;
                 let token = reconcile_token("control", fence_epoch.get())?;
                 {
                     let descriptor = state.spaces.get_mut(space_id).ok_or_else(|| {
@@ -1458,6 +1483,7 @@ impl Broker {
                         page.lifecycle = PageLifecycle::UserOwned;
                     }
                 }
+                state.lease_holders.remove(space_id);
                 state.pending_fences.remove(space_id);
                 state.control_tickets.insert(
                     space_id.clone(),
@@ -1575,6 +1601,9 @@ impl Broker {
                     )
                     .into());
                 }
+                if current_lease.state == LeaseState::Active {
+                    authorize_lease_holder(state, space_id, authority)?;
+                }
                 let old_epoch = Some(current_lease.lease_epoch);
                 let next_number = old_epoch
                     .map_or(0, LeaseEpoch::get)
@@ -1598,6 +1627,9 @@ impl Broker {
                     renew_by,
                 ));
                 descriptor.lifecycle = SpaceLifecycle::FencePending;
+                state
+                    .lease_holders
+                    .insert(space_id.clone(), authority.connection_epoch());
                 let queued = state.action_queues.remove(space_id).unwrap_or_default();
                 for action_id in queued {
                     if let Some(receipt) = state.actions.get_mut(&action_id)
@@ -1860,6 +1892,9 @@ impl Broker {
                     renew_by,
                 ));
                 descriptor.lifecycle = SpaceLifecycle::FencePending;
+                state
+                    .lease_holders
+                    .insert(space_id.clone(), authority.connection_epoch());
                 state.control_tickets.remove(space_id);
                 state.takeover_proofs.remove(space_id);
                 state.snapshots.remove(space_id);
@@ -1954,6 +1989,7 @@ impl Broker {
                         && lease.state == LeaseState::Fenced
                         && space.lifecycle == SpaceLifecycle::FencePending
                 })
+                || state.lease_holders.get(space_id) != Some(&authority.connection_epoch())
             {
                 return Err(CoreError::new(
                     ErrorCode::PermissionDenied,
@@ -2054,7 +2090,8 @@ impl Broker {
                             lease.principal_id == *authority.principal_id()
                                 && lease.lease_epoch == lease_epoch
                         })
-                });
+                }) && state.lease_holders.get(space_id)
+                    == Some(&authority.connection_epoch());
                 if pending.fence_epoch != lease_epoch
                     || pending.principal_id != *authority.principal_id()
                     || !valid_claim
@@ -2331,7 +2368,8 @@ impl Broker {
                 let valid_claim = descriptor.lease.as_ref().is_some_and(|lease| {
                     lease.principal_id == *authority.principal_id()
                         && lease.lease_epoch == lease_epoch
-                });
+                }) && state.lease_holders.get(space_id)
+                    == Some(&authority.connection_epoch());
                 if !valid_claim {
                     let expected = descriptor
                         .lease
@@ -2548,7 +2586,28 @@ impl Broker {
             Some(observed_generation("navigation_generation")?),
             Some(observed_generation("document_generation")?),
         )?;
-        let _ = bridge.present_group(space_id, &planned.page_id, lease_epoch, title);
+        let group_title = self.with_inner(|inner| {
+            inner
+                .ledger
+                .state()
+                .spaces
+                .get(space_id)
+                .map(|space| space.label.clone())
+                .ok_or_else(|| {
+                    HostError::Core(CoreError::new(
+                        ErrorCode::SpaceNotFound,
+                        "logical space was not found while presenting its tab group",
+                    ))
+                })
+        })?;
+        bridge
+            .present_group(
+                space_id,
+                &planned.page_id,
+                lease_epoch,
+                Some(group_title.as_str()),
+            )
+            .map_err(HostError::Bridge)?;
         Ok(bound)
     }
 
@@ -3886,6 +3945,8 @@ impl Broker {
                         space.lifecycle.admits_mutations()
                             && space.lease.as_ref().is_some_and(|lease| {
                                 lease.principal_id == *authority.principal_id()
+                                    && state.lease_holders.get(&request.space_id)
+                                        == Some(&authority.connection_epoch())
                                     && lease.lease_epoch == request.lease_epoch
                                     && lease.state == LeaseState::Active
                                     && lease.expires_at.get() > now.get()
@@ -4888,6 +4949,22 @@ fn authorize_ticket(state: &LedgerState, authority: &AuthorityTicket) -> Result<
     Ok(())
 }
 
+fn authorize_lease_holder(
+    state: &LedgerState,
+    space_id: &SpaceId,
+    authority: &AuthorityTicket,
+) -> Result<(), HostError> {
+    if state.lease_holders.get(space_id) == Some(&authority.connection_epoch()) {
+        Ok(())
+    } else {
+        Err(CoreError::new(
+            ErrorCode::PermissionDenied,
+            "space lease belongs to another agent session",
+        )
+        .into())
+    }
+}
+
 fn ensure_ready(inner: &BrokerInner) -> Result<(), HostError> {
     if inner.lifecycle == HostLifecycle::Ready {
         Ok(())
@@ -5049,6 +5126,7 @@ fn authorize_finish_claim(
         )
         .into());
     }
+    authorize_lease_holder(state, space_id, authority)?;
     if lease.lease_epoch != lease_epoch {
         return Err(CoreError::stale_lease(lease.lease_epoch.get(), lease_epoch.get()).into());
     }
@@ -5127,6 +5205,7 @@ fn authorize_release_claim(
         )
         .into());
     }
+    authorize_lease_holder(state, space_id, authority)?;
     if lease.lease_epoch != lease_epoch {
         return Err(CoreError::stale_lease(lease.lease_epoch.get(), lease_epoch.get()).into());
     }
@@ -5183,6 +5262,7 @@ fn authorize_reconciliation_authority(
         )
         .into());
     }
+    authorize_lease_holder(state, &receipt.space_id, authority)?;
     let lease = space
         .lease
         .as_ref()
@@ -5255,6 +5335,7 @@ fn authorize_space(
         )
         .into());
     }
+    authorize_lease_holder(state, space_id, authority)?;
     if lease.lease_epoch != lease_epoch {
         return Err(CoreError::stale_lease(lease.lease_epoch.get(), lease_epoch.get()).into());
     }
@@ -5356,6 +5437,11 @@ fn authorize_visible_space(
         .get(space_id)
         .ok_or_else(|| CoreError::new(ErrorCode::SpaceNotFound, "logical space not found"))?;
     if visible_to_principal(space, authority.principal_id()) {
+        if space.lifecycle != SpaceLifecycle::UserOwned
+            && state.lease_holders.contains_key(space_id)
+        {
+            authorize_lease_holder(state, space_id, authority)?;
+        }
         Ok(())
     } else {
         Err(CoreError::new(
@@ -6155,6 +6241,7 @@ mod tests {
     use super::*;
     use crate::bridge::FakeBridge;
     use agentyc_core::{ClientId, ClientMetadata, ConnectionNonce, IdempotencyKey, RequestId};
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn principal(suffix: &str) -> PrincipalId {
@@ -6224,7 +6311,7 @@ mod tests {
     }
 
     #[test]
-    fn two_spaces_are_isolated_and_stale_epochs_are_rejected() {
+    fn two_spaces_are_isolated_and_reconnected_sessions_are_rejected() {
         let directory = tempdir().expect("tempdir");
         let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
         let one_authority = admit_authority(&broker, "one");
@@ -6261,13 +6348,105 @@ mod tests {
                 100
             ),
             Err(HostError::Core(CoreError {
-                code: ErrorCode::StaleLease,
+                code: ErrorCode::PermissionDenied,
                 ..
             }))
         ));
         assert_eq!(broker.list_spaces(&one_authority).expect("list").len(), 1);
         assert_eq!(lease_one.lease.lease_epoch.get(), 1);
         assert_eq!(lease_two.lease.lease_epoch.get(), 1);
+    }
+
+    #[test]
+    fn same_principal_cannot_mutate_a_lease_from_another_session() {
+        let directory = tempdir().expect("tempdir");
+        let broker = Broker::open(directory.path(), FakeBridge::new()).expect("broker");
+        let first = admit_authority_with_nonce(&broker, "same-agent", "first");
+        let space = broker.create_space(&first, "same-session").expect("space");
+        let lease = broker
+            .acquire_lease(&space.space_id, &first, Timestamp::new(0), 100)
+            .expect("lease");
+        let second = admit_authority_with_nonce(&broker, "same-agent", "second");
+
+        let assert_permission_denied = |result: Result<(), HostError>| {
+            assert!(matches!(
+                result,
+                Err(HostError::Core(CoreError {
+                    code: ErrorCode::PermissionDenied,
+                    ..
+                }))
+            ));
+        };
+        assert_permission_denied(
+            broker
+                .renew_lease(
+                    &space.space_id,
+                    &second,
+                    lease.lease.lease_epoch,
+                    Timestamp::new(1),
+                    100,
+                )
+                .map(|_| ()),
+        );
+        assert_permission_denied(
+            broker
+                .create_page(&space.space_id, &second, lease.lease.lease_epoch, "blocked")
+                .map(|_| ()),
+        );
+        assert_permission_denied(
+            broker
+                .takeover(&space.space_id, &second, Timestamp::new(1), 100)
+                .map(|_| ()),
+        );
+    }
+
+    #[test]
+    fn required_group_failure_returns_error_but_retains_managed_page() {
+        let directory = tempdir().expect("tempdir");
+        let bridge = Arc::new(FakeBridge::new());
+        bridge.push_present_group_result(Err(CoreError::new(
+            ErrorCode::CapabilityUnavailable,
+            "tab groups unavailable",
+        )));
+        let broker = Broker::with_shared_bridge(
+            Ledger::open(directory.path()).expect("ledger"),
+            bridge.clone(),
+        );
+        let authority = admit_authority(&broker, "group-failure");
+        let space = broker
+            .create_space(&authority, "group-failure")
+            .expect("space");
+        let lease = broker
+            .acquire_lease(&space.space_id, &authority, Timestamp::new(0), 100)
+            .expect("lease");
+
+        let result = broker.create_managed_page(
+            &space.space_id,
+            &authority,
+            lease.lease.lease_epoch,
+            "retained-page",
+            Timestamp::new(1),
+            None,
+            Some("page title"),
+        );
+        assert!(matches!(
+            result,
+            Err(HostError::Bridge(CoreError {
+                code: ErrorCode::CapabilityUnavailable,
+                ..
+            }))
+        ));
+        assert_eq!(bridge.present_group_count(), 1);
+
+        let state = broker.state_snapshot(&authority).expect("state snapshot");
+        let page = state
+            .spaces
+            .get(&space.space_id)
+            .and_then(|space| space.pages.first())
+            .expect("retained managed page");
+        assert_eq!(page.lifecycle, PageLifecycle::Managed);
+        assert_eq!(page.ownership, PageOwnership::Agent);
+        assert_eq!(page.binding, PageBindingState::Bound);
     }
 
     #[test]
