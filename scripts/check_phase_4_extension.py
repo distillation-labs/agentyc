@@ -26,12 +26,13 @@ LIVE_EXISTING_PROFILE_MCP_ARTIFACT = Path("artifacts/p4-existing-chrome-mcp-e2e.
 MAX_BYTES = 4 * 1024 * 1024
 MAX_PROVENANCE_AGE_SECONDS = 7 * 24 * 60 * 60
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-TASK_IDS = tuple(f"P4-T{i}" for i in range(1, 8))
+TASK_IDS = tuple(f"P4-T{i}" for i in range(1, 6))
 REDACTION_FALSE_FIELDS = ("raw_browser_ids", "secrets", "absolute_paths", "page_bodies", "errors")
 PHASE4_SOURCE_PATHS = (
     PLAN,
     Path("extension/manifest.json"),
     Path("extension/src/tab-creation-worker.mjs"),
+    Path("extension/src/groups.mjs"),
     Path("extension/src/native-messaging.mjs"),
     Path("extension/tests/manifest.test.mjs"),
     Path("extension/tests/tab-creation-worker.test.mjs"),
@@ -211,9 +212,9 @@ def _validate_current_acceptance(plan: str) -> None:
     }
     required = {
         "The host connects only to the user-launched profile's loopback CDP endpoint and owns navigation, snapshots, actions, waits, and lifecycle operations.",
-        "The extension authenticates to the host through Native Messaging and performs only the requested tab-creation operation.",
-        "The extension manifest exposes no popup, side panel, content scripts, debugger permission, or tab-inventory capability; clicking the extension icon has no effect.",
-        "Deterministic tests prove that no extension route can perform browser control beyond creating a tab, and that CDP endpoints outside loopback are rejected.",
+        "The extension authenticates to the host through Native Messaging and performs only requested tab creation and required tab-group presentation.",
+        "The extension manifest exposes no popup, side panel, content scripts, debugger permission, or tab-inventory capability; it declares `tabGroups`; clicking the extension icon has no effect.",
+        "Deterministic tests prove that no extension route can perform browser control beyond creating/grouping a managed tab, and that CDP endpoints outside loopback are rejected.",
         "Dedicated-profile Chrome E2E and store-distribution/update proof remain release gates. Host/browser restart recovery and cross-origin frame behavior are release gates only when those capabilities are claimed; deterministic tests do not substitute for any required live evidence.",
     }
     require(required <= criteria, "Phase 4 plan current acceptance criteria are incomplete")
@@ -227,8 +228,8 @@ def _validate_current_manifest(value: dict[str, Any]) -> None:
         "extension manifest worker is not the tab-creation worker",
     )
     require(
-        value.get("permissions") == ["nativeMessaging", "storage"],
-        "extension manifest permissions exceed the tab-creation boundary",
+        value.get("permissions") == ["nativeMessaging", "storage", "tabGroups"],
+        "extension manifest permissions do not match the required-group boundary",
     )
     forbidden = {
         "action",
@@ -243,24 +244,27 @@ def _validate_current_manifest(value: dict[str, Any]) -> None:
     require(not forbidden.intersection(value), "extension manifest exposes a UI, script, or browser-control route")
 
 
-def _validate_create_only_runtime(worker: str, native_messaging: str) -> None:
+def _validate_create_only_runtime(worker: str, groups: str, native_messaging: str) -> None:
     required = (
         'message?.kind !== "request"',
+        'message.method === "group.present"',
         'message.method !== "tab.create"',
         "only host-requested tab creation is supported",
         "Object.keys(params).length !== 1",
         'Object.hasOwn(params, "bootstrap_url")',
         "validateBootstrapUrl(params.bootstrap_url)",
         "active: false",
-        "requestedCapabilities: []",
-        "this.native.requestedCapabilities = []",
+        'requestedCapabilities: ["visual_groups"]',
+        'this.native.requestedCapabilities = ["visual_groups"]',
         "handleTabCreationRequest(message",
     )
     for marker in required:
         require(marker in worker, f"tab-creation runtime invariant missing: {marker}")
+    for marker in ("tabs.group", "tabGroups.update", "required = false", "if (required) throw"):
+        require(marker in groups, f"tab-group runtime invariant missing: {marker}")
 
     tab_methods = set(re.findall(r"\btabs\s*\??\.\s*([A-Za-z_$][\w$]*)", worker))
-    require(tab_methods == {"create"}, "extension runtime exposes a non-creation tabs route")
+    require(tab_methods == {"create"}, "extension runtime exposes an unapproved tabs route")
     require(len(re.findall(r"\bonMessage\s*:", worker)) == 1, "extension has an unexpected Native Messaging route")
     chrome_namespaces = set(
         re.findall(
@@ -270,7 +274,7 @@ def _validate_create_only_runtime(worker: str, native_messaging: str) -> None:
         )
     )
     require(
-        chrome_namespaces <= {"runtime", "storage", "tabs"},
+        chrome_namespaces <= {"runtime", "storage", "tabs", "tabGroups"},
         "extension runtime exposes an unapproved Chrome API",
     )
     native_namespaces = set(
@@ -314,13 +318,14 @@ def validate_current_architecture(
     plan: str,
     manifest_value: dict[str, Any],
     worker: str,
+    groups: str,
     native_messaging: str,
     cdp: str,
 ) -> None:
     """Check the active host-CDP/minimal-extension acceptance contract."""
     _validate_current_acceptance(plan)
     _validate_current_manifest(manifest_value)
-    _validate_create_only_runtime(worker, native_messaging)
+    _validate_create_only_runtime(worker, groups, native_messaging)
     _validate_host_cdp_boundary(cdp)
 
 
@@ -429,9 +434,10 @@ def check(root: Path = ROOT) -> dict[str, Any]:
         raise Phase4Error("extension manifest must be strict JSON") from exc
     require(isinstance(extension_manifest, dict), "extension manifest root must be an object")
     worker = read(root, Path("extension/src/tab-creation-worker.mjs"))
+    groups = read(root, Path("extension/src/groups.mjs"))
     native_messaging = read(root, Path("extension/src/native-messaging.mjs"))
     cdp = read(root, Path("crates/agentyc-host/src/cdp.rs"))
-    validate_current_architecture(plan, extension_manifest, worker, native_messaging, cdp)
+    validate_current_architecture(plan, extension_manifest, worker, groups, native_messaging, cdp)
     live_text = read(root, LIVE_ARTIFACT) if (root / LIVE_ARTIFACT).is_file() else None
     live_mcp_text = (
         read(root, LIVE_EXISTING_PROFILE_MCP_ARTIFACT)
