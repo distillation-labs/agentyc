@@ -44,6 +44,20 @@ const MAX_CDP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) trait TabCreationTransport: Send + Sync {
     fn create_tab(&self, bootstrap_url: &str) -> Result<(), CoreError>;
 
+    fn present_group(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        let _ = (space_id, page_id, lease_epoch, title);
+        Err(CoreError::new(
+            ErrorCode::CapabilityUnavailable,
+            "extension tab grouping is unavailable",
+        ))
+    }
+
     fn extension_epochs(&self) -> Option<ExtensionEpochs> {
         None
     }
@@ -103,6 +117,17 @@ impl TabCreationTransport for TabCreationTransportRouter {
 
     fn extension_epochs(&self) -> Option<ExtensionEpochs> {
         self.current.read().ok()?.as_ref()?.extension_epochs()
+    }
+
+    fn present_group(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        self.current()?
+            .present_group(space_id, page_id, lease_epoch, title)
     }
 
     fn bridge_status(&self) -> Option<BridgeStatus> {
@@ -509,6 +534,17 @@ impl Bridge for CdpBridge {
 
     fn bridge_status(&self) -> Option<BridgeStatus> {
         self.tab_creation.bridge_status()
+    }
+
+    fn present_group(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        lease_epoch: LeaseEpoch,
+        title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        self.tab_creation
+            .present_group(space_id, page_id, lease_epoch, title)
     }
 
     fn dispatch(
@@ -1639,6 +1675,7 @@ mod tests {
     #[derive(Default)]
     struct FakeTabCreator {
         bootstrap_urls: Mutex<Vec<String>>,
+        presented_groups: Mutex<Vec<(String, String, u64, Option<String>)>>,
     }
 
     impl TabCreationTransport for FakeTabCreator {
@@ -1649,6 +1686,54 @@ mod tests {
                 .push(bootstrap_url.to_owned());
             Ok(())
         }
+
+        fn present_group(
+            &self,
+            space_id: &SpaceId,
+            page_id: &PageId,
+            lease_epoch: LeaseEpoch,
+            title: Option<&str>,
+        ) -> Result<Value, CoreError> {
+            self.presented_groups
+                .lock()
+                .map_err(|_| cdp_error(CdpWireError::Unavailable))?
+                .push((
+                    space_id.to_string(),
+                    page_id.to_string(),
+                    lease_epoch.get(),
+                    title.map(str::to_owned),
+                ));
+            Ok(json!({"grouped": true}))
+        }
+    }
+
+    #[test]
+    fn tab_creation_transport_router_forwards_required_group_presentation() {
+        let router = TabCreationTransportRouter::default();
+        let creator = Arc::new(FakeTabCreator::default());
+        router.install(creator.clone()).expect("install transport");
+        let space_id = SpaceId::from_suffix("space-one").expect("space id");
+        let page_id = PageId::from_suffix("page-one").expect("page id");
+
+        assert_eq!(
+            router
+                .present_group(&space_id, &page_id, LeaseEpoch::new(2), Some("one"))
+                .expect("present group"),
+            json!({"grouped": true})
+        );
+        assert_eq!(
+            creator
+                .presented_groups
+                .lock()
+                .expect("creator lock")
+                .as_slice(),
+            &[(
+                "space_space-one".to_owned(),
+                "page_page-one".to_owned(),
+                2,
+                Some("one".to_owned()),
+            )]
+        );
     }
 
     #[test]
