@@ -10,14 +10,15 @@ This document uses **MUST**, **MUST NOT**, **SHOULD**, and **MAY** as normative 
 
 1. `space` is the only logical task-space object. `space_id` is its canonical field and public handle. `page` is a durable logical child of a space.
 2. The host broker owns identity, leases, epochs, policy, ordering, persistence, reconciliation, event watermarks, snapshot/ref provenance, and cleanup authorization.
-3. The host owns browser control through its loopback CDP connection. The MV3 extension is used only to create tabs on host request; it MUST NOT navigate, observe, snapshot, act on pages, or provide task-space UI.
+3. The host owns browser control through its loopback CDP connection. The MV3 extension creates tabs and presents them in required per-space visual tab groups on host request; it MUST NOT navigate, observe, snapshot, act on pages, or provide task-space UI. The extension MUST NOT own authoritative leases.
 4. CLI/SDK clients use the persistent local host protocol. MCP remains a compatibility adapter over that protocol and never becomes a second state owner.
 5. Chrome tab IDs, CDP target/session IDs, frame IDs, extension worker IDs, and process IDs are ephemeral reconciliation hints. They MUST NOT appear in primary output, authorize an action, or replace a logical handle.
-6. Chrome tab grouping and extension UI are not part of the product control surface.
+6. Chrome tab groups are required presentation for managed pages; they are visual presentation only. Group IDs and membership are never authorization, isolation, adoption, or cleanup authority. Extension UI is not part of the product control surface.
 7. The product path MUST NOT download, launch, or silently create a browser/profile. The user launches a dedicated Chrome profile with a loopback debugging endpoint; the host connects to it. The host MUST reject non-loopback endpoints.
 8. A profile instance selector chooses an enrolled binding; it is not authentication. Mismatch, copied profile, reinstall, storage reset, or extension identity change enters `rebind_required` and fences prior authority.
 9. User takeover is a host transition with a durable fence acknowledgement. It increments the lease epoch, stops old-epoch issuance, and rejects stale commands before host-side CDP execution. Missing acknowledgement fails closed.
 10. A dispatched mutation whose result is lost is `unknown`. Click, input, navigation, upload, storage, cookie, evaluate, and close operations MUST NOT be blindly replayed.
+11. Every leased space is bound to the host-issued live connection epoch that acquired it. A different connection cannot mutate or reconcile that space, even when it presents the same principal label; explicit recovery is required.
 
 ## 2. Component and trust flow
 
@@ -29,12 +30,12 @@ CLI / Node SDK / legacy MCP adapter
 agentyc-host HostServer (one broker per enrolled profile binding)
   |-- host lock, OS-peer admission, ledger, leases, scheduler
   |-- CDP client, snapshot/ref cache, event/wait router, reconciliation
-  |-- NativeMessagingBridge (tab creation only)
+  |-- NativeMessagingBridge (tab creation and required group presentation only)
           |
           | Chrome-mediated Native Messaging; exact origin and extension ID
           v
 MV3 extension service worker (no popup or side panel)
-  |-- chrome.tabs.create only, on an authenticated host request
+  |-- chrome.tabs.create, tabs.group, and tabGroups.update only, on authenticated host requests
           |
           v
 user-launched dedicated Chrome profile
@@ -61,11 +62,11 @@ This closes U3-1 for the supported macOS topology. Windows named-pipe registrati
 | ------------------------------------ | ------------------------------------------------- | ----------------------------------------------------- | ------------------------- | --------------------------------- |
 | space/page identity and records      | host ledger and core contracts                    | profile/worker identity metadata only                  | send logical handles      | map legacy fields                 |
 | leases, epochs, fences               | host broker                                       | no page-action or fence execution                      | present receipts          | map connections to principals     |
-| Chrome tabs, targets, frames         | host CDP client                                    | create tabs only, on host request                     | never call Chrome APIs    | never call Chrome APIs            |
+| Chrome tabs, targets, frames, groups | host CDP client                                    | create tabs and present required groups only           | never call Chrome APIs    | never call Chrome APIs            |
 | snapshots, refs, events              | host runtime/core                                 | no page observation or action                         | consume bounded envelopes | serialize compatibility responses |
 | user control                         | host transition authority                         | no user-facing UI                                      | request and observe       | request supported host operations |
 | persistence and recovery             | host ledger/journal                               | profile/connection metadata only                      | reconnect                 | no independent copy               |
-| cleanup                              | host authorization plus host CDP                  | no page cleanup                                        | request scoped release    | scope legacy close                |
+| cleanup                              | host authorization plus host CDP                  | no page/group cleanup                                  | request scoped release    | scope legacy close                |
 | policy and evaluate                  | host policy and CDP execution                     | no page operation                                      | request with capability   | reject unsafe bypass              |
 
 ## 3. Canonical records and identity
