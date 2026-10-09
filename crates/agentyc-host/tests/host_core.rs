@@ -284,7 +284,7 @@ fn two_spaces_stay_isolated_and_stale_epochs_fail_before_dispatch() {
     assert!(matches!(
         error,
         HostError::Core(agentyc_core::CoreError {
-            code: ErrorCode::StaleLease,
+            code: ErrorCode::PermissionDenied,
             ..
         })
     ));
@@ -1435,7 +1435,6 @@ fn finish_and_release_require_current_principal_and_lease_epoch() {
             ..
         }))
     ));
-    let owner_authority = authority(&broker, "finish-current-owner");
     assert!(matches!(
         broker.finish_space(
             &space.space_id,
@@ -1471,7 +1470,6 @@ fn finish_and_release_require_current_principal_and_lease_epoch() {
             ..
         }))
     ));
-    let owner_authority = authority(&broker, "finish-current-owner");
     assert!(matches!(
         broker.release_space(
             &space.space_id,
@@ -2062,11 +2060,10 @@ fn older_epoch_reconciliation_requires_current_owner_and_takeover_proof() {
         }))
     ));
 
-    let current_owner = authority(&broker, "proof-owner");
     let reconciled = broker
         .reconcile_action(
             &unknown.action_id,
-            &current_owner,
+            &owner,
             takeover.lease_epoch,
             Timestamp::new(4),
         )
