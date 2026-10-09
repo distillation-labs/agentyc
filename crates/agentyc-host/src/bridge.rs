@@ -24,7 +24,7 @@ use crate::{actions::ArtifactHandle, snapshots::empty_snapshot};
 pub struct ObservationSnapshot {
     /// Logical page records observed by the host browser bridge.
     pub pages: Vec<Value>,
-    /// Legacy visual-group hints; current product flow does not use groups.
+    /// Bounded visual-group hints; group IDs remain non-authoritative.
     pub groups: Vec<Value>,
     /// Bounded measured coexistence counters, when available.
     pub safety: Option<Value>,
@@ -953,6 +953,8 @@ struct FakeState {
     observation: ObservationSnapshot,
     bridge_status: Option<BridgeStatus>,
     snapshots: BTreeMap<SpaceId, BTreeMap<PageId, SnapshotEnvelope>>,
+    create_page_results: VecDeque<Result<Value, CoreError>>,
+    present_group_results: VecDeque<Result<Value, CoreError>>,
     dispatch_results: VecDeque<BridgeDispatchResult>,
     reconcile_results: VecDeque<BridgeReconcileResult>,
     close_results: VecDeque<Result<(), CoreError>>,
@@ -962,6 +964,7 @@ struct FakeState {
     snapshot_count: usize,
     observe_count: usize,
     close_count: usize,
+    present_group_count: usize,
     closed_pages: Vec<(SpaceId, PageId)>,
 }
 
@@ -993,6 +996,8 @@ impl FakeBridge {
                 observation: ObservationSnapshot::default(),
                 bridge_status: None,
                 snapshots: BTreeMap::new(),
+                create_page_results: VecDeque::new(),
+                present_group_results: VecDeque::new(),
                 dispatch_results: VecDeque::new(),
                 reconcile_results: VecDeque::new(),
                 close_results: VecDeque::new(),
@@ -1002,6 +1007,7 @@ impl FakeBridge {
                 snapshot_count: 0,
                 observe_count: 0,
                 close_count: 0,
+                present_group_count: 0,
                 closed_pages: Vec::new(),
             }),
         }
@@ -1033,6 +1039,28 @@ impl FakeBridge {
         if let Ok(mut state) = self.state.lock() {
             state.close_results.push_back(result);
         }
+    }
+
+    /// Queue a result for the next managed-page creation.
+    pub fn push_create_page_result(&self, result: Result<Value, CoreError>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.create_page_results.push_back(result);
+        }
+    }
+
+    /// Queue a result for the next required group presentation.
+    pub fn push_present_group_result(&self, result: Result<Value, CoreError>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.present_group_results.push_back(result);
+        }
+    }
+
+    /// Number of required group presentation calls.
+    pub fn present_group_count(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.present_group_count)
+            .unwrap_or(0)
     }
 
     /// Choose whether takeover fences acknowledge.
@@ -1140,6 +1168,36 @@ impl Bridge for FakeBridge {
             .and_then(|state| state.bridge_status.clone())
     }
 
+    fn create_page(
+        &self,
+        space_id: &SpaceId,
+        page_id: &PageId,
+        _lease_epoch: LeaseEpoch,
+        url: Option<&str>,
+        title: Option<&str>,
+        _ownership_proof: Value,
+    ) -> Result<Value, CoreError> {
+        let mut state = self.state.lock().map_err(|_| {
+            CoreError::new(
+                ErrorCode::ExtensionNotConnected,
+                "fake bridge state poisoned",
+            )
+        })?;
+        if let Some(result) = state.create_page_results.pop_front() {
+            return result;
+        }
+        Ok(json!({
+            "space_id": space_id.as_str(),
+            "page_id": page_id.as_str(),
+            "target_generation": 1,
+            "navigation_generation": 1,
+            "document_generation": 1,
+            "frame_count": 1,
+            "url": url,
+            "title": title,
+        }))
+    }
+
     fn dispatch(
         &self,
         _request: &ActionRequest<BTreeMap<String, String>>,
@@ -1243,6 +1301,26 @@ impl Bridge for FakeBridge {
             state.closed_pages.push((space_id.clone(), page_id.clone()));
         }
         result
+    }
+
+    fn present_group(
+        &self,
+        _space_id: &SpaceId,
+        _page_id: &PageId,
+        _lease_epoch: LeaseEpoch,
+        _title: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        let mut state = self.state.lock().map_err(|_| {
+            CoreError::new(
+                ErrorCode::ExtensionNotConnected,
+                "fake bridge state poisoned",
+            )
+        })?;
+        state.present_group_count = state.present_group_count.saturating_add(1);
+        Ok(state
+            .present_group_results
+            .pop_front()
+            .unwrap_or_else(|| Ok(json!({"grouped": true})))?)
     }
 }
 
