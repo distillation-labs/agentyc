@@ -26,15 +26,14 @@ class ExtensionPermissionCheckerTests(unittest.TestCase):
     def test_current_manifest_passes_direct_validation(self) -> None:
         checker.validate_manifest(self.manifest)
 
-    def test_debugger_must_be_required_and_not_optional(self) -> None:
-        optional = copy.deepcopy(self.manifest)
-        optional["permissions"].remove("debugger")
-        optional["optional_permissions"] = ["debugger"]
-        self.assert_rejected(optional)
-
+    def test_tab_groups_are_required_and_debugger_is_not_allowed(self) -> None:
         missing = copy.deepcopy(self.manifest)
-        missing["permissions"].remove("debugger")
+        missing["permissions"].remove("tabGroups")
         self.assert_rejected(missing)
+
+        debugger = copy.deepcopy(self.manifest)
+        debugger["permissions"].append("debugger")
+        self.assert_rejected(debugger)
 
     def test_host_scripting_and_optional_permission_keys_are_rejected(self) -> None:
         for key in ("optional_permissions", "host_permissions", "optional_host_permissions"):
