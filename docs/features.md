@@ -15,7 +15,7 @@ Available operations cover:
 
 The connected remote adapter advertises 30 routes. Nineteen are implemented by the current local protocol; the remaining 11 return typed `capability_unavailable` errors. The deterministic offline server exposes the in-process host contract and does not connect to Chrome. See [MCP compatibility](mcp-compatibility.md).
 
-Task spaces share cookies, sessions, and storage within the dedicated Chrome profile; that profile is separate from the user's everyday profile. Creation requires explicit acknowledgement. Page titles are document-controlled; Agentyc does not use tab groups.
+Task spaces share cookies, sessions, and storage within the dedicated Chrome profile; that profile is separate from the user's everyday profile. Creation requires explicit acknowledgement. Managed pages are presented in required per-space Chrome tab groups; groups are visual only and never authorize, isolate, adopt, or clean up pages.
 
 ## Task-Space Browser Automation
 
