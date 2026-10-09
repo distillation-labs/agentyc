@@ -31,9 +31,9 @@ Remote TCP is disabled by default and is not a fallback when local IPC or Native
 - macOS/Linux use a Unix-domain socket below a host-owned state directory with restrictive directory and socket permissions. Windows uses a named pipe with an ACL restricted to the enrolled user/service identity.
 - The state directory, socket, lock, temporary ledger, and replacement path are checked for symlinks and path replacement. A symlink component, unexpected owner, permissive mode, or replacement race fails closed.
 - One broker owns one enrolled profile binding and one local endpoint. The lock is acquired before serving and held for the broker lifetime. A second process exits with a typed `host_already_running` result; it never steals a lock based only on a stale PID or timestamp.
-- The broker allocates `broker_epoch` and connection identity. A client-provided principal is not authentication: the `principal_id` is a bounded same-user logical label used for space visibility. Profile selectors are binding metadata and require the separate enrollment/rebind gate before production mutation authority.
+- The broker allocates `broker_epoch` and connection identity. A client-provided principal is not authentication: the `principal_id` is a bounded same-user logical label used for space visibility. Each leased space is also bound to the host-issued live `connection_epoch`; another connection, even with the same principal, fails before browser/CDP mutation until explicit recovery or control-ticket reclaim. This connection binding is not cryptographic authentication against a malicious same-OS-user process; a trusted supervisor or OS/profile isolation is still required for that threat model.
 - A host restart creates a new `broker_epoch`. In-flight post-dispatch actions become `unknown` until reconciliation; raw commands are not replayed.
-- The user starts a dedicated Chrome profile with a loopback debugging endpoint. The host does not launch/download Chrome or switch profiles. Extension connection failure blocks tab creation only; existing CDP-bound pages remain host-controlled.
+- The user starts a dedicated Chrome profile with a loopback debugging endpoint. The host does not launch/download Chrome or switch profiles. Extension connection failure blocks new tab/group presentation only; existing CDP-bound pages remain host-controlled.
 
 ## 3. Framing and bounded allocation
 
@@ -83,8 +83,10 @@ A client cannot send a browser target/session/tab identifier as a public routing
 1. The host accepts the transport only after owner-only endpoint/path checks pass; same-user process impersonation remains inside the documented threat boundary.
 2. The client sends a bounded `hello` with protocol version, client kind/version, requested profile binding selector, and a fresh connection nonce.
 3. The host negotiates an explicitly supported version, allocates a `connection_epoch`, and returns `hello_ok` with the broker epoch, limits, capabilities, and resume requirements. The principal label remains inside the same-OS-user trust boundary.
-4. The host validates every request schema, scope, deadline, capability, lease epoch, and generation. A claimed principal or profile selector never overrides the OS admission result.
+4. The host validates every request schema, scope, deadline, capability, lease epoch, generation, and lease-holder connection epoch. A claimed principal or profile selector never overrides the OS admission result.
 5. Version, schema, nonce, sequence, profile-binding, or compatibility failure happens before mutation authority and returns `protocol_mismatch`, `profile_not_found`, `permission_denied`, or a more specific typed error.
+
+Lower-epoch commands are rejected before browser execution. A missing durable acknowledgement for a takeover or fence leaves the space fenced; durable acknowledgement is required before new control becomes active.
 
 ### Extension Native Messaging handshake
 
