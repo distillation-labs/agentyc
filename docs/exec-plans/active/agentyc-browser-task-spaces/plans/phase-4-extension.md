@@ -9,14 +9,14 @@ depends_on: phase-3
 
 # Phase 4 — Host-owned CDP and minimal tab-creation extension
 
-> **User-directed scope reset:** The earlier side-panel, tab-group, content-script, and extension-debugger design below is superseded. The extension is used only to create tabs; all page navigation, snapshots, actions, waits, and lifecycle operations belong to the host. The user launches the dedicated Chrome profile. There is no extension popup or side panel, and clicking the extension icon does nothing. Do not treat the historical UI/debugger tasks below as current acceptance criteria.
+> **Current scope:** The earlier side-panel, content-script, and extension-debugger design remains superseded. The extension creates tabs and presents each agent space in a required visual Chrome tab group; all page navigation, snapshots, actions, waits, and lifecycle operations belong to the host. The user launches the dedicated Chrome profile. There is no extension popup or side panel, and clicking the extension icon does nothing. Group IDs remain internal presentation state, never authorization or cleanup authority.
 
 ## Current acceptance criteria
 
 - The host connects only to the user-launched profile's loopback CDP endpoint and owns navigation, snapshots, actions, waits, and lifecycle operations.
-- The extension authenticates to the host through Native Messaging and performs only the requested tab-creation operation.
-- The extension manifest exposes no popup, side panel, content scripts, debugger permission, or tab-inventory capability; clicking the extension icon has no effect.
-- Deterministic tests prove that no extension route can perform browser control beyond creating a tab, and that CDP endpoints outside loopback are rejected.
+- The extension authenticates to the host through Native Messaging and performs only requested tab creation and required tab-group presentation.
+- The extension manifest exposes no popup, side panel, content scripts, debugger permission, or tab-inventory capability; it declares `tabGroups`; clicking the extension icon has no effect.
+- Deterministic tests prove that no extension route can perform browser control beyond creating/grouping a managed tab, and that CDP endpoints outside loopback are rejected.
 - Dedicated-profile Chrome E2E and store-distribution/update proof remain release gates. Host/browser restart recovery and cross-origin frame behavior are release gates only when those capabilities are claimed; deterministic tests do not substitute for any required live evidence.
 
 ## Superseded historical design and checklists
@@ -52,7 +52,7 @@ Implement the browser-side half of the new product. The extension must work in t
 
 - **U4-1 — Decision:** target Chrome Web Store signing and updates. Production signing-key custody, Store listing/submission, and end-to-end update proof remain separate release work; the checked-in unpacked development identity is not a production distribution.
 - **U4-2 — Superseded:** the earlier extension bridge failed closed on restricted URLs before content-bridge or debugger collection. That result does not establish restricted-target behavior for the host-CDP implementation.
-- **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focus theft. A navigation remained `unknown_outcome` and was not replayed; snapshot reads remained blocked with `unknown_outcome` and produced no logical refs. The run also recorded one unmanaged-tab close with an unattributed actor, so tab-cleanup safety is unresolved. This partial run does not satisfy the current-profile E2E, recovery, or distribution gates.
+- **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focus theft. A navigation remained `unknown_outcome` and was not replayed; snapshot reads remained blocked with `unknown_outcome` and produced no logical refs. The run also recorded one unmanaged-tab close with an unattributed actor, so tab-cleanup safety is unresolved. It predates the required-group contract and does not satisfy the current-profile E2E, recovery, or distribution gates.
 - **Policy scope (2026-10-06):** managed-policy evidence is explicitly deferred by the user and is not a blocker for this Phase 4 scope.
 - **Disposable MCP/extension E2E (2026-10-06):** an isolated Chrome profile passed extension load, native-host connection, task-space/page creation, MCP snapshot read with a snapshot hash, and MCP close-action receipt with the page subsequently observed as `target_lost`. It produced no logical element refs and does not establish dedicated-profile snapshot/ref or tab-safety proof, conditional host/browser restart or cross-origin-frame behavior, or store-distribution evidence; managed-policy evidence is deferred.
 
@@ -111,7 +111,7 @@ extension/
 2. The service worker maps live IDs to host-provided logical page/space records but cannot grant ownership.
 3. A host-issued command includes `connection_id`, `space_id`, `page_id`, lease epoch, command ID, and expected generation; the extension rejects mismatches.
 4. `onDetach`, `tabs.onRemoved`, `tabs.onReplaced`, profile changes, and debugger errors invalidate the affected generation and notify the host; DevTools detach is user interference, not an automatic reattach/retry trigger; no mutation is replayed automatically.
-5. Tab-group creation/update is best-effort presentation; failure does not create or destroy a logical space.
+5. Every managed page must be presented in its space's visual group. Group failure returns a typed error while retaining the managed page for explicit recovery; it never closes the page or changes authorization.
 6. User-created/unknown tabs are inventory-only until explicit adoption; release removes only broker-claimed tabs.
 7. Side-panel controls call host transitions and display the resulting state; the panel cannot mutate browser state directly without a host-approved command. User actions produce a single-use, expiring intent ticket bound to profile binding, space/page, document generation, action hash, lease epoch, and the side-panel connection; payload booleans cannot claim user authority.
 8. Content/page messages require a per-document nonce, strict schema, origin/source checks, and bounded payloads.
@@ -122,63 +122,49 @@ extension/
 
 ## Tasks
 
-- [ ] P4-T1 — Add the MV3 manifest and build/package contract.
-  - **Files:** `extension/manifest.json`, `extension/package.json`, lockfile/build config, `docs/installation.md`.
-  - **Done when:** minimum Chrome version, exact permissions/host match patterns, side-panel entry, service worker, content scripts, CSP, development/production IDs, Native Messaging host name, enterprise-policy denial behavior, and incognito policy are explicit. `sidePanel.open()` is documented as user-action-gated.
-  - **Validation:** `npm ci --prefix extension`; `npm test --prefix extension`; manifest lint; install unpacked in a clean test profile; permission review against S-019–S-024; reject undocumented `<all_urls>`/cookies/downloads/file/incognito additions.
+- [x] P4-T1 — Freeze the required tab-group boundary.
+  - **Files:** `extension/manifest.json`, `extension/src/tab-creation-worker.mjs`, `extension/src/groups.mjs`, manifest/worker tests, permission docs/checkers.
+  - **Done when:** the extension declares `nativeMessaging`, `storage`, and `tabGroups`; it exposes only `tab.create` and `group.present`; it never returns raw tab/group IDs; group failure is typed and retains the page.
+  - **Validation:** extension manifest, worker, grouping, and permission tests.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P4-T2 — Implement service-worker/native-host connection lifecycle.
-  - **Files:** `extension/src/{service-worker.ts,native-messaging.ts,protocol.ts}`.
-  - **Done when:** worker connects/reconnects, persists only profile/binding/reconnect metadata, validates transport origin/host hello/nonce/independent sequences/broker epoch, forwards requests/events, handles host crash/EOF, implements fence-barrier drain/reject acknowledgement, and never treats worker memory as authoritative or replays pending mutations.
-  - **Validation:** `npm test --prefix extension -- --runInBand`; worker termination during every mutation, duplicate connect, host version mismatch, malformed/chunk-flood messages, backpressure, sequence reset, profile rebind, and reconnect; real Chrome host crash drill.
+- [x] P4-T2 — Connect host CDP page creation to grouping.
+  - **Files:** `crates/agentyc-host/src/{cdp.rs,native_messaging.rs,bridge.rs,broker.rs}`.
+  - **Done when:** host-created pages are inactive, grouped by logical space using the space label, and grouping failure returns an error without closing or unowning the managed page.
+  - **Validation:** bridge wire tests, managed-page success/failure-retention tests, and no-raw-ID assertions.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P4-T3 — Implement debugger bridge and target/frame registry.
-  - **Files:** `extension/src/{debugger-bridge.ts,frames.ts}`; ChromeBridge adapter in `crates/agentyc-host/src/chrome_bridge.rs`.
-  - **Done when:** exact allowlisted domains/methods, Chrome floor, permission/policy failures, restricted URLs, DevTools conflicts, root `tabId`, child `sessionId`, frame/document mapping, and typed unsupported results are enforced; attach/detach/send/event, flat related sessions, recursive OOPIF attachment, execution-context mapping, target generation, and DevTools/tab-close handling are correct. Missing attribution never routes to an active page.
-  - **Validation:** Chrome 125+ nested-frame/OOPIF fixtures, per-child auto-attach, DevTools detach without reattach/replay, tab replacement, target close, restricted URL, enterprise denial, browser restart, event ordering, and no blind replay tests.
+- [ ] P4-T3 — Validate required groups in headed Chrome.
+  - **Files:** host/extension integration tests, `scripts/run_phase4_live_probe.py`, Phase 4 artifacts.
+  - **Done when:** two spaces create distinct groups, multiple pages in one space share its group, pages remain inactive, user tabs remain untouched, and group drift never changes authorization.
+  - **Validation:** dedicated-profile run covering group creation, group removal/rename/move, reconnect, restart, and cleanup.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P4-T4 — Implement tabs, page claims, tab groups, and reconciliation.
-  - **Files:** `extension/src/{tabs-registry.ts,groups.ts}`; host page reconciliation calls.
-  - **Done when:** host-created pages specify an approved window and `active:false`, verify no focus theft, associate with visual tab groups best-effort, observe attach/detach/replace/move/discard/freeze/group removal events, and mark pages lost/ambiguous/rebind-required when identity is not provable; user tabs are never auto-adopted. Group title/color/collapse/group ID are presentation only, and mixed groups are not cleanup units.
-  - **Validation:** create two spaces/pages; user opens/moves/closes tabs; cross-window attach/detach; tab replacement/discard/freeze; tab-group rename/collapse/move/removal; Chrome restart/reused tab ID; assert logical records and no unowned close.
+- [ ] P4-T4 — Resolve current live unknown outcomes and logical refs.
+  - **Files:** host CDP snapshot/ref path and Phase 4 live artifacts.
+  - **Done when:** current-build validation produces logical refs, resolves unknown navigation/snapshot outcomes without replay, and records unsupported frame/recovery behavior explicitly.
+  - **Validation:** repeatable redacted live run with build tuple, refs, receipts, cleanup, and recovery evidence.
   - **Owner:** Japneet Kalkat.
 
-- [ ] P4-T5 — Implement content-script/page bridge safely.
-  - **Files:** `extension/src/{content-script.ts,page-bridge.ts}`.
-  - **Done when:** the bridge supports only typed DOM/ARIA/event operations, rejects page-origin spoofing, preserves frame/document identity, does not expose Native Messaging to page scripts, and handles CSP/permission failure as a capability result.
-  - **Validation:** isolated-world tests, hostile `postMessage`, prompt-injection fixture, cross-origin frame denial, rerender/document change, payload bounds, and no arbitrary string eval by default.
-  - **Owner:** Japneet Kalkat.
-
-- [ ] P4-T6 — Build the side-panel task-space UI.
-  - **Files:** `extension/src/sidepanel/*`, host event/client fixtures, `docs/user-control.md`.
-  - **Done when:** the UI lists structured spaces/pages with labels/status/owner/capability warnings; supports create, pause, stop, take over, return control, handoff, finish, retain, and release; it never shows `[id] name` or raw IDs; confirmations create the bound single-use intent ticket required for adoption, login/payment/destructive actions, upload, cookies, and evaluate. The panel cannot silently rebind a profile or open itself from an agent command.
-  - **Validation:** `npm test --prefix extension -- sidepanel`; headed workflow screenshots; keyboard/focus accessibility; takeover fence and return-control race tests; rebind/copy-profile confirmation tests.
-  - **Owner:** Japneet Kalkat.
-
-- [ ] P4-T7 — Add extension observability and privacy redaction.
-  - **Files:** extension logging/debug bundle adapter; `docs/security/logging.md`.
-  - **Done when:** host/profile/space/page/action/sequence metadata is available without raw browser IDs or page content; logs distinguish worker restart, bridge loss, debugger detach, permission denial, and user takeover.
-  - **Validation:** redaction fixtures; inspect generated bundle for cookies/tokens/headers/body/screenshot/raw-ID leakage.
+- [ ] P4-T5 — Complete distribution evidence and documentation closure.
+  - **Files:** Phase 4 plan, architecture/security docs, checkers, installation/update artifacts.
+  - **Done when:** required groups, failure retention, visual-only group authorization, and current live claims are consistent; signing/update/install/uninstall evidence is recorded; managed-policy evidence remains explicitly deferred.
+  - **Validation:** all Phase 4 static checkers and required live evidence pass.
   - **Owner:** Japneet Kalkat.
 
 ## Quality checklist
 
 - [ ] Service-worker restart loses no authoritative lease/ledger state.
-- [ ] Debugger detach is target loss/unknown, not an automatic replay or reattach trigger.
 - [ ] Existing/user tabs are never silently claimed or closed.
-- [ ] Tab groups are presentation only.
-- [ ] Side-panel takeover is visible and fences host mutations.
-- [ ] Content/page messages are treated as untrusted.
-- [ ] No primary extension/host UI displays raw IDs or `[id] name`.
+- [ ] Required groups are presentation only and never authorization, isolation, adoption, or cleanup units.
+- [ ] Group creation/update failure returns a typed error and retains the managed page.
+- [ ] No primary extension/host output displays raw IDs or `[id] name`.
 - [ ] Profile binding is explicit and cannot be forged with a profile UUID or payload role field.
 - [ ] Stop, crash, update, uninstall, and ambiguous rebind retain pages; explicit cleanup uses fresh proof and confirmation.
 
 ## Handoff out
 
-- **Artifacts:** installable extension build, host handshake integration, debugger/tabs/frame bridge, tab-group mapping, side panel, permission/privacy evidence.
+- **Artifacts:** installable extension build, host handshake integration, host-CDP/tab-creation/group bridge, required-group mapping, permission/privacy evidence, and headed Chrome evidence.
 - **Next phase:** Phase 5 connects the host runtime to compact snapshots, refs, waits, actionability, and typed automation outcomes.
 - **Residuals:** exact unsupported capability fallbacks are carried into the runtime matrix; no fallback may broaden permissions silently.
 
@@ -188,14 +174,14 @@ Phase 4 remains active and release-ineligible until the release evidence gate pa
 
 ### Redesigned implementation gate
 
-- Host browser-control operations use only the user's loopback CDP endpoint; the extension performs only the requested tab-creation operation.
-- The extension has no popup, side panel, content scripts, debugger permission, or tab-inventory/browser-control route; clicking its icon has no effect.
-- Deterministic tests and the Phase 4 evidence checker enforce these boundaries and reject non-loopback CDP endpoints.
+- Host browser-control operations use only the user's loopback CDP endpoint; the extension performs only requested tab creation and required tab-group presentation.
+- The extension has no popup, side panel, content scripts, debugger permission, or tab-inventory route; it declares `tabGroups` and clicking its icon has no effect.
+- Deterministic tests and the Phase 4 evidence checker enforce these boundaries, required grouping, failure retention, and non-loopback CDP rejection.
 - Documentation and evidence artifacts reflect the redesigned architecture and distinguish verified outcomes from nonclaims.
 
 ### Release evidence gate (open)
 
-- Run current-build end-to-end validation in the user's dedicated Chrome profile, including a snapshot with logical refs and safe page lifecycle behavior.
+- Run current-build end-to-end validation in the user's dedicated Chrome profile, including required per-space groups, a snapshot with logical refs, and safe page lifecycle behavior.
 - Resolve the existing-profile `unknown_outcome` snapshot/navigation results and the unattributed unmanaged-tab close; preserve no-replay and no-unowned-close guarantees.
 - Record host/Chrome restart-recovery and cross-origin frame/OOPIF behavior only where those behaviors are part of the host-owned CDP design; deterministic tests do not replace required live evidence.
 - Provide real Chrome Web Store listing, signing, and update/distribution evidence.
