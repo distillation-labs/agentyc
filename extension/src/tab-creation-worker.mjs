@@ -1,9 +1,13 @@
 import { createLogicalId } from "./protocol.mjs";
 import { NativeMessagingClient } from "./native-messaging.mjs";
+import { createGroupsRegistry } from "./groups.mjs";
 
 const METADATA_KEY = "agentyc_extension_metadata";
+const SESSION_STATE_KEY = "agentyc_tab_group_state";
 const BOOTSTRAP_URL =
-  /^about:blank#agentyc-tab=(page_[a-z0-9][a-z0-9._:-]{0,126})-([1-9][0-9]*)$/;
+  /^about:blank#agentyc-tab=(page_[a-z0-9][a-z0-9_-]{0,126})-([1-9][0-9]*)$/;
+const SPACE_ID = /^space_[a-z0-9][a-z0-9_-]{0,126}$/;
+const PAGE_ID = /^page_[a-z0-9][a-z0-9_-]{0,126}$/;
 
 function isSafeEpoch(value) {
   return Number.isSafeInteger(value) && value >= 1;
@@ -25,11 +29,79 @@ function sendResponse(nativeClient, message, ok, result, error) {
   });
 }
 
+function isLogicalId(value, pattern) {
+  return typeof value === "string" && pattern.test(value);
+}
+
+function validGroupParams(params) {
+  if (!params || typeof params !== "object" || Array.isArray(params)) return false;
+  const keys = Object.keys(params).sort();
+  if (keys.join(",") !== "lease_epoch,page_id,space_id,title") return false;
+  return (
+    isLogicalId(params.space_id, SPACE_ID) &&
+    isLogicalId(params.page_id, PAGE_ID) &&
+    Number.isSafeInteger(params.lease_epoch) &&
+    params.lease_epoch >= 1 &&
+    typeof params.title === "string" &&
+    params.title.length > 0 &&
+    params.title.length <= 128
+  );
+}
+
+function validSessionState(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!value.pages || typeof value.pages !== "object" || Array.isArray(value.pages))
+    return false;
+  if (!value.groups || typeof value.groups !== "object" || Array.isArray(value.groups))
+    return false;
+  return true;
+}
+
 export async function handleTabCreationRequest(
   message,
-  { chromeApi = globalThis.chrome, nativeClient },
+  {
+    chromeApi = globalThis.chrome,
+    nativeClient,
+    pageTabs = new Map(),
+    groups,
+    onStateChange = async () => {},
+  },
 ) {
   if (message?.kind !== "request") return;
+  if (message.method === "group.present") {
+    if (!validGroupParams(message.params)) {
+      sendResponse(nativeClient, message, false, undefined, {
+        code: "invalid_argument",
+        message: "tab-group presentation request is invalid",
+      });
+      return;
+    }
+    const rawTabId = pageTabs.get(message.params.page_id);
+    if (!Number.isInteger(rawTabId) || !groups) {
+      sendResponse(nativeClient, message, false, undefined, {
+        code: "capability_unavailable",
+        message: "the managed page is not available for tab grouping",
+      });
+      return;
+    }
+    try {
+      const hint = await groups.presentSpace({
+        spaceId: message.params.space_id,
+        rawTabId,
+        title: message.params.title,
+        required: true,
+      });
+      if (hint.present !== true) throw new Error("Chrome did not create a tab group");
+      await onStateChange();
+      sendResponse(nativeClient, message, true, { grouped: true });
+    } catch (error) {
+      sendResponse(nativeClient, message, false, undefined, {
+        code: "capability_unavailable",
+        message: error instanceof Error ? error.message : "tab grouping failed",
+      });
+    }
+    return;
+  }
   if (message.method !== "tab.create") {
     sendResponse(nativeClient, message, false, undefined, {
       code: "capability_unavailable",
@@ -61,10 +133,16 @@ export async function handleTabCreationRequest(
     return;
   }
   try {
-    await tabs.create.call(tabs, {
+    const created = await tabs.create.call(tabs, {
       url: params.bootstrap_url,
       active: false,
     });
+    const pageId = BOOTSTRAP_URL.exec(params.bootstrap_url)?.[1];
+    if (!pageId || !Number.isInteger(created?.id)) {
+      throw new Error("Chrome did not return the created tab identity");
+    }
+    pageTabs.set(pageId, created.id);
+    await onStateChange();
   } catch {
     sendResponse(nativeClient, message, false, undefined, {
       code: "unknown_outcome",
@@ -126,6 +204,8 @@ export class TabCreationWorker {
     this.autoReconnect = autoReconnect;
     this.identity = undefined;
     this.startPromise = undefined;
+    this.pageTabs = new Map();
+    this.groups = undefined;
     this.onStartup = () => {
       void this.advanceBrowserSession().catch((error) => {
         console.error("agentyc browser-session update failed", error);
@@ -142,6 +222,12 @@ export class TabCreationWorker {
 
   async startOnce() {
     this.identity = await loadIdentity(this.chrome);
+    this.groups = createGroupsRegistry({
+      chromeApi: this.chrome,
+      hintSalt: this.identity.profileInstanceId,
+    });
+    this.groups.start();
+    await this.loadSessionState();
     this.native ??= new NativeMessagingClient({
       chromeApi: this.chrome,
       profileInstanceId: this.identity.profileInstanceId,
@@ -149,12 +235,15 @@ export class TabCreationWorker {
       browserSessionEpoch: this.identity.browserSessionEpoch,
       extensionVersion:
         this.chrome?.runtime?.getManifest?.().version ?? "0.1.0",
-      requestedCapabilities: [],
+      requestedCapabilities: ["visual_groups"],
       autoReconnect: this.autoReconnect,
       onMessage: (message) => {
         void handleTabCreationRequest(message, {
           chromeApi: this.chrome,
           nativeClient: this.native,
+          pageTabs: this.pageTabs,
+          groups: this.groups,
+          onStateChange: () => this.saveSessionState(),
         }).catch((error) => {
           console.error("agentyc tab request handling failed", error);
         });
@@ -163,7 +252,7 @@ export class TabCreationWorker {
     this.native.profileInstanceId = this.identity.profileInstanceId;
     this.native.workerInstanceEpoch = this.identity.workerInstanceEpoch;
     this.native.browserSessionEpoch = this.identity.browserSessionEpoch;
-    this.native.requestedCapabilities = [];
+    this.native.requestedCapabilities = ["visual_groups"];
     try {
       await this.native.connect();
     } catch (error) {
@@ -188,6 +277,9 @@ export class TabCreationWorker {
     });
     this.identity.browserSessionEpoch = nextEpoch;
     this.native.browserSessionEpoch = nextEpoch;
+    this.pageTabs.clear();
+    this.groups?.clear?.();
+    await this.clearSessionState();
     this.native.stop();
     this.native.stopped = false;
     try {
@@ -200,7 +292,57 @@ export class TabCreationWorker {
   stop() {
     this.chrome?.runtime?.onStartup?.removeListener?.(this.onStartup);
     this.native?.stop?.();
+    this.groups?.stop?.();
+    this.groups = undefined;
     this.startPromise = undefined;
+  }
+
+  async loadSessionState() {
+    const storage = this.chrome?.storage?.session;
+    if (typeof storage?.get !== "function") return;
+    const values = await storage.get([SESSION_STATE_KEY]);
+    const state = values?.[SESSION_STATE_KEY];
+    if (!validSessionState(state)) return;
+    for (const [pageId, tabId] of Object.entries(state.pages)) {
+      if (PAGE_ID.test(pageId) && Number.isInteger(tabId) && tabId >= 0)
+        this.pageTabs.set(pageId, tabId);
+    }
+    for (const [spaceId, group] of Object.entries(state.groups)) {
+      if (!SPACE_ID.test(spaceId) || !group || typeof group !== "object") continue;
+      this.groups?.restoreSpace({
+        spaceId,
+        rawGroupId: group.group_id,
+        rawTabIds: Array.isArray(group.tab_ids) ? group.tab_ids : [],
+        title: group.title,
+      });
+    }
+  }
+
+  async saveSessionState() {
+    const storage = this.chrome?.storage?.session;
+    if (typeof storage?.set !== "function") return;
+    const groups = {};
+    for (const hint of this.groups?.listHints?.() ?? []) {
+      const internal = this.groups.getInternal(hint.space_id);
+      if (!internal?.present || !Number.isInteger(internal.rawGroupId)) continue;
+      groups[hint.space_id] = {
+        group_id: internal.rawGroupId,
+        tab_ids: [...internal.claimedTabIds],
+        title: internal.title,
+      };
+    }
+    await storage.set({
+      [SESSION_STATE_KEY]: {
+        pages: Object.fromEntries(this.pageTabs),
+        groups,
+      },
+    });
+  }
+
+  async clearSessionState() {
+    const storage = this.chrome?.storage?.session;
+    if (typeof storage?.set !== "function") return;
+    await storage.set({ [SESSION_STATE_KEY]: { pages: {}, groups: {} } });
   }
 }
 
