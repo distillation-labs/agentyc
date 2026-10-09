@@ -79,16 +79,16 @@ Every bullet below is a target or requirement for planned work, not a statement 
 - Persistent local CLI with machine-readable JSON output and a thin typed Node SDK over the same protocol.
 - Task-space creation, list, resume, claim, renew, handoff, accept, pause, stop, take over, return control, finish, retain, release, and recovery.
 - Durable labeled pages inside each space; no process-global active tab.
-- Agent-created pages are logical pages managed by the host; no Chrome tab groups are used.
+- Agent-created pages are logical pages managed by the host and presented in required per-space Chrome tab groups. Group IDs and membership are visual hints only.
 - Explicit adoption of a user tab only after ownership proof and user confirmation; no implicit adoption.
 - Structured space/page records only; no `[id] name`, raw Chrome tab IDs, raw CDP target/session IDs, or numeric tab-group IDs in primary output.
 
 ### Existing Chrome integration
 
-- MV3 extension installed into the user-launched dedicated Chrome profile for tab creation only. The pinned unpacked identity is a trusted development build; ordinary macOS distribution requires a Web Store-signed extension or enterprise management.
+- MV3 extension installed into the user-launched dedicated Chrome profile for host-requested tab creation and required group presentation only. The pinned unpacked identity is a trusted development build; ordinary macOS distribution requires a Web Store-signed extension or enterprise management.
 - Native Messaging bridge with exact extension-origin allowlisting and platform registration.
 - Host-owned loopback CDP transport for browser control and page operations.
-- `chrome.tabs.create` only, requested over the Native Messaging bridge; the extension has no popup, side panel, content script, or debugger permission.
+- `chrome.tabs.create`, `tabs.group`, and `tabGroups.update` only, requested over the Native Messaging bridge; the extension has no popup, side panel, content script, or debugger permission.
 - Extension/host reconnect and Chrome/worker restart recovery without replaying side effects.
 
 ### Reliability and context
@@ -220,7 +220,7 @@ The launch tuple is versioned and published before launch: Chrome milestone/plat
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `crates/agentyc-core/`      | transport-neutral IDs, records, states, errors, envelopes, snapshots, refs, receipts, events                     | Chrome APIs, MCP, process lifecycle                      |
 | `crates/agentyc-host/`      | broker, local IPC, Native Messaging bridge, ledger, leases, scheduler, Chrome adapter, reconciliation, redaction | UI rendering, MCP-specific schemas, arbitrary page code  |
-| `extension/`                | MV3 manifest and Native Messaging worker for host-requested tab creation only                                  | browser control, UI, page observation, leases, raw agent policy |
+| `extension/`                | MV3 manifest and Native Messaging worker for host-requested tab creation and required group presentation        | browser control, UI, page observation, leases, raw agent policy |
 | `crates/agentyc/`           | shipped host-backed logical CLI, MCP stdio entry point, and skill initialization                                 | direct MCP state ownership                               |
 | `crates/agentyc-mcp/`       | host-backed logical MCP adapter over the host client                                                             | direct CDP, active-page authority, canonical space state |
 | `crates/agentyc-tests/`     | integration and test harnesses; any internal CDP use remains test-only                                           | user-facing CLI or product browser runtime               |
