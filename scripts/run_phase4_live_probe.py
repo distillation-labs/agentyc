@@ -115,9 +115,12 @@ def run_cli(state_dir: Path, arguments: list[str]) -> tuple[int, dict[str, Any] 
 def _mcp_snapshot_read(
     state_dir: Path,
     profile_binding: str,
-    space_id: str,
-    page_id: str,
-    lease_epoch: int,
+    space_id: str | None = None,
+    page_id: str | None = None,
+    lease_epoch: int | None = None,
+    *,
+    setup: bool = False,
+    initial_url: str | None = None,
 ) -> dict[str, Any]:
     environment = os.environ.copy()
     environment["AGENTYC_STATE_DIR"] = str(state_dir)
@@ -185,6 +188,68 @@ def _mcp_snapshot_read(
         if not isinstance(initialized.get("result"), dict):
             return {"status": "failed", "outcome_code": "mcp_initialize_failed"}
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+        def find_field(value: Any, field: str) -> Any:
+            if isinstance(value, dict):
+                if field in value:
+                    return value[field]
+                for child in value.values():
+                    found = find_field(child, field)
+                    if found is not None:
+                        return found
+            elif isinstance(value, list):
+                for child in value:
+                    found = find_field(child, field)
+                    if found is not None:
+                        return found
+            return None
+
+        if setup:
+            created = request(
+                "tools/call",
+                {
+                    "name": "host_space_create",
+                    "arguments": {
+                        "label": "phase4-live",
+                        "profile_scope": "shared_existing_profile",
+                        "shared_state_notice": "shared_profile_state",
+                        "isolation_claim": False,
+                        "profile_disclosure_acknowledged": True,
+                    },
+                },
+            )
+            space_id = find_field(created, "space_id")
+            if not isinstance(space_id, str):
+                return {"status": "failed", "outcome_code": "mcp_space_create_failed"}
+            claimed = request(
+                "tools/call",
+                {
+                    "name": "host_lease_acquire",
+                    "arguments": {"space_id": space_id, "now": 1, "ttl": 60000},
+                },
+            )
+            lease_epoch = find_field(claimed, "lease_epoch")
+            if not isinstance(lease_epoch, int):
+                return {"status": "failed", "outcome_code": "mcp_space_claim_failed"}
+            page_created = request(
+                "tools/call",
+                {
+                    "name": "host_page_create_managed",
+                    "arguments": {
+                        "space_id": space_id,
+                        "lease_epoch": lease_epoch,
+                        "label": "phase4-page",
+                        "url": initial_url or "https://example.test/",
+                        "title": "phase4-page",
+                        "now": 1,
+                    },
+                },
+            )
+            page_id = find_field(page_created, "page_id")
+            if not isinstance(page_id, str):
+                return {"status": "failed", "outcome_code": "mcp_page_create_failed"}
+        if not isinstance(space_id, str) or not isinstance(page_id, str) or not isinstance(lease_epoch, int):
+            return {"status": "failed", "outcome_code": "mcp_setup_missing_scope"}
         page_list = request(
             "tools/call",
             {"name": "host_page_list", "arguments": {"space_id": space_id}},
@@ -218,21 +283,6 @@ def _mcp_snapshot_read(
         error = content.get("error", {}) if isinstance(content, dict) else {}
         result = content.get("result", {}) if isinstance(content, dict) else {}
 
-        def find_field(value: Any, field: str) -> Any:
-            if isinstance(value, dict):
-                if field in value:
-                    return value[field]
-                for child in value.values():
-                    found = find_field(child, field)
-                    if found is not None:
-                        return found
-            elif isinstance(value, list):
-                for child in value:
-                    found = find_field(child, field)
-                    if found is not None:
-                        return found
-            return None
-
         snapshot_hash = find_field(result, "snapshot_hash")
         refs = find_field(result, "refs")
         ref_count = len(refs) if isinstance(refs, (dict, list)) else 0
@@ -253,58 +303,20 @@ def _mcp_snapshot_read(
                 "page_unbound_after_action": False,
             }
 
-        action_id = "action_phase4_mcp_close"
         action_request = {
             "name": "host_action_execute",
             "arguments": {
-                "request_id": "req_phase4_mcp_close",
-                "action_id": action_id,
-                "idempotency_key": "idem_phase4_mcp_close",
                 "space_id": space_id,
                 "page_id": page_id,
                 "lease_epoch": lease_epoch,
-                "operation": "close",
+                "now": 1,
             },
         }
-        action_transport_unknown = False
-        try:
-            action_response = request("tools/call", action_request).get("result", {})
-        except RuntimeError:
-            action_response = {}
-            action_transport_unknown = True
+        action_request["name"] = "host_page_close"
+        action_response = request("tools/call", action_request).get("result", {})
         action_content = action_response.get("structuredContent", {})
-        action_receipt = find_field(action_content, "receipt")
-        action_status = (
-            action_receipt.get("status")
-            if isinstance(action_receipt, dict)
-            else None
-        )
+        action_status = "succeeded" if action_content.get("ok") is True else None
         action_error = action_content.get("error", {}) if isinstance(action_content, dict) else {}
-        action_unknown = (
-            action_transport_unknown
-            or action_status == "unknown"
-            or (
-                isinstance(action_error, dict)
-                and action_error.get("code") == "unknown_outcome"
-            )
-        )
-        if action_unknown:
-            reconciled = request(
-                "tools/call",
-                {
-                    "name": "host_action_reconcile",
-                    "arguments": {
-                        "action_id": action_id,
-                        "lease_epoch": lease_epoch,
-                    },
-                },
-            ).get("result", {})
-            reconciled_receipt = find_field(
-                reconciled.get("structuredContent", {}),
-                "receipt",
-            )
-            if isinstance(reconciled_receipt, dict):
-                action_status = reconciled_receipt.get("status", action_status)
 
         page_unbound_after_action = False
         page_binding_after = None
@@ -353,6 +365,9 @@ def _mcp_snapshot_read(
             "page_binding_after": page_binding_after,
             "page_lifecycle_after": page_lifecycle_after,
             "page_unbound_after_action": page_unbound_after_action,
+            "space_id": space_id,
+            "page_id": page_id,
+            "lease_epoch": lease_epoch,
         }
     finally:
         process.terminate()
@@ -405,6 +420,7 @@ def run_probe(
     )
     port = free_port()
     env = os.environ.copy()
+    env["AGENTYC_CDP_PORT"] = str(port)
     env["AGENTYC_STATE_DIR"] = str(state_dir)
     env["AGENTYC_DEBUG_LOG"] = str(profile / "host-debug.log")
     command = build_chrome_command(
@@ -451,6 +467,11 @@ def run_probe(
             cli_space = None
             cli_lease = None
             cli_page = None
+            status = None
+            profile_binding = None
+            space_id = None
+            page_id = None
+            lease_epoch = None
             cli_errors = []
             mcp_e2e = None
             if exercise_cli and worker_seen and endpoint_seen:
@@ -461,68 +482,73 @@ def run_probe(
                 status_result = status.get("result", status) if status else None
                 profile_binding = status_result.get("profile_instance_id") if isinstance(status_result, dict) else None
                 if cli_status and isinstance(profile_binding, str):
-                    create_args = [
-                        "--profile-binding-id",
-                        profile_binding,
-                        "space",
-                        "create",
-                        "--label",
-                        "phase4-live",
-                        "--accept-shared-profile-disclosure",
-                    ]
-                    code, created, error = run_cli(state_dir, create_args)
-                    created_result = created.get("result", created) if created else None
-                    cli_space = code == 0 and isinstance(created_result, dict)
-                    if code != 0 or created is None:
-                        cli_errors.append(f"space.create:{error[:256]}")
-                    space_id = created_result.get("space_id") if isinstance(created_result, dict) else None
-                    if cli_space and isinstance(space_id, str):
-                        code, claimed, error = run_cli(
+                    if exercise_mcp_e2e:
+                        mcp_e2e = _mcp_snapshot_read(
                             state_dir,
-                            ["--profile-binding-id", profile_binding, "space", "claim", "--space-id", space_id],
+                            profile_binding,
+                            setup=True,
+                            initial_url=fixture_url,
                         )
-                        claimed_result = claimed.get("result", claimed) if claimed else None
-                        lease = claimed_result.get("lease") if isinstance(claimed_result, dict) else None
-                        cli_lease = code == 0 and isinstance(lease, dict)
-                        if code != 0 or claimed is None:
-                            cli_errors.append(f"space.claim:{error[:256]}")
-                        if cli_lease:
-                            lease_epoch = lease.get("lease_epoch")
-                            code, page, error = run_cli(
-                                state_dir,
-                                [
-                                    "--profile-binding-id",
-                                    profile_binding,
-                                    "page",
-                                    "create-managed",
-                                    "--space-id",
-                                    space_id,
-                                    "--lease-epoch",
-                                    str(lease_epoch),
-                                    "--label",
-                                    "phase4-page",
-                                    "--url",
-                                    fixture_url if exercise_mcp_e2e else "https://example.test/",
-                                ],
+                        space_id = mcp_e2e.get("space_id")
+                        page_id = mcp_e2e.get("page_id")
+                        lease_epoch = mcp_e2e.get("lease_epoch")
+                        cli_space = isinstance(space_id, str)
+                        cli_lease = isinstance(lease_epoch, int)
+                        cli_page = isinstance(page_id, str)
+                        if not (cli_space and cli_lease and cli_page):
+                            cli_errors.append(
+                                f"mcp.setup:{mcp_e2e.get('outcome_code', 'failed')}"
                             )
-                            page_result = page.get("result", page) if page else None
-                            cli_page = code == 0 and isinstance(page_result, dict)
-                            if code != 0 or page is None:
-                                cli_errors.append(f"page.create-managed:{error[:256]}")
-                            page_id = page_result.get("page_id") if isinstance(page_result, dict) else None
-                            if (
-                                exercise_mcp_e2e
-                                and cli_page
-                                and isinstance(page_id, str)
-                                and isinstance(lease_epoch, int)
-                            ):
-                                mcp_e2e = _mcp_snapshot_read(
+                    else:
+                        create_args = [
+                            "--profile-binding-id",
+                            profile_binding,
+                            "space",
+                            "create",
+                            "--label",
+                            "phase4-live",
+                            "--accept-shared-profile-disclosure",
+                        ]
+                        code, created, error = run_cli(state_dir, create_args)
+                        created_result = created.get("result", created) if created else None
+                        cli_space = code == 0 and isinstance(created_result, dict)
+                        if code != 0 or created is None:
+                            cli_errors.append(f"space.create:{error[:256]}")
+                        space_id = created_result.get("space_id") if isinstance(created_result, dict) else None
+                        if cli_space and isinstance(space_id, str):
+                            code, claimed, error = run_cli(
+                                state_dir,
+                                ["--profile-binding-id", profile_binding, "space", "claim", "--space-id", space_id],
+                            )
+                            claimed_result = claimed.get("result", claimed) if claimed else None
+                            lease = claimed_result.get("lease") if isinstance(claimed_result, dict) else None
+                            cli_lease = code == 0 and isinstance(lease, dict)
+                            if code != 0 or claimed is None:
+                                cli_errors.append(f"space.claim:{error[:256]}")
+                            if cli_lease:
+                                lease_epoch = lease.get("lease_epoch")
+                                code, page, error = run_cli(
                                     state_dir,
-                                    profile_binding,
-                                    space_id,
-                                    page_id,
-                                    lease_epoch,
+                                    [
+                                        "--profile-binding-id",
+                                        profile_binding,
+                                        "page",
+                                        "create-managed",
+                                        "--space-id",
+                                        space_id,
+                                        "--lease-epoch",
+                                        str(lease_epoch),
+                                        "--label",
+                                        "phase4-page",
+                                        "--url",
+                                        "https://example.test/",
+                                    ],
                                 )
+                                page_result = page.get("result", page) if page else None
+                                cli_page = code == 0 and isinstance(page_result, dict)
+                                if code != 0 or page is None:
+                                    cli_errors.append(f"page.create-managed:{error[:256]}")
+                                page_id = page_result.get("page_id") if isinstance(page_result, dict) else None
             host_debug_tail = ""
             try:
                 host_debug_tail = (profile / "host-debug.log").read_text(errors="replace")[-4096:]
