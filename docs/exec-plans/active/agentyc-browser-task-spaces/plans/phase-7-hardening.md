@@ -78,7 +78,7 @@ The release artifact records exact Chrome build, OS/architecture, display backen
 - Existing user tab remains open, usable, and unclaimed.
 - Two agents create separate spaces/pages and work concurrently.
 - Visual Chrome tab groups correspond to spaces but do not grant authorization.
-- User can open/move/create tabs while agents work; no unexpected focus theft.
+- User can open/move/create tabs and keep another app in front while agents work; direct CLI/SDK/MCP calls never foreground Chrome, switch the user's active Chrome tab, or steal OS keyboard focus. Page-local DOM focus is tracked separately.
 - User takeover pauses/fences mutations; dispatched operations reconcile; return-control requires explicit user action and fresh lease.
 - Agent page close/release removes only proven claimed pages; user/unmanaged tabs survive.
 - Chrome, host, native bridge, and service-worker restarts recover logical state safely.
@@ -97,7 +97,7 @@ The release artifact records exact Chrome build, OS/architecture, display backen
 - Batch SDK versus separate CLI process calls.
 - Warm host first action, action/wait, event delivery, extension bridge reconnect.
 - Chrome CPU/RSS, host RSS, queue/event/snapshot memory, artifact chunking.
-- Human tab responsiveness and focus stability.
+- Human-tab responsiveness and focus stability, including OS frontmost app/window and active-user-tab state before/after agent calls.
 
 ### Interface and privacy
 
@@ -113,7 +113,7 @@ The release artifact records exact Chrome build, OS/architecture, display backen
 - Timing decomposition: client send, IPC, host queue, bridge, Chrome command, browser scan, serialization/tokenization, and response delivery; compare host-backed MCP stdio, local protocol, direct CLI invocation, SDK sequential/batch, full/min/delta, clean/dirty cache, and event-driven wait against polling.
 - Delta target: median ≤35% and p95 ≤60% of equivalent full snapshot only when actionable-control/ref coverage is equivalent; emit full/min when measured delta cost is higher.
 - Clean target: zero DOM/AX scan and no element payload when cache is clean.
-- Isolation metric: any cross-space mutation, stale-agent mutation after takeover, user/unmanaged close, authorization bypass, secret leak, or silent unknown success is a release blocker.
+- Isolation/focus metric: any cross-space mutation, stale-agent mutation after takeover, user/unmanaged close, authorization bypass, secret leak, silent unknown success, or unapproved foreground/tab-focus change is a release blocker.
 - Unknown metric: every injected disconnect is classified; no lost mutating response is silently successful or blindly replayed.
 - Speed metric: warm metadata p95 ≤50 ms and batch script round trips at least 50% below process-per-command baseline, subject to the Phase 0 signed environment and confidence interval.
 - Baseline policy: every blocking metric uses a committed manifest containing commit/build/OS/CPU/Chrome/extension-host tuple/fixture hash/tokenizer/concurrency/cache state/sample/statistical method; threshold changes require a dated owner-approved decision record.
@@ -140,8 +140,8 @@ The release artifact records exact Chrome build, OS/architecture, display backen
 
 - [ ] P7-T4 — Run real headed existing-Chrome acceptance.
   - **Files/surfaces:** extension e2e, `tests/browser_task_spaces_existing_chrome.rs`, local fixture server, CLI/SDK workflows, `scripts/run_existing_chrome.py`.
-  - **Done when:** the ten required Phase 0 scenarios pass across supported Chrome/platforms; user-tab/focus safety and takeover evidence exist; no browser launch/download/CDP URL is used.
-  - **Validation:** `python3 scripts/run_existing_chrome.py --headed --require-live --spaces 2 --agents 2 --artifact-dir artifacts/p7-existing-chrome`; execute the full manifest scenario set with deterministic seeds, repeat safety scenarios until the signed confidence target is met, and archive screenshots/traces/logs/environment manifests/replay commands.
+  - **Done when:** the ten required Phase 0 scenarios pass across supported Chrome/platforms; user-tab/focus safety and takeover evidence exist; no browser launch/download/CDP URL is used. While the user keeps another app/window in front, agent calls preserve that OS foreground state and the unrelated active Chrome tab; any page-local DOM focus is separately recorded.
+  - **Validation:** `python3 scripts/run_existing_chrome.py --headed --require-live --spaces 2 --agents 2 --artifact-dir artifacts/p7-existing-chrome`; execute the full manifest scenario set with deterministic seeds, repeat safety scenarios until the signed confidence target is met, measure frontmost-app/window and active-tab state before/after every background scenario, and archive screenshots/traces/logs/environment manifests/replay commands.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P7-T5 — Run context/performance/resource benchmarks.
