@@ -702,10 +702,9 @@ def _validate_profile_sharing(root: Path, value: Any) -> None:
             "explicit shared-profile disclosure acknowledgement is required",
         ),
         "crates/agentyc-host/src/protocol.rs": ("fn profile_disclosure", "space.create"),
-        "crates/agentyc-host/src/bin/agentyc-native-host.rs": ("fn profile_disclosure_param", "profile_disclosure_acknowledged"),
+        "crates/agentyc-host/src/bin/agentyc-native-host.rs": ("NativeMessagingConfig", "to_core_hello"),
         "crates/agentyc/src/commands/direct.rs": ("accept_shared_profile_disclosure",),
-        "extension/src/sidepanel/index.html": ("profile-disclosure-acknowledged", "shared-profile behavior"),
-        "extension/src/sidepanel/app.mjs": ("profile_scope", "profile_disclosure_acknowledged"),
+        "extension/src/tab-creation-worker.mjs": ("agentyc_extension_metadata", "NativeMessagingClient"),
     }.items():
         _require_markers(read_bounded(root, relative, name=f"profile disclosure source {relative}"), markers, relative)
     _validate_evidence_paths(root, "profile_sharing", section["evidence_paths"])
