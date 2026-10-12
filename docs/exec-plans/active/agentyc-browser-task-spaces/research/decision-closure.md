@@ -138,6 +138,24 @@
 
 **Stop rationale:** Security/installation constraints are explicit before implementation rather than hidden in a later hardening phase.
 
+## D-18 — Background execution and focus preservation
+
+**User requirement:** Coding-agent calls must not repeatedly bring Chrome to the foreground or interrupt the user's work. “Background” means preserving both desktop/window focus and the unrelated user's active Chrome tab; it is not satisfied merely by creating agent tabs inactive.
+
+**Recommendation:** Make focus-preserving background execution the default for CLI, SDK, extension bridge, and MCP calls. Target logical pages through their existing host-owned CDP sessions without raising/focusing Chrome or activating an agent tab. `DOM.focus`/`document.activeElement` changes needed inside an agent page are page-local state and are allowed only if desktop/window focus and the unrelated active tab remain unchanged. No implicit foreground fallback is permitted; if an operation cannot meet this contract, return a typed unsupported/capability result. Any future user-approved foreground mode requires a separate explicit product/API decision.
+
+**Why this wins now:** The user reports focus theft during coding-agent calls (2026-10-12); existing Chrome is shared with the user's ongoing work, and the plan already promises focus stability and inactive managed tabs (D-10; Phase 4). The current tab-creation worker requests `active: false`, while host input code can call `DOM.focus`; these establish relevant layers to test, not proof that the OS window stays in the background.
+
+**Trade-offs accepted:** CDP operations on inactive targets may have Chrome-version or operation-specific limits; those must be measured. A typed unsupported result is preferable to silently stealing focus. Capturing OS foreground state may require a macOS-specific test observer and should emit only redacted booleans/logical assertions, not raw window/tab IDs.
+
+**Ego comparison limit:** “Like Ego” records the desired background user experience, not an implementation claim. The checked-in ego-lite SDK tests explicitly activate the addressed target for `snapshot` and for `evaluate`/`screenshot` in some paths (`reference/ego-lite-main/package/ego-browser/src/page-model.test.mjs`, focus-activation cases); Agentyc must define and validate its stricter no-focus-steal contract independently.
+
+**Confidence:** high for the user-facing invariant; low/medium for the root cause and operation coverage until reproduced on the intended dedicated profile.
+
+**What would change the decision:** A documented user request for a specific foreground operation or a verified Chrome limitation may motivate a separate explicit-consent mode; it must not weaken the background default or silently activate pages.
+
+**Stop rationale:** The reported interruption is a direct usability regression. The next safe step is to distinguish OS app/window activation, Chrome active-tab changes, and page-local DOM focus in headed tests, then fix only the proven activation path.
+
 ---
 
 ## D-01 — Runtime isolation
