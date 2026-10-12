@@ -126,6 +126,8 @@ The default product mode uses a dedicated, user-launched Chrome profile. It sepa
 
 The host and client MUST disclose that spaces share state within the dedicated profile before a space is created. The `space.create` contract requires explicit disclosure acknowledgement; missing or mismatched disclosure is rejected before the ledger commit. The everyday Chrome profile is not used or copied.
 
+Spaces are not storage isolation boundaries: cookies, sessions, history, extensions, and shared profile state remain visible within the enrolled profile. The host MUST disclose shared profile state before a space is created. Any future isolated-profile mode is a separate product decision and is not implied by a logical space.
+
 The pinned manifest key identifies the trusted unpacked-development build only. Ordinary macOS users require a Chrome Web Store-signed extension; self-hosted distribution on macOS is an enterprise-managed path. A stable unpacked ID is not production distribution evidence.
 
 ## 5. Lifecycle state machines
@@ -176,7 +178,7 @@ running -> unknown
 unknown -> reconciled(succeeded | failed | requires_confirmation)
 ```
 
-Every mutation checks principal, `space_id`, `page_id`, lease epoch, policy, capability, and generation at enqueue, dequeue, and immediately before host-side CDP dispatch. A lost post-dispatch response is `unknown`; no raw browser command is replayed.
+Every mutation checks principal, `space_id`, `page_id`, lease epoch, policy, capability, and generation at enqueue, dequeue, and immediately before extension dispatch. The host repeats the same checks immediately before host-side CDP dispatch. A lost post-dispatch response is `unknown`; no raw browser command is replayed.
 
 ### Connection lifecycle
 
