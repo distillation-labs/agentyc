@@ -18,6 +18,7 @@ depends_on: phase-3
 - The extension manifest exposes no popup, side panel, content scripts, debugger permission, or tab-inventory capability; it declares `tabGroups`; clicking the extension icon has no effect.
 - Deterministic tests prove that no extension route can perform browser control beyond creating/grouping a managed tab, and that CDP endpoints outside loopback are rejected.
 - Dedicated-profile Chrome E2E and store-distribution/update proof remain release gates. Host/browser restart recovery and cross-origin frame behavior are release gates only when those capabilities are claimed; deterministic tests do not substitute for any required live evidence.
+- Background is the default: agent requests must not foreground the Chrome app/window, change the active user tab, or steal OS keyboard focus. Page-local DOM focus for an action is distinct and permitted only if those user-facing focus states remain unchanged; there is no implicit foreground fallback.
 
 ## Superseded historical design and checklists
 
@@ -55,6 +56,10 @@ Implement the browser-side half of the new product. The extension must work in t
 - **Limited live evidence (2026-10-06):** the existing-profile MCP/Native Messaging path completed an epoch-4 takeover and inactive managed-page rebind without focus theft. A navigation remained `unknown_outcome` and was not replayed; snapshot reads remained blocked with `unknown_outcome` and produced no logical refs. The run also recorded one unmanaged-tab close with an unattributed actor, so tab-cleanup safety is unresolved. It predates the required-group contract and does not satisfy the current-profile E2E, recovery, or distribution gates.
 - **Policy scope (2026-10-06):** managed-policy evidence is explicitly deferred by the user and is not a blocker for this Phase 4 scope.
 - **Disposable MCP/extension E2E (2026-10-06):** an isolated Chrome profile passed extension load, native-host connection, task-space/page creation, MCP snapshot read with a snapshot hash, and MCP close-action receipt with the page subsequently observed as `target_lost`. It produced no logical element refs and does not establish dedicated-profile snapshot/ref or tab-safety proof, conditional host/browser restart or cross-origin-frame behavior, or store-distribution evidence; managed-policy evidence is deferred.
+- **Existing-profile live run (2026-10-09):** on a dedicated non-everyday Chrome profile with the production extension and registered Native Messaging host, a persistent MCP session created a space, acquired a lease, created a managed page, and completed required group presentation (the extension reported a tab group with the space label). `host_snapshot_read` returned a snapshot hash. A second same-principal connection was denied `permission_denied` for lease renew and page close, a different-principal connection was denied `space_forbidden`, and page close, space finish, and space release completed. No logical element refs were produced; restart/OOPIF/user-control evidence, the full existing-profile scenario suite, and distribution/signing proof remain open.
+- **Disposable-profile MCP smoke (2026-10-12):** `artifacts/p4-live-disposable/report.json` records extension load, service-worker/host startup, MCP space/lease/managed-page creation, a snapshot hash, and successful close on a local fixture. It produced zero logical refs and explicitly sets `release_eligible: false`; it is not existing-profile evidence or Phase 4 completion.
+- **Test-environment finding (2026-10-12):** the open Chrome 155.0.8059.40 window reported Profile Path under Chrome's standard `Google/Chrome/Default` data root, had no remote-debugging listener on port 9222, and had no connected host. A local extension-state check did not find the workspace Agentyc extension under that profile, though the user reports it is installed in a non-daily profile. Chrome 136+ requires remote-debugging switches to use a non-default `--user-data-dir` (source ledger S-018); the intended Agentyc-enabled data directory remains to be located and launched. Do not copy profile data to work around this requirement.
+- **User-reported focus regression (2026-10-12):** coding-agent calls can bring Chrome to the foreground and interrupt the user's work. This has not yet been reproduced on the intended profile. Background focus preservation is now an explicit acceptance and live-evidence gate; isolate OS-window focus, Chrome active-tab changes, and page-local DOM focus separately.
 
 ## Scope
 
@@ -136,8 +141,8 @@ extension/
 
 - [ ] P4-T3 — Validate required groups in headed Chrome.
   - **Files:** host/extension integration tests, `scripts/run_phase4_live_probe.py`, Phase 4 artifacts.
-  - **Done when:** two spaces create distinct groups, multiple pages in one space share its group, pages remain inactive, user tabs remain untouched, and group drift never changes authorization.
-  - **Validation:** dedicated-profile run covering group creation, group removal/rename/move, reconnect, restart, and cleanup.
+  - **Done when:** two spaces create distinct groups, multiple pages in one space share its group, pages remain inactive, user tabs remain untouched, group drift never changes authorization, and agent calls do not foreground Chrome, switch the active user tab, or steal OS keyboard focus.
+  - **Validation:** dedicated-profile run covering group creation, group removal/rename/move, reconnect, restart, and cleanup while a non-Chrome app and an unrelated Chrome tab are foreground. Record sanitized before/after frontmost-app, Chrome-window-focus, and active-user-tab invariants for page creation/grouping and host operations; page-local DOM focus must not foreground the browser.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P4-T4 — Resolve current live unknown outcomes and logical refs.
@@ -158,6 +163,7 @@ extension/
 - [ ] Existing/user tabs are never silently claimed or closed.
 - [ ] Required groups are presentation only and never authorization, isolation, adoption, or cleanup units.
 - [ ] Group creation/update failure returns a typed error and retains the managed page.
+- [ ] Background agent requests never foreground Chrome or change OS keyboard focus or the unrelated active user tab; page-local DOM focus does not imply window/tab activation.
 - [ ] No primary extension/host output displays raw IDs or `[id] name`.
 - [ ] Profile binding is explicit and cannot be forged with a profile UUID or payload role field.
 - [ ] Stop, crash, update, uninstall, and ambiguous rebind retain pages; explicit cleanup uses fresh proof and confirmation.
@@ -181,9 +187,9 @@ Phase 4 remains active and release-ineligible until the release evidence gate pa
 
 ### Release evidence gate (open)
 
-- Run current-build end-to-end validation in the user's dedicated Chrome profile, including required per-space groups, a snapshot with logical refs, and safe page lifecycle behavior.
+- Run current-build end-to-end validation in the user's dedicated Chrome profile, including required per-space groups, a snapshot with logical refs, safe page lifecycle behavior, and background focus preservation.
 - Resolve the existing-profile `unknown_outcome` snapshot/navigation results and the unattributed unmanaged-tab close; preserve no-replay and no-unowned-close guarantees.
-- Record host/Chrome restart-recovery and cross-origin frame/OOPIF behavior only where those behaviors are part of the host-owned CDP design; deterministic tests do not replace required live evidence.
+- Record that host/Chrome restart-recovery, cross-origin frame/OOPIF behavior, and no-focus-steal behavior pass only where those behaviors are part of the host-owned CDP design; deterministic tests do not replace required live evidence.
 - Provide real Chrome Web Store listing, signing, and update/distribution evidence.
 - Managed-policy evidence remains deferred and is not a blocker for this scope.
 
