@@ -60,8 +60,8 @@ Source of truth: `docs/mcp-compatibility.md` and the host MCP implementation und
 
 - [ ] P8-T3 — Run live headed-Chrome MCP workflows.
   - **Files:** host/extension integration tests and redacted Phase 8 live artifacts.
-  - **Done when:** the stdio process is exercised through the owner-only host socket, Native Messaging bridge, enrolled extension, and headed Chrome; every supported workflow has observed browser-side outcomes, while unsupported routes return their documented typed errors. Cover logical space/page scoping, navigation and actions, snapshots/refs, cancellation and disconnect, takeover/fencing, reconnect/reconciliation, and unrelated user-tab safety.
-  - **Validation:** repeatable live run with environment/build tuple, route results, semantic assertions, cleanup evidence, and redacted artifacts. A failed or unavailable preflight is a blocker, not a pass.
+  - **Done when:** the stdio process is exercised through the owner-only host socket, Native Messaging bridge, enrolled extension, and headed Chrome; every supported workflow has observed browser-side outcomes, while unsupported routes return their documented typed errors. Cover logical space/page scoping, navigation and actions, snapshots/refs, cancellation and disconnect, takeover/fencing, reconnect/reconciliation, unrelated user-tab safety, and background focus preservation (Chrome is not foregrounded and the user's active tab/OS keyboard focus do not change).
+  - **Validation:** repeatable live run with environment/build tuple, route results, semantic assertions, before/after frontmost-app/window and active-tab focus assertions, cleanup evidence, and redacted artifacts. A failed or unavailable preflight is a blocker, not a pass.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P8-T4 — Pass the independent MCP release gate.
@@ -83,6 +83,7 @@ Source of truth: `docs/mcp-compatibility.md` and the host MCP implementation und
 - [ ] Offline 29-route and remote 30-route catalogs are described distinctly.
 - [ ] All 11 currently unavailable remote routes fail closed as `capability_unavailable` unless their support is implemented and proven.
 - [ ] Headed Chrome validation covers the real host, Native Messaging bridge, extension, and Chrome path.
+- [ ] Connected MCP calls preserve the same background-focus contract as the direct CLI/SDK; no MCP route silently foregrounds Chrome or changes the active user tab.
 - [ ] No offline, declaration-only, source-inspection, or operator-acknowledgment evidence is treated as live support.
 - [ ] Required release artifacts and security/error gates pass before MCP is described as distribution-ready.
 - [ ] No removed direct-CDP CLI path is presented as shipped; the Node SDK and extension `chrome.debugger` backend remain accurately documented.
