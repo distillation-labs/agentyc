@@ -43,7 +43,7 @@ Each supported MCP tool is mapped to a scenario containing setup, protocol trans
 - Exercise hidden, disabled, covered, moving, rerendered, stale, cross-origin, and detached controls.
 - Take over a space from the side panel while queued and dispatched actions exist, then return control and resume.
 - Disconnect the MCP stdio process, restart the host, reconnect the extension, terminate the MV3 worker, detach the debugger, restart Chrome, and reconcile without replaying mutations.
-- Browse unrelated user tabs while two spaces work; activate or edit agent-owned tabs without treating focus or page events as takeover.
+- Browse unrelated user tabs while two spaces work; agent requests must not foreground the Chrome app/window, change the active user tab, or steal OS keyboard focus. Measure OS frontmost app/window, Chrome active-tab state, and page-local DOM focus separately. Explicit page-local focus for input is not OS focus or user takeover.
 - Attempt cross-space actions, raw-ID bypasses, unowned closes, session spoofing, stale refs, wrong generations, and forged user-intent tickets.
 
 A scenario is not successful because a process exits cleanly. It must assert semantic results, scope, action status, postconditions, event cursor behavior, cleanup, and redaction.
@@ -58,6 +58,7 @@ The current MCP contract and release suite must test:
 - Canonical error mapping: tool execution errors preserve `CallToolResult.isError=true`; protocol/transport errors remain protocol/transport errors. Errors include stable codes and reconciliation guidance without secrets or raw browser IDs.
 - Multiple connections sharing one broker, out-of-order responses, per-space mutation ordering, event isolation, duplicate idempotency keys, lease expiry, takeover fences, cancellation, disconnect/reconnect, and replay gaps.
 - Host-backed real-browser execution for every supported workflow; unsupported routes must fail closed. There is no MCP HTTP transport or profile-based tool selection.
+- Background-focus conformance across direct CLI/SDK/MCP: create/group, snapshot, navigation, input/click, wait, and close while a different app is foreground; assert no implicit browser-window raise, active-tab switch, or keyboard-focus theft. An operation that cannot pass must be typed unsupported unless a separate explicit foreground mode is approved.
 
 ## Context and speed measurements
 
