@@ -25,7 +25,7 @@ Host-backed logical MCP stdio
   -> same agentyc-host broker
 ```
 
-The user launches a dedicated Chrome profile with a loopback debugging endpoint; Agentyc does not launch Chrome, create or switch profiles, or copy state from the everyday profile. The host owns CDP navigation, observation, snapshots, actions, and lifecycle. The extension only creates tabs and has no popup, side panel, content script, or debugger permission. The standalone direct-CDP CLI and Rust runtime crates described in the early plan were removed; the host's internal CDP connection is not a user-facing CLI.
+The user launches a dedicated Chrome profile with a loopback debugging endpoint; Agentyc does not launch Chrome, create or switch profiles, or copy state from the everyday profile. The host owns CDP navigation, observation, snapshots, actions, and lifecycle. The extension only creates tabs and has no popup, side panel, content script, or debugger permission. Agent-driven work is background-first: it must not foreground Chrome, switch the user's active tab, or steal OS keyboard focus; page-local DOM focus is a separate state. The standalone direct-CDP CLI and Rust runtime crates described in the early plan were removed; the host's internal CDP connection is not a user-facing CLI.
 
 **Why this wins now:**
 
@@ -37,11 +37,11 @@ The user launches a dedicated Chrome profile with a loopback debugging endpoint;
 
 **Accepted trade-offs:** The user must launch a dedicated Chrome profile with a loopback debugging endpoint, and the create-tab bridge requires the extension and Native Messaging host. Spaces share state within that profile; MCP remains a separate compatibility contract with its own pending release gates.
 
-**Top risks:** loopback CDP availability, profile setup confusion, Native Messaging origin or payload bugs, MV3 worker restarts during tab creation, stale target/document/ref routing, user takeover races, extension distribution, and false token/performance claims.
+**Top risks:** loopback CDP availability, profile setup confusion, Native Messaging origin or payload bugs, MV3 worker restarts during tab creation, stale target/document/ref routing, user takeover races, Chrome foreground/focus theft during background operations, extension distribution, and false token/performance claims.
 
 **Stop rationale:** The repository and cloned ego-lite harness were audited; official Chrome remote-debugging, debugger, Native Messaging, service-worker, content-script, scripting, tabs, tab-groups, storage, side-panel, distribution, and browser-target CDP Extensions sources were retrieved; independent architecture reviews converged on the same host/extension/CLI direction. The automated P0-T2 probe has now passed against installed Chrome 154 using `Extensions.loadUnpacked`/`getExtensions`/`uninstall` with a disposable profile; the remaining uncertainty is explicitly gated in Phase 0 rather than hidden.
 
-See `research/decision-supersession.md` for the old-plan mapping and `research/decision-closure.md` for active decisions D-09–D-17.
+See `research/decision-supersession.md` for the old-plan mapping and `research/decision-closure.md` for active decisions D-09–D-18.
 
 ## Evidence status
 
@@ -64,6 +64,7 @@ This document is an execution plan and evidence registry. The current Phase 0 ch
 
 - The accepted headed artifact `artifacts/p0-coexistence/live-checkpoints-auto12/report.json` proves the two-space/two-agent current-run coexistence gate, user-tab/focus preservation, isolation, fencing, cleanup, and restart/update observations through the product host-backed direct CLI. The source-identical smoke `artifacts/p0-coexistence/live-hardening-basic-3/` additionally passes current-source browser inventory, snapshots, actions, focus, isolation, and cleanup; disruptive restart/update actions remain operator-approved checkpoints.
 - The current checker returns `status: pass` with coexistence, installation, live Chrome, live Native Messaging, and performance gates passed. The disposable P0 lane is not existing-profile proof.
+- A bounded Phase 4 disposable-profile MCP smoke passed on 2026-10-12 (extension/host startup, managed page, snapshot hash, and close) but produced zero logical refs and `release_eligible: false`; it does not prove the user's existing profile. The user also reports Chrome foreground/focus theft; no live reproduction or root cause is yet recorded.
 - Deterministic validation includes 72 extension tests, 67 host-library tests, 66 host integration tests, 15 direct CLI tests, 28 core tests, 77 harness tests, and the Phase 1/2/3/4 quality and contract checkers. Phase 3 adds stale-owner lock recovery, endpoint metadata, Native Messaging shim forwarding, peer-credential admission, broker scheduler permits, pause/handoff fences, and profile rebind fencing. Its explicit legacy runtime boundary was later removed with the standalone direct-CDP CLI crates.
 
 **Explicit residuals, not hidden blockers:** OOPIF/flat debugger session graph, full reference-equivalent refs/actionability/waits/dialog/file chooser, selected-page retention, ordinary-user Web Store/managed distribution, Linux/Windows registration, deployed-model tokenizer/human responsiveness baselines remain owned by later phases. They are not claimed by the Phase 0 gate.
@@ -144,7 +145,7 @@ Reopen deferred items only on a documented trigger in `research/decision-superse
 | Reliability       | No operation exceeds its deadline; disconnect after dispatch is typed `unknown`; stale refs/events cannot affect replacement pages                                                | Fault-injection and recovery tests                           |
 | Context           | Clean cache causes zero DOM scans; delta median target ≤35% of equivalent full snapshot and actual tokenizer metadata is reported                                                 | Snapshot/token benchmark; threshold may be signed in Phase 0 |
 | Speed             | Warm host metadata p95 ≤50 ms; batch script cuts agent round trips by ≥50% on the reference scenario; action latency is within the Phase 0 budget                                 | Direct CLI/SDK benchmark                                     |
-| Human coexistence | User can browse unrelated tabs while two spaces work; extension does not steal focus except explicit user action                                                                  | Manual headed workflow                                       |
+| Human coexistence | User can keep another app/window and unrelated Chrome tab in front while two spaces work; background calls never foreground Chrome or alter OS keyboard focus/active-user-tab state without explicit approval | Headed focus/coexistence workflow                            |
 | Native bridge     | Malformed, oversized, wrong-origin, truncated, replayed, and version-mismatched messages fail closed                                                                              | Native host/extension protocol tests                         |
 | Compatibility     | Host-backed logical MCP stdio contract is tested offline; separate MCP release requires supported-route live headed-Chrome evidence and explicit decisions for unavailable routes | Phase 8 MCP release suite                                    |
 | Operations        | Metrics identify broker/profile/space/page/action/lease epoch without cookies, tokens, headers, page bodies, screenshots, or raw browser IDs                                      | Redaction and runbook review                                 |
@@ -183,6 +184,7 @@ These gates apply to the planned agentyc path and remain unproven until Phase 0,
 - User takeover is a hard stop and non-retry condition until the user explicitly returns control.
 - Event watermarks, deadlines, cancellation, and reconnect/resume behavior are explicit and bounded.
 - Cleanup proves individual agent ownership and never closes an unowned or user tab.
+- Background operations preserve the OS foreground application/window and unrelated active Chrome tab; page-local DOM focus is measured separately and cannot silently activate Chrome.
 
 ## Production-grade validation bar
 
