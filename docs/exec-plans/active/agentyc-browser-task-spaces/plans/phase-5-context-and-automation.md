@@ -81,6 +81,12 @@ Lease epoch is checked at enqueue, dequeue, and immediately before extension dis
 | storage/cookie/evaluate | only before send           | unknown + explicit confirmation if needed | never                  |
 | close/release           | only before send           | reconcile target absence                  | only if absence proven |
 
+### Background-focus invariant
+
+Background execution is the default across direct clients and later MCP mapping. It means an agent request does not foreground the Chrome application/window, switch the user's active tab, or take OS keyboard focus; `tabs.create({active:false})` alone is not sufficient proof. Page-local `DOM.focus`/`document.activeElement` changes needed to target an input are distinct and permitted only when OS/window and unrelated active-tab focus remain unchanged. The default path must not call target/window activation APIs. If Chrome requires foreground activation for an operation, return a typed capability result or use a separately approved explicit foreground mode; never activate silently or retry through a focus-stealing fallback.
+
+Validation must separately observe (a) frontmost OS application/window, (b) Chrome's active user tab, and (c) the target page's DOM focus before and after background page creation, snapshot, navigation, click/input, wait, and close. Page text or an observed focus change cannot grant authority or count as user takeover.
+
 ## Tasks
 
 - [ ] P5-T1 — Add typed host event envelopes, sequences, and bounded routing.
@@ -109,8 +115,8 @@ Lease epoch is checked at enqueue, dequeue, and immediately before extension dis
 
 - [ ] P5-T5 — Implement actionability and postcondition checks.
   - **Files:** `crates/agentyc-host/src/actionability.rs`, `actions.rs`, extension debugger/content action adapters.
-  - **Done when:** click/type/fill/select/check/scroll/drag/key/upload/evaluate validates connectedness, frame/ref identity, visibility, disabled/readonly, geometry/hit target, user-control state, and final postcondition; only known transient failures retry with fresh resolution.
-  - **Validation:** hidden/disabled/readonly/covered/moving/rerendered/offscreen/shadow/OOPIF/file chooser/coordinate fallback fixtures.
+  - **Done when:** click/type/fill/select/check/scroll/drag/key/upload/evaluate validates connectedness, frame/ref identity, visibility, disabled/readonly, geometry/hit target, user-control state, and final postcondition; only known transient failures retry with fresh resolution. Actions against background agent pages must not foreground Chrome, switch the unrelated active tab, or steal OS keyboard focus; page-local DOM focus remains target-scoped.
+  - **Validation:** hidden/disabled/readonly/covered/moving/rerendered/offscreen/shadow/OOPIF/file chooser/coordinate fallback fixtures; run actions against an inactive agent page while another app and unrelated user tab are foreground, asserting all three focus layers remain unchanged. Operations that cannot meet this contract must return a typed unsupported result rather than activate the page implicitly.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P5-T6 — Implement typed unknown outcomes and reconciliation.
@@ -136,6 +142,7 @@ Lease epoch is checked at enqueue, dequeue, and immediately before extension dis
 - [ ] Clean snapshots do not scan.
 - [ ] Delta/resync and token metrics are measured, not guessed.
 - [ ] Every ref/action/wait resolves current logical/generation identity immediately before use.
+- [ ] Background requests preserve OS foreground app/window and the unrelated active Chrome tab; page-local DOM focus is measured separately and never triggers silent window/tab activation.
 - [ ] No missing-session/event path mutates the selected page.
 - [ ] No mutating operation silently succeeds after user takeover or disconnect.
 - [ ] Cleanups after stop/crash/update/uninstall retain pages unless an explicit fresh-proof confirmation operation is executing.
