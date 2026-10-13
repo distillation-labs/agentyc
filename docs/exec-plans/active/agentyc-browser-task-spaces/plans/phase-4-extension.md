@@ -58,8 +58,8 @@ Implement the browser-side half of the new product. The extension must work in t
 - **Disposable MCP/extension E2E (2026-10-06):** an isolated Chrome profile passed extension load, native-host connection, task-space/page creation, MCP snapshot read with a snapshot hash, and MCP close-action receipt with the page subsequently observed as `target_lost`. It produced no logical element refs and does not establish dedicated-profile snapshot/ref or tab-safety proof, conditional host/browser restart or cross-origin-frame behavior, or store-distribution evidence; managed-policy evidence is deferred.
 - **Existing-profile live run (2026-10-09):** on a dedicated non-everyday Chrome profile with the production extension and registered Native Messaging host, a persistent MCP session created a space, acquired a lease, created a managed page, and completed required group presentation (the extension reported a tab group with the space label). `host_snapshot_read` returned a snapshot hash. A second same-principal connection was denied `permission_denied` for lease renew and page close, a different-principal connection was denied `space_forbidden`, and page close, space finish, and space release completed. No logical element refs were produced; restart/OOPIF/user-control evidence, the full existing-profile scenario suite, and distribution/signing proof remain open.
 - **Disposable-profile MCP smoke (2026-10-12):** `artifacts/p4-live-disposable/report.json` records extension load, service-worker/host startup, MCP space/lease/managed-page creation, a snapshot hash, and successful close on a local fixture. It produced zero logical refs and explicitly sets `release_eligible: false`; it is not existing-profile evidence or Phase 4 completion.
-- **Test-environment finding (2026-10-12):** the open Chrome 155.0.8059.40 window reported Profile Path under Chrome's standard `Google/Chrome/Default` data root, had no remote-debugging listener on port 9222, and had no connected host. A local extension-state check did not find the workspace Agentyc extension under that profile, though the user reports it is installed in a non-daily profile. Chrome 136+ requires remote-debugging switches to use a non-default `--user-data-dir` (source ledger S-018); the intended Agentyc-enabled data directory remains to be located and launched. Do not copy profile data to work around this requirement.
-- **User-reported focus regression (2026-10-12):** coding-agent calls can bring Chrome to the foreground and interrupt the user's work. This has not yet been reproduced on the intended profile. Background focus preservation is now an explicit acceptance and live-evidence gate; isolate OS-window focus, Chrome active-tab changes, and page-local DOM focus separately.
+- **Test-environment finding (2026-10-12):** after the user launched Chrome 155.0.8059.40 with a non-default Agentyc test `--user-data-dir` and port 9222, the endpoint was reachable only at `127.0.0.1:9222`; `agentyc host status` reported a ready, extension-connected, non-test-seam host and a bound profile. The earlier `chrome://version` screenshot showed the standard `Google/Chrome/Default` path and is superseded by this later running instance. Chrome 136+ requires remote-debugging switches to use a non-default `--user-data-dir` (source ledger S-018); do not copy profile data to work around this requirement.
+- **User-reported focus regression (2026-10-12):** coding-agent calls can bring Chrome to the foreground and interrupt the user's work. In a live MCP probe with a non-Chrome app foreground, space creation and lease acquisition preserved frontmost app state; `host_page_create_managed` returned `unknown_outcome` before snapshot/action testing. Read-only MCP inventory found the test page planned/unbound and CDP inventory found no matching bootstrap/fixture tab. No retry was issued; after lease expiry, the test-owned space was finished/released and no test tab remained. Thus no focus theft was observed in the tested setup calls, but the background page workflow and active-tab focus remain unverified. Root cause of the managed-page unknown outcome is open; preserve no-replay while investigating.
 
 ## Scope
 
@@ -147,8 +147,8 @@ extension/
 
 - [ ] P4-T4 — Resolve current live unknown outcomes and logical refs.
   - **Files:** host CDP snapshot/ref path and Phase 4 live artifacts.
-  - **Done when:** current-build validation produces logical refs, resolves unknown navigation/snapshot outcomes without replay, and records unsupported frame/recovery behavior explicitly.
-  - **Validation:** repeatable redacted live run with build tuple, refs, receipts, cleanup, and recovery evidence.
+  - **Done when:** current-build validation produces logical refs, reconciles unknown managed-page creation/navigation/snapshot outcomes without replay, records unsupported frame/recovery behavior explicitly, and preserves the background-focus contract.
+  - **Validation:** repeatable redacted live run with build tuple, refs, receipts, cleanup, recovery evidence, and focus observations. Inject or observe create-response loss and reconcile using host/extension inventory; never repeat page creation solely because its response was unknown.
   - **Owner:** Japneet Kalkat.
 
 - [ ] P4-T5 — Complete distribution evidence and documentation closure.
@@ -174,7 +174,7 @@ extension/
 - **Next phase:** Phase 5 connects the host runtime to compact snapshots, refs, waits, actionability, and typed automation outcomes.
 - **Residuals:** exact unsupported capability fallbacks are carried into the runtime matrix; no fallback may broaden permissions silently.
 
-## Current Phase 4 exit gates
+## Exit gate — current Phase 4 gates
 
 Phase 4 remains active and release-ineligible until the release evidence gate passes. Do not use completion of deterministic implementation work as a claim of live validation or production readiness.
 
